@@ -1,0 +1,34 @@
+{{- if and .Values.nodeAgent.enabled .Values.operator.admissionPolicy.enabled }}
+{{- /*
+The node-agent keeps, in the release namespace, a ConfigMap vni-ledger-<node> with the VNIs its node carries flows of (the operator does
+not return a VNI to the pool while a node's ledger has it). RBAC cannot name a ConfigMap per node, so the policy
+laboratory-node-agent-ledger limits the node-agent to the ConfigMap of the node it runs on. No policy, no permission.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-node-agent-ledger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ configmaps ]
+    verbs: [ get, create, patch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-node-agent-ledger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-node-agent-ledger
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-node-agent
+    namespace: {{ .Release.Namespace }}
+{{- end }}

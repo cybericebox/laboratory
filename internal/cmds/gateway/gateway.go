@@ -23,6 +23,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/gateway"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 )
@@ -51,6 +52,7 @@ func Run() {
 		log.Error(err, "init iptables")
 		os.Exit(1)
 	}
+	ipt.MaxConnectionsPerLab, ipt.NewConnectionsPerSecondPerLab = cfg.MaxConnectionsPerLab, cfg.NewConnectionsPerSecondPerLab
 	defer ipt.RemoveInput()
 	if err := ipt.SetupFilter(); err != nil {
 		log.Error(err, "setup the forwarding filter")
@@ -77,10 +79,14 @@ func Run() {
 
 	dhcpMgr := dhcp.NewManager()
 	defer dhcpMgr.Close()
+	// The bandwidth ceiling of each lab comes from the annotation of this pod (a downward API volume); a pod made without the volume
+	// has no ceiling and shapes nothing.
+	shaper := gateway.NewShaper()
 	if err := (&gateway.LabGatewayReconciler{
 		Client:   mgr.GetClient(),
 		DHCP:     dhcpMgr,
 		IPT:      ipt,
+		Shaper:   shaper,
 		Cfg:      cfg,
 		Recorder: mgr.GetEventRecorderFor("labgateway"),
 	}).SetupWithManager(mgr); err != nil {
@@ -90,6 +96,19 @@ func Run() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	go func() {
+		err := bandwidth.Watch(ctx, bandwidth.AnnotationsFile,
+			func(l bandwidth.Limits) {
+				if err := shaper.SetLimit(l.CapKbps); err != nil {
+					log.Error(err, "apply the bandwidth ceiling", "kbps", l.CapKbps)
+				}
+			},
+			func(err error) { log.Error(err, "read the bandwidth annotation") })
+		if err != nil {
+			log.Error(err, "watch the bandwidth annotation")
+		}
+	}()
 
 	log.Info("starting gateway manager", "namespace", cfg.Namespace)
 	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), cfg.Namespace, ctrl.Log.WithName("error-journal"))

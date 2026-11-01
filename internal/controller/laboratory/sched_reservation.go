@@ -326,7 +326,7 @@ func (r *reservationPass) own(rooms []nodeRoom, name string) []nodeRoom {
 	out := make([]nodeRoom, len(rooms))
 	for i := range rooms {
 		a := r.withheld[name][rooms[i].Name]
-		out[i] = nodeRoom{Name: rooms[i].Name, CPU: a.cpu, Memory: a.mem}
+		out[i] = nodeRoom{Name: rooms[i].Name, CPU: a.cpu, Memory: a.mem, noContainer: rooms[i].noContainer, noMicroVM: rooms[i].noMicroVM}
 	}
 	return out
 }

@@ -1,3 +1,4 @@
+{{- include "laboratory.lifecycleProfile" . -}}
 {{- /*
 The operator hardcodes its system namespace as "laboratory-system"
 (internal/names/namespaces.go): it reads the platform lab access key secret from there and
@@ -159,4 +160,11 @@ at install time instead of shipping a broken deployment.
 
 {{- if and $caps.requiredSnapshot (not .Values.lifecycle.requiredSnapshotAvailable) }}
 {{- fail "requiredSnapshot advertisement requires qualified snapshot acceptance" }}
+{{- end }}
+
+{{- /* The node-agent's cni-gate sends the pods of the namespaces named lg-* to the node-agent and every other pod straight to the real CNI. That
+       boundary is kept by the admission policies (only the operator labels a namespace as a group's, only lg-* namespaces take pods with a
+       network annotation) and the node-agent writes its VNI ledger under one of them. Without the policies there is no guarantee: refuse. */ -}}
+{{- if and .Values.nodeAgent.enabled (not .Values.operator.admissionPolicy.enabled) }}
+{{- fail "nodeAgent.enabled needs operator.admissionPolicy.enabled=true: the policies keep the lg-* namespace boundary of cni-gate (a pod outside it goes to the real CNI without the node-agent) and confine the node-agent's writes. Without them a lab pod could land in a namespace the node-agent never wires." }}
 {{- end }}

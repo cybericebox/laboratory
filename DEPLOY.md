@@ -505,10 +505,24 @@ not reachable from a chart); it runs in the release namespace with a lease of it
 `labScheduler.image` for an air-gapped registry). `labScheduler.enabled: false` leaves lab pods to the default scheduler. If the
 lab scheduler is down, new lab pods stay Pending until it is back (running labs are not affected).
 
-**Placement of a group.** Pod placement is the lab scheduler's (or the default one's), with two soft preferences on device pods (never required, so a full
-node never blocks a lab): the node of another device of the same lab (weight 100: a lab's traffic stays node-local), then a node that already
-runs any pod of the same group, i.e. its VPN, gateway and other labs (weight 50). A group's labs therefore end up together on as few nodes as
-capacity allows, which makes a node empty sooner when you take it out for maintenance. Nothing guarantees one node per group.
+**Placement of a group.** Pod placement is the lab scheduler's (or the default one's), with soft preferences only (never required, so a full
+node never blocks a lab and no node is added for them): a device pod prefers the node of another device of the same lab (weight 100: a
+lab's traffic stays node-local), then a node that runs any pod of the same group (weight 50); the VPN and gateway pods prefer a node
+with a lab of the group (weight 100), then a node with any pod of the group (weight 50; set when their Deployment is made, so groups
+that exist keep what they have). The lab scheduler scores these preferences with `labScheduler.affinityWeight` (12), above
+3 x `fitWeight`, so among the nodes that run the best match wins and the fuller node (MostAllocated) only breaks a tie. A new node
+comes from the autoscaler only when a pod fits no running node. Nothing guarantees one node per group or per lab: a lab with a
+fixed-speed wire that must stay whole needs a field of the Lab API and is not built yet.
+
+**Device profiles (container, microVM).** A device has a profile (`devices[].profile`, empty = container). A microVM device is the same pod with
+`runtimeClassName` set to the chart's RuntimeClass (`microvm.*`: Kata Containers with Cloud Hypervisor, `overhead.podFixed` 50m / 120Mi as a first guess),
+and runs only on nodes labelled `cybericebox.com/profile-microvm=true` and `cybericebox.com/runtime-kata-clh=true` (infrastructure installs Kata on
+`/dev/kvm` nodes and labels them). `microvm.enabled` is off by default; `profileLabels.enabled` (off) makes container devices and the VPN and
+gateway pods select `cybericebox.com/profile-container=true`, for clusters with nodes meant for microVMs only: turn it on after every container node
+carries the label. The operator adds the overhead to the pod's need in the placement simulation and to the reservation check, and places a profile
+only in a room that runs it; `scaleUpProfiles` tells which profiles the autoscaler node groups can add. The agent reports every offered profile
+(running now, after scale-up, overhead) in `GetCapacity.node_profiles` and refuses a lab with `PROFILE_UNSUPPORTED` / `PROFILE_UNAVAILABLE`. The guest
+kernel is built by `.github/workflows/guest-kernel.yml` from `kernel/microvm/cybericebox.fragment`. A microVM pod sets no `hostUsers: false` and no TUN resource.
 
 **Maintenance of a node.** The `lab-group` budget blocks every voluntary eviction in a group namespace, the VPN and gateway pods included, so
 `kubectl drain`, an autopilot upgrade or the autoscaler's scale-down wait on a node that still has lab pods. That is intended: a running lab is
@@ -786,6 +800,37 @@ every minute). The windows are **not** part of the Monitoring stream, which is a
 kind that is filtered by a tenant list would complicate its deltas for little gain.
 
 ---
+
+## Bandwidth protection
+
+Off by default (`bandwidth.enabled`). On, no participant, lab or group can saturate a node or the cluster network. Per node and per direction
+
+    U = the node's bandwidth - the system reserve - the reserves of the platform pods that run on that node
+
+and U is divided into classes: the **entry** (the WireGuard demux and the L7 proxy) gets 50 %, the **internet** (the gateways) 25 %, **Geneve** (traffic between nodes) 25 % (`bandwidth.shares`). Inside a class everyone gets a fair share, never more than a cap: a participant 50, a lab's internet 50, a lab's Geneve traffic 100 Mbit/s (`bandwidth.caps`). **Nothing inside a node is limited**; only what crosses nodes and what goes to the internet:
+
+| What | Where | How |
+|---|---|---|
+| Geneve between nodes | the node-agent, on the OVS bridge | an OVS meter per lab that is split between nodes (table 7) and one meter for the node (table 8), chained: `t6 (local delivery) -> t7 meter(lab) -> t8 meter(node) + tunnel outputs`. Local delivery is never metered |
+| the entry (participants of the VPN and of the web) | the demux (userspace: bytes per session, both directions; tc and xdp: the packet rate of the kernel fast path) and the L7 proxy (paced reads and writes, WebSockets too) | a token bucket per participant and one for the class; the share is the class divided by the participants active in the last seconds, up to the cap |
+| the internet | the gateway pod, on each lab interface | a token bucket filter on the egress (to the lab) and a police on the ingress (to the internet) |
+
+The label `cybericebox.com/node-bandwidth` gives a node's bandwidth in Mbit/s (`1562`, or `1562M`, `10G`); the cloud code sets it from the instance type, the Proxmox inventory from the NIC. A node without it is `bandwidth.defaultMbit` (1000). A platform pod keeps bandwidth for itself with the annotation `cybericebox.com/bandwidth-reserve` (Mbit/s), taken off the node it runs on and no other. This chart annotates the registry (100) and the agent (20); the backend and the frontends declare theirs in the platform chart. All numbers are estimates until the load test.
+
+Who computes what: the **operator** works every number out when something changes (a node's label, a pod that appears, moves or goes, a lab's gateway). It writes the gateways' ceilings as the annotation `cybericebox.com/bandwidth-limits` of each gateway pod, and the limits of every node into the ConfigMap `laboratory-bandwidth`, one key per node, in the namespace of the demux, of the L7 proxy and of the node-agent: the entry limits for the first two, the Geneve ceilings (the class and the cap of a lab) for the node-agent. The pods read their files and apply them themselves; the **node-agent** computes nothing and watches no pod, it reads the key of its own node and touches an OVS meter only when a rate changes (`mod-meter`; a delete would delete the flows that use the meter). The operator needs no right to write to nodes, and none to patch the demux, L7 or node-agent pods; it may read, make and change that one ConfigMap in those three namespaces.
+
+Switching on: a pod made before has no volume for its limits, so the **gateway pods that exist keep no ceiling until they are recreated** (changing the template of a Deployment would restart a team's gateway). The demux and L7 pods get the ConfigMap volume at the next rollout of their DaemonSet/Deployment. Switching off: set the shares and caps to 0, the pods then limit nothing; the meters of the node are removed when the node-agent sees zero limits.
+
+Checks on a node (the bridge is `br-ovs`):
+
+    ovs-ofctl -O OpenFlow13 dump-meters br-ovs          # meter 1 = the node, 16 + VNI = a lab
+    ovs-ofctl -O OpenFlow13 meter-stats br-ovs          # packet_count / byte_count of the dropped band
+    ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=7   # the lab meters
+    ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=8   # the node meter and the tunnel outputs
+    kubectl -n <group namespace> get pod -l laboratory.cybericebox.com/component=gateway -o jsonpath='{.items[*].metadata.annotations}'
+    kubectl -n laboratory-wg get configmap laboratory-bandwidth -o yaml
+
+Known limits (see `docs/research/2026-10-28-lab-bandwidth-plan.md`, "Open for owner"): the OVS meter counts the frame before the Geneve headers, so the Geneve class is scaled by `bandwidth.geneveOverheadFactor` (0.85); a flooded frame is copied to every remote node while the meter counts it once, so a lab's rate is divided by the number of remote nodes; the kernel fast path of the demux (tc and xdp) limits by bytes in the BPF program itself, so queueing disciplines do not matter: a byte bucket per session, written as the session's fair share of the class (the demux recounts the active sessions every 2 s), and one window for the class of the node. If the verifier of a kernel refuses the byte limiter the demux logs it and falls back to a packet rate per session (the packets of a session are assumed 1500 bytes; no class limit); the userspace demux adds a hop that is not counted. Nothing here is a guarantee: it is a ceiling.
 
 ## 6. Uninstall
 
@@ -1435,6 +1480,53 @@ The gateway forwards to the **public internet only**:
 - Not done here: a sandbox RuntimeClass (gVisor, Kata) for hostile images, and Pod Security Admission on the group namespaces (the lab pods need NET_ADMIN,
   which `baseline` allows, but the `extended` profile adds more; the admission policy below is the guard that matters for the operator).
 
+### Which pods the node-agent wires
+
+`cni-gate` looks at the namespace of the pod only. A pod in a namespace named `lg-*` (the namespaces of the LabGroups) goes through the node-agent (`SetupNetworks`);
+if the node-agent does not answer, the ADD is refused and the kubelet retries it: a lab pod never reaches Cilium on its own. A pod of **any other namespace** goes straight to the
+real CNI and the node-agent is not called, so the system pods of a node (Cilium, CoreDNS, kube-proxy, the node-agent itself) start with the node-agent down or not yet up. DEL
+always reaches the real CNI; for a pod outside `lg-*` it does not ask the node-agent. No taint is added: `node-starting` and `node-agent-ready` keep lab pods off a node without a node-agent.
+
+Two ValidatingAdmissionPolicies (`operator.admissionPolicy.enabled`, template `operator/lab-namespace-policy.yaml`) keep the prefix true for everyone:
+
+- `laboratory-group-namespace-label`: the label `laboratory.cybericebox.com/group` may be added, changed or removed on a Namespace only by the operator's ServiceAccount,
+  and only on a name starting with `lg-`.
+- `laboratory-network-pods`: a pod (and the template of a Deployment, StatefulSet, DaemonSet, ReplicaSet, Job or CronJob) with one of the annotations
+  `network.cybericebox.com/networks`, `default-network` or `conntrack-accounting` is refused outside `lg-*`.
+
+A LabGroup recorded under the old naming (the bare group name as its namespace, kept in `status.namespace`) is not provisioned any more: the operator raises the Warning event
+`LegacyNamespace` and does nothing (deleting it works). Its pods could not be wired, and the policies would refuse the network annotations there. Recreate such a group.
+`nodeAgent.enabled` (always on) requires `operator.admissionPolicy.enabled=true`; the chart refuses to render without it.
+
+### Which nodes carry the flows of a VNI
+
+Each node-agent keeps the ConfigMap `vni-ledger-<node>` (release namespace) with the VNIs its node has flows for. A number is written there **before** the first flow of it is
+installed (no record, no flow) and taken out **after** the removal of its flows is confirmed. The operator's sweeper does not return a retired VNI to the pool while any node's
+ledger has it, **whether or not the Lab that owned it still exists**; an unreadable ledger stops the sweep. Metrics of the operator: `laboratory_vni_held_unacknowledged_slots`,
+`laboratory_vni_held_oldest_seconds` (with a log line after 15 minutes), `laboratory_vni_ledger_missing_nodes`.
+
+A node that has left the cluster keeps its ledger, and its VNIs stay held (the log names the node). When the node is certainly gone, settle it by hand:
+remove the policy `laboratory-vni-ledger-guard` (and its binding), then `kubectl -n laboratory-system delete configmap vni-ledger-<node>`, then `helm upgrade` to restore the policy. Nothing clears it by itself.
+
+At start and every two minutes the node-agent compares the VNIs in its flows and its ledger with the pool (`VNIOrphanReconciler`). A VNI whose slot is retired, or back in the pool with
+no Device or Connection naming it, has its flows removed (under the lock of the pod wiring, the slot read again under it) and leaves the ledger; the node-agent logs it and raises a
+`VNIOrphanRemoved` event on the Node. A VNI whose slot is held by a lease, and any VNI whose slot cannot be judged, is never touched. Flows of a VNI the ledger did not know
+(from before the ledger) are written into it first. The node-agent may write only its own node's ledger ConfigMap (policy `laboratory-node-agent-ledger`). Nobody else may change or delete a ledger ConfigMap, a cluster administrator included
+(policy `laboratory-vni-ledger-guard`; the namespace controller may delete it only while its namespace is being deleted). Settling the ledger of a node that is certainly gone means
+removing that policy first, deleting the ConfigMap, and installing the policy again (`helm upgrade`). Keys are VNIs only (0 to 16777215); an entry that is not a VNI is ignored and counted
+in `laboratory_vni_ledger_invalid_entries`.
+
+### Finalizers: who removes them, and what happens when that component is gone
+
+| Finalizer | On | Removed by | Component gone |
+|---|---|---|---|
+| `cybericebox.com/vpn` | LabVPN, LabGroupClient | the VPN process in the group's VPN pod (DHCP, firewall rules, the lab network, the client's WireGuard peer: all of it lives in the pod) | the operator removes it when the group's `vpn` Deployment is missing or at zero **and** no VPN pod is left (read without the cache): a suspended group, a group being deleted. A running Deployment or a living pod keeps the finalizer |
+| `cybericebox.com/gateway` | LabGateway | the gateway process in the group's gateway pod | the same rule with the `gateway` Deployment |
+| `cybericebox.com/ovs-cleanup` | Device, Connection | the node-agent of the node (ports, flows, VNI in Open vSwitch **on the node**) | **not removed by anyone**: the state outlives the node-agent pod (it is in the node's switch), so a node-agent that is down only delays the release; a node that left the cluster holds its VNIs and scopes until it is settled by hand (see "Which nodes carry the flows of a VNI") |
+| (no finalizer) the access fence of a stop | Lab | the VPN pod proves that a stopped lab is cut off | a stop in a group suspended on purpose (the `vpn` Deployment is there and at zero, no pod is left, read without the cache; a Deployment that is missing waits) takes the fence as `no-vpn-pod`: there is no access to cut. A resumed group builds its access from the state of the day, and a stopped lab is not ready, so no rule allows it. A stop with a running VPN waits for the real fence; a start never takes the shortcut |
+| `cybericebox.com/controller` | LabVPN, LabGateway | the operator, after the pod's own finalizer | n/a |
+| `cybericebox.com/lab`, `labgroup`, `labgroupclient` | Lab, LabGroup, LabGroupClient | the operator | n/a |
+
 ### Namespaces of the lab groups
 
 The namespace of a **new** LabGroup is `lg-<name, at most 40 characters>-<8 hex of the SHA-256 of the whole name>` (at most 52 characters), never the bare group
@@ -1585,7 +1677,7 @@ fast path (no `BPF` capability, a foreign XDP program on the device, ...) exits 
 network device, server to client on `cilium_host` (servers on other nodes) or on the host-side veth of the server's pod (a server on this node).
 Everything else is passed on to the demux process unchanged, and `wg_demux_fastpath_packets_total` counts why: no session (`passed_miss`), a packet from another
 address than the session's (`passed_source`, a roam: the process moves the session), an idle session (`passed_stale`), no route or no metadata
-(`passed_route`, `passed_meta`). The per-session rate (`sessionRate`/`sessionBurst`) is enforced in the kernel with one bucket per session for both directions
+(`passed_route`, `passed_meta`; why a route lookup failed: `fib_no_neigh`, `fib_not_forwarded`, `fib_no_route`, `fib_other`). A route whose next hop has no neighbour entry yet (`fib_no_neigh`, for example the pod subnet routed via the node's own `cilium_host` address) is not left to the slow path: the packet is redirected with `bpf_redirect_neigh` and the kernel resolves the next hop (`neigh_redirected`). The per-session rate (`sessionRate`/`sessionBurst`) is enforced in the kernel with one bucket per session for both directions
 (`dropped_rate`). Over-rate packets are dropped there. IPv6 stays on the slow path.
 
 **Entry discovery.** The kernel judges only packets sent to the demux's entry addresses: each node address with the Service's UDP nodePort, and the Service's
@@ -2366,7 +2458,7 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
    `helm upgrade`, outside an event: `kubectl -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found`. The Service moves to
    `laboratory-wg`, and Helm creates the new one before it deletes the old one, so with a fixed `proxy.wg.nodePort` the create fails ("provided port
    is already allocated") and the upgrade stops halfway. The VPN is down from this step until the new demux pods are Ready, and every client
-   re-handshakes. Once migrated the step does nothing (the kind harness checks the upgrade from `develop`: `hack/kind-demux/e2e.sh upgrade`).
+   re-handshakes. Once migrated the step does nothing: every release tag so far already has the Service in `laboratory-wg`, so an upgrade from a release needs no step (`hack/kind-demux/e2e.sh upgrade` checks the plain upgrade from the last release; with `KIND_DEMUX_UPGRADE_FROM` naming an older base that still has the Service in `laboratory-proxy` it checks the step too).
    The old Service is gone before a non-atomic `helm upgrade`: if that upgrade fails for another reason, the VPN has no Service until it is run again or rolled back.
 3. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
 4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
@@ -2448,6 +2540,25 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
   with `kubectl apply --server-side -f charts/laboratory/crds/` in the message. So Enroll can never burn a token against an old CRD. No extra permission is needed (discovery).
 
 ### Lifecycle native gates and admission recovery
+
+**`lifecycle.profile: full`.** One value switches on what a cluster needs to stop and restart labs: `devices.statePersistence.enabled`,
+`lifecycle.runtimeObservation.enabled` and the capabilities `perLabStop`, `confirmedRuntime`, `retainedRestart`, `fullGroupStop` and
+`requiredSnapshot` (with `lifecycle.requiredSnapshotAvailable`); the default is empty (all as set one by one). A required snapshot is reported
+as available only while persistence is confirmed by every ready lab node (the same preflight as `retainedRestart`; otherwise it is false
+with the code of the reason). **Required means a snapshot for the devices that keep state**: a lab with a persistent database and an ordinary
+web server stops waiting for the snapshot of the database only, the other devices stop without one and never make the request fail; a lab with
+writable devices and none that keeps state has nothing to snapshot, and the request is refused. Set `devices.statePersistence.containerdRoot` to the containerd root of the
+cluster (`/var/lib/containerd`; `/var/lib/k0s/containerd` is the default). The node-agent checks its node at start (the containerd root and
+its snapshotter, the container runtime socket, the snapshot registry; the host cgroup v2 tree) and never hangs or exits for a failure: it
+switches the feature off in its process, logs it, puts the result in the Node annotations `cybericebox.com/state-persistence` and
+`cybericebox.com/runtime-observation` (`ready`, `disabled` or `unavailable: <reason>`) and tells it in a Warning Event on the Node
+(`LifecyclePreflightFailed`). The containerd root volume has no hostPath type check, so a wrong path reaches this check. `GetFeatures` reports
+persistence and the lifecycle capabilities as available only when every lab node that is ready for pods confirms them, and gives the reason
+as a fixed code and a count in `state_persistence.unavailable_reason` and `lifecycle.unavailable_reason`: `<CODE>:<n>/<m>` (CODE one of
+`CONTAINERD_ROOT_MISSING`, `SNAPSHOTTER_MISSING`, `RUNTIME_SOCKET_UNAVAILABLE`, `SNAPSHOT_REGISTRY_UNREACHABLE`, `CGROUP_V2_MISSING`,
+`PERSISTENCE_DISABLED`, `OBSERVATION_DISABLED`, `NODE_UNCONFIRMED`; n lab nodes do not confirm, m were asked). No node names, paths or error
+text leave the cluster; the detail is in the Node annotation (`unavailable: CODE: detail`), the Event and the node-agent log. A node without a
+result (an older node-agent) holds them back (`NODE_UNCONFIRMED`), and with no ready node the configured values stand. The persistence check is repeated every 30 s while it fails (the registry of a fresh cluster is often not up yet): when it passes, the snapshot engine starts in the running node-agent and the annotation turns `ready`; the other checks (and a changed `containerdRoot`) need a restart of the node-agent. The node-agent's right to annotate its node is limited by the admission policy `laboratory-node-agent-label` to the two check annotations (`ready`, `disabled` or `unavailable: CODE: detail`).
 
 Full group lifecycle completion requires direct UID/revision reads, durable
 pre-scale service inventory and node-owned first-success cleanup acknowledgements.

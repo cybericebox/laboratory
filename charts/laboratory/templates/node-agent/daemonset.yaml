@@ -1,3 +1,4 @@
+{{- include "laboratory.lifecycleProfile" . -}}
 {{- if .Values.nodeAgent.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
@@ -173,6 +174,11 @@ spec:
             # The probes' address: the loopback only (the node-agent is on the host network).
             - name: HEALTH_ADDR
               value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
+            {{- if .Values.bandwidth.enabled }}
+            # The bandwidth protection: the Geneve traffic of the node is held to the ceilings the operator wrote for it (the ConfigMap volume).
+            - name: BANDWIDTH_ENABLED
+              value: "true"
+            {{- end }}
             # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
             - name: PORT_POLICING_KBPS
               value: {{ .Values.nodeAgent.portPolicingKbps | quote }}
@@ -215,6 +221,9 @@ spec:
               value: {{ .Values.devices.statePersistence.enabled | quote }}
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
+            # Checked at start (the node-agent tells what its node can do on the Node and in an Event; a wrong path does not hang the pod).
+            - name: CONTAINERD_ROOT
+              value: {{ .Values.devices.statePersistence.containerdRoot | quote }}
             - name: STATE_MAX_WATCH_DIRS
               value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
             # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
@@ -288,6 +297,11 @@ spec:
             failureThreshold: 3
             timeoutSeconds: 8
           volumeMounts:
+            {{- if .Values.bandwidth.enabled }}
+            - name: bandwidth
+              mountPath: /etc/bandwidth
+              readOnly: true
+            {{- end }}
             - name: ovs-run
               mountPath: /run/openvswitch
             - name: grpc-dir
@@ -321,6 +335,14 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if .Values.bandwidth.enabled }}
+        # The limits of every node, written by the operator; the node-agent reads the key of its own node. Optional: the pod starts before
+        # the operator has made the ConfigMap, and has no limit until it exists.
+        - name: bandwidth
+          configMap:
+            name: laboratory-bandwidth
+            optional: true
+        {{- end }}
         - name: cni-bin
           hostPath:
             path: /opt/cni/bin
@@ -363,7 +385,9 @@ spec:
         - name: containerd-root
           hostPath:
             path: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-            type: Directory
+            # No type check on purpose: a wrong path must reach the node-agent's own check (which says so clearly) and not leave the pod
+            # waiting for a volume, with every other pod of the node blocked behind it.
+            type: ""
         - name: host-cgroup
           hostPath:
             path: /sys/fs/cgroup

@@ -36,6 +36,17 @@ func podRequests(pod *corev1.Pod) amount {
 type nodeRoom struct {
 	Name        string
 	CPU, Memory int64
+	// noContainer and noMicroVM say the room cannot run a pod of that device profile (set by capacitySnapshot.rooms from the
+	// profile policy; the zero value runs everything).
+	noContainer, noMicroVM bool
+}
+
+// runs says a pod of the profile can be placed in the room.
+func (r nodeRoom) runs(profile string) bool {
+	if profile == nodecap.ProfileMicroVM {
+		return !r.noMicroVM
+	}
+	return !r.noContainer
 }
 
 // capacitySnapshot is the CPU and memory of the nodes lab pods can run on.
@@ -59,6 +70,10 @@ type capacitySnapshot struct {
 	// Under the breaker the plan keeps new gangs off it; the reservations, the shortfall and the verdicts still count it. Zero
 	// without a budget.
 	vmax amount
+	// profiles maps device profiles to nodes (the zero policy: containers only, anywhere).
+	profiles nodecap.ProfilePolicy
+	// nodeLabels are the labels of the nodes of perNode, by name (the device profiles they can run).
+	nodeLabels map[string]map[string]string
 }
 
 // virtualRoom is the aggregate room a the budget still allows, as one room named nodecap.VirtualRoomName; none when a is zero.
@@ -72,7 +87,23 @@ func virtualRoom(a amount) []nodeRoom {
 // rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs, and after them
 // the virtual room the budget still allows: the maximum. The real room is used first.
 func (c capacitySnapshot) rooms() []nodeRoom {
-	return append(append([]nodeRoom(nil), c.perNode...), virtualRoom(c.vmax)...)
+	out := append([]nodeRoom(nil), c.perNode...)
+	if !c.profiles.Active() {
+		return append(out, virtualRoom(c.vmax)...)
+	}
+	for i := range out {
+		labels := c.nodeLabels[out[i].Name]
+		out[i].noMicroVM = !c.profiles.NodeRuns(labels, nodecap.ProfileMicroVM)
+		out[i].noContainer = !c.profiles.NodeRuns(labels, nodecap.ProfileContainer)
+	}
+	if v := virtualRoom(c.vmax); len(v) > 0 {
+		// Nodes the autoscaler adds: a profile runs there when the chart says a node group can add it (microVM: only then; a container
+		// when the profile labels are off or the groups are not known).
+		v[0].noMicroVM = !c.profiles.CanScaleUp(nodecap.ProfileMicroVM)
+		v[0].noContainer = c.profiles.Labels && c.profiles.ScaleUpKnown() && !c.profiles.CanScaleUp(nodecap.ProfileContainer)
+		out = append(out, v...)
+	}
+	return out
 }
 
 // emptyRooms is rooms: what a gang could ever have, for the DoesNotFit verdict.
@@ -123,6 +154,10 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 	reserve := nodecap.Reserve{Node: nodecap.Amount{CPU: nodeReserve.cpu, Memory: nodeReserve.mem}, Percent: platformPercent}
 	for _, f := range nodecap.FreeForLabs(nodes, pods, selector, tolerations, reserve, packing) {
 		c.perNode = append(c.perNode, nodeRoom{Name: f.Name, CPU: f.CPU, Memory: f.Memory})
+		if c.nodeLabels == nil {
+			c.nodeLabels = map[string]map[string]string{}
+		}
+		c.nodeLabels[f.Name] = f.Labels
 	}
 	for i := range nodes {
 		n := &nodes[i]

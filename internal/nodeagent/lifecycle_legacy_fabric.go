@@ -124,17 +124,11 @@ func (r *ConnectionReconciler) validateLegacyTopology(ctx context.Context, conn 
 	if len(current.Spec.Endpoints) != 2 || a.UID == b.UID || current.Spec.Endpoints[0].Device != a.Spec.Name || current.Spec.Endpoints[1].Device != b.Spec.Name {
 		return ErrPortOwnerChanged
 	}
-	var all lab.ConnectionList
-	if err := r.directReader().List(ctx, &all); err != nil {
+	unique, err := connectionNameUnique(ctx, r.Client, r.directReader(), conn.Name)
+	if err != nil {
 		return err
 	}
-	matches := 0
-	for _, candidate := range all.Items {
-		if candidate.Name == conn.Name {
-			matches++
-		}
-	}
-	if matches != 1 {
+	if !unique {
 		return fmt.Errorf("legacy global pair has ambiguous Connection topology")
 	}
 	var parent lab.Lab

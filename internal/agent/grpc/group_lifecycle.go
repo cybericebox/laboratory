@@ -27,6 +27,9 @@ func (h *Handler) StopLabGroups(ctx context.Context, in *protobuf.StopLabGroupsR
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
+	if res := h.unsupportedBatch(refs, "full group stop", (*protobuf.LifecycleFeature).GetFullGroupStop); res != nil {
+		return res, nil
+	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		it := in.Items[i]
 		if !it.GetRequireAllLabsStopped() {
@@ -52,6 +55,9 @@ func (h *Handler) StartLabGroups(ctx context.Context, in *protobuf.StartLabGroup
 	}
 	if err := dupRefs(refs); err != nil {
 		return nil, err
+	}
+	if res := h.unsupportedBatch(refs, "full group stop", (*protobuf.LifecycleFeature).GetFullGroupStop); res != nil {
+		return res, nil
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		t := in.Items[i]

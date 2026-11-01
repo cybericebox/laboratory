@@ -29,7 +29,17 @@ type Handler struct {
 	// metrics is optional: nil when metrics-server is not installed. Live
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
-	agentID string
+	// usageAll is the last read of the pod metrics of the whole cluster (see clusterUsage).
+	// reads serves the read-only calls from informers (see readCache).
+	reads readCache
+	// admissionStaleAfter, admissionSeen: see admissionAbandoned. clock is the test clock (nil = time.Now).
+	admissionStaleAfter time.Duration
+	admissionSeenMu     sync.Mutex
+	admissionSeen       map[string]time.Time
+	usageMu             sync.Mutex
+	usageAll            map[string]map[usageKey]deviceUsage
+	usageAt             time.Time
+	agentID             string
 	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
 	// Multi-agent/API admission remains a native capability gate.
 	lifecycleAdmissionMu sync.Mutex
@@ -40,6 +50,9 @@ type Handler struct {
 
 	// statePersistence: the cluster allows devices with persistence (the chart switch).
 	statePersistence bool
+	// capabilitiesEnforced: the lifecycle calls refuse (UNSUPPORTED) what GetFeatures does not advertise. Set with the
+	// features the agent runs with (SetFeatures); a bare Handler accepts every lifecycle intent.
+	capabilitiesEnforced bool
 	// Native required-snapshot validation gate; false until configured after proof.
 	requiredSnapshotAvailable bool
 

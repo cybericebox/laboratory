@@ -258,6 +258,13 @@ spec:
                             the device.
                           type: boolean
                       type: object
+                    profile:
+                      description: 'Profile is how the device runs: container (the
+                        default when empty) or microvm. vm is reserved and refused.'
+                      enum:
+                      - container
+                      - microvm
+                      type: string
                     resources:
                       description: Resources sets the container resource requests/limits
                         for this device.
@@ -307,6 +314,9 @@ spec:
                   - message: a container device has at most 16 interfaces
                     rule: self.type != 'container' || !has(self.interfaces) || size(self.interfaces)
                       <= 16
+                  - message: only a container device has a profile
+                    rule: '!has(self.profile) || self.profile == ''container'' ||
+                      self.type == ''container'''
                 maxItems: 64
                 type: array
               imagePullSecret:

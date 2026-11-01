@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -421,6 +422,25 @@ func (o *NativeRuntimeObserver) verifyNativeKernelAttachments(id *lab.OwnedRunti
 	return nil
 }
 
+// claimLeaseDomain marks the VNI of an object as a domain the lease vouches for (poolpkg.ValidateOrReleased, with the uncached reader). The
+// record of an object whose lease is no longer held (the slot went to another owner, or back to the pool) vouches for nothing: its VNI is
+// not claimed here (the owner of the slot claims it), and it is not a failure of the scan of the node: failing it left every lab of the
+// cluster unable to prove anything the moment one lab had been stopped.
+func (o *NativeRuntimeObserver) claimLeaseDomain(ctx context.Context, known map[uint64]bool, uid string, index *uint, lease *lab.VNILease) error {
+	if index == nil || lease == nil {
+		return nil
+	}
+	err := poolpkg.ValidateOrReleased(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: *index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation})
+	if errors.Is(err, poolpkg.ErrLeaseNotHeld) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	known[uint64(*index)] = true
+	return nil
+}
+
 func (o *NativeRuntimeObserver) verifyNativeFlowAttachments(ctx context.Context, id *lab.OwnedRuntimeIdentity, connections *lab.ConnectionList, rows map[string]types.UID, allFabric []lab.OwnedFabricPort, final bool) error {
 	flows, err := o.Network.Flows.readNativeFlows(ctx)
 	if err != nil {
@@ -442,14 +462,7 @@ func (o *NativeRuntimeObserver) verifyNativeFlowAttachments(ctx context.Context,
 		return err
 	}
 	addLease := func(uid string, index *uint, lease *lab.VNILease) error {
-		if index == nil || lease == nil {
-			return nil
-		}
-		if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: *index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation}); err != nil {
-			return err
-		}
-		knownDomains[uint64(*index)] = true
-		return nil
+		return o.claimLeaseDomain(ctx, knownDomains, uid, index, lease)
 	}
 	for _, d := range devices.Items {
 		if err := addLease(string(d.UID), d.Status.VNI, d.Status.VNILease); err != nil {

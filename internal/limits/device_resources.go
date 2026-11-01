@@ -16,6 +16,28 @@ type DeviceDefaults struct {
 	// object is clamped to them. Empty or "0" = no maximum beyond the absolute bound of the limits package.
 	MaxCPU    string
 	MaxMemory string
+	// NoCPULimit runs a device that declares no CPU limit of its own with a CPU request only: no hard cap, so it bursts to the
+	// free CPU of its node and is never throttled, while the request still gives it its share against the neighbours. A device
+	// that declares a cpuLimit keeps it.
+	NoCPULimit bool
+	// MicroVMOverheadCPU and MicroVMOverheadMemory are the RuntimeClass overhead of a microVM pod: added to the requests of every
+	// device of that profile wherever the platform sums them (scheduler, quotas, reservations). Empty: none.
+	MicroVMOverheadCPU    string
+	MicroVMOverheadMemory string
+}
+
+// ProfileOverhead is the CPU (millicores) and memory (bytes) the profile adds to a device pod on top of its own requests.
+func ProfileOverhead(profile laboratoryv1alpha1.DeviceProfile, defaults DeviceDefaults) (cpu, mem int64) {
+	if profile != laboratoryv1alpha1.DeviceProfileMicroVM {
+		return 0, 0
+	}
+	if q, err := resource.ParseQuantity(defaults.MicroVMOverheadCPU); err == nil {
+		cpu = q.MilliValue()
+	}
+	if q, err := resource.ParseQuantity(defaults.MicroVMOverheadMemory); err == nil {
+		mem = q.Value()
+	}
+	return cpu, mem
 }
 
 // pick is the first usable candidate: a quantity that parses, is positive and within the absolute bound, clamped to the
@@ -44,7 +66,7 @@ func pick(isCPU bool, maxQ string, candidates ...string) (resource.Quantity, boo
 
 // DevicePodResources returns the requests and the limits of a device container. Memory is one amount for both (limit,
 // else request, else the default). CPU may burst: the request is cpuRequest (else cpuLimit, else the default) and the
-// limit is cpuLimit (else the request), never below the request. A quantity that does not parse, is zero or negative
+// limit is cpuLimit (else the request, or none with defaults.NoCPULimit), never below the request. A quantity that does not parse, is zero or negative
 // (it would remove the limit) or is beyond the absolute bound is skipped, and one above the chart maximum is clamped to
 // it, so an object that predates the validation cannot run a pod without limits. Both nil when nothing is set.
 func DevicePodResources(spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDefaults) (requests, limits corev1.ResourceList) {
@@ -60,10 +82,18 @@ func DevicePodResources(spec *laboratoryv1alpha1.DeviceResources, defaults Devic
 	}
 	if req, ok := pick(true, defaults.MaxCPU, cpuReq, cpuLim, defaults.CPU); ok {
 		lim, ok := pick(true, defaults.MaxCPU, cpuLim)
-		if !ok || lim.Cmp(req) < 0 {
-			lim = req.DeepCopy()
+		switch {
+		case !ok && defaults.NoCPULimit:
+			if requests == nil {
+				requests, limits = corev1.ResourceList{}, corev1.ResourceList{}
+			}
+			requests[corev1.ResourceCPU] = req
+		default:
+			if !ok || lim.Cmp(req) < 0 {
+				lim = req.DeepCopy()
+			}
+			add(corev1.ResourceCPU, req, lim)
 		}
-		add(corev1.ResourceCPU, req, lim)
 	}
 	if mem, ok := pick(false, defaults.MaxMemory, memLim, memReq, defaults.Memory); ok {
 		add(corev1.ResourceMemory, mem, mem.DeepCopy())
@@ -89,6 +119,8 @@ func LabNeed(spec *laboratoryv1alpha1.LabSpec, defaults DeviceDefaults) (cpu, me
 		if r := DeviceRequests(d.Resources, defaults); r != nil {
 			cpu, mem = cpu+r.Cpu().MilliValue(), mem+r.Memory().Value()
 		}
+		oc, om := ProfileOverhead(d.Profile, defaults)
+		cpu, mem = cpu+oc, mem+om
 	}
 	return cpu, mem
 }

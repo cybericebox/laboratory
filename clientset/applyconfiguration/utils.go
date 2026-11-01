@@ -35,6 +35,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	// Group=allocation, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("Pool"):
 		return &allocationv1alpha1.PoolApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PoolRetired"):
+		return &allocationv1alpha1.PoolRetiredApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PoolLease"):
 		return &allocationv1alpha1.PoolLeaseApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PoolSpec"):

@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -122,6 +125,10 @@ func TestL7MemoryPerConnection(t *testing.T) {
 	var clients []*http.Client
 	var mu sync.Mutex
 	var failures atomic.Int64
+	// At most this many connections are being set up (dial, TLS handshake, request) at once: the accept queue of a loopback listener is
+	// short, and a burst of thousands that a loaded machine cannot serve in time is reset or timed out by the kernel. The connections
+	// themselves stay open, so the number in flight still reaches the thousands.
+	setup := make(chan struct{}, 64)
 	open := func(n int) {
 		var wg sync.WaitGroup
 		for i := 0; i < n; i++ {
@@ -131,11 +138,25 @@ func TestL7MemoryPerConnection(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: true}}
+				c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: true,
+					DialContext: (&net.Dialer{Timeout: 3 * time.Second}).DialContext}}
 				req, _ := http.NewRequest("GET", "https://"+l7addr+"/", nil)
 				req.Host = "web-abc123.challenges.example.com"
 				req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
-				resp, err := c.Do(req)
+				// The accept queue of a loopback listener is short and a loaded machine (the race detector, parallel packages) can
+				// overflow it: the kernel then resets the connection before the proxy ever saw it. That says nothing about the proxy,
+				// so a refused connect is made again; a request that reached the proxy and failed is a failure.
+				var resp *http.Response
+				var err error
+				for attempt := 0; attempt < 100; attempt++ {
+					setup <- struct{}{}
+					resp, err = c.Do(req)
+					<-setup
+					if err == nil || !connectRefused(err) {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
 				if err != nil {
 					failures.Add(1)
 					t.Logf("request: %v", err)
@@ -150,7 +171,7 @@ func TestL7MemoryPerConnection(t *testing.T) {
 		wg.Wait()
 	}
 	waitInflight := func(n int64) {
-		for deadline := time.Now().Add(30 * time.Second); inflight.Load() < n; {
+		for deadline := time.Now().Add(2 * time.Minute); inflight.Load() < n; { // 2000 TLS handshakes take long under the race detector
 			if time.Now().After(deadline) {
 				t.Fatalf("only %d of %d requests reached the backend", inflight.Load(), n)
 			}
@@ -182,4 +203,11 @@ func TestL7MemoryPerConnection(t *testing.T) {
 	for _, c := range clients {
 		c.CloseIdleConnections()
 	}
+}
+
+// connectRefused says the request never got a connection: the dial was reset, refused or timed out (a full accept queue drops the SYN) or found no free local
+// port (the TIME_WAIT sockets of a run just before).
+func connectRefused(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial" && (op.Timeout() || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EADDRNOTAVAIL))
 }

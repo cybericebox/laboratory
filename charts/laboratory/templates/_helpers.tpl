@@ -135,7 +135,30 @@ The settings that more than one binary reads, as ONE map under ONE name each (en
 ConfigMap, the management agent as its env. Each chart value is written here once, so the two can never disagree. A binary reads only the
 names it knows. The map is YAML: consumers use `include ... | fromYaml`.
 */}}
+{{- /*
+lifecycle.profile: full switches on, with ONE value, what a cluster needs to stop and restart labs: the snapshots of device state, the native
+runtime observation and the capabilities per-lab stop, confirmed runtime, retained restart and full group stop (not the required snapshot).
+It sets the values every template reads, so each template that reads them includes this first; setting twice is harmless. Empty (the
+default): the individual values below are used as they are.
+*/ -}}
+{{- define "laboratory.lifecycleProfile" -}}
+{{- $p := .Values.lifecycle.profile | default "" -}}
+{{- if eq $p "full" -}}
+{{- $_ := set .Values.devices.statePersistence "enabled" true -}}
+{{- $_ := set .Values.lifecycle.runtimeObservation "enabled" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "perLabStop" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "confirmedRuntime" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "retainedRestart" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "fullGroupStop" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "requiredSnapshot" true -}}
+{{- $_ := set .Values.lifecycle "requiredSnapshotAvailable" true -}}
+{{- else if ne $p "" -}}
+{{- fail (printf "lifecycle.profile must be empty or \"full\", got %q" $p) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "laboratory.sharedEnv" -}}
+{{- include "laboratory.lifecycleProfile" . -}}
 LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
 LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
 LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}
@@ -181,6 +204,24 @@ DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
 DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
+DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
+PROFILE_LABELS_ENABLED: {{ .Values.profileLabels.enabled | quote }}
+MICROVM_ENABLED: {{ .Values.microvm.enabled | quote }}
+MICROVM_RUNTIME_CLASS: {{ .Values.microvm.runtimeClassName | quote }}
+MICROVM_IMPLEMENTATION_LABEL: {{ .Values.microvm.implementationLabel | quote }}
+MICROVM_OVERHEAD_CPU: {{ .Values.microvm.overhead.cpu | quote }}
+MICROVM_OVERHEAD_MEMORY: {{ .Values.microvm.overhead.memory | quote }}
+SCALE_UP_PROFILES: {{ join "," .Values.scaleUpProfiles | quote }}
+GROUP_MAX_USERS: {{ .Values.groupLimits.maxUsers | quote }}
+GROUP_MAX_LABS: {{ .Values.groupLimits.maxLabs | quote }}
+GROUP_DEFAULT_USERS: {{ .Values.groupLimits.defaultUsers | quote }}
+GROUP_DEFAULT_LABS: {{ .Values.groupLimits.defaultLabs | quote }}
+GATEWAY_MAX_CONNECTIONS_PER_LAB: {{ .Values.inetGateway.limits.maxConnectionsPerLab | quote }}
+GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB: {{ .Values.inetGateway.limits.newConnectionsPerSecondPerLab | quote }}
+VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
+VNI_QUARANTINE: {{ .Values.vni.quarantine | quote }}
+VNI_SWEEP_INTERVAL: {{ .Values.vni.sweepInterval | quote }}
+VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
 STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
 STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
@@ -191,6 +232,23 @@ STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
 IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
 IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
 IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
+{{- end }}
+
+{{/*
+The bandwidth protection settings the operator and the node-agent read (package bandwidth, Settings).
+*/}}
+{{- define "laboratory.bandwidthEnv" -}}
+BANDWIDTH_ENABLED: {{ .Values.bandwidth.enabled | quote }}
+BANDWIDTH_DEFAULT_MBIT: {{ .Values.bandwidth.defaultMbit | quote }}
+BANDWIDTH_SYSTEM_RESERVE_MBIT: {{ .Values.bandwidth.systemReserveMbit | quote }}
+BANDWIDTH_ENTRY_SHARE: {{ .Values.bandwidth.shares.entry | quote }}
+BANDWIDTH_INTERNET_SHARE: {{ .Values.bandwidth.shares.internet | quote }}
+BANDWIDTH_GENEVE_SHARE: {{ .Values.bandwidth.shares.geneve | quote }}
+BANDWIDTH_PARTICIPANT_CAP_MBIT: {{ .Values.bandwidth.caps.participantMbit | quote }}
+BANDWIDTH_LAB_INTERNET_CAP_MBIT: {{ .Values.bandwidth.caps.labInternetMbit | quote }}
+BANDWIDTH_LAB_GENEVE_CAP_MBIT: {{ .Values.bandwidth.caps.labGeneveMbit | quote }}
+BANDWIDTH_GENEVE_OVERHEAD_FACTOR: {{ .Values.bandwidth.geneveOverheadFactor | quote }}
+BANDWIDTH_ENTRY_OVERHEAD_FACTOR: {{ .Values.bandwidth.entryOverheadFactor | quote }}
 {{- end }}
 
 {{/*

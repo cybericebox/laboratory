@@ -21,6 +21,7 @@ import (
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +57,88 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 		}
 	}
 	return false, ErrPortOwnerUnknown
+}
+
+// neverMaterializedHereDeviceElsewhere admits the empty pre-Pod declaration of this node for a Device whose Pod was placed on ANOTHER node:
+// the declaration was never filled here (a retained, genuinely empty one), the Device belongs to this very Lab, and its Pod lives (or lived)
+// elsewhere, so the API cannot say "not yet scheduled" about it any more. That is not an absence certificate: the release still needs the
+// native scan of this node to find no container, cgroup, port or attachment of the Device, as for any other scope.
+func neverMaterializedHereDeviceElsewhere(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
+	// Persistent devices keep their existing boundary, except on the deletion of the Lab (the state is discarded then).
+	if d.Status.NodeName == "" || d.Status.NodeName == id.NodeName || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || persistentDevice(d) && !labDeleting(l) {
+		return false
+	}
+	owned := false
+	for _, parent := range d.OwnerReferences {
+		owned = owned || parent.Kind == ownerKindLab && parent.Name == l.Name && parent.UID == l.UID
+	}
+	if !owned {
+		return false
+	}
+	empty := false
+	for _, declared := range l.Status.ScopeInventory {
+		if !sameDeclaredNativeScope(declared, id) {
+			continue
+		}
+		if scopeDeclarationHasRuntime(declared) {
+			return false
+		}
+		empty = true
+	}
+	return empty
+}
+
+// neverMaterializedOfADeletedDevice admits the empty pre-Pod declaration of a Device that is being deleted together with its Lab (a Lab deleted
+// while it was running has no stop revision, so the ordinary proof of an older declaration does not apply). Neither can make a Pod any
+// more: the Lab and the Device both carry a deletion time. Two more things must hold, read from the API without the cache: no Pod of the
+// Device is on this node (none labelled with the Device, or all on other nodes: a Pod that is still being made or terminated here keeps
+// the scope Unknown, whatever the native scan sees at that moment), and the release is still only by the native scan of this node, which
+// must find no container, cgroup, port or attachment of the Device. The state of a persistent Device is discarded by the deletion of its Lab.
+func (o *NativeRuntimeObserver) neverMaterializedOfADeletedDevice(ctx context.Context, l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
+	if !labDeleting(l) || d.DeletionTimestamp.IsZero() || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || d.Namespace != id.Namespace {
+		return false
+	}
+	owned := false
+	for _, parent := range d.OwnerReferences {
+		owned = owned || parent.Kind == ownerKindLab && parent.Name == l.Name && parent.UID == l.UID
+	}
+	if !owned {
+		return false
+	}
+	empty := false
+	for _, declared := range l.Status.ScopeInventory {
+		if !sameDeclaredNativeScope(declared, id) {
+			continue
+		}
+		if scopeDeclarationHasRuntime(declared) {
+			return false
+		}
+		empty = true
+	}
+	return empty && !o.devicePodOnThisNode(ctx, d, id.NodeName)
+}
+
+// devicePodOnThisNode says a Pod of the Device is, or may be, on the node: one labelled with the Device that sits on it or has no node yet, the
+// Pod the Device's status names (when the status puts it on this node), or any API error (the answer is then "may be").
+func (o *NativeRuntimeObserver) devicePodOnThisNode(ctx context.Context, d *lab.Device, node string) bool {
+	var pods corev1.PodList
+	if err := o.Reader.List(ctx, &pods, client.InNamespace(d.Namespace), client.MatchingLabels{names.LabelDeviceUID: string(d.UID)}); err != nil {
+		return true
+	}
+	for _, p := range pods.Items {
+		if p.Spec.NodeName == "" || p.Spec.NodeName == node {
+			return true
+		}
+	}
+	if d.Status.PodName != "" && (d.Status.NodeName == "" || d.Status.NodeName == node) {
+		var pod corev1.Pod
+		err := o.Reader.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Status.PodName}, &pod)
+		if err == nil {
+			return pod.Spec.NodeName == "" || pod.Spec.NodeName == node
+		}
+		return !apierrors.IsNotFound(err)
+	}
+	return false
 }
 
 func historicalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity, operation string, revision int64) bool {
@@ -322,6 +405,43 @@ func retirementDebtContains[T any](observed, declared []T) bool {
 	}
 	return true
 }
+
+// gonePoolOwned: the owner of the binding is gone (vniOwnerGone) and the pool still says the number is its lease's (held, or retired by it).
+func (o *NativeRuntimeObserver) gonePoolOwned(ctx context.Context, binding lab.OwnedVNI) bool {
+	if binding.VNI == 0 || binding.UID == "" {
+		return false
+	}
+	if _, err := o.vniOwnerGone(ctx, binding); err != nil {
+		return false
+	}
+	return o.leaseStillTheirs(ctx, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}) == nil
+}
+
+// bindingOwnerState: the Device or Connection of the binding is the current holder of its VNI (gone false), or it no longer exists and the
+// pool still holds its lease (gone true), or the scope cannot be trusted (an error). Bindings of other kinds are not judged here.
+func (o *NativeRuntimeObserver) bindingOwnerState(ctx context.Context, binding lab.OwnedVNI, devices []lab.Device, connections []lab.Connection) (gone bool, err error) {
+	current := false
+	switch binding.Kind {
+	case ownerKindDevice:
+		for _, d := range devices {
+			current = current || deviceBindingCurrent(d, binding)
+		}
+	case ownerKindConnection:
+		for _, c := range connections {
+			current = current || connectionBindingCurrent(c, binding)
+		}
+	default:
+		return false, nil
+	}
+	if current {
+		return false, nil
+	}
+	if o.gonePoolOwned(ctx, binding) {
+		return true, nil
+	}
+	return false, fmt.Errorf("original %s VNI lease owner unavailable or replaced", binding.Kind)
+}
+
 func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.OwnedRuntimeIdentity) error {
 	if id.ScopeKind == scopeGroup || id.ScopeKind == runtimeNeverMaterialized {
 		return nil
@@ -338,38 +458,22 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		}
 		id.VNIs = append(id.VNIs, vni)
 	}
-	for _, binding := range id.VNIBindings {
-		if o.vniReleased(binding) {
-			continue
-		}
-		found := false
-		if binding.Kind == ownerKindDevice {
-			for _, d := range devices.Items {
-				if deviceBindingCurrent(d, binding) {
-					found = true
-				}
-			}
-		}
-		if binding.Kind == ownerKindDevice && !found {
-			return fmt.Errorf("original Device VNI lease owner unavailable or replaced")
-		}
-		add(binding.VNI)
-	}
 	var connections lab.ConnectionList
 	if err := o.Reader.List(ctx, &connections, client.InNamespace(id.Namespace)); err != nil {
 		return err
 	}
+	gone := map[string]bool{} // owners that no longer exist but whose lease the pool still holds (see vniOwnerGone)
 	for _, binding := range id.VNIBindings {
-		if binding.Kind == ownerKindConnection && !o.vniReleased(binding) {
-			found := false
-			for _, c := range connections.Items {
-				if connectionBindingCurrent(c, binding) {
-					found = true
-				}
-			}
-			if !found {
-				return fmt.Errorf("original Connection VNI lease owner unavailable or replaced")
-			}
+		if o.vniReleased(binding) {
+			continue
+		}
+		isGone, err := o.bindingOwnerState(ctx, binding, devices.Items, connections.Items)
+		if err != nil {
+			return err
+		}
+		gone[binding.UID] = isGone
+		if binding.Kind == ownerKindDevice {
+			add(binding.VNI)
 		}
 	}
 	if err := o.captureConnectionFabric(id, connections.Items); err != nil {
@@ -390,7 +494,7 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 				count++
 			}
 		}
-		if count != 1 {
+		if count != 1 && (count != 0 || !gone[binding.UID]) {
 			return fmt.Errorf("VNI lease owner is not unique")
 		}
 	}
@@ -485,6 +589,95 @@ func (o *NativeRuntimeObserver) vniReleased(binding lab.OwnedVNI) bool {
 
 // Caller holds the common physical creation/retirement lock. Recovery consumes
 // a completed old lease receipt without deleting any later owner's numeric VNI.
+// leaseStillTheirs says the VNI may be dropped for this lease (poolpkg.ValidateOrReleased, with the uncached reader of the observer).
+func (o *NativeRuntimeObserver) leaseStillTheirs(ctx context.Context, lease poolpkg.Lease) error {
+	return poolpkg.ValidateOrReleased(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease)
+}
+
+// vniOwnerGone says the Device or Connection that held the lease is gone for good: no Device and no Connection of the cluster has its UID,
+// no object names the number as its VNI, and the Lab that owned the lease (binding.OwnerUID) exists in the namespace. The pool still says
+// whose the number is (the caller asks it): an object that was deleted before its Lab (a direct link, a switch) leaves its lease and its
+// flows behind, and nothing else can release them. It returns that Lab. An object that exists under the UID, with another name or VNI,
+// is a replacement, not a gone owner.
+func (o *NativeRuntimeObserver) vniOwnerGone(ctx context.Context, binding lab.OwnedVNI) (*lab.Lab, error) {
+	var ds lab.DeviceList
+	var cs lab.ConnectionList
+	if err := o.Reader.List(ctx, &ds); err != nil {
+		return nil, err
+	}
+	if err := o.Reader.List(ctx, &cs); err != nil {
+		return nil, err
+	}
+	for _, d := range ds.Items {
+		if string(d.UID) == binding.UID || d.Status.VNI != nil && *d.Status.VNI == binding.VNI {
+			return nil, ErrPortOwnerChanged
+		}
+	}
+	for _, c := range cs.Items {
+		if string(c.UID) == binding.UID || c.Status.VNI != nil && *c.Status.VNI == binding.VNI {
+			return nil, ErrPortOwnerChanged
+		}
+	}
+	var labs lab.LabList
+	if err := o.Reader.List(ctx, &labs, client.InNamespace(binding.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range labs.Items {
+		if string(labs.Items[i].UID) == binding.OwnerUID {
+			return &labs.Items[i], nil
+		}
+	}
+	return nil, ErrPortOwnerChanged
+}
+
+// retireVNIOfGoneOwner is retireVNI for a lease whose Device or Connection no longer exists (see vniOwnerGone). The lease is checked
+// before the flows go and after, exactly as for a present owner: the number is dropped only while the pool still says it is this owner's.
+func (o *NativeRuntimeObserver) retireVNIOfGoneOwner(ctx context.Context, binding lab.OwnedVNI, lease poolpkg.Lease, flows *FlowManager) error {
+	parent, err := o.vniOwnerGone(ctx, binding)
+	if err != nil {
+		return err
+	}
+	op, rev := nativeLabOperation(parent)
+	receipt := vniReceipt{Binding: binding, LabUID: string(parent.UID), OperationID: op, Revision: rev, Generation: parent.Generation}
+	if err := o.writeRecord("vni-inventory", o.vniIdentity(binding), receipt); err != nil {
+		return err
+	}
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
+	}
+	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
+	}
+	if _, err := o.vniOwnerGone(ctx, binding); err != nil { // nobody took the number meanwhile
+		return err
+	}
+	receipt.Complete = true
+	return o.writeRecord("vni-released", o.vniIdentity(binding), receipt)
+}
+
+// loadVNIOwner reads the Device or Connection of the binding; one with another UID is a replacement.
+func (o *NativeRuntimeObserver) loadVNIOwner(ctx context.Context, binding lab.OwnedVNI) (client.Object, error) {
+	var object client.Object
+	switch binding.Kind {
+	case ownerKindConnection:
+		object = &lab.Connection{}
+	case ownerKindDevice:
+		object = &lab.Device{}
+	default:
+		return nil, ErrPortOwnerUnknown
+	}
+	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err != nil {
+		return nil, err
+	}
+	if string(object.GetUID()) != binding.UID {
+		return nil, ErrPortOwnerChanged
+	}
+	return object, nil
+}
+
 func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
 	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
 		return ErrPortOwnerUnknown
@@ -497,26 +690,19 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 			return err
 		}
 	}
-	if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
+	lease := poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
 		return err
 	}
 	if o.Reader == nil || binding.UID == "" {
 		return ErrPortOwnerUnknown
 	}
-	var object client.Object
-	switch binding.Kind {
-	case ownerKindConnection:
-		object = &lab.Connection{}
-	case ownerKindDevice:
-		object = &lab.Device{}
-	default:
-		return ErrPortOwnerUnknown
+	object, err := o.loadVNIOwner(ctx, binding)
+	if apierrors.IsNotFound(err) && binding.VNI != 0 {
+		return o.retireVNIOfGoneOwner(ctx, binding, lease, flows)
 	}
-	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err != nil {
+	if err != nil {
 		return err
-	}
-	if string(object.GetUID()) != binding.UID {
-		return ErrPortOwnerChanged
 	}
 	var actual *uint
 	var labName string
@@ -547,7 +733,16 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 	if err := o.writeRecord("vni-inventory", o.vniIdentity(binding), receipt); err != nil {
 		return err
 	}
+	// Checked again right before the flows go: the number is dropped only while it is still this owner's (held, or retired by this very
+	// lease and kept from the pool until this acknowledgement).
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
+	}
 	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	// And after: if the slot was given to someone else meanwhile the release is not acknowledged.
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
 		return err
 	}
 	// API object replacement during a barrier cannot authorize a completed ACK.
@@ -599,11 +794,30 @@ func scopeDeclarationHasRuntime(declared lab.OwnedRuntimeIdentity) bool {
 }
 
 func historicalOrdinaryDeviceInvalid(id lab.OwnedRuntimeIdentity, l *lab.Lab, revision int64, d *lab.Device) bool {
-	return id.Generation >= l.Generation || id.Revision >= revision || d.Spec.Type != lab.DeviceTypeContainer || d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil || d.Spec.LabRef != l.Name || d.Namespace != id.Namespace || string(d.UID) != id.ScopeUID
+	return id.Generation >= l.Generation || id.Revision >= revision || d.Spec.Type != lab.DeviceTypeContainer || persistentDevice(d) && !labDeleting(l) || d.Spec.LabRef != l.Name || d.Namespace != id.Namespace || string(d.UID) != id.ScopeUID
+}
+
+// persistentDevice is a Device that keeps state (a state spec or a state status).
+func persistentDevice(d *lab.Device) bool {
+	return d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil
+}
+
+// labDeleting: the end of the reservation. Deleting a Lab discards the state of its persistent Devices (everything goes), so no snapshot barrier
+// is waited for. A stop without deletion keeps its boundary: persistent Devices need the committed capture there.
+func labDeleting(l *lab.Lab) bool { return !l.DeletionTimestamp.IsZero() }
+
+// reportGenerationInvalid: a report must be of the Lab's current generation. Deleting a Lab raises its generation, so for a deleting Lab a
+// report of an earlier generation (but not earlier than the declaration it releases) stands: the proof does not depend on the generation
+// that existed before the deletion.
+func reportGenerationInvalid(report, declared int64, l *lab.Lab) bool {
+	if labDeleting(l) {
+		return report < declared || report > l.Generation
+	}
+	return report != l.Generation
 }
 
 func historicalOrdinaryReportInvalid(proof lab.OwnedRuntimeIdentity, id lab.OwnedRuntimeIdentity, operation string, revision int64, l *lab.Lab, d *lab.Device, report lab.OwnedRuntimeReport) bool {
-	return proof.ScopeKind != "" && proof.ScopeKind != "Pod" || proof.OwnerUID != id.OwnerUID || proof.ScopeUID != id.ScopeUID || proof.Namespace != id.Namespace || proof.LabName != id.LabName || proof.OperationID != operation || proof.Revision != revision || proof.Generation != l.Generation || proof.NodeName != id.NodeName || proof.NodeName != d.Status.NodeName || proof.NodeBootID != id.NodeBootID || proof.Epoch != id.Epoch || proof.Incarnation != id.Incarnation || proof.PodUID == "" || len(proof.ContainerIDs) == 0 || len(proof.CgroupPaths) == 0 || !proof.AttachmentsComplete || report.Error != "" || report.ObservedAt == nil || report.ObservedAt.IsZero()
+	return proof.ScopeKind != "" && proof.ScopeKind != "Pod" || proof.OwnerUID != id.OwnerUID || proof.ScopeUID != id.ScopeUID || proof.Namespace != id.Namespace || proof.LabName != id.LabName || proof.OperationID != operation || proof.Revision != revision || reportGenerationInvalid(proof.Generation, id.Generation, l) || proof.NodeName != id.NodeName || proof.NodeName != d.Status.NodeName || proof.NodeBootID != id.NodeBootID || proof.Epoch != id.Epoch || proof.Incarnation != id.Incarnation || proof.PodUID == "" || len(proof.ContainerIDs) == 0 || len(proof.CgroupPaths) == 0 || !proof.AttachmentsComplete || report.Error != "" || report.ObservedAt == nil || report.ObservedAt.IsZero()
 }
 
 func historicalPersistentIntentInvalid(id lab.OwnedRuntimeIdentity, l *lab.Lab, revision int64) bool {
@@ -666,6 +880,8 @@ func (o *NativeRuntimeObserver) labScopeCurrent(ctx context.Context, id lab.Owne
 				// Deployment materialization. A later bound native Pod proof
 				// admits only the full native observation path, never release.
 				found = found || !current && historicalNeverMaterializedPodProof(&l, &d, id, operation, revision)
+				found = found || neverMaterializedHereDeviceElsewhere(&l, &d, id)
+				found = found || o.neverMaterializedOfADeletedDevice(ctx, &l, &d, id)
 				if !current {
 					if proof, ok := persistentHistoricalNeverMaterializedPodProof(&l, &d, id, operation, revision); ok {
 						found = true

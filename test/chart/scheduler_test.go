@@ -214,6 +214,7 @@ func TestLabSchedulerIsABinPackingProfile(t *testing.T) {
 	}
 	for _, want := range []string{
 		"schedulerName: laboratory-binpack", "type: MostAllocated", "name: NodeResourcesBalancedAllocation", "kind: Deployment",
+		"name: InterPodAffinity\n                weight: 12",
 		"resourceName: laboratory-scheduler", "name: system:kube-scheduler",
 	} {
 		if !strings.Contains(out, want) {

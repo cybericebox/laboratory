@@ -28,6 +28,11 @@ func (*FastPath) TowardsClient(demux.Socket) (demux.Socket, bool) { return demux
 func (*FastPath) LastSeen() (map[uint32]time.Time, error)         { return nil, errNotLinux }
 func (*FastPath) Pinned() ([]demux.Forward, error)                { return nil, errNotLinux }
 func (*FastPath) EnsureOrder() error                              { return errNotLinux }
+func (*FastPath) SetRate(float64, int) error                      { return errNotLinux }
+func (*FastPath) SetBandwidth(int64, int64) error                 { return errNotLinux }
+func (*FastPath) ByteLimiter() bool                               { return false }
+func (*FastPath) LimiterError() error                             { return nil }
+func (*FastPath) ActiveSessions(uint64) (int, error)              { return 0, errNotLinux }
 func (*FastPath) Ready() error                                    { return errNotLinux }
 func (*FastPath) Stats() Stats                                    { return nil }
 func (*FastPath) Close() error                                    { return nil }

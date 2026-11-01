@@ -50,6 +50,9 @@ func counterComment(id, epoch, direction, kind string) string {
 }
 
 func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan) (ApplyResult, error) {
+	if m.nftOn() {
+		return m.nftApplyForwardPlan(ctx, plan)
+	}
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
 	if m.quiesced {

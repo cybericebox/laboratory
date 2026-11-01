@@ -133,7 +133,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	over, err := h.overLimits(ctx, items, variants)
+	over, err := h.refusedBeforeCreate(ctx, items, variants)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +154,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		if over[i] != nil {
-			return failedResult(refs[i], status.Error(codes.ResourceExhausted, over[i].Error()))
+			return overResult(refs[i], over[i])
 		}
 		if refusals[i] != nil {
 			return failedResult(refs[i], refusals[i])
@@ -237,6 +237,11 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	}
 	if liveGroup.Status.Namespace != ns || liveGroup.Spec.Lifecycle.IsStopped() {
 		return 0, fmt.Errorf("lab group is stopped or its namespace changed")
+	}
+	if v.spec.Lifecycle != nil {
+		if err := h.replaceStaleLab(ctx, ns, it.GetName(), v.spec.Lifecycle.OperationID); err != nil {
+			return 0, err
+		}
 	}
 	want := mergeItemLabels(common, it.GetLabels())
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
@@ -364,7 +369,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 			if err != nil {
 				return nil, err
 			}
-			lab, err := h.cs.LaboratoryV1alpha1().Labs(g.Status.Namespace).Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
+			lab, err := h.readLab(ctx, g.Status.Namespace, crName(ref.GetName()))
 			if apierrors.IsNotFound(err) {
 				continue
 			}
@@ -547,7 +552,7 @@ func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*
 		if err != nil {
 			return err
 		}
-		if err := birthWriteReady(cur); err != nil {
+		if err := birthDeleteReady(cur); err != nil {
 			return err
 		}
 		uid, rv := cur.UID, cur.ResourceVersion
@@ -660,4 +665,25 @@ func validateExistingLab(cur *laboratoryv1alpha1.Lab, id, hash string) error {
 		return errDifferentSpec{kindLab, id}
 	}
 	return nil
+}
+
+// overResult is the failed result of an item refused before its create: one with a machine reason (an unsupported profile) keeps it,
+// the rest are over a limit.
+func overResult(ref *protobuf.ItemRef, err error) *protobuf.ItemResult {
+	if _, ok := err.(reasonError); ok {
+		return failedResult(ref, err)
+	}
+	return failedResult(ref, status.Error(codes.ResourceExhausted, err.Error()))
+}
+
+// refusedBeforeCreate is the per-item refusals made before anything is created: over a limit, or a profile that cannot run.
+func (h *Handler) refusedBeforeCreate(ctx context.Context, items []*protobuf.LabItem, variants map[string]*labVariant) ([]error, error) {
+	over, err := h.overLimits(ctx, items, variants)
+	if err != nil {
+		return nil, err
+	}
+	if over, err = h.profileRefusals(ctx, items, variants, over); err != nil {
+		return nil, err
+	}
+	return h.persistenceRefusals(ctx, items, variants, over)
 }

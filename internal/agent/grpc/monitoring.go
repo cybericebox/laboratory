@@ -93,6 +93,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 	}
 	labsOf, clientsOf, policiesOf, reportsOf := byNamespace(allLabs), byNamespace(allClients), byNamespace(allPolicies), byNamespace(allReports)
 	usageOf, podsOf, schedOf := c.usageByNamespace(ctx), c.podStatuses(), c.deviceSchedules()
+	groupUsageOf := c.groupPodUsage(ctx)
 	proxyCoverage := c.proxyCoverage()
 
 	st := &monState{labels: map[string]map[string]string{}, labLabels: map[string]map[string]string{}}
@@ -112,7 +113,8 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			out[names.LabelTenant] = gt
 			return out
 		}
-		upd.Groups = append(upd.Groups, h.currentLabGroupProto(ctx, g))
+		gp := h.currentLabGroupProto(ctx, g)
+		upd.Groups = append(upd.Groups, gp)
 		st.labels[recordKey("lab_group", gid, "", gid)] = tl(g.Labels)
 		ns := g.Status.Namespace
 		if ns == "" {
@@ -128,6 +130,26 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			}
 		}
 		pods, sched := podsOf[ns], schedOf[ns]
+		if ns != "" {
+			clients, internetLabs := 0, 0
+			for _, cl := range clientsOf[ns] {
+				if cl.DeletionTimestamp == nil {
+					clients++
+				}
+			}
+			for _, l := range labsOf[ns] {
+				if l.DeletionTimestamp == nil && l.Spec.Internet.Enabled {
+					internetLabs++
+				}
+			}
+			var groupUsage map[string]deviceUsage
+			if groupUsageOf != nil {
+				if groupUsage = groupUsageOf[ns]; groupUsage == nil {
+					groupUsage = map[string]deviceUsage{}
+				}
+			}
+			h.fillGroupPodUsage(g, gp, groupUsage, clients, internetLabs)
+		}
 		for _, lab := range sortedByName(labsOf[ns]) {
 			p := labMonitoringToProto(lab, gid, h.features.Limits)
 			fillLabUsage(p, usage, lab.Name)

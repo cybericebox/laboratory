@@ -58,6 +58,10 @@ spec:
                 description: BitMap is a base64-encoded bitset (one bit per slot,
                   1 = allocated).
                 type: string
+              cursor:
+                description: Cursor is where a forward-only allocator hands out next
+                  (see pkg/api/pool ForwardAllocator).
+                type: integer
               free:
                 description: Free is the count of unallocated slots; mirrored to label
                   pool.cybericebox.com/free.
@@ -80,6 +84,27 @@ spec:
               nextLeaseGeneration:
                 format: int64
                 type: integer
+              retired:
+                additionalProperties:
+                  description: |-
+                    PoolRetired is a slot waiting out its quarantine. OwnerUID and Generation are the lease it had (empty for a slot that never
+                    had one); RetiredAt starts the quarantine.
+                  properties:
+                    generation:
+                      format: int64
+                      type: integer
+                    ownerUID:
+                      type: string
+                    retiredAt:
+                      format: date-time
+                      type: string
+                  required:
+                  - retiredAt
+                  type: object
+                description: |-
+                  Retired are the slots whose owner is done with them: the bit stays set (the slot is not given out) until the quarantine has
+                  passed, then the sweep clears the bits of many slots in one update. Keyed like Leases.
+                type: object
             type: object
         type: object
     served: true

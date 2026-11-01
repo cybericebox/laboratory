@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,6 +17,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -79,6 +83,7 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	}
 	idMap := map[string]string{}
 	rules := make([]laboratoryv1alpha1.LabGroupAccessRule, 0, len(in.Rules))
+	var missing []string
 	for _, rule := range in.Rules {
 		if rule == nil {
 			return 0, invalid("access rules cannot be null")
@@ -95,7 +100,7 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 		labNames := uniqueSorted(rule.LabNames)
 		for _, id := range labNames {
 			if _, ok := knownLabs[crName(id)]; !ok {
-				return 0, invalid("lab %q does not belong to group %q", id, in.LabGroupName)
+				missing = append(missing, id)
 			}
 		}
 		// The VPN reconciler matches CR names; the originals go to the id map.
@@ -104,6 +109,9 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 			ClientNames: encodeNames(uniqueSorted(rule.ClientNames), idMap),
 			LabNames:    encodeNames(labNames, idMap),
 		})
+	}
+	if len(missing) > 0 {
+		return 0, labsNotInGroupError{group: in.LabGroupName, ids: uniqueSorted(missing)}
 	}
 	// The policy carries the labels of its group (plus the given ones), so a selector
 	// that matches the group matches its policy too. The group's scheduling label is
@@ -253,4 +261,28 @@ func (h *Handler) updateGroupAccessPolicy(ctx context.Context, in *protobuf.LabG
 	}
 	_, err = policiesAPI.Update(ctx, stored, metav1.UpdateOptions{})
 	return err
+}
+
+// labsNotInGroupError is a policy that names Labs the group does not have. It reports every such Lab at once (the caller
+// drops them in one step) and carries the machine code LAB_NOT_IN_GROUP.
+type labsNotInGroupError struct {
+	group string
+	ids   []string
+}
+
+func (e labsNotInGroupError) Error() string {
+	if len(e.ids) == 1 {
+		return fmt.Sprintf("lab %q does not belong to group %q", e.ids[0], e.group)
+	}
+	quoted := make([]string, len(e.ids))
+	for i, id := range e.ids {
+		quoted[i] = strconv.Quote(id)
+	}
+	return fmt.Sprintf("labs %s do not belong to group %q", strings.Join(quoted, ", "), e.group)
+}
+
+func (e labsNotInGroupError) Reason() string { return client.ReasonLabNotInGroup }
+
+func (e labsNotInGroupError) GRPCStatus() *status.Status {
+	return status.New(codes.InvalidArgument, e.Error())
 }

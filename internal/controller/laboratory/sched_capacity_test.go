@@ -125,7 +125,7 @@ func TestRoomsSubtractNonLabAndPacking(t *testing.T) {
 	done.Status.Phase = corev1.PodSucceeded
 	c := snapshotCapacity(nodes, []corev1.Pod{cilium, labPod, gateway, done}, nil, nil, amount{}, 0, nodecap.PackingReserve{Percent: 15})
 	// n1: (4000-100) - 585 = 3315; (8Gi-256Mi) = 8321499136, less 1248224870 = 7073274266. n2: 4000 - 600 = 3400, 8Gi less 1288490188.
-	want := []nodeRoom{{"n1", 3315, 7073274266}, {"n2", 3400, 8589934592 - 8589934592*15/100}}
+	want := []nodeRoom{{Name: "n1", CPU: 3315, Memory: 7073274266}, {Name: "n2", CPU: 3400, Memory: 8589934592 - 8589934592*15/100}}
 	got := c.rooms()
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
@@ -136,12 +136,12 @@ func TestRoomsSubtractNonLabAndPacking(t *testing.T) {
 func TestPackingFixedWinsOverPercent(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "4", "8Gi")}
 	c := snapshotCapacity(nodes, nil, nil, nil, amount{}, 0, nodecap.PackingReserve{Percent: 15, CPU: 500})
-	want := nodeRoom{"n1", 3500, 8<<30 - (8<<30)*15/100}
+	want := nodeRoom{Name: "n1", CPU: 3500, Memory: 8<<30 - (8<<30)*15/100}
 	if got := c.rooms(); len(got) != 1 || got[0] != want {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
 	}
 	c = snapshotCapacity(nodes, nil, nil, nil, amount{}, 0, nodecap.PackingReserve{Percent: 15, CPU: 500, Memory: 1 << 30})
-	want = nodeRoom{"n1", 3500, 7 << 30}
+	want = nodeRoom{Name: "n1", CPU: 3500, Memory: 7 << 30}
 	if got := c.rooms(); len(got) != 1 || got[0] != want {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
 	}
@@ -153,7 +153,7 @@ func TestRoomsSubtractPlatformPercentPerNode(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "4", "8Gi")}
 	c := snapshotCapacity(nodes, []corev1.Pod{testPod("n1", "100m", "256Mi")}, nil, nil, amount{}, 10, nodecap.PackingReserve{Percent: 15})
 	mem := int64(8<<30) - int64(8<<30)*10/100 - 256<<20
-	want := nodeRoom{"n1", 2975, mem - mem*15/100}
+	want := nodeRoom{Name: "n1", CPU: 2975, Memory: mem - mem*15/100}
 	if got := c.rooms(); len(got) != 1 || got[0] != want {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
 	}
@@ -175,7 +175,7 @@ func TestFreeRoomsSubtractBoundLabPodsAndStopped(t *testing.T) {
 	done.Status.Phase = corev1.PodFailed
 	pods := []corev1.Pod{testPod("n1", "100m", "256Mi"), lab("n1", "1", "1Gi"), held, pending, done}
 	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, 0, nodecap.PackingReserve{})
-	want := []nodeRoom{{"n1", 4000 - 100 - 1000, 8<<30 - 256<<20 - 1<<30}, {"n2", 3500, 7 << 30}}
+	want := []nodeRoom{{Name: "n1", CPU: 4000 - 100 - 1000, Memory: 8<<30 - 256<<20 - 1<<30}, {Name: "n2", CPU: 3500, Memory: 7 << 30}}
 	got := c.freeRooms()
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("freeRooms = %+v, want %+v", got, want)

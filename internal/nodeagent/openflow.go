@@ -13,7 +13,9 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // FlowManager programs tables 0 and 6 of the OVS pipeline on br-ovs. The bridge is fail-secure (see
@@ -39,6 +41,41 @@ type FlowManager struct {
 	// port from any other source has no t0 flow and is dropped (R-12). Guarded by gmu.
 	gmu       sync.Mutex
 	geneveSrc map[uint32]bool
+
+	// The Geneve meters (see geneve_meters.go). bwmu orders the changes of the t6/t7/t8 flows of a VNI and of the meters they use;
+	// floods remembers what each VNI was built from, so the flows can be built again when the limits turn on or off.
+	bwmu   sync.Mutex
+	meters *geneveMeters
+	floods map[uint]t6Flood
+
+	// Ledger, when set, records the VNIs this node has flows for (internal/vniledger): written before the first flow of a VNI is
+	// installed, taken out after RetireVNI confirms the flows gone. The operator does not return a VNI to the pool while it is there.
+	Ledger VNILedger
+	// vniMu orders the recording of a VNI and the installing of its flows (read side: many installs at once) against RetireVNI and the
+	// Clear that follows it (write side). Without it a RetireVNI could take the record out between an install's Note and its flows,
+	// leaving flows the ledger does not know.
+	vniMu sync.RWMutex
+}
+
+// VNILedger is the node's record of the VNIs it carries flows of. Note stores before it returns (an error means: install nothing).
+type VNILedger interface {
+	Note(vni uint) error
+	Clear(vni uint) error
+}
+
+func (f *FlowManager) noteVNI(vni uint) error {
+	if f.Ledger == nil {
+		return nil
+	}
+	if err := f.Ledger.Note(vni); err != nil {
+		return reconcileutil.Waiting(fmt.Errorf("record VNI %d of this node: %w", vni, err), 0)
+	}
+	return nil
+}
+
+// t6Flood is what RebuildT6Flood was last given for a VNI.
+type t6Flood struct {
+	localPorts, remoteVTEPs []string
 }
 
 func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
@@ -58,11 +95,12 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 			)
 		},
 	)
-	fm := &FlowManager{client: c, proofSocket: sockPath}
+	fm := &FlowManager{client: c, proofSocket: sockPath, meters: newGeneveMeters(c), floods: map[uint]t6Flood{}}
 	if err := fm.resetPipeline(); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
+	deleteStaleMeters(c, log)
 	return fm, nil
 }
 
@@ -71,7 +109,7 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 // its own t0 flow reaches nobody. The flows of the live ports come back from the reconcilers within seconds; until
 // then nothing is forwarded (the price of never bridging ports of different teams).
 func (f *FlowManager) resetPipeline() error {
-	for _, table := range []uint8{0, 6} {
+	for _, table := range []uint8{0, 6, geneveTable1, geneveTable2} {
 		if err := f.client.FlowDeleteTable(table); err != nil {
 			return fmt.Errorf("clear table %d: %w", table, err)
 		}
@@ -236,7 +274,12 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 	}
 	portNo, err := f.portNo(portName)
 	if err != nil {
-		return fmt.Errorf("resolve port %q: %w", portName, err)
+		return reconcileutil.Waiting(fmt.Errorf("resolve port %q: %w", portName, err), 0)
+	}
+	f.vniMu.RLock()
+	defer f.vniMu.RUnlock()
+	if err := f.noteVNI(vni); err != nil {
+		return err
 	}
 	match := ofclient.BuildMatch(portNo, 0, false)
 	actions := make([]byte, 0, 128)
@@ -267,9 +310,42 @@ func (f *FlowManager) retirePort(name string) error {
 	}
 	no, err := f.portNo(name)
 	if err != nil {
-		return fmt.Errorf("port retirement cannot resolve %q: %w", name, err)
+		return reconcileutil.Waiting(fmt.Errorf("port retirement cannot resolve %q: %w", name, err), 0)
 	}
-	return f.client.RetirePort(no)
+	if err := f.client.RetirePort(no); err != nil {
+		return err
+	}
+	return f.forgetPort(name)
+}
+
+// forgetPort takes a retired local port out of the floods that name it. Retiring a port deletes every flow that outputs to it, which
+// takes the t6 flood of a VNI whose last local port it was, but not the t7 and t8 flows behind it, nor the meter of the lab: those
+// would stay, and the dead lab would go on counting as a split lab in the fair share of the others. The flood is built again from the
+// ports that are left (none: its flows and its meter go).
+func (f *FlowManager) forgetPort(name string) error {
+	f.bwmu.Lock()
+	defer f.bwmu.Unlock()
+	var first error
+	for vni, fl := range f.floods {
+		keep := make([]string, 0, len(fl.localPorts))
+		for _, p := range fl.localPorts {
+			if p != name {
+				keep = append(keep, p)
+			}
+		}
+		if len(keep) == len(fl.localPorts) {
+			continue
+		}
+		fl.localPorts = keep
+		f.floods[vni] = fl
+		if err := f.rebuildT6Locked(vni); err != nil && first == nil {
+			first = err
+		}
+		if len(keep) == 0 {
+			delete(f.floods, vni)
+		}
+	}
+	return first
 }
 
 // RebuildT6Flood atomically replaces the t6 flood entries for vni:
@@ -279,19 +355,36 @@ func (f *FlowManager) retirePort(name string) error {
 //
 // Deletes any previous t6 entries for this VNI first.
 // No-op (deletes only) when localPorts is empty.
+//
+// With the Geneve limits on and a remote VTEP, the Geneve outputs move out of t6 into two more tables, each behind a meter
+// (see geneve_meters.go): local delivery stays unmetered, only what leaves the node is counted.
 func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string) error {
-	if err := f.DelT6Flood(vni); err != nil {
+	f.vniMu.RLock()
+	defer f.vniMu.RUnlock()
+	if err := f.noteVNI(vni); err != nil {
 		return err
 	}
-	if len(localPorts) == 0 {
-		return nil
+	f.bwmu.Lock()
+	defer f.bwmu.Unlock()
+	f.initBandwidthLocked()
+	f.floods[vni] = t6Flood{localPorts: append([]string(nil), localPorts...), remoteVTEPs: append([]string(nil), remoteVTEPs...)}
+	return f.rebuildT6Locked(vni)
+}
+
+func (f *FlowManager) rebuildT6Locked(vni uint) error {
+	fl := f.floods[vni]
+	if err := f.delFloodFlowsLocked(vni); err != nil {
+		return err
+	}
+	if len(fl.localPorts) == 0 {
+		return f.dropMetersLocked(vni)
 	}
 	if err := f.refreshPorts(); err != nil {
 		return err
 	}
 
-	localNos := make([]uint32, 0, len(localPorts))
-	for _, p := range localPorts {
+	localNos := make([]uint32, 0, len(fl.localPorts))
+	for _, p := range fl.localPorts {
 		no, err := f.portNo(p)
 		if err != nil {
 			return fmt.Errorf("resolve local port %q: %w", p, err)
@@ -300,52 +393,118 @@ func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string)
 	}
 
 	var geneveNo uint32
-	if len(remoteVTEPs) > 0 {
+	if len(fl.remoteVTEPs) > 0 {
 		var err error
 		if geneveNo, err = f.portNo(GenevePort); err != nil {
 			return fmt.Errorf("resolve geneve port: %w", err)
 		}
 	}
-
-	// Local-only actions (used by the reg0=1 entry and as base for reg0=0).
-	var localActions []byte
-	for _, no := range localNos {
-		localActions = append(localActions, ofclient.BuildActionsOutput(no)...)
-	}
-
-	// Full-flood actions: local ports + Geneve to each VTEP.
-	fullActions := append([]byte(nil), localActions...) // copy
-	for _, vtep := range remoteVTEPs {
+	ves := make([]uint32, 0, len(fl.remoteVTEPs))
+	for _, vtep := range fl.remoteVTEPs {
 		ipBE, err := ipv4BE(vtep)
 		if err != nil {
 			return fmt.Errorf("parse VTEP %q: %w", vtep, err)
 		}
-		fullActions = append(fullActions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
-		fullActions = append(fullActions, ofclient.BuildActionsSetTunDst(ipBE)...)
-		fullActions = append(fullActions, ofclient.BuildActionsOutput(geneveNo)...)
+		ves = append(ves, ipBE)
 	}
 
-	// priority=110, metadata=VNI, reg0=0 → full flood (local + Geneve)
-	matchLocal := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 0, true, 0, false, 0, false)
-	if err := f.client.FlowAdd(6, 110, matchLocal, fullActions); err != nil {
-		return fmt.Errorf("add t6 local-origin flood VNI %d: %w", vni, err)
+	limited := len(ves) > 0 && f.meters.Enabled()
+	if limited {
+		// the meters are there before the flows that name them
+		if err := f.meters.Split(vni, len(ves)); err != nil {
+			return fmt.Errorf("the Geneve meters of VNI %d: %w", vni, err)
+		}
 	}
-
-	// priority=100, metadata=VNI, reg0=1 → local only (no Geneve re-flood)
-	matchRemote := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 1, true, 0, false, 0, false)
-	if err := f.client.FlowAdd(6, 100, matchRemote, localActions); err != nil {
-		return fmt.Errorf("add t6 remote-origin flood VNI %d: %w", vni, err)
+	plan := planT6(vni, localNos, ves, geneveNo, limited)
+	for _, flow := range plan {
+		var err error
+		if flow.checked {
+			err = f.client.FlowAddInstr(flow.table, flow.priority, flow.match, flow.ins)
+		} else {
+			err = f.client.FlowAdd(flow.table, flow.priority, flow.match, flow.ins.Actions)
+		}
+		if err != nil {
+			return fmt.Errorf("add %s VNI %d: %w", flow.what, vni, err)
+		}
 	}
-
+	if !limited {
+		return f.dropMetersLocked(vni)
+	}
 	return nil
 }
 
-// DelT6Flood removes all t6 entries matching metadata=VNI (both reg0=0 and reg0=1).
-func (f *FlowManager) DelT6Flood(vni uint) error {
-	// Match on metadata=VNI only (no reg0 constraint) so non-strict delete
-	// removes both the reg0=0 and reg0=1 entries in one operation.
+// initBandwidthLocked makes the bandwidth state of a FlowManager that was not built by NewFlowManager (the tests build bare ones).
+func (f *FlowManager) initBandwidthLocked() {
+	if f.floods == nil {
+		f.floods = map[uint]t6Flood{}
+	}
+	if f.meters == nil {
+		f.meters = newGeneveMeters(f.client)
+	}
+}
+
+// dropMetersLocked removes the meter of a VNI that no longer floods to a remote node (its flows are already built without it).
+func (f *FlowManager) dropMetersLocked(vni uint) error {
+	if f.meters == nil {
+		return nil // no limits were ever set on this manager
+	}
+	if err := f.meters.Unsplit(vni); err != nil {
+		return fmt.Errorf("the Geneve meters of VNI %d: %w", vni, err)
+	}
+	return nil
+}
+
+// delFloodFlowsLocked removes the flows of a VNI from t6 and from the meter tables.
+func (f *FlowManager) delFloodFlowsLocked(vni uint) error {
 	match := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 0, false, 0, false, 0, false)
-	return f.client.FlowDelete(6, match)
+	for _, table := range []uint8{6, geneveTable1, geneveTable2} {
+		if err := f.client.FlowDelete(table, match); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DelT6Flood removes all flood entries matching metadata=VNI (both reg0 values, and the meter tables) and the meter of the VNI.
+func (f *FlowManager) DelT6Flood(vni uint) error {
+	f.bwmu.Lock()
+	defer f.bwmu.Unlock()
+	delete(f.floods, vni)
+	if err := f.delFloodFlowsLocked(vni); err != nil {
+		return err
+	}
+	return f.dropMetersLocked(vni)
+}
+
+// SetGeneveLimits gives the node its Geneve ceilings (from the operator's annotation on the node): zero limits turn the meters
+// off. A change of the rates is a mod-meter on the meters that changed; turning on or off builds the floods of the split labs
+// again, with or without the meters.
+func (f *FlowManager) SetGeneveLimits(l bandwidth.Limits) error {
+	f.bwmu.Lock()
+	defer f.bwmu.Unlock()
+	f.initBandwidthLocked()
+	toggled, err := f.meters.SetLimits(l)
+	if err != nil {
+		return err
+	}
+	if !toggled {
+		return nil
+	}
+	var first error
+	for vni, fl := range f.floods {
+		if len(fl.remoteVTEPs) == 0 {
+			continue
+		}
+		if err := f.rebuildT6Locked(vni); err != nil && first == nil {
+			first = err
+		}
+	}
+	if !f.meters.Enabled() {
+		if err := f.meters.Clear(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // ipv4BE parses a dotted-quad IPv4 address into a big-endian uint32 for
@@ -386,4 +545,23 @@ func (f *FlowManager) DelFlowsByPort(portName string) error { return f.DelT0Port
 // DelFlowsByVNI removes all t6 flood entries for vni.
 func (f *FlowManager) DelFlowsByVNI(vni uint, _ string) error { return f.DelT6Flood(vni) }
 
-func (f *FlowManager) RetireVNI(vni uint) error { return f.client.RetireVNI(uint64(vni)) }
+// RetireVNI removes every flow of the VNI in every table, confirmed, and then the Geneve meter of the lab (the flows that used it
+// are gone by then).
+func (f *FlowManager) RetireVNI(vni uint) error {
+	f.vniMu.Lock()
+	defer f.vniMu.Unlock()
+	f.bwmu.Lock()
+	defer f.bwmu.Unlock()
+	delete(f.floods, vni)
+	if err := f.client.RetireVNI(uint64(vni)); err != nil {
+		return err
+	}
+	if err := f.dropMetersLocked(vni); err != nil {
+		return err
+	}
+	// The flows are confirmed gone: only now the node stops vouching that it may carry this VNI.
+	if f.Ledger != nil {
+		return f.Ledger.Clear(vni)
+	}
+	return nil
+}

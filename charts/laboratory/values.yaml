@@ -102,6 +102,29 @@ priorityClasses:
 # (NodeResourcesFit, scoringStrategy MostAllocated) instead of spreading, so no hole is left on every node that a big device
 # cannot use. Nothing is repacked during a running event, so placement must avoid holes from the start. System pods keep the
 # cluster's own scheduler. false: lab pods use the cluster's default scheduler.
+# Device profiles (docs/specs/MICROVM.md in the platform repo). A container device runs anywhere on the lab nodes unless the profile labels
+# are turned on; a microVM device always needs a node with cybericebox.com/profile-microvm=true and the implementation label.
+profileLabels:
+  # On: container devices (and the VPN and gateway pods) select cybericebox.com/profile-container=true. Off (default): scheduling as before,
+  # so a cluster whose nodes carry no profile labels is unchanged. Turn it on only after every container node carries the label.
+  enabled: false
+microvm:
+  # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).
+  enabled: false
+  runtimeClassName: cybericebox-microvm
+  # The containerd runtime handler of the implementation (Kata with Cloud Hypervisor).
+  handler: kata-clh-runtime-rs
+  # The node label of the implementation the RuntimeClass selects; stays inside the laboratory.
+  implementationLabel: cybericebox.com/runtime-kata-clh
+  # RuntimeClass overhead.podFixed: what the guest kernel, the agent and the VMM cost per pod (a first guess, set after the measurement).
+  # The scheduler adds it to every microVM pod; the agent reports it, the backend adds it to a reservation.
+  overhead:
+    cpu: 50m
+    memory: 120Mi
+# The device profiles the autoscaler node groups can add a node for (container, microvm); empty = not known, so the agent reports no
+# "available after scale-up" and refuses a profile that no running node can run.
+scaleUpProfiles: []
+
 labScheduler:
   enabled: true
   # The profile name the operator puts into the pods of labs (schedulerName).
@@ -109,6 +132,10 @@ labScheduler:
   replicas: 2
   # Weight of the bin-packing score against the soft co-location preferences of device pods (the same lab, the same group).
   fitWeight: 3
+  # Weight of the co-location preferences (the same lab, the same group) among the running nodes. It must stay above 3 x fitWeight, so that a
+  # node with a better match wins over any difference in fullness and the fuller node only breaks a tie between equal matches (the
+  # preference terms differ by a third of the normalised range at least, and the fit score is at most 100 x fitWeight).
+  affinityWeight: 12
   image:
     repository: registry.k8s.io/kube-scheduler
     # Empty = the cluster's own version (a scheduler must not be newer than the API server).
@@ -128,20 +155,28 @@ labScheduler:
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
-  # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured on the local stand:
-  # idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi (the memory grows with the
-  # peers and their traffic, so it is the limit that matters; 195Mi was seen with 10 peers: 320Mi leaves about 50% room). The data path is the
+  # How the VPN pod forwards between the participants and the labs. iptables: the relation chains with connection tracking. nft: nftables sets
+  # without connection tracking (a pair is allowed in both directions at once, statelessly; one lookup per packet whatever the number of pairs;
+  # a revoked pair stops with its next packet; the counters of the pair's set elements are the accounting). Only the VPN pods created after the
+  # change use it; a pod that exists keeps its firewall.
+  firewall: iptables
+  # Resources of the VPN pod of a NEW LabGroup made with no size of its own (requests = limits: a Guaranteed pod): the sizing formula
+  # below at groupLimits.maxUsers (20m + 6m * 10 = 80m, 64Mi + 20Mi * 10 = 264Mi), so it also fits the maximum the agent reports. Measured on
+  # the local stand: idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi, 195Mi with 10 peers (the memory
+  # grows with the peers and their traffic, so it is the limit that matters: 264Mi leaves 35% room). On AWS (infrastructure/experiments/
+  # vpn-pooling-20261007) the pods of the current sizing used 2-6m CPU and 16-24Mi with 20 connected peers under UDP/TCP load. The data path is the
   # kernel's WireGuard, the pod manages peers and firewall rules. The management agent reports vpn + gateway as the
   # service overhead of a group (GetCapacity). Existing groups keep what they were created with.
   resources:
-    cpu: 100m
-    memory: 320Mi
+    cpu: 80m
+    memory: 264Mi
   # How the platform sizes the VPN pod of a group: base + perUser * users, at most maxUsers users (the maximum size is
   # base + perUser * maxUsers). The agent reports it in GetFeatures; the backend computes the size of a group's VPN from the
   # event's largest team (users = WireGuard peers) and passes it to CreateLabGroups; the agent refuses a size over the maximum,
   # and the operator creates the pod Guaranteed at exactly that size, never resizing it. Measured: about 16Mi idle, about 55m and
   # 195Mi with 10 active peers. `resources` above is the size of a group created without an explicit one and must not exceed the
-  # maximum (the agent refuses to start otherwise).
+  # maximum, which is the size at groupLimits.maxUsers users (not at sizing.maxUsers below: the agent reports the former), so
+  # base + perUser * groupLimits.maxUsers must be at least `resources` (the agent refuses to start otherwise).
   sizing:
     baseCpu: 20m
     baseMemory: 64Mi
@@ -161,6 +196,12 @@ vpn:
 # Gateway pod image (created at runtime by operator per LabGroup)
 # ============================================================
 inetGateway:
+  # What one lab may do towards the outside through the gateway (its /24): the most connections held open, the most NEW connections in a
+  # second. Only a NEW connection is looked at, after the established traffic has passed; 0 = no limit. Applied to the gateway pods created
+  # after the change (a pod that exists would be restarted by a change of its environment).
+  limits:
+    maxConnectionsPerLab: 4096
+    newConnectionsPerSecondPerLab: 100
   # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi
   # (traffic of labs through it is not measured yet).
   resources:
@@ -249,6 +290,17 @@ proxy:
     enabled: true
     # The HTTPS listener is :8443 and the probes (/readyz: the listener is bound and the informer caches have synced; /healthz: the
     # process answers) are on :8081; the TLS files are where proxy-tls is mounted. All constants of the image.
+    # PROXY protocol (v1/v2) in front of the TLS on :8443, for an edge that carries the client's address. trustedFrom lists the peers (IPs or
+    # CIDRs: the edge nodes) whose header is believed (optional for them, never required); the header of any other peer is read and
+    # ignored. Empty (default): off, as before. The address is used only inside the proxy (its limits) and never reaches a device.
+    proxyProtocol:
+      trustedFrom: []
+      # The edge adds a TLV of this type (0xE0-0xEF is free for applications; 224 = 0xE0) with a shared secret to its PROXY v2 header.
+      tlvType: 224
+      # Where the secret(s) are: {name, key} of a Secret in the proxy namespace whose value is one secret, or "current,next" while rotating
+      # (both are accepted). Empty: no secret is required (a warning is logged at start when trustedFrom is set without it). The value is
+      # never a chart value.
+      secretRef: {}
     # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
     sessionCookieName: "challenge"
     # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth
@@ -885,6 +937,70 @@ capacity:
   nodeTimeoutSeconds: 900
 
 # ============================================================
+# Groups: what a group is made for
+# ============================================================
+# A group (the VPN and internet gateway pods it runs itself) is sized once, when it is created, from the number of VPN users and of
+# labs it is made for (CreateLabGroups expected_users / expected_labs; formulas in code (internal/grouppods/limits.go), base = the size a pod had before,
+# vpn.sizing and inetGateway.sizing only serve the old way, sizes sent by the caller). The pods are not resized afterwards: more users or labs than expected still run within the
+# margin of the formula. A request for more than the maximum is refused. A group that says nothing gets the defaults.
+groupLimits:
+  maxUsers: 10
+  maxLabs: 50
+  defaultUsers: 1
+  defaultLabs: 5
+
+# ============================================================
+# VNI pool: retirement, quarantine, sweep
+# ============================================================
+# A VNI is not returned to the pool one write at a time: a release only retires it (a mark in the pool's status, queued and written
+# in batches every retireFlush), the VNI is not given out for quarantine (a flow of its old owner may still be on a node), and
+# the sweep, every sweepInterval, returns all that passed the quarantine in one update per pool. The sweep also retires leases whose
+# owner is gone and held VNIs nobody references (a release that never ran).
+vni:
+  quarantine: 10m
+  sweepInterval: 5m
+  retireFlush: 2s
+
+# ============================================================
+# Bandwidth protection
+# ============================================================
+# No participant, lab or group can saturate a node or the cluster network. Per node and per direction:
+#   U = the node's bandwidth - systemReserveMbit - the reserves of the platform pods that run on that node
+# and of U the entry (the WireGuard demux and the L7 proxy) gets shares.entry percent, the internet (the gateways) shares.internet,
+# and Geneve (the traffic between nodes) shares.geneve. Inside a class everyone gets a fair share, never more than its cap. Nothing
+# inside a node is limited; only what crosses nodes (Geneve: an OVS meter per lab and one for the node; VXLAN: the demux and the L7 proxy
+# per participant) and what goes to the internet (the gateway, per lab).
+# A node's bandwidth is its label cybericebox.com/node-bandwidth in Mbit/s (the cloud code sets it from the instance type, the Proxmox
+# inventory from the NIC); a node without it is defaultMbit. A platform pod declares what it keeps for itself with the annotation
+# cybericebox.com/bandwidth-reserve (Mbit/s); it is taken off the node the pod runs on and no other.
+# Off: nothing is limited. Switching it on gives the pods made from then on their limits (existing gateway pods keep none until
+# they are recreated); switching it off again: set the shares and caps to 0, the pods then limit nothing.
+bandwidth:
+  enabled: false
+  defaultMbit: 1000
+  systemReserveMbit: 100
+  shares:
+    entry: 50
+    internet: 25
+    geneve: 25
+  caps:
+    participantMbit: 50
+    labInternetMbit: 50
+    labGeneveMbit: 100
+  # The OVS meter counts the frame before the Geneve headers (about 50 bytes) are added; the Geneve class is scaled by this so that
+  # small packets do not push the node over its class.
+  geneveOverheadFactor: 0.85
+  # The cluster network (VXLAN) adds about 50 bytes to every packet the demux and the L7 proxy forward to another node; the entry class
+  # of a demux is scaled by this and divided by the number of lab nodes that can send to one VPN node, so that all of them sending to
+  # one node together stay within that node's entry class (the U invariant).
+  entryOverheadFactor: 0.85
+  # What the pods of this chart keep for themselves (the annotation above). The backend and the frontends declare theirs in the
+  # platform chart.
+  reserves:
+    registryMbit: 100
+    agentMbit: 20
+
+# ============================================================
 # Limits the cluster owns on devices, labs and tenants
 # ============================================================
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them
@@ -900,6 +1016,10 @@ limits:
     # The planning profile: what a device that declares no resources gets (and counts as).
     defaultCpu: 100m
     defaultMemory: 256Mi
+    # true: a device that declares no cpuLimit runs with a CPU request only, no hard cap (CFS shares by request: it bursts to the
+    # free CPU of its node, is never throttled, and cannot take a neighbour's requested share). A device with its own cpuLimit
+    # keeps it. false: the limit equals the request (the old behaviour; short spikes are throttled).
+    noCpuLimit: false
   lab:
     # Devices of one lab, every type counted (container, switch, hub). The platform has a ceiling of 64 that this can only lower (0 = the
     # ceiling); the chart refuses a larger value. A container device has at most 16 interfaces, a switch or hub 48 ports.
@@ -1099,6 +1219,13 @@ tenants: {}
 # Advertised capabilities require owner-qualified native evidence and all
 # dependencies below. Source/SDK integration alone does not authorize enable.
 lifecycle:
+  # "full" switches on with one value what a cluster needs to stop and restart labs: devices.statePersistence.enabled,
+  # runtimeObservation.enabled and the capabilities perLabStop, confirmedRuntime, retainedRestart, fullGroupStop and requiredSnapshot (with requiredSnapshotAvailable).
+  # Set devices.statePersistence.containerdRoot to the containerd root of the cluster. The node-agents check their node at start (the
+  # containerd root and its snapshotter, the container runtime, the cgroup tree, the snapshot registry); what a node cannot do is switched
+  # off there, told in an Event on the Node and in its annotations, and GetFeatures reports the lifecycle capabilities and persistence as
+  # available only when every ready lab node confirms them, with the reason otherwise. Empty (default): the values below as they are.
+  profile: ""
   capabilities:
     requiredSnapshot: false
     perLabStop: false

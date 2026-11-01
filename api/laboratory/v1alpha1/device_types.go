@@ -15,6 +15,9 @@ type DeviceSpec struct {
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`
 	Image string     `json:"image,omitempty"`
+	// Profile is how the device runs (see DeviceTemplate.Profile); empty is container.
+	// +optional
+	Profile DeviceProfile `json:"profile,omitempty"`
 	// SecurityPreset names a device security profile (standard or extended); the concrete capabilities are resolved internally by the operator.
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
 	// +kubebuilder:validation:MaxItems=48

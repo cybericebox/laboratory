@@ -15,6 +15,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/protobuf/types/known/anypb"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -286,6 +287,165 @@ func TestHistoricalNeverMaterializedLiveTaskOwnedByPodLabels(t *testing.T) {
 			report := o.ObserveScope(context.Background(), id)
 			if report.RuntimeState != "Allocated" || report.Error != "" || report.RuntimeAbsentAt != nil {
 				t.Fatalf("labelled pod was not attributed: %+v", report)
+			}
+		})
+	}
+}
+
+// The live case of the stuck teardown: the empty pre-Pod declaration of node B, for a Device whose Pod was placed on node A. The API no longer
+// says "not scheduled" about the Device, but B has nothing of it: the native scan of B finds no container, cgroup, port or attachment, and the
+// scope is released. Every fence of the declaration stays: a filled declaration, another Lab's Device, a persistent Device and a Device that
+// sits on this very node (it may have a Pod here) are not released by it.
+func TestNeverMaterializedDeclarationOfAnotherNodeIsReleasedByItsNativeAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		edit    func(*lab.OwnedRuntimeIdentity, *lab.Lab, *lab.Device)
+		release bool
+	}{
+		{"device on another node", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) { d.Status.NodeName = "other-node" }, true},
+		{"device on this node", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) {}, false},
+		{"device owned by another lab", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) {
+			d.Status.NodeName = "other-node"
+			d.OwnerReferences[0].UID = "replacement-lab"
+		}, false},
+		{"filled declaration", func(id *lab.OwnedRuntimeIdentity, l *lab.Lab, d *lab.Device) {
+			d.Status.NodeName = "other-node"
+			id.ContainerIDs = []string{"prior"}
+			l.Status.ScopeInventory = []lab.OwnedRuntimeIdentity{*id}
+		}, false},
+		{"persistent device", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) {
+			d.Status.NodeName = "other-node"
+			d.Status.State = &lab.DeviceStateStatus{}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			c := o.Reader.(client.Client)
+			ctx := context.Background()
+			d.Status.RuntimeReports = nil // no per-node proof of an earlier Pod: only the declaration and the API
+			tc.edit(&id, l, d)
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			report := o.ObserveScope(ctx, id)
+			if released := report.RuntimeState == "Released" && report.Error == ""; released != tc.release {
+				t.Fatalf("released = %v, want %v: %+v", released, tc.release, report)
+			}
+		})
+	}
+}
+
+// Deleting a Lab ends the reservation and discards the state of its persistent Devices: the empty pre-Pod declaration is released like an
+// ordinary Device's, whatever the generation the deletion raised the Lab to. A stop without deletion keeps the capture boundary.
+func TestNeverMaterializedOfAPersistentDeviceIsReleasedOnDeletionOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deleting   bool
+		generation int64
+		persistent bool
+		reportGen  int64
+		release    bool
+	}{
+		{"persistent, Lab deleted, generation raised by the deletion", true, 3, true, 2, true},
+		{"persistent, Lab stopped and not deleted", false, 2, true, 2, false},
+		{"ordinary, Lab deleted, generation raised by the deletion", true, 3, false, 2, true},
+		{"persistent, deleted, report of a later generation than the Lab", true, 3, true, 5, false},
+		{"persistent, deleted, report older than the declaration", true, 3, true, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			c := o.Reader.(client.Client)
+			ctx := context.Background()
+			if tc.persistent {
+				d.Spec.State = &lab.DeviceStateSpec{Enabled: true}
+				d.Status.State = &lab.DeviceStateStatus{Incarnation: 1}
+			}
+			d.Status.RuntimeReports[0].Identity.Generation = tc.reportGen
+			l.Generation = tc.generation
+			l.Finalizers = []string{"test/hold"}
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			if tc.deleting {
+				if err := c.Delete(ctx, l); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report := o.ObserveScope(ctx, id)
+			if released := report.RuntimeState == "Released" && report.Error == ""; released != tc.release {
+				t.Fatalf("released = %v, want %v: %+v", released, tc.release, report)
+			}
+		})
+	}
+}
+
+// A Lab deleted while it was running has no stop revision. Its Devices are deleted with it, so none can make a Pod any more: the empty
+// pre-Pod declaration is released by the native absence of this node, and only then. A Pod that is still there, a Device that is not being
+// deleted, a Lab that is not being deleted and a filled declaration keep the scope Unknown.
+func TestNeverMaterializedOfALabDeletedWhileRunningIsReleasedByNativeAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		labDeleting, devDelete bool
+		filled                 bool
+		release                bool
+	}{
+		{"lab and device deleted", true, true, false, true},
+		{"device not deleted", true, false, false, false},
+		{"lab not deleted", false, true, false, false},
+		{"filled declaration", true, true, true, false},
+		{"pod of the device still on this node", true, true, false, false},
+		{"pod of the device being made, no node yet", true, true, false, false},
+		{"pod of the device on another node", true, true, false, true},
+		{"status names a pod that no longer exists here", true, true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			c := o.Reader.(client.Client)
+			ctx := context.Background()
+			l.Spec.Lifecycle = nil // never stopped: the revision of the declaration is the current one
+			l.Generation = 2
+			l.Finalizers = []string{"test/hold"}
+			d.Finalizers = []string{"test/hold"}
+			d.Status.RuntimeReports = nil
+			switch tc.name {
+			case "pod of the device still on this node", "pod of the device being made, no node yet", "pod of the device on another node":
+				node := map[string]string{"pod of the device still on this node": "node", "pod of the device being made, no node yet": "", "pod of the device on another node": "other-node"}[tc.name]
+				pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns", Labels: map[string]string{names.LabelDeviceUID: string(d.UID)}}, Spec: corev1.PodSpec{NodeName: node}}
+				if err := c.Create(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+			case "status names a pod that no longer exists here":
+				d.Status.PodName, d.Status.NodeName = "gone-pod", "node"
+			}
+			if tc.filled {
+				id.ContainerIDs = []string{"prior"}
+				l.Status.ScopeInventory = []lab.OwnedRuntimeIdentity{id}
+			}
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			if tc.labDeleting {
+				if err := c.Delete(ctx, l); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.devDelete {
+				if err := c.Delete(ctx, d); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report := o.ObserveScope(ctx, id)
+			if released := report.RuntimeState == "Released" && report.Error == ""; released != tc.release {
+				t.Fatalf("released = %v, want %v: %+v", released, tc.release, report)
 			}
 		})
 	}

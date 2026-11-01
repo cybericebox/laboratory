@@ -562,7 +562,7 @@ func TestPassesWithoutRoute(t *testing.T) {
 	}
 	in := toServerFrame().bytes()
 	checkUntouched(t, "to server", runTC(t, objs.WgTcIngress, in, ingress(tp, 0)), in)
-	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1})
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1, WgFastpathWgStatWG_STAT_FIB_NOT_FWDED: 1})
 }
 
 func TestDropsOverRate(t *testing.T) {
@@ -595,6 +595,159 @@ func TestDropsOverRate(t *testing.T) {
 		}
 		wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_DROPPED_RATE: 1})
 	})
+}
+
+// The byte bucket of a session: 92-byte packets (20 IP + 8 UDP + 64 WireGuard), a burst of 200 bytes and a rate too small to refill
+// within the test pass two packets and drop the third, both in tc and in XDP.
+func TestDropsOverByteRate(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 200
+
+	t.Run("tc", func(t *testing.T) {
+		objs := load(t, cfg)
+		putSessions(t, objs, tp)
+		in := toServerFrame().bytes()
+		for i, want := range []uint32{tcxRedirect, tcxRedirect, tcxDrop} {
+			if r := runTC(t, objs.WgTcIngress, in, ingress(tp, 0)); r.ret != want {
+				t.Fatalf("packet %d: verdict %d, want %d", i+1, int32(r.ret), int32(want))
+			}
+		}
+		wantStats(t, objs, map[WgFastpathWgStat]uint64{
+			WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER: 2,
+			WgFastpathWgStatWG_STAT_DROPPED_RATE:        1,
+		})
+	})
+	t.Run("xdp", func(t *testing.T) {
+		objs := load(t, cfg)
+		putSessions(t, objs, tp)
+		in := toServerFrame().bytes()
+		for i, want := range []uint32{xdpPass, xdpPass, xdpDrop} {
+			if x := runXDP(t, objs.WgXdp, in); x.ret != want {
+				t.Fatalf("packet %d: verdict %d, want %d", i+1, x.ret, want)
+			}
+		}
+	})
+}
+
+// The lengths in the headers are the sender's word. A packet whose IP or UDP length is not the length it really has (trailing bytes
+// the limiters would not see, a header that claims less) is not forwarded and is charged nothing; the slow path gets it and counts
+// the bytes it really reads.
+func TestLengthMismatchIsNotForwardedOrCharged(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 1000
+	cfg.ClassWindowNs, cfg.ClassWindowBytes = uint64(time.Hour), 1000
+	good := toServerFrame().bytes()
+	trailing := append(append([]byte{}, good...), make([]byte, 600)...)
+	ipShort := append([]byte{}, good...)
+	binary.BigEndian.PutUint16(ipShort[16:], uint16(len(good)-14-10)) // IP total length: 10 bytes less than the packet has
+	udpShort := append([]byte{}, good...)
+	binary.BigEndian.PutUint16(udpShort[14+20+4:], uint16(len(good)-14-20-10)) // UDP length: 10 bytes less
+	udpLong := append([]byte{}, good...)
+	binary.BigEndian.PutUint16(udpLong[14+20+4:], uint16(len(good)-14-20+10))
+	for name, in := range map[string][]byte{"trailing bytes": trailing, "short IP length": ipShort, "short UDP length": udpShort, "long UDP length": udpLong} {
+		t.Run(name, func(t *testing.T) {
+			objs := load(t, cfg)
+			putSessions(t, objs, tp)
+			checkUntouched(t, "tc", runTC(t, objs.WgTcIngress, in, ingress(tp, 0)), in)
+			if x := runXDP(t, objs.WgXdp, in); x.ret != xdpPass || len(x.meta) != 0 {
+				t.Fatalf("xdp: verdict %d with %d bytes of meta, the frame must pass untouched", x.ret, len(x.meta))
+			}
+			if o := owner(t, objs); o.ByteTokens != 0 || o.ByteRefillNs != 0 {
+				t.Fatalf("a refused packet was charged to the session: %+v", o)
+			}
+			var c WgFastpathWgClass
+			if err := objs.WgClass.Lookup(uint32(0), &c); err != nil || c.Used != 0 {
+				t.Fatalf("a refused packet was charged to the class: used %d (%v)", c.Used, err)
+			}
+			wantStats(t, objs, map[WgFastpathWgStat]uint64{})
+		})
+	}
+	// the same packet with honest lengths goes, and is charged its real length (92 bytes)
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	if r := runTC(t, objs.WgTcIngress, good, ingress(tp, 0)); r.ret != tcxRedirect {
+		t.Fatalf("the honest packet: verdict %d", int32(r.ret))
+	}
+	var c WgFastpathWgClass
+	if err := objs.WgClass.Lookup(uint32(0), &c); err != nil || c.Used != uint64(len(good)-14) {
+		t.Fatalf("charged %d, the packet has %d bytes after the Ethernet header (%v)", c.Used, len(good)-14, err)
+	}
+}
+
+// A packet over the byte bucket takes nothing from the packet bucket (and the other way round), and both directions of a session
+// draw from the same byte bucket.
+func TestByteBucketIsSharedByBothDirections(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 200
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	if r := runTC(t, objs.WgTcIngress, toServerFrame().bytes(), ingress(tp, 0)); r.ret != tcxRedirect {
+		t.Fatalf("to server: verdict %d", int32(r.ret))
+	}
+	if r := runTC(t, objs.WgTcReply, toClientFrame().bytes(), replyCtx(tp.srv)); r.ret != tcxRedirect {
+		t.Fatalf("to client: verdict %d", int32(r.ret))
+	}
+	if r := runTC(t, objs.WgTcReply, toClientFrame().bytes(), replyCtx(tp.srv)); r.ret != tcxDrop {
+		t.Fatalf("the third packet of the session, in either direction, is over its 200 bytes: verdict %d", int32(r.ret))
+	}
+}
+
+// The node's class window: all sessions together, 200 bytes in a window that does not end during the test.
+func TestDropsOverTheClassWindow(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ClassWindowNs, cfg.ClassWindowBytes = uint64(time.Hour), 200
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	in := toServerFrame().bytes()
+	for i, want := range []uint32{tcxRedirect, tcxRedirect, tcxDrop} {
+		if r := runTC(t, objs.WgTcIngress, in, ingress(tp, 0)); r.ret != want {
+			t.Fatalf("packet %d: verdict %d, want %d", i+1, int32(r.ret), int32(want))
+		}
+	}
+	var c WgFastpathWgClass
+	if err := objs.WgClass.Lookup(uint32(0), &c); err != nil || c.Used != 184 {
+		t.Fatalf("a refused packet gives its bytes back: used %d (%v)", c.Used, err)
+	}
+}
+
+// Loaded with byte_limiter = 0 (the fallback), the byte settings do nothing and the packet bucket is the only limit.
+func TestByteLimiterOffIgnoresTheByteSettings(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 1
+	cfg.ClassWindowNs, cfg.ClassWindowBytes = uint64(time.Hour), 1
+	spec, err := LoadWgFastpath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range spec.Maps {
+		m.Pinning = ebpf.PinNone
+	}
+	if err := spec.Variables[WgFastpathVarByteLimiter].Set(uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	var objs WgFastpathObjects
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = objs.Close() })
+	if err := objs.WgCfg.Put(uint32(0), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := objs.WgEntries.Put(addr(entry), uint8(1)); err != nil {
+		t.Fatal(err)
+	}
+	putSessions(t, &objs, tp)
+	in := toServerFrame().bytes()
+	for i := 0; i < 5; i++ {
+		if r := runTC(t, objs.WgTcIngress, in, ingress(tp, 0)); r.ret != tcxRedirect {
+			t.Fatalf("packet %d: verdict %d, the limiter is off", i+1, int32(r.ret))
+		}
+	}
 }
 
 func TestRecordsEntryOfHandshake(t *testing.T) {
@@ -812,6 +965,39 @@ func TestForwardsLive(t *testing.T) {
 	}
 }
 
+// TestForwardsWithoutNeighbourEntry: the route is known but the next hop has no neighbour entry (as on a Cilium node, where the pod
+// subnet is routed via the node's own cilium_host address). bpf_fib_lookup answers NO_NEIGH; the packet is not left to the slow path
+// but redirected with bpf_redirect_neigh, and the kernel resolves the next hop. Both directions.
+func TestForwardsWithoutNeighbourEntry(t *testing.T) {
+	tp := setup(t)
+	objs := load(t, defaultCfg(tp))
+	putSessions(t, objs, tp)
+	attachAll(t, objs, tp, false)
+	ip(t, "neigh", "del", "10.0.0.2", "dev", "srv0")
+	ip(t, "neigh", "del", "192.0.2.2", "dev", "ext0")
+	cl := udpIn(t, "bpfcl", client)
+	sv := udpIn(t, "bpfsv", server)
+
+	if _, err := cl.WriteToUDPAddrPort(transport(serverIndex), entry); err != nil {
+		t.Fatal(err)
+	}
+	receive(t, sv, probe, transport(serverIndex))
+	if _, err := sv.WriteToUDPAddrPort(transport(clientIndex), probe); err != nil {
+		t.Fatal(err)
+	}
+	receive(t, cl, entry, transport(clientIndex))
+
+	// The kernel may learn an entry from the first packet's exchange, so the second direction can find it: at least one lookup
+	// needed the redirect, every such lookup was redirected, and nothing was left to the slow path.
+	noNeigh := stat(t, objs, WgFastpathWgStatWG_STAT_FIB_NO_NEIGH)
+	if noNeigh < 1 || stat(t, objs, WgFastpathWgStatWG_STAT_NEIGH_REDIRECTED) != noNeigh {
+		t.Errorf("no_neigh = %d, neigh_redirected = %d", noNeigh, stat(t, objs, WgFastpathWgStatWG_STAT_NEIGH_REDIRECTED))
+	}
+	if stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER) != 1 || stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_CLIENT) != 1 || stat(t, objs, WgFastpathWgStatWG_STAT_PASSED_ROUTE) != 0 {
+		t.Errorf("forwarded %d/%d, passed_route %d", stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER), stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_CLIENT), stat(t, objs, WgFastpathWgStatWG_STAT_PASSED_ROUTE))
+	}
+}
+
 // TestSharesOneBucketPerSession: both directions draw from the session's one bucket, as in user space, and a reply keeps
 // the session fresh just like a request.
 func TestSharesOneBucketPerSession(t *testing.T) {
@@ -1019,5 +1205,5 @@ func TestXDPPutBackWithoutRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	receive(t, demux, client, transport(serverIndex))
-	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1})
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1, WgFastpathWgStatWG_STAT_FIB_NOT_FWDED: 1})
 }

@@ -27,7 +27,7 @@
 # A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux-e2e-all runs userspace, tc, xdp in that order).
 #
 # upgrade (on a cluster where no release laboratory exists, or one this step made) installs the chart of KIND_DEMUX_UPGRADE_FROM
-# (origin/develop) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
+# (the last release tag) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
 # tree fails on that node port, deletes the old Service as DEPLOY.md says and upgrades again, checks the chart's default mode (userspace)
 # and policy (Cluster), runs the userspace checks and uninstalls the release.
 #
@@ -40,7 +40,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 case "$MODE" in upgrade | userspace | tc | xdp | detach) ;; *) echo "usage: $0 upgrade|userspace|tc|xdp|detach" >&2; exit 2 ;; esac
-# upgrade installs the chart of KIND_DEMUX_UPGRADE_FROM (origin/develop), upgrades it to this tree with the chart's default mode, then runs
+# upgrade installs the chart of KIND_DEMUX_UPGRADE_FROM (the last release tag), upgrades it to this tree with the chart's default mode, then runs
 # the userspace checks.
 DEMUX_MODE="$MODE"
 [[ "$MODE" == upgrade ]] && DEMUX_MODE=userspace
@@ -189,11 +189,14 @@ upgrade_values=(--set operator.baseDomain=demux.test --set operator.publicVPNEnd
   --set image.tag=kind-demux-absent --set proxy.wg.nodePort="$UPGRADE_NODE_PORT")
 helm_k() { helm --kube-context "kind-$CLUSTER" "$@"; }
 
-# upgrade: a release of the chart of KIND_DEMUX_UPGRADE_FROM, then helm upgrade to this tree with no proxy.wg.mode. A plain upgrade must
-# fail while the old Service holds the fixed node port; after the documented step (DEPLOY.md, "Upgrade order") it must succeed, with the
-# chart's default mode (userspace) and policy (Cluster).
+# upgrade: a release of the chart of KIND_DEMUX_UPGRADE_FROM, then helm upgrade to this tree with no proxy.wg.mode. From a base that still has
+# the VPN Service in laboratory-proxy a plain upgrade must fail while the old Service holds the fixed node port, and after the documented step
+# (DEPLOY.md, "Upgrade order") it must succeed; from a base that has it in laboratory-wg already (every release tag so far) the plain upgrade
+# must succeed. Either way the result has the chart's default mode (userspace) and policy (Cluster).
 upgrade() {
-  local from="${KIND_DEMUX_UPGRADE_FROM:-origin/develop}" out np
+  # The last RELEASE (the harness handles a base on either side of the move of the Service, see below).
+  local from="${KIND_DEMUX_UPGRADE_FROM:-$(git -C "$ROOT" tag --list 'v*' | grep -v -- '-rc' | sort -V | tail -1)}" out np
+  [[ -n "$from" ]] || fail "no release tag to upgrade from (set KIND_DEMUX_UPGRADE_FROM)"
   log "clean slate: the demux of earlier steps was applied without Helm"
   helm_k -n "$RELEASE_NS" uninstall laboratory --ignore-not-found --wait >/dev/null
   deploy_render userspace
@@ -203,22 +206,34 @@ upgrade() {
   log "helm install the chart of $from"
   mkdir -p "$WORK/from"
   git -C "$ROOT" archive "$from" charts/laboratory | tar -x -C "$WORK/from"
-  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace "${upgrade_values[@]}" >/dev/null
-  np="$(k -n laboratory-proxy get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')" ||
-    fail "the chart of $from has no VPN Service in laboratory-proxy"
+  # CRDs are applied by kubectl, as DEPLOY.md says (helm never updates crds/): up.sh applied the CRDs of this tree with server-side apply,
+  # so put the CRDs of the old chart in their place first (forced: the field manager is kubectl either way) and tell helm to leave them.
+  k apply --server-side --force-conflicts -f "$WORK/from/charts/laboratory/crds" >/dev/null
+  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace --skip-crds "${upgrade_values[@]}" >/dev/null
+  # Where the old chart put the VPN Service: every release tag so far already has it in laboratory-wg (the move out of laboratory-proxy is
+  # older than all of them), so a release shows no move; a base that still has it in laboratory-proxy (KIND_DEMUX_UPGRADE_FROM may name
+  # one) shows the move that the documented step is about.
+  local old_ns=""
+  for ns in laboratory-proxy "$WG_NS"; do
+    if np="$(k -n "$ns" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)" && [[ -n "$np" ]]; then old_ns="$ns"; break; fi
+  done
+  [[ -n "$old_ns" ]] || fail "the chart of $from has no VPN Service in laboratory-proxy or $WG_NS"
   [[ "$np" == "$UPGRADE_NODE_PORT" ]] || fail "the old VPN Service has node port $np"
-  summary "installed the chart of $from ($(git -C "$ROOT" rev-parse --short "$from")): VPN Service laboratory-proxy/laboratory-proxy-wg on node port $np"
+  summary "installed the chart of $from ($(git -C "$ROOT" rev-parse --short "$from")): VPN Service $old_ns/laboratory-proxy-wg on node port $np"
 
   local up=(upgrade laboratory "$ROOT/charts/laboratory" -n "$RELEASE_NS" "${upgrade_values[@]}" --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s"
     --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}")
-  log "helm upgrade to this tree without the step"
-  if out="$(helm_k "${up[@]}" 2>&1)"; then fail "the plain upgrade succeeded while the old Service held the node port (DEPLOY.md says it fails)"; fi
-  grep -q "already allocated" <<<"$out" || fail "the plain upgrade failed for another reason: $out"
-  summary "plain helm upgrade fails as documented: $(grep -o '[^:]*already allocated' <<<"$out" | head -1)"
-
-  log "the documented step, then helm upgrade"
-  k -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found >/dev/null
-  out="$(helm_k "${up[@]}" 2>&1)" || fail "helm upgrade after the step failed: $out"
+  if [[ "$old_ns" == laboratory-proxy ]]; then
+    log "helm upgrade to this tree without the step"
+    if out="$(helm_k "${up[@]}" 2>&1)"; then fail "the plain upgrade succeeded while the old Service held the node port (DEPLOY.md says it fails)"; fi
+    grep -q "already allocated" <<<"$out" || fail "the plain upgrade failed for another reason: $out"
+    summary "plain helm upgrade fails as documented: $(grep -o '[^:]*already allocated' <<<"$out" | head -1)"
+    log "the documented step, then helm upgrade"
+    k -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found >/dev/null
+  else
+    log "the Service is already in $WG_NS (no move, no step): the plain helm upgrade must succeed"
+  fi
+  out="$(helm_k "${up[@]}" 2>&1)" || fail "helm upgrade failed: $out"
   k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
   local mode etp
   mode="$(k -n "$WG_NS" get ds laboratory-proxy-wg -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DEMUX_MODE")].value}')"
@@ -227,6 +242,9 @@ upgrade() {
   [[ "$mode" == userspace && "$etp" == Cluster && "$np" == "$UPGRADE_NODE_PORT" ]] ||
     fail "after the upgrade: mode $mode, externalTrafficPolicy $etp, node port $np (want userspace, Cluster, $UPGRADE_NODE_PORT)"
   ! k -n laboratory-proxy get svc laboratory-proxy-wg >/dev/null 2>&1 || fail "the old VPN Service is back"
+  log "the CRDs of this tree (helm upgrade does not update crds/)"
+  k apply --server-side --force-conflicts -f "$ROOT/charts/laboratory/crds" >/dev/null
+  k wait --for=condition=Established crd --all --timeout=2m >/dev/null
   summary "after the step helm upgrade succeeds: $(helm_k -n "$RELEASE_NS" status laboratory -o json | jq -r '"revision \(.version) \(.info.status)"'), mode $mode, externalTrafficPolicy $etp, node port $np"
 }
 
@@ -474,7 +492,14 @@ log "client with an unknown key"
 n="$(received bad -c 10 -i 0.5 -W 1 10.99.1.1)"
 hs="$(client bad wg show wg0 latest-handshakes | awk '{print $2}')"
 echo "replies: $n, latest handshake: $hs"
-[[ "$n" == 0 && "$hs" == 0 ]] || fail "the client with an unknown key got through"
+if [[ "$n" != 0 || "$hs" != 0 ]]; then
+  # What decides between a dirty harness and a leak: who knows the key (the server's peers), what the client has, what the demux counted.
+  echo "--- client bad: wg show"; client bad wg show wg0 || true
+  echo "--- server a: wg show"; k -n lg-demux-a exec vpn -- wg show wg0 || true
+  echo "--- server b: wg show"; k -n lg-demux-b exec vpn -- wg show wg0 || true
+  echo "--- demux metrics"; metrics 2>/dev/null | grep -E 'wg_demux_(sessions|fastpath_packets_total|packets_total)' || true
+  fail "the client with an unknown key got through"
+fi
 
 log "the VPN pod policy: a pod outside laboratory-wg that the server knows cannot reach it directly"
 read -r intruder_priv intruder_pub <<<"$(genkey)"

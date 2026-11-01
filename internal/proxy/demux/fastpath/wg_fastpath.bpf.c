@@ -10,6 +10,11 @@
 //   wg_tc_egress_guard  tcx egress, external device: lets our replies skip Cilium's NodePort NAT
 //   wg_xdp              xdp, external device: client -> server rewrite, handed to wg_tc_ingress through XDP metadata
 //
+// Bandwidth: besides the packet bucket every session has a byte bucket (rate and burst from wg_cfg, set by the demux to the session's
+// fair share of the entry class), and all sessions together draw from one class window (wg_class): at most class_window_bytes in
+// each window of class_window_ns. Both are off while their numbers are zero, and the whole byte limiter compiles away when the demux
+// loads the program with byte_limiter = 0 (the fallback when the verifier of a kernel refuses it: the packet bucket stays).
+//
 // See the decision section "Datapath decisions (Task 4 spike)" of the demux modes plan for why packets move this way.
 
 #include <linux/bpf.h>
@@ -55,6 +60,9 @@
 #define PKT_LEN (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + 8)
 #define UDP_CSUM_OFF (sizeof(struct ethhdr) + sizeof(struct iphdr) + offsetof(struct udphdr, check))
 
+// Set by the loader before the program is loaded (a read-only constant, so the verifier drops the byte limiter's code when it is 0).
+volatile const __u32 byte_limiter = 1;
+
 // The refill of the token bucket counts at most this much idle time at once (keeps elapsed * rate within 64 bits).
 #define MAX_REFILL_NS 10000000000ULL
 
@@ -92,12 +100,23 @@ struct wg_fwd {
 	struct bpf_spin_lock lock;
 	__u32 pad3;
 	__u64 tokens_x1000, refill_ns;
+	__u64 byte_tokens, byte_refill_ns; // the byte bucket, same rules; bytes, not thousandths
+	__u64 byte_total;                  // the bytes the owner has let through, both directions: the demux reads it to tell the sessions that send from those that only keep the connection alive
 };
 
 struct wg_cfg {
 	__u64 ttl_ns, rate_per_s, burst; // rate 0 = unlimited
 	__u32 ext_ifindex;               // the external device replies leave through
 	__u32 pad;
+	__u64 byte_rate, byte_burst;                 // per session, both directions together, bytes per second and bytes; rate 0 = unlimited
+	__u64 class_window_ns, class_window_bytes;   // the node's entry class: at most this many bytes in a window; bytes 0 = unlimited
+};
+
+// The class window: the bytes taken in the window that began at window_start_ns. Updated without a lock (atomic adds): a reset
+// that two CPUs race to do costs at most one window of slack.
+struct wg_class {
+	__u64 window_start_ns;
+	__u64 used;
 };
 
 struct wg_meta {
@@ -115,6 +134,14 @@ enum wg_stat {
 	WG_STAT_DROPPED_RATE,
 	WG_STAT_PASSED_ROUTE, // matched, but no route or neighbour for the rewritten packet: left to the slow path
 	WG_STAT_PASSED_META,  // matched in XDP, but the driver gave no room for metadata: tc handles it as in tc mode
+	// Why bpf_fib_lookup did not return SUCCESS (a lookup that is not saved by the neighbour redirect also counts in
+	// WG_STAT_PASSED_ROUTE): no neighbour entry for the next hop, the kernel would not forward the packet (local destination, forwarding off),
+	// no route (blackhole, unreachable, prohibit), anything else (unsupported lightweight tunnel route, fragmentation needed, no source).
+	WG_STAT_FIB_NO_NEIGH,
+	WG_STAT_FIB_NOT_FWDED,
+	WG_STAT_FIB_NO_ROUTE,
+	WG_STAT_FIB_OTHER,
+	WG_STAT_NEIGH_REDIRECTED, // no neighbour entry, forwarded with bpf_redirect_neigh (the kernel resolves the next hop)
 	WG_STAT_MAX,
 };
 
@@ -151,6 +178,14 @@ struct {
 } wg_cfg SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct wg_class);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} wg_class SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, WG_STAT_MAX);
 	__type(key, enum wg_stat);
@@ -165,6 +200,7 @@ struct pkt {
 	__u32 type;  // WireGuard message type with the reserved bytes
 	__u32 index; // receiver index (transport) / sender index (initiation): bytes 4..7
 	__u32 len;   // UDP payload length
+	__u32 bytes; // the packet's real length without the Ethernet header: what the byte limiters charge
 };
 
 struct tuple {
@@ -179,6 +215,27 @@ static __always_inline void count(enum wg_stat s)
 	__u64 *v = bpf_map_lookup_elem(&wg_stats, &s);
 	if (v)
 		*v += 1;
+}
+
+// count_fib counts a route lookup that did not succeed, by the reason the helper gave.
+static __always_inline void count_fib(long rc)
+{
+	switch (rc) {
+	case BPF_FIB_LKUP_RET_NO_NEIGH:
+		count(WG_STAT_FIB_NO_NEIGH);
+		break;
+	case BPF_FIB_LKUP_RET_NOT_FWDED:
+	case BPF_FIB_LKUP_RET_FWD_DISABLED:
+		count(WG_STAT_FIB_NOT_FWDED);
+		break;
+	case BPF_FIB_LKUP_RET_BLACKHOLE:
+	case BPF_FIB_LKUP_RET_UNREACHABLE:
+	case BPF_FIB_LKUP_RET_PROHIBIT:
+		count(WG_STAT_FIB_NO_ROUTE);
+		break;
+	default:
+		count(WG_STAT_FIB_OTHER);
+	}
 }
 
 static __always_inline void count_judgement(enum judgement j)
@@ -201,8 +258,11 @@ static __always_inline void count_judgement(enum judgement j)
 	}
 }
 
-// parse accepts Ethernet + IPv4 without options, not a fragment, + UDP with at least the 8 bytes of a WireGuard header.
-static __always_inline int parse(void *data, void *data_end, struct pkt *p)
+// parse accepts Ethernet + IPv4 without options, not a fragment, + UDP with at least the 8 bytes of a WireGuard header. real_len is
+// what the device really delivered after the Ethernet header (skb->len, or the frame in XDP): the lengths in the headers are the
+// sender's word, so a packet whose IP or UDP length is not the real length (trailing bytes, a short header) is not parsed and
+// goes to the slow path, and what the limiters charge is the real length, never the claimed one.
+static __always_inline int parse(void *data, void *data_end, __u32 real_len, struct pkt *p)
 {
 	struct ethhdr *eth = data;
 	struct iphdr *ip = (void *)(eth + 1);
@@ -218,7 +278,7 @@ static __always_inline int parse(void *data, void *data_end, struct pkt *p)
 	if (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET))
 		return -1;
 	__u32 ulen = bpf_ntohs(udp->len);
-	if (ulen < sizeof(*udp) + 8 || ulen + sizeof(*ip) > bpf_ntohs(ip->tot_len))
+	if (bpf_ntohs(ip->tot_len) != real_len || ulen < sizeof(*udp) + 8 || ulen + sizeof(*ip) != real_len)
 		return -1;
 
 	p->eth = eth;
@@ -227,7 +287,14 @@ static __always_inline int parse(void *data, void *data_end, struct pkt *p)
 	p->type = (__u32)wg[0] | ((__u32)wg[1] << 8) | ((__u32)wg[2] << 16) | ((__u32)wg[3] << 24);
 	p->index = (__u32)wg[4] | ((__u32)wg[5] << 8) | ((__u32)wg[6] << 16) | ((__u32)wg[7] << 24);
 	p->len = ulen - sizeof(*udp);
+	p->bytes = real_len;
 	return 0;
+}
+
+// frame_len is the length of an XDP frame after the Ethernet header.
+static __always_inline __u32 frame_len(struct xdp_md *ctx)
+{
+	return (__u32)((long)ctx->data_end - (long)ctx->data) - sizeof(struct ethhdr);
 }
 
 static __always_inline int is_entry(__be32 ip, __be16 port)
@@ -247,12 +314,14 @@ static __always_inline void record_entry(struct pkt *p)
 	bpf_map_update_elem(&wg_entry_seen, &client, &entry, BPF_ANY);
 }
 
-// take refills the session's bucket and takes one packet from it (the userspace bucket of conntrack.go, in thousandths of a
-// token), and stamps last_seen when the packet may go.
-static __always_inline int take(struct wg_fwd *f, __u64 rate, __u64 burst, __u64 now)
+// take refills the session's buckets and takes one packet and len bytes from them (the userspace bucket of conntrack.go, in
+// thousandths of a token for the packets), and stamps last_seen when the packet may go. A packet that does not fit one of the buckets
+// takes nothing from the other.
+static __always_inline int take(struct wg_fwd *f, struct wg_cfg *cfg, __u64 len, __u64 now)
 {
+	__u64 rate = cfg->rate_per_s;
+	__u64 full = cfg->burst * 1000;
 	int ok = 1;
-	__u64 full = burst * 1000;
 
 	bpf_spin_lock(&f->lock);
 	if (rate) {
@@ -276,13 +345,61 @@ static __always_inline int take(struct wg_fwd *f, __u64 rate, __u64 burst, __u64
 		}
 		if (f->tokens_x1000 < 1000)
 			ok = 0;
-		else
-			f->tokens_x1000 -= 1000;
 	}
-	if (ok)
+	if (byte_limiter && cfg->byte_rate) {
+		__u64 brate = cfg->byte_rate;
+		if (!f->byte_refill_ns) {
+			f->byte_tokens = cfg->byte_burst;
+			f->byte_refill_ns = now;
+		}
+		if (now > f->byte_refill_ns) {
+			__u64 elapsed = now - f->byte_refill_ns;
+			if (elapsed > MAX_REFILL_NS)
+				elapsed = MAX_REFILL_NS;
+			__u64 add = elapsed * brate / 1000000000ULL;
+			f->byte_tokens += add;
+			if (f->byte_tokens >= cfg->byte_burst) {
+				f->byte_tokens = cfg->byte_burst;
+				f->byte_refill_ns = now;
+			} else {
+				f->byte_refill_ns += add * 1000000000ULL / brate;
+			}
+		}
+		if (f->byte_tokens < len)
+			ok = 0;
+	}
+	if (ok) {
+		if (rate)
+			f->tokens_x1000 -= 1000;
+		if (byte_limiter && cfg->byte_rate)
+			f->byte_tokens -= len;
+		f->byte_total += len;
 		f->last_seen_ns = now;
+	}
 	bpf_spin_unlock(&f->lock);
 	return ok;
+}
+
+// class_take counts len bytes in the node's class window and says whether they fit (the bytes of a packet that does not fit are
+// given back, so a refused packet does not eat into the window).
+static __always_inline int class_take(struct wg_cfg *cfg, __u64 len, __u64 now)
+{
+	if (!byte_limiter || !cfg->class_window_bytes)
+		return 1;
+	__u32 zero = 0;
+	struct wg_class *c = bpf_map_lookup_elem(&wg_class, &zero);
+	if (!c)
+		return 1;
+	if (now < c->window_start_ns || now - c->window_start_ns >= cfg->class_window_ns) {
+		c->used = 0;
+		c->window_start_ns = now;
+	}
+	__sync_fetch_and_add(&c->used, len);
+	if (c->used > cfg->class_window_bytes) {
+		__sync_fetch_and_add(&c->used, (__u64)0 - len);
+		return 0;
+	}
+	return 1;
 }
 
 // judge is the slow path's LookupForward in the kernel: a known index of this direction, fresh, from exactly the expected
@@ -325,7 +442,10 @@ static __always_inline enum judgement judge(struct pkt *p, int to_client, __u32 
 		return J_STALE;
 	if (p->ip->saddr != f->exp_ip || p->udp->source != f->exp_port)
 		return J_SOURCE;
-	if (!take(owner, cfg->rate_per_s, cfg->burst, now))
+	__u64 len = p->bytes;
+	if (!take(owner, cfg, len, now))
+		return J_RATE;
+	if (!class_take(cfg, len, now))
 		return J_RATE;
 	*out = f;
 	*cfg_out = cfg;
@@ -381,8 +501,10 @@ static __always_inline void udp_csum_skb(struct __sk_buff *skb, struct tuple *fr
 	bpf_l4_csum_replace(skb, UDP_CSUM_OFF, from->dport, to->dport, BPF_F_MARK_MANGLED_0 | sizeof(__be16));
 }
 
-static __always_inline int fib(struct __sk_buff *skb, struct pkt *p, struct tuple *t, __u32 ifindex, __u32 flags,
-			       struct bpf_fib_lookup *params)
+// fib looks the rewritten packet's route up and returns the helper's result (BPF_FIB_LKUP_RET_SUCCESS: dmac and smac are filled;
+// NO_NEIGH: the route and the next hop (params->ipv4_dst) are known, only the neighbour entry is missing).
+static __always_inline long fib(struct __sk_buff *skb, struct pkt *p, struct tuple *t, __u32 ifindex, __u32 flags,
+				struct bpf_fib_lookup *params)
 {
 	__builtin_memset(params, 0, sizeof(*params));
 	params->family = AF_INET;
@@ -394,27 +516,53 @@ static __always_inline int fib(struct __sk_buff *skb, struct pkt *p, struct tupl
 	params->ipv4_src = t->saddr;
 	params->ipv4_dst = t->daddr;
 	params->ifindex = ifindex;
-	return bpf_fib_lookup(skb, params, sizeof(*params), flags) == BPF_FIB_LKUP_RET_SUCCESS;
+	long rc = bpf_fib_lookup(skb, params, sizeof(*params), flags);
+	if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+		count_fib(rc);
+	return rc;
+}
+
+// routed says the lookup found a way out: with SUCCESS the next hop's MACs are in params; with NO_NEIGH only its neighbour entry is
+// missing, and bpf_redirect_neigh lets the kernel resolve it (as it does for the slow path's own packets).
+static __always_inline int routed(long rc)
+{
+	return rc == BPF_FIB_LKUP_RET_SUCCESS || rc == BPF_FIB_LKUP_RET_NO_NEIGH;
+}
+
+static __always_inline void set_macs(struct pkt *p, struct bpf_fib_lookup *params, long rc)
+{
+	if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+		return;
+	__builtin_memcpy(p->eth->h_dest, params->dmac, ETH_ALEN);
+	__builtin_memcpy(p->eth->h_source, params->smac, ETH_ALEN);
+}
+
+static __always_inline int redirect_out(struct __sk_buff *skb, struct bpf_fib_lookup *params, long rc)
+{
+	if (rc == BPF_FIB_LKUP_RET_SUCCESS)
+		return bpf_redirect(params->ifindex, 0);
+	struct bpf_redir_neigh nh = {.nh_family = AF_INET, .ipv4_nh = params->ipv4_dst};
+	count(WG_STAT_NEIGH_REDIRECTED);
+	return bpf_redirect_neigh(params->ifindex, &nh, sizeof(nh), 0);
 }
 
 static __always_inline int load(struct __sk_buff *skb, struct pkt *p)
 {
 	if ((void *)(long)skb->data + PKT_LEN > (void *)(long)skb->data_end)
 		bpf_skb_pull_data(skb, PKT_LEN);
-	return parse((void *)(long)skb->data, (void *)(long)skb->data_end, p);
+	return parse((void *)(long)skb->data, (void *)(long)skb->data_end, skb->len - sizeof(struct ethhdr), p);
 }
 
 // forward rewrites a matched packet (UDP checksum through the helpers), sets the next hop's MACs and the mark, and
 // redirects it out of the device the route lookup chose.
 static __always_inline int forward(struct __sk_buff *skb, struct pkt *p, struct tuple *from, struct tuple *to,
-				   struct bpf_fib_lookup *params, __u32 mark)
+				   struct bpf_fib_lookup *params, long rc, __u32 mark)
 {
 	rewrite(p->ip, p->udp, to, 0);
-	__builtin_memcpy(p->eth->h_dest, params->dmac, ETH_ALEN);
-	__builtin_memcpy(p->eth->h_source, params->smac, ETH_ALEN);
+	set_macs(p, params, rc);
 	udp_csum_skb(skb, from, to);
 	skb->mark = mark;
-	return bpf_redirect(params->ifindex, 0);
+	return redirect_out(skb, params, rc);
 }
 
 // put_back undoes wg_xdp's rewrite, so the frame is again exactly as it arrived and the slow path can take it.
@@ -439,17 +587,17 @@ static __always_inline int forward_xdp_marked(struct __sk_buff *skb, struct pkt 
 	}
 	// XDP computed the UDP checksum as if the frame carried a full one; the skb helpers know better (a partial checksum).
 	p->udp->check = orig_check;
-	if (!fib(skb, p, &to, skb->ingress_ifindex, 0, &params)) {
+	long rc = fib(skb, p, &to, skb->ingress_ifindex, 0, &params);
+	if (!routed(rc)) {
 		put_back(p, &from, orig_check);
 		count(WG_STAT_PASSED_ROUTE);
 		return TCX_NEXT;
 	}
-	__builtin_memcpy(p->eth->h_dest, params.dmac, ETH_ALEN);
-	__builtin_memcpy(p->eth->h_source, params.smac, ETH_ALEN);
+	set_macs(p, &params, rc);
 	udp_csum_skb(skb, &from, &to);
 	skb->mark = (skb->mark & ~CILIUM_MAGIC_MASK) | CILIUM_MAGIC_HOST;
 	count(WG_STAT_FORWARDED_TO_SERVER);
-	return bpf_redirect(params.ifindex, 0);
+	return redirect_out(skb, &params, rc);
 }
 
 // Client -> server on the external device. The rewritten packet goes into Cilium's datapath like one the demux socket sent:
@@ -487,12 +635,13 @@ int wg_tc_ingress(struct __sk_buff *skb)
 	struct tuple from = {.saddr = p.ip->saddr, .daddr = p.ip->daddr, .sport = p.udp->source, .dport = p.udp->dest};
 	struct tuple to = {.saddr = f->new_src_ip, .daddr = f->dst_ip, .sport = f->new_src_port, .dport = f->dst_port};
 	struct bpf_fib_lookup params;
-	if (!fib(skb, &p, &to, skb->ingress_ifindex, 0, &params)) {
+	long rc = fib(skb, &p, &to, skb->ingress_ifindex, 0, &params);
+	if (!routed(rc)) {
 		count(WG_STAT_PASSED_ROUTE);
 		return TCX_NEXT;
 	}
 	count(WG_STAT_FORWARDED_TO_SERVER);
-	return forward(skb, &p, &from, &to, &params, (skb->mark & ~CILIUM_MAGIC_MASK) | CILIUM_MAGIC_HOST);
+	return forward(skb, &p, &from, &to, &params, rc, (skb->mark & ~CILIUM_MAGIC_MASK) | CILIUM_MAGIC_HOST);
 }
 
 // Server -> client on cilium_host (cross-node servers, after Cilium's overlay processing) and on the host-side veth of a
@@ -518,12 +667,13 @@ int wg_tc_reply(struct __sk_buff *skb)
 	struct tuple from = {.saddr = p.ip->saddr, .daddr = p.ip->daddr, .sport = p.udp->source, .dport = p.udp->dest};
 	struct tuple to = {.saddr = f->new_src_ip, .daddr = f->dst_ip, .sport = f->new_src_port, .dport = f->dst_port};
 	struct bpf_fib_lookup params;
-	if (!fib(skb, &p, &to, cfg->ext_ifindex, BPF_FIB_LOOKUP_OUTPUT, &params)) {
+	long rc = fib(skb, &p, &to, cfg->ext_ifindex, BPF_FIB_LOOKUP_OUTPUT, &params);
+	if (!routed(rc)) {
 		count(WG_STAT_PASSED_ROUTE);
 		return TCX_NEXT;
 	}
 	count(WG_STAT_FORWARDED_TO_CLIENT);
-	return forward(skb, &p, &from, &to, &params, WG_REPLY_MARK);
+	return forward(skb, &p, &from, &to, &params, rc, WG_REPLY_MARK);
 }
 
 // Our replies leave without Cilium's to-netdev program, which would otherwise create a NodePort NAT and CT entry for every
@@ -555,7 +705,7 @@ int wg_xdp(struct xdp_md *ctx)
 {
 	struct pkt p;
 
-	if (parse((void *)(long)ctx->data, (void *)(long)ctx->data_end, &p))
+	if (parse((void *)(long)ctx->data, (void *)(long)ctx->data_end, frame_len(ctx), &p))
 		return XDP_PASS;
 	if (p.type != WG_TRANSPORT || p.len < WG_TRANSPORT_MIN_LEN || !is_entry(p.ip->daddr, p.udp->dest))
 		return XDP_PASS;
@@ -566,7 +716,7 @@ int wg_xdp(struct xdp_md *ctx)
 	}
 	void *data = (void *)(long)ctx->data;
 	struct wg_meta *m = (void *)(long)ctx->data_meta;
-	if ((void *)(m + 1) > data || parse(data, (void *)(long)ctx->data_end, &p)) {
+	if ((void *)(m + 1) > data || parse(data, (void *)(long)ctx->data_end, frame_len(ctx), &p)) {
 		bpf_xdp_adjust_meta(ctx, (int)sizeof(struct wg_meta));
 		return XDP_PASS;
 	}

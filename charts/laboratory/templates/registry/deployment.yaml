@@ -23,6 +23,10 @@ spec:
         {{- include "laboratory.registrySelector" . | nindent 8 }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/registry/configmap.yaml") . | sha256sum }}
+        {{- if and .Values.bandwidth.enabled .Values.bandwidth.reserves.registryMbit }}
+        # What the registry keeps of its node's bandwidth for itself (Mbit/s), taken off that node only.
+        cybericebox.com/bandwidth-reserve: {{ .Values.bandwidth.reserves.registryMbit | quote }}
+        {{- end }}
     spec:
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       # zot never talks to the Kubernetes API: no ServiceAccount token in the pod.

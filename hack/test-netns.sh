@@ -28,8 +28,8 @@ if [[ "${1:-}" != "inside" ]]; then
 fi
 
 export GOWORK=off CICE_NETNS_TESTS=1
-if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null || ! command -v conntrack >/dev/null || ! command -v ovsdb-server >/dev/null || ! command -v ovsdb-tool >/dev/null || ! command -v ovs-vsctl >/dev/null; then
-  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack openvswitch-switch >/dev/null
+if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null || ! command -v conntrack >/dev/null || ! command -v ovsdb-server >/dev/null || ! command -v ovsdb-tool >/dev/null || ! command -v ovs-vsctl >/dev/null || ! command -v nft >/dev/null || ! command -v iperf3 >/dev/null; then
+  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack openvswitch-switch nftables python3 iperf3 >/dev/null
 fi
 out=$(mktemp -d)
 pkgs="vpn vpn/reconciler gateway accessroute cmds/cnigate nodeagent"

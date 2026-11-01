@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -18,7 +19,26 @@ import (
 )
 
 type Config struct {
-	RuntimeObservation bool `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the operator writes the bandwidth ceilings onto the
+	// gateway, demux and L7 proxy pods (see package bandwidth).
+	Bandwidth bandwidth.Settings
+	// BandwidthEntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy: each gets the ConfigMap with the entry
+	// limits of every node (BANDWIDTH_ENTRY_NAMESPACES, comma separated).
+	BandwidthEntryNamespaces []string `env:"BANDWIDTH_ENTRY_NAMESPACES" envSeparator:","`
+	RuntimeObservation       bool     `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
+	// gateway pods created from now on (chart inetGateway.limits).
+	GatewayMaxConnectionsPerLab          int `env:"GATEWAY_MAX_CONNECTIONS_PER_LAB" envDefault:"0"`
+	GatewayNewConnectionsPerSecondPerLab int `env:"GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB" envDefault:"0"`
+	// VPNFirewall: "iptables" (the relation chains with connection tracking) or "nft" (nftables sets, no connection tracking) for the
+	// VPN pods created from now on (VPN_FIREWALL, chart vpn.firewall).
+	VPNFirewall string `env:"VPN_FIREWALL" envDefault:"iptables"`
+	// VNIQuarantine is how long a retired VNI is not given out again (VNI_QUARANTINE), VNISweepInterval how often the sweep
+	// retires leases that lost their owner and returns the VNIs that passed the quarantine (VNI_SWEEP_INTERVAL), VNIRetireFlush how
+	// often the VNIs queued for retirement are written to the pool (VNI_RETIRE_FLUSH).
+	VNIQuarantine    time.Duration `env:"VNI_QUARANTINE" envDefault:"10m"`
+	VNISweepInterval time.Duration `env:"VNI_SWEEP_INTERVAL" envDefault:"5m"`
+	VNIRetireFlush   time.Duration `env:"VNI_RETIRE_FLUSH" envDefault:"2s"`
 	// Acceptance gate stays false until final native proof; advertising remains false.
 	RequiredSnapshotAvailable bool `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address); a host alone gets the default port.
@@ -171,6 +191,11 @@ type Config struct {
 	// device object that asks for more (it predates the agent's check, or was made by hand) is clamped to them.
 	DeviceMaxCPU    string `env:"DEVICE_MAX_CPU" envDefault:"2000m"`
 	DeviceMaxMemory string `env:"DEVICE_MAX_MEMORY" envDefault:"4Gi"`
+	// DeviceNoCPULimit runs devices that declare no cpuLimit with a CPU request only (limits.device.noCpuLimit).
+	DeviceNoCPULimit bool `env:"DEVICE_NO_CPU_LIMIT" envDefault:"false"`
+
+	// Profiles are the device profiles this cluster offers and how they map to nodes (chart microvm.*, profileLabels.*).
+	Profiles nodecap.ProfileConfig
 
 	// DeviceUserNamespaces runs device pods with hostUsers: false (default on; a hidden setting, not shown in any UI).
 	// DeviceEphemeralStorage limits the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).

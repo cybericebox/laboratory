@@ -65,6 +65,8 @@ type SchedulerConfig struct {
 	// StatusInterval is the least time between two queue status writes of one
 	// object; zero means defaultStatusInterval.
 	StatusInterval time.Duration
+	// Profiles says which device profiles run and where (the chart's microvm and profileLabels values).
+	Profiles nodecap.ProfilePolicy
 	// Maximum is the static maximum capacity of the lab nodes, a budget for the autoscaled ones: admission places gangs on the
 	// nodes that exist and on the room the budget still allows (one virtual room). No budget: the maximum is the current capacity.
 	Maximum nodecap.Maximum
@@ -712,6 +714,11 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 	if need := deviceRequests(t.Resources, s.Defaults); need != nil {
 		p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
 	}
+	if t.Profile.Effective() == laboratoryv1alpha1.DeviceProfileMicroVM {
+		p.profile = nodecap.ProfileMicroVM
+		oh := s.Config.Profiles.OverheadOf(p.profile)
+		p.need = p.need.add(amount{cpu: oh.CPU, mem: oh.Memory})
+	}
 	p.missing = snap.devices[key] == nil
 	if d := snap.devices[key]; d != nil {
 		p.ref = d
@@ -1074,6 +1081,7 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	if e.s.Config.Maximum.Set() {
 		e.breaker = e.s.breakerOn(nodes.Items, e.now)
 	}
+	c.profiles = e.s.Config.Profiles
 	e.snapshot = &c
 	return e.snapshot
 }

@@ -12,6 +12,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -42,8 +43,15 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if _, err := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
-		if err := h.checkPodSizes(it); err != nil {
+		computed, err := h.applyExpectedCounts(it)
+		if err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+		}
+		// sizes the agent computed from the counts are within its own limits; the sizes a caller sent are checked
+		if !computed {
+			if err := h.checkPodSizes(it); err != nil {
+				return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+			}
 		}
 		if err := reservationIDError(it.GetReservationId()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
@@ -76,7 +84,12 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if refusals[i] != nil {
 			return failedResult(refs[i], refusals[i])
 		}
-		return h.createLabGroup(ctx, items[i], in.GetLabels())
+		res := h.createLabGroup(ctx, items[i], in.GetLabels())
+		if res.GetState() != protobuf.ItemState_ITEM_STATE_FAILED {
+			// the sizes the counts became (applyExpectedCounts), for the caller to see
+			res.VpnSize, res.GatewaySize = items[i].GetVpnSize(), items[i].GetGatewaySize()
+		}
+		return res
 	})}, nil
 }
 
@@ -159,6 +172,14 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 
 // errDifferentSpec is an existing object whose spec differs from the one sent.
 type errDifferentSpec struct{ kind, name string }
+
+// Reason is the machine code of the item (LAB_NAME_CONFLICT); the text stays as it was.
+func (e errDifferentSpec) Reason() string {
+	if e.kind == kindLab {
+		return client.ReasonLabNameConflict
+	}
+	return ""
+}
 
 func (e errDifferentSpec) Error() string {
 	return fmt.Sprintf("%s %s already exists with a different spec", e.kind, e.name)
@@ -441,4 +462,25 @@ func samePodSize(a, b *laboratoryv1alpha1.GroupPodSize) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+// applyExpectedCounts turns the counts a group is made for into the sizes of its pods (formulas in code). An item that sets a count,
+// or neither a count nor a size, is sized from the counts (the defaults fill what it leaves out); an item that sets only sizes keeps
+// them, as before.
+func (h *Handler) applyExpectedCounts(it *protobuf.LabGroupItem) (bool, error) {
+	if h.features.GroupLimits.MaxUsers == 0 { // an agent without the group limits (not configured): the sizes as sent
+		return false, nil
+	}
+	counts := it.GetExpectedUsers() != 0 || it.GetExpectedLabs() != 0
+	if !counts && (it.GetVpnSize() != nil || it.GetGatewaySize() != nil) {
+		return false, nil
+	}
+	users, labs, err := h.features.GroupLimits.Resolve(int(it.GetExpectedUsers()), int(it.GetExpectedLabs()))
+	if err != nil {
+		return false, err
+	}
+	vpn, gw := grouppods.VPNSize(users, labs), grouppods.GatewaySize(labs)
+	it.VpnSize = &protobuf.PodSize{CpuMillicores: vpn.CPU, MemoryBytes: vpn.Memory}
+	it.GatewaySize = &protobuf.PodSize{CpuMillicores: gw.CPU, MemoryBytes: gw.Memory}
+	return true, nil
 }

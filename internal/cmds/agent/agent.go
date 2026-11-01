@@ -65,6 +65,8 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	h.EnableReadCache()
+	h.SetAdmissionStaleAfter(cfg.AdmissionStaleAfter)
 	h.SetRequiredSnapshotAvailable(cfg.RequiredSnapshotAvailable && cfg.StatePersistence)
 	feat, err := features(cfg)
 	if err != nil {
@@ -191,10 +193,23 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err
 	}
+	if f.Profiles, err = cfg.Profiles.Policy(); err != nil {
+		return f, err
+	}
 	f.DeviceDefaults = limits.DeviceDefaults{CPU: cfg.Limits.DeviceDefaultCPU, Memory: cfg.Limits.DeviceDefaultMemory, MaxCPU: cfg.Limits.DeviceMaxCPU, MaxMemory: cfg.Limits.DeviceMaxMemory}
+	if f.Profiles.MicroVM {
+		f.DeviceDefaults.MicroVMOverheadCPU, f.DeviceDefaults.MicroVMOverheadMemory = cfg.Profiles.MicroVMOverheadCPU, cfg.Profiles.MicroVMOverheadMemory
+	}
 	if f.GroupPods.Sizing, err = cfg.GroupSizing.Parse(); err != nil {
 		return f, err
 	}
+	if err = cfg.GroupLimits.Validate(); err != nil {
+		return f, err
+	}
+	f.GroupLimits = cfg.GroupLimits
+	// the pods are sized for at most this many users and labs: the maximum the agent reports is the size at these counts, so the default
+	// size must fit inside THAT maximum (not the one of vpn.sizing.maxUsers, which groupLimits.maxUsers replaces)
+	f.GroupPods.Sizing.VPN.MaxUnits, f.GroupPods.Sizing.Gateway.MaxUnits = cfg.GroupLimits.MaxUsers, cfg.GroupLimits.MaxLabs
 	if err = cfg.GroupPods.CheckWithin(f.GroupPods.Sizing); err != nil {
 		return f, err
 	}

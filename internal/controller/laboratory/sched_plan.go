@@ -70,8 +70,10 @@ type schedPod struct {
 	// state is the recorded scheduling state; empty until the owning reconciler
 	// has initialised it (the pod is then counted but cannot be dispatched).
 	state laboratoryv1alpha1.PodScheduleState
-	// need is what the pod will request from a node.
+	// need is what the pod will request from a node (a microVM pod: with the RuntimeClass overhead).
 	need amount
+	// profile is the device profile of the pod ("" = container).
+	profile string
 	// tenant owns the pod (its object's tenant label).
 	tenant string
 	// missing says the pod is a device pod whose Device does not exist (yet): the lab reconciler has not made it.
@@ -573,7 +575,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	needsOf := func(pods []*schedPod) []podNeed {
 		needs := make([]podNeed, 0, len(pods))
 		for _, p := range pods {
-			needs = append(needs, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
+			needs = append(needs, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem, Profile: p.profile})
 		}
 		return needs
 	}
@@ -600,7 +602,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		for _, o := range objs {
 			for _, p := range o.pods {
 				if p.state == laboratoryv1alpha1.PodStarting && env.nodeOf(p) == "" {
-					unbound = append(unbound, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
+					unbound = append(unbound, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem, Profile: p.profile})
 				}
 			}
 		}
@@ -623,7 +625,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				if n := env.nodeOf(p); n != "" {
 					bound[n] = bound[n].add(p.need)
 				} else if p.state == laboratoryv1alpha1.PodStarting {
-					unbound = append(unbound, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
+					unbound = append(unbound, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem, Profile: p.profile})
 				}
 			}
 		}

@@ -70,6 +70,20 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(vpn.Requests).To(Equal(vpn.Limits))
 		Expect(quantity(gw.Requests, corev1.ResourceCPU)).To(Equal("60m"))
 		Expect(gw.Requests).To(Equal(gw.Limits))
+		// Placement: soft only (a full node never blocks the pod), a node with a lab of the group first, then any pod of the group.
+		for _, n := range []string{"vpn", "gateway"} {
+			var dep appsv1.Deployment
+			ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: namespace}, &dep)).To(Succeed())
+			aff := dep.Spec.Template.Spec.Affinity
+			ExpectWithOffset(1, aff).NotTo(BeNil())
+			Expect(aff.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(BeEmpty())
+			terms := aff.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+			Expect(terms).To(HaveLen(2))
+			Expect(terms[0].Weight).To(BeNumerically(">", terms[1].Weight))
+			Expect(terms[0].PodAffinityTerm.TopologyKey).To(Equal(names.TopologyKeyHostname))
+			Expect(terms[0].PodAffinityTerm.LabelSelector.MatchExpressions).To(ConsistOf(metav1.LabelSelectorRequirement{Key: names.LabelLab, Operator: metav1.LabelSelectorOpExists}))
+			Expect(terms[1].PodAffinityTerm.LabelSelector.MatchLabels).To(BeEmpty())
+		}
 		// A later change of the chart value reaches new groups only: the pods of a group keep the size they were created with.
 		r.GroupPods = grouppods.Config{VPNCPU: "500m", VPNMemory: "512Mi", GatewayCPU: "500m", GatewayMemory: "512Mi"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	stderrors "errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -486,6 +487,13 @@ func leasePool(ctx context.Context, c client.Reader, prefix, namespace string, s
 	return &p, index - p.Spec.Offset, nil
 }
 
+// ErrLeaseAbsent and ErrLeaseRetired are what PinExistingIndex says of a slot that is no longer held: its bit is clear (returned to the
+// pool after the quarantine) or it is retired and waits out its quarantine. For an owner that is being deleted they mean "released".
+var (
+	ErrLeaseAbsent  = stderrors.New("pool reservation is absent or identity unavailable")
+	ErrLeaseRetired = stderrors.New("pool slot is retired and waits out its quarantine")
+)
+
 // PinExistingIndex upgrades a currently held legacy reservation. It never binds
 // a clear bit or a differently owned lease; all subsequent releases are fenced.
 func PinExistingIndex(ctx context.Context, c client.Client, prefix, namespace string, size, index uint, uid string) (*Lease, error) {
@@ -501,9 +509,12 @@ func PinExistingIndex(ctx context.Context, c client.Client, prefix, namespace st
 		return nil, err
 	}
 	if !bitmap.Test(bit) || p.UID == "" {
-		return nil, fmt.Errorf("pool reservation is absent or identity unavailable")
+		return nil, ErrLeaseAbsent
 	}
 	key := strconv.FormatUint(uint64(bit), 10)
+	if _, retired := p.Status.Retired[key]; retired {
+		return nil, ErrLeaseRetired
+	}
 	if prior, ok := p.Status.Leases[key]; ok {
 		if prior.OwnerUID != uid {
 			return nil, fmt.Errorf("pool slot belongs to another owner")
@@ -530,16 +541,56 @@ func ValidateLease(ctx context.Context, c client.Reader, prefix, namespace strin
 	}
 	owner, ok := p.Status.Leases[strconv.FormatUint(uint64(bit), 10)]
 	if !ok || string(p.UID) != lease.PoolUID || owner.OwnerUID != lease.OwnerUID || owner.Generation != lease.Generation || lease.Generation < 1 {
-		return fmt.Errorf("current pool lease owner/generation changed")
+		return ErrLeaseNotHeld
 	}
 	bitmap, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
 	if err != nil {
 		return err
 	}
 	if !bitmap.Test(bit) {
-		return fmt.Errorf("current pool reservation absent")
+		return fmt.Errorf("%w: the reservation is absent", ErrLeaseNotHeld)
 	}
 	return nil
+}
+
+// ErrLeaseNotHeld is what ValidateLease says of a lease the pool does not hold as recorded: no record, another owner or generation, another
+// pool, a clear bit. Other errors (the pool cannot be read, a bad extent) are failures of the question, not its answer.
+var ErrLeaseNotHeld = stderrors.New("current pool lease owner/generation changed")
+
+// LeaseReleased says the exact lease has been retired and nothing holds its slot: the slot has no lease record and its retirement
+// record names this very owner and generation (it waits out its quarantine, and the sweep does not return it while a node still owes the
+// acknowledgement). Anything else is not "released": a slot back in the pool (the proof of whose lease it was is gone, and it may be
+// someone else's now), a slot with a lease record (this lease, or another owner's after a reuse), a retirement of another owner or
+// generation, a legacy hold. The pool is read by the caller; for a decision that drops flows it must be an uncached reader.
+func LeaseReleased(ctx context.Context, c client.Reader, prefix, namespace string, size uint, lease Lease) (bool, error) {
+	p, bit, err := leasePool(ctx, c, prefix, namespace, size, lease.Index)
+	if err != nil {
+		return false, err
+	}
+	if string(p.UID) != lease.PoolUID || lease.OwnerUID == "" || lease.Generation < 1 {
+		return false, nil
+	}
+	key := strconv.FormatUint(uint64(bit), 10)
+	if _, held := p.Status.Leases[key]; held {
+		return false, nil
+	}
+	r, retired := p.Status.Retired[key]
+	return retired && r.OwnerUID == lease.OwnerUID && r.Generation == lease.Generation, nil
+}
+
+// ValidateOrReleased is the question a node asks before it drops the flows of a VNI for a lease: is the number still this owner's? Yes
+// when the lease is held as recorded, or when it has been retired with exactly this owner and generation (LeaseReleased). A slot that
+// was given back and issued to someone else, a retirement of another lease and a pool that cannot be read are errors, never an answer.
+// Ask it with an uncached reader, before the flows go and again after.
+func ValidateOrReleased(ctx context.Context, c client.Reader, prefix, namespace string, size uint, lease Lease) error {
+	err := ValidateLease(ctx, c, prefix, namespace, size, lease)
+	if err == nil {
+		return nil
+	}
+	if released, rerr := LeaseReleased(ctx, c, prefix, namespace, size, lease); rerr == nil && released {
+		return nil
+	}
+	return err
 }
 func ReleaseOwnedIndex(ctx context.Context, c client.Client, prefix, namespace string, size uint, lease Lease) error {
 	p, bit, err := leasePool(ctx, c, prefix, namespace, size, lease.Index)

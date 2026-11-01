@@ -5,11 +5,15 @@ package nodeagent
 import (
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
 type Config struct {
+	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the Geneve traffic of the node is held to its class by
+	// OVS meters (see package bandwidth).
+	Bandwidth                  bandwidth.Settings
 	RuntimeObservation         bool          `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
 	RuntimeObservationInterval time.Duration `env:"RUNTIME_OBSERVATION_INTERVAL" envDefault:"5s"`
 	NodeName                   string        `env:"NODE_NAME,required"`
@@ -55,6 +59,9 @@ type Config struct {
 	// StatePersistence turns on the snapshot engine (the forwarder alone serves
 	// the image cache).
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// ContainerdRoot is the containerd root directory of the host as mounted in the pod (the same path): the snapshots of a device's
+	// writable layer are read from its snapshotter. The preflight checks it.
+	ContainerdRoot string `env:"CONTAINERD_ROOT"`
 	// ContainerdNamespace is the containerd namespace of the kubelet's CRI.
 	ContainerdNamespace string `env:"CONTAINERD_NAMESPACE" envDefault:"k8s.io"`
 	// CgroupRoot is where the host's cgroup v2 tree is mounted in the pod.
@@ -85,4 +92,22 @@ func LoadConfig() (*Config, error) {
 		cfg.StateRegistryAddr = names.RegistryServiceAddr
 	}
 	return cfg, nil
+}
+
+// PreflightInput is the part of the configuration the start-up check reads.
+func (c *Config) PreflightInput() PreflightInput {
+	return PreflightInput{
+		Persistence: c.StatePersistence, Observation: c.RuntimeObservation,
+		ContainerdRoot: c.ContainerdRoot, CRISock: c.CRISock, CgroupRoot: c.CgroupRoot, RegistryAddr: c.StateRegistryAddr,
+	}
+}
+
+// Apply switches off in the configuration what the node cannot do, so the node-agent starts without it instead of failing.
+func (c *Config) Apply(r PreflightResult) {
+	if _, bad := IsUnavailable(r.StatePersistence); bad {
+		c.StatePersistence = false
+	}
+	if _, bad := IsUnavailable(r.RuntimeObservation); bad {
+		c.RuntimeObservation = false
+	}
 }

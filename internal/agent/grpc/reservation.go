@@ -113,6 +113,10 @@ func reasonOf(err error) string {
 	if errors.As(err, &re) {
 		return re.reason
 	}
+	var coded interface{ Reason() string }
+	if errors.As(err, &coded) {
+		return coded.Reason()
+	}
 	return ""
 }
 
@@ -686,7 +690,7 @@ func reservationIDOf(ids map[string]string, label string) string {
 
 // reservationIDs maps the CR names of the caller's tenant's reservations to their ids.
 func (h *Handler) reservationIDs(ctx context.Context) (map[string]string, error) {
-	list, err := h.listReservations(ctx, "")
+	list, err := h.readReservations(ctx)
 	if err != nil {
 		return nil, err
 	}

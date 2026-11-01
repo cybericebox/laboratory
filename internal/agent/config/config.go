@@ -9,6 +9,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 )
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA. TLS is always on; the files are where the chart mounts the
@@ -112,9 +113,14 @@ type Config struct {
 	// GroupSizing is how the pods of a group are sized (the chart's vpn.sizing and inetGateway.sizing): reported in GetFeatures, and the
 	// maximum of the sizes CreateLabGroups accepts.
 	GroupSizing grouppods.Sizing
+	// GroupLimits are the chart's groupLimits (the most a group may be made for, and the defaults).
+	GroupLimits grouppods.Limits
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// AdmissionStaleAfter is how long a pending child admission of another lab that wrote nothing blocks its group before the
+	// next claim clears it (ADMISSION_STALE_AFTER).
+	AdmissionStaleAfter time.Duration `env:"ADMISSION_STALE_AFTER" envDefault:"10m"`
 	// State are the cluster values of state persistence (the chart's devices.statePersistence, the same as the
 	// operator's): GetFeatures reports them, a tenant's own limits are capped by them.
 	State StateConfig
@@ -128,6 +134,8 @@ type Config struct {
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`
+	// Profiles are the device profiles this cluster offers and how they map to nodes (chart microvm.*, profileLabels.*).
+	Profiles nodecap.ProfileConfig
 	// Limits are the caps on devices, labs and tenants the agent enforces on CreateLabs and reports.
 	Limits limits.Config
 	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard. The operator's names and the

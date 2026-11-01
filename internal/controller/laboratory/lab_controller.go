@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -40,6 +41,8 @@ import (
 // LabReconciler reconciles a Lab object.
 type LabReconciler struct {
 	client.Client
+	// VNI batches the retirement of VNIs (nil: each one is retired at once).
+	VNI      *VNIRetirer
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
@@ -516,6 +519,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Code:           code,
 				Type:           tmpl.Type,
 				Image:          tmpl.Image,
+				Profile:        tmpl.Profile,
 				SecurityPreset: tmpl.SecurityPreset,
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,
@@ -603,7 +607,11 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 				}
 				existing.Status.VNI = &vni
 				if err := r.Status().Update(ctx, &existing); err != nil {
-					_ = vniAllocator.ReleaseIndex(ctx, vni)
+					// Nothing records the index: retire it (the error of the status write stays the one returned, and a retirement
+					// that cannot be made is still caught by the sweep, which finds a held slot nobody references).
+					if retireErr := r.retireIndex(ctx, vni); retireErr != nil {
+						ctrl.LoggerFrom(ctx).Error(retireErr, "retire the unrecorded VNI", "vni", vni)
+					}
 					return err
 				}
 			}
@@ -652,7 +660,9 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			// Return the VNI: the Connection does not exist, so nothing records
 			// this index and the delete path would never release it.
 			if allocatedVNI != nil {
-				_ = vniAllocator.ReleaseIndex(ctx, *allocatedVNI)
+				if retireErr := r.retireIndex(ctx, *allocatedVNI); retireErr != nil {
+					ctrl.LoggerFrom(ctx).Error(retireErr, "retire the unrecorded VNI", "vni", *allocatedVNI)
+				}
 			}
 			return err
 		}
@@ -1104,19 +1114,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	// Release lab subnet index if allocated.
-	if lab.Status.VPN.CIDR != "" || lab.Status.Internet.CIDR != "" {
-		cidr := lab.Status.VPN.CIDR
-		if cidr == "" {
-			cidr = lab.Status.Internet.CIDR
-		}
-		if n, ok := indexFromCIDR(cidr); ok {
-			subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
-			if releaseErr := subnetAllocator.ReleaseIndex(ctx, n); releaseErr != nil {
-				logger.Error(releaseErr, "release lab subnet", "n", n)
-			}
-		}
-	}
+	// The lab subnet index is not given back: the pool of a group only moves forward and goes with the group (see ForwardAllocator).
 
 	controllerutil.RemoveFinalizer(lab, names.FinalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
@@ -1135,7 +1133,7 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 		return false, nil
 	}
 
-	subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
+	subnetAllocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolLabSubnets, Namespace: lab.Namespace, Size: 254, InUse: r.subnetsInUse(lab.Namespace)}
 	n, err := subnetAllocator.AllocateIndex(ctx)
 	if err != nil {
 		return false, fmt.Errorf("allocate lab subnet: %w", err)
@@ -1326,7 +1324,41 @@ func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratory
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
 		return false, r.Update(ctx, &obj)
 	}
-	return false, nil
+	return r.releaseFinalizerOfAbsentGroupPod(ctx, &obj, names.FinalizerVPN, names.ComponentVPN)
+}
+
+// releaseFinalizerOfAbsentGroupPod strips the finalizer of the group pod's binary (it cleans inside the pod: DHCP, firewall rules, the lab
+// network) when the pod is gone for good: a suspended group, or one being deleted, runs no VPN or gateway pod, and with the pod went
+// everything the cleanup would have cleaned. Without this a Lab deleted in a suspended group waits forever for a binary that is not there.
+func (r *LabReconciler) releaseFinalizerOfAbsentGroupPod(ctx context.Context, obj client.Object, finalizer, component string) (bool, error) {
+	if !controllerutil.ContainsFinalizer(obj, finalizer) {
+		return false, nil
+	}
+	absent, err := groupPodAbsent(ctx, r.lifecycleReader(), obj.GetNamespace(), component)
+	if err != nil || !absent {
+		return false, err
+	}
+	log.FromContext(ctx).Info("the pod of the group is gone: releasing the finalizer of its binary", "object", client.ObjectKeyFromObject(obj), "finalizer", finalizer)
+	controllerutil.RemoveFinalizer(obj, finalizer)
+	return false, r.Update(ctx, obj)
+}
+
+// groupPodAbsent says the pod of a component of the group (the VPN, the gateway) is not there and will not be: its Deployment is missing or
+// scaled to zero, and no pod of the component is left (read without the cache).
+func groupPodAbsent(ctx context.Context, reader client.Reader, namespace, component string) (bool, error) {
+	var dep appsv1.Deployment
+	err := reader.Get(ctx, types.NamespacedName{Name: component, Namespace: namespace}, &dep)
+	if err == nil && (dep.Spec.Replicas == nil || *dep.Spec.Replicas > 0) {
+		return false, nil
+	}
+	if err != nil && !errors.IsNotFound(err) {
+		return false, err
+	}
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{names.LabelComponent: component}); err != nil {
+		return false, err
+	}
+	return len(pods.Items) == 0, nil
 }
 
 // ensureLabGatewayDeleted is ensureLabVPNDeleted's counterpart for LabGateway.
@@ -1347,7 +1379,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
 		return false, r.Update(ctx, &obj)
 	}
-	return false, nil
+	return r.releaseFinalizerOfAbsentGroupPod(ctx, &obj, names.FinalizerGateway, names.ComponentGateway)
 }
 
 func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
@@ -1543,4 +1575,25 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func deviceTypeIsSwitch(deviceType laboratoryv1alpha1.DeviceType) bool {
 	return deviceType == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || deviceType == laboratoryv1alpha1.DeviceTypeHub
+}
+
+// subnetsInUse is the subnet indexes the labs of a namespace refer to, read straight from the API server (the insurance of the
+// forward-only pool: see poolpkg.ForwardAllocator).
+func (r *LabReconciler) subnetsInUse(namespace string) func(context.Context) (map[uint]bool, error) {
+	return func(ctx context.Context) (map[uint]bool, error) {
+		reader := r.lifecycleReader()
+		var labs laboratoryv1alpha1.LabList
+		if err := reader.List(ctx, &labs, client.InNamespace(namespace)); err != nil {
+			return nil, err
+		}
+		used := map[uint]bool{}
+		for i := range labs.Items {
+			for _, cidr := range []string{labs.Items[i].Status.VPN.CIDR, labs.Items[i].Status.Internet.CIDR} {
+				if n, ok := indexFromCIDR(cidr); ok && cidr != "" {
+					used[n] = true
+				}
+			}
+		}
+		return used, nil
+	}
 }

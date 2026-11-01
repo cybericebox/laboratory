@@ -59,6 +59,29 @@ const (
 	DeviceTypeHub             DeviceType = "hub"
 )
 
+// DeviceProfile is how a container device runs: the node profile it needs. Empty means container, so every spec written before
+// the field keeps its meaning.
+// +kubebuilder:validation:Enum=container;microvm
+type DeviceProfile string
+
+const (
+	// DeviceProfileContainer is a plain container (the default).
+	DeviceProfileContainer DeviceProfile = "container"
+	// DeviceProfileMicroVM is the same image in a microVM (Kata Containers through a RuntimeClass): its own kernel.
+	DeviceProfileMicroVM DeviceProfile = "microvm"
+	// DeviceProfileVM is reserved (a full VM with a disk image); nothing runs it yet. It is not in the CRD enum, and the agent
+	// refuses it with PROFILE_UNSUPPORTED.
+	DeviceProfileVM DeviceProfile = "vm"
+)
+
+// Effective is the profile with the default applied.
+func (p DeviceProfile) Effective() DeviceProfile {
+	if p == "" {
+		return DeviceProfileContainer
+	}
+	return p
+}
+
 // AddrType controls how an interface gets its address.
 //   - static:      fixed IP from spec; applied by the netconfig init-container.
 //   - dhcp:        the image runs its own DHCP client; the device pod is granted

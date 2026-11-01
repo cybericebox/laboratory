@@ -7,7 +7,7 @@
 #   proxy       /proxy  (proxy-l7, proxy-wg)              distroless static, non-root, no shell
 #   node        /node   (node-agent, install-cni, netconfig, cni-gate), /probe (device readiness) + Open vSwitch    alpine (root and a shell:
 #               it drives OVS and pod networking on the host, and start-ovs.sh and the init scripts are shell)
-#   lab         /lab    (vpn, gateway) + the iptables binaries only                     built from scratch: no shell,
+#   lab         /lab    (vpn, gateway) + the iptables and nft binaries only                     built from scratch: no shell,
 #               no package manager (root: the pods need NET_ADMIN, which Kubernetes gives only to root)
 # Multi-component binaries pick the component by first argument, or by the name they
 # are started as (the host copy of cni-gate).
@@ -77,6 +77,8 @@ USER 65532:65532
 ENTRYPOINT ["/manager"]
 
 FROM ${DISTROLESS} AS agent
+# The API contract of pkg/agent/client.ContractVersion; a test keeps the two equal.
+LABEL com.cybericebox.laboratory.api-contract="1.4"
 COPY --from=build-agent /out/agent /agent
 USER 65532:65532
 ENTRYPOINT ["/agent"]
@@ -90,7 +92,7 @@ USER 65532:65532
 # from the alpine packages of exactly those and copied onto an empty image, so there is no shell, no package manager and
 # no busybox in the final image.
 FROM ${ALPINE} AS lab-rootfs
-RUN apk add --no-cache --root /rootfs --initdb --no-scripts --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories iptables ip6tables && \
+RUN apk add --no-cache --root /rootfs --initdb --no-scripts --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories iptables ip6tables nftables && \
     rm -rf /rootfs/etc/apk /rootfs/lib/apk /rootfs/var /rootfs/sbin/apk /rootfs/usr/share/apk /rootfs/usr/share/man && \
     rm -rf /rootfs/bin /rootfs/etc/busybox-paths.d /rootfs/etc/network /rootfs/etc/udhcpc /rootfs/etc/logrotate.d /rootfs/etc/securetty /rootfs/usr/share/udhcpc && \
     rm -f /rootfs/usr/sbin/arptables* /rootfs/usr/sbin/ebtables* /rootfs/usr/sbin/*-apply /rootfs/usr/lib/xtables/libarpt_* /rootfs/usr/lib/xtables/libebt_*

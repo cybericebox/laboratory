@@ -31,6 +31,8 @@ type LabGroupClientReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// Reader reads straight from the API server (nil: through Client).
+	Reader client.Reader
 	// VPNBaseNetwork is the full VPN address space advertised to WireGuard clients (e.g. "10.8.0.0/10").
 	VPNBaseNetwork string
 }
@@ -97,7 +99,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 			return ctrl.Result{}, nil
 		}
 
-		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
+		allocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolVPNClients, Namespace: lgc.Namespace, Size: 254, InUse: r.clientIndexesInUse(lgc.Namespace)}
 		idx, err := allocator.AllocateIndex(ctx)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
@@ -171,16 +173,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(
 	ctx context.Context,
 	lgc *laboratoryv1alpha1.LabGroupClient,
 ) (ctrl.Result, error) {
-	if lgc.Status.AssignedIP != "" {
-		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
-		idx, err := ipToIndex(lgc.Status.AssignedIP)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := allocator.ReleaseIndex(ctx, idx); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
+	// The tunnel address is not given back: the pool of a group only moves forward and goes with the group (see ForwardAllocator).
 
 	// No client Secret to clean up — the config lives in status only.
 
@@ -343,4 +336,28 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).
 		Complete(reconcileutil.Quiet(r))
+}
+
+// clientIndexesInUse is the tunnel indexes the clients of a group's namespace hold, read straight from the API server (the insurance
+// of the forward-only pool: see poolpkg.ForwardAllocator).
+func (r *LabGroupClientReconciler) clientIndexesInUse(namespace string) func(context.Context) (map[uint]bool, error) {
+	return func(ctx context.Context) (map[uint]bool, error) {
+		var reader client.Reader = r.Client
+		if r.Reader != nil {
+			reader = r.Reader
+		}
+		var clients laboratoryv1alpha1.LabGroupClientList
+		if err := reader.List(ctx, &clients, client.InNamespace(namespace)); err != nil {
+			return nil, err
+		}
+		used := map[uint]bool{}
+		for i := range clients.Items {
+			if ip := clients.Items[i].Status.AssignedIP; ip != "" {
+				if idx, err := ipToIndex(ip); err == nil {
+					used[idx] = true
+				}
+			}
+		}
+		return used, nil
+	}
 }

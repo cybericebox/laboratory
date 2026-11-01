@@ -399,14 +399,12 @@ func TestAdmissionPolicyRequiresHostUsersFalseForDevicePods(t *testing.T) {
 	}
 }
 
-// R-8: the opt-out of the admission policies is explicit.
-func TestAdmissionPolicyOptOutIsExplicit(t *testing.T) {
+// R-8: the admission policies are required with the node-agent (which is always installed): cni-gate sends the pods outside the lg-*
+// namespaces to the real CNI, and only the policies keep a lab pod out of them. The opt-out is refused at render time.
+func TestAdmissionPolicyOptOutIsRefused(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "operator.admissionPolicy.enabled=false", "-s", "templates/operator/configmap.yaml")
-	if err != nil {
-		t.Fatalf("the opt-out must render: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, `OPERATOR_REQUIRE_ADMISSION_POLICY: "false"`) {
-		t.Errorf("an opted-out chart must not make the operator require the policies:\n%s", out)
+	if err == nil || !strings.Contains(out, "nodeAgent.enabled needs operator.admissionPolicy.enabled=true") {
+		t.Fatalf("the opt-out must be refused: %v\n%s", err, out)
 	}
 	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml")
 	if err != nil || !strings.Contains(out, `OPERATOR_REQUIRE_ADMISSION_POLICY: "true"`) {

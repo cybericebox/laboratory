@@ -98,6 +98,9 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	if v := h.room(ctx); v.ok {
 		resp.HasMaxDevice, resp.MaxDeviceCpuMillicores, resp.MaxDeviceMemoryBytes = true, v.largest.CPU, v.largest.Memory
 	}
+	if resp.NodeProfiles, err = h.nodeProfiles(ctx); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

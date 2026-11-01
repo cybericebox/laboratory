@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -56,4 +58,76 @@ func TestNodeLabelerMarksItsNodeAndClearsItOnStop(t *testing.T) {
 	if labels("n1")["keep"] != "me" {
 		t.Errorf("other labels stay: %v", labels("n1"))
 	}
+}
+
+// The result of the start-up check is on the node in the same patch as the ready label, and a failed check is told once in an Event.
+func TestNodeLabelerPublishesThePreflightWithTheLabel(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}).Build()
+	rec := record.NewFakeRecorder(10)
+	pre := PreflightResult{StatePersistence: Unavailable(CodeContainerdRootMissing, "no containerd root"), RuntimeObservation: PreflightReady}
+	l := &NodeLabeler{Client: c, NodeName: "n1", Interval: 10 * time.Millisecond, Annotations: pre.Annotations(), Recorder: rec}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- l.Start(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	var n corev1.Node
+	for {
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "n1"}, &n); err != nil {
+			t.Fatal(err)
+		}
+		if n.Labels[names.LabelNodeAgentReady] == "true" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("not marked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n.Annotations[names.AnnotationStatePersistence] != "unavailable: CONTAINERD_ROOT_MISSING: no containerd root" || n.Annotations[names.AnnotationRuntimeObservation] != "ready" {
+		t.Fatalf("annotations %v", n.Annotations)
+	}
+	cancel()
+	<-done
+	if len(rec.Events) != 1 {
+		t.Fatalf("one Event for the failed check, got %d", len(rec.Events))
+	}
+	if ev := <-rec.Events; !strings.Contains(ev, "LifecyclePreflightFailed") || !strings.Contains(ev, "no containerd root") {
+		t.Errorf("event %q", ev)
+	}
+}
+
+// The retry of a failed check changes the annotation through the labeler: the next assertion of the label does not put the start-up
+// result ("unavailable") back over the newer "ready" (a patch of the node alone would be undone within a minute).
+func TestNodeLabelerKeepsANewerCheckResult(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}).Build()
+	pre := PreflightResult{StatePersistence: Unavailable(CodeSnapshotRegistry, "registry not up yet"), RuntimeObservation: PreflightReady}
+	l := &NodeLabeler{Client: c, NodeName: "n1", Interval: 5 * time.Millisecond, Annotations: pre.Annotations()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- l.Start(ctx) }()
+	persistence := func() string {
+		var n corev1.Node
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "n1"}, &n); err != nil {
+			t.Fatal(err)
+		}
+		return n.Annotations[names.AnnotationStatePersistence]
+	}
+	wait := func(want string) {
+		deadline := time.Now().Add(5 * time.Second)
+		for persistence() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("annotation = %q, want %q", persistence(), want)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	wait(Unavailable(CodeSnapshotRegistry, "registry not up yet"))
+	l.SetAnnotation(names.AnnotationStatePersistence, PreflightReady)
+	wait(PreflightReady)
+	time.Sleep(100 * time.Millisecond) // many assertions later it is still ready
+	if got := persistence(); got != PreflightReady {
+		t.Fatalf("the labeler put the start-up result back: %q", got)
+	}
+	cancel()
+	<-done
 }

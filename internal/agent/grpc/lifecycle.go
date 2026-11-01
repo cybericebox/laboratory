@@ -13,6 +13,7 @@ import (
 	controller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,9 @@ func (h *Handler) StopLabs(ctx context.Context, in *protobuf.StopLabsRequest) (*
 	}
 	if err := dupRefs(refs); err != nil {
 		return nil, err
+	}
+	if res := h.unsupportedBatch(refs, "per-lab stop", (*protobuf.LifecycleFeature).GetPerLabStop); res != nil {
+		return res, nil
 	}
 	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
@@ -78,6 +82,9 @@ func (h *Handler) StartLabs(ctx context.Context, in *protobuf.StartLabsRequest) 
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
+	if res := h.unsupportedBatch(refs, "retained restart", (*protobuf.LifecycleFeature).GetRetainedRestart); res != nil {
+		return res, nil
+	}
 	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		t := in.Items[i]
@@ -88,6 +95,20 @@ func (h *Handler) StartLabs(ctx context.Context, in *protobuf.StartLabsRequest) 
 		return result(refs[i], protobuf.ItemState_ITEM_STATE_UPDATED)
 	})}, nil
 }
+
+// unsupportedBatch answers a lifecycle call whose capability the agent does not advertise: every item FAILED with the
+// reason UNSUPPORTED, nothing changed. nil when the call is supported (or capabilities are not enforced).
+func (h *Handler) unsupportedBatch(refs []*protobuf.ItemRef, capability string, advertised func(*protobuf.LifecycleFeature) bool) *protobuf.BatchResult {
+	if !h.capabilitiesEnforced || advertised(h.features.Lifecycle) {
+		return nil
+	}
+	res := make([]*protobuf.ItemResult, len(refs))
+	for i, ref := range refs {
+		res[i] = &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_FAILED, Error: "this agent does not support " + capability, Reason: client.ReasonUnsupported}
+	}
+	return &protobuf.BatchResult{Results: res}
+}
+
 func checkLifecycleCount(n int) error {
 	if n == 0 {
 		return invalid("items are required")
@@ -123,6 +144,9 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		}
 		if startTargetInvalid(before, admission, intent) {
 			return fmt.Errorf("invalid or retired start target")
+		}
+		if err := h.refuseStartWithoutPersistence(ctx, before); err != nil {
+			return err
 		}
 		if err := h.claimChildAdmission(ctx, ref.GetLabGroup(), admission); err != nil {
 			return err

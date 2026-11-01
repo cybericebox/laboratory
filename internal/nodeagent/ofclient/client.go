@@ -80,6 +80,7 @@ type Client struct {
 	pdMu       sync.Mutex
 	pendingPD  chan portDescMsg // non-nil while queryPortDesc is active
 	pendingXID uint32           // xid of the in-flight PORT_DESC request
+	pendingMP  uint16           // multipart type the in-flight query waits for (PORT_DESC or METER_CONFIG)
 
 	// onError, if set, is invoked for every OFPT_ERROR not consumed by a
 	// pending PORT_DESC query (e.g. a rejected FLOW_MOD). Set via SetErrorHandler.
@@ -90,6 +91,7 @@ type Client struct {
 	retireXIDs    map[uint32]bool
 	retireBarrier uint32
 	retireError   error
+	retireOp      string // what the pending barrier exchange is, for its error ("" = port retirement)
 
 	closeOnce sync.Once
 }
@@ -310,7 +312,10 @@ func (c *Client) readLoop() {
 			if len(msg) < 12 {
 				continue
 			}
-			if binary.BigEndian.Uint16(msg[8:10]) != ofpmpPortDesc {
+			c.pdMu.Lock()
+			want := c.pendingMP
+			c.pdMu.Unlock()
+			if binary.BigEndian.Uint16(msg[8:10]) != want {
 				continue
 			}
 			var body []byte
@@ -345,8 +350,10 @@ func (c *Client) readLoop() {
 				errCode := binary.BigEndian.Uint16(msg[10:12])
 				c.pdMu.Lock()
 				matchedPD := c.pendingPD != nil && errXID == c.pendingXID
+				claimed := false // an exchange that reports its own errors (meters, checked flows): not also a stray error
 				if c.pendingRetire != nil && (c.retireXIDs[errXID] || errXID == c.retireBarrier) {
-					c.retireError = fmt.Errorf("port retirement rejected: OFPT_ERROR type=%d code=%d", errType, errCode)
+					c.retireError = &OFError{Op: c.retireOp, Type: errType, Code: errCode}
+					claimed = c.retireOp != ""
 				}
 				if matchedPD {
 					select {
@@ -355,7 +362,7 @@ func (c *Client) readLoop() {
 					}
 				}
 				c.pdMu.Unlock()
-				if !matchedPD && c.onError != nil {
+				if !matchedPD && !claimed && c.onError != nil {
 					c.onError(errXID, errType, errCode)
 				}
 			}
@@ -405,6 +412,7 @@ func (c *Client) queryPortDesc() error {
 	c.pdMu.Lock()
 	c.pendingPD = ch
 	c.pendingXID = xid
+	c.pendingMP = ofpmpPortDesc
 	c.pdMu.Unlock()
 	_, writeErr := c.conn.Write(req)
 	c.writeMu.Unlock()
@@ -479,6 +487,11 @@ func buildFlowMod(cmd uint8, tableID uint8, priority uint16, match, actions []by
 	if len(actions) > 0 {
 		instr = buildInstruction(ofpitApplyActions, actions)
 	}
+	return buildFlowModInstr(cmd, tableID, priority, match, instr, outPort)
+}
+
+// buildFlowModInstr encodes an OFPT_FLOW_MOD whose instructions are already encoded.
+func buildFlowModInstr(cmd uint8, tableID uint8, priority uint16, match, instr []byte, outPort uint32) []byte {
 	bodyLen := 40 + len(match) + len(instr)
 	totalLen := 8 + bodyLen
 	msg := make([]byte, totalLen)

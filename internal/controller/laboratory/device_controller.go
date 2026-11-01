@@ -3,7 +3,9 @@ package laboratory
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
+	"maps"
 	"net"
 	"regexp"
 	"sync"
@@ -31,6 +33,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/netattach"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
@@ -45,6 +48,9 @@ type DeviceReconciler struct {
 	PriorityClass string
 	// SchedulerName is the kube-scheduler profile of the device pods (bin-packing); empty = the default scheduler.
 	SchedulerName string
+	// Profiles says how device profiles map to nodes; MicroVMRuntimeClass is the RuntimeClass of the pods of a microVM device.
+	Profiles            nodecap.ProfilePolicy
+	MicroVMRuntimeClass string
 	// TerminationGraceSeconds is the terminationGracePeriodSeconds of the device pods; 0 = the Kubernetes default.
 	TerminationGraceSeconds int64
 	// NetConfigImage is the image used for the optional init-container that
@@ -243,6 +249,9 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 			}
 		}
 		if err := r.createDeployment(ctx, device, replicas); err != nil {
+			if stderrors.Is(err, errProfileUnsupported) {
+				return ctrl.Result{}, nil // refused for good, with an event: nothing to retry
+			}
 			return r.pullSecretWait(ctx, device, err)
 		}
 		return ctrl.Result{}, nil
@@ -330,16 +339,28 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 	); err != nil {
 		return "", "", ""
 	}
+	running := false
 	for i := range pods.Items {
 		p := &pods.Items[i]
 		if p.DeletionTimestamp != nil {
 			continue
 		}
-		if p.Status.Phase == corev1.PodRunning {
+		switch {
+		case p.Status.Phase == corev1.PodRunning:
+			nodeName, podIP, podName, running = p.Spec.NodeName, p.Status.PodIP, p.Name, true
+		case !running && startingWithNetwork(p):
 			nodeName, podIP, podName = p.Spec.NodeName, p.Status.PodIP, p.Name
 		}
 	}
 	return nodeName, podIP, podName
+}
+
+// startingWithNetwork says the pod is placed and its sandbox is up (the CNI ran, so its OVS ports exist) but it is still in its init
+// containers. Its node is published already: the netconfig init container of a device with a dhcp-preset interface asks the lab's DHCP
+// server for its address through the port, and the port gets its flows only when the Connection is bound, which needs the node and the
+// pod. Waiting for Running would be a deadlock for such a device. Only Ready (the Deployment's availability) says the device works.
+func startingWithNetwork(p *corev1.Pod) bool {
+	return p.Spec.NodeName != "" && p.Status.PodIP != "" && p.Status.Phase == corev1.PodPending && len(p.Spec.InitContainers) > 0
 }
 
 // networkAnnotation builds the network.cybericebox.com/networks annotation value.
@@ -402,11 +423,13 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		annotations[names.AnnotationUserLabels] = joinKeys(wanted)
 	}
 
+	profile := string(device.Spec.Profile.Effective())
 	podSpec = corev1.PodSpec{
-		NodeSelector:      r.LabNodeSelector,
+		NodeSelector:      r.profileNodeSelector(profile),
 		Tolerations:       r.LabTolerations,
 		PriorityClassName: r.PriorityClass,
 		SchedulerName:     r.SchedulerName,
+		RuntimeClassName:  r.runtimeClassFor(profile),
 		// Best-effort co-location, soft (preferred) so a full node never blocks a lab from being placed:
 		// 1. prefer a node that already runs another device of the same lab, so a lab's intra-fabric
 		//    traffic stays node-local (no Geneve hop) whenever capacity allows;
@@ -447,7 +470,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 				// has a DHCP interface). Isolation is enforced host-side by OVS
 				// flows, so these caps cannot break a pod out of its VNI.
 				SecurityContext: deviceSecurityContext(device),
-				Resources:       withTUN(withEphemeralStorage(deviceResources(device, r.Defaults), r.Security.EphemeralStorage), profiles.Get(string(device.Spec.SecurityPreset)).TUN),
+				Resources:       withTUN(withEphemeralStorage(deviceResources(device, r.Defaults), r.Security.EphemeralStorage), profiles.Get(string(device.Spec.SecurityPreset)).TUN && r.runtimeClassFor(profile) == nil),
 				// Env vars come from a per-device Secret (<device>-env) the agent
 				// wrote write-only — referenced here, never read by the controller
 				// (the kubelet resolves envFrom at pod start). optional=true so a
@@ -484,7 +507,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	hardenPod(&podSpec, false, r.TerminationGraceSeconds)
 	// Every device may ping: unprivileged ICMP echo sockets (a safe sysctl), so ping needs no NET_RAW.
 	podSpec.SecurityContext.Sysctls = []corev1.Sysctl{{Name: "net.ipv4.ping_group_range", Value: profiles.PingGroupRange}}
-	if r.Security.UserNamespaces {
+	// A microVM has its own kernel: the VM is the wall, and Kata does not run a pod in a user namespace of the host.
+	if r.Security.UserNamespaces && podSpec.RuntimeClassName == nil {
 		hostUsers := false
 		podSpec.HostUsers = &hostUsers
 	}
@@ -502,6 +526,9 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 }
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
+	if err := r.refuseUnrunnableProfile(device); err != nil {
+		return err
+	}
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
 	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
 		return err
@@ -830,4 +857,50 @@ func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *l
 		}
 	}
 	return nil
+}
+
+// errProfileUnsupported: the device asks for a profile this laboratory does not run. No pod is made, whatever the path.
+var errProfileUnsupported = stderrors.New("the device profile is not supported by this laboratory")
+
+// profileRunnable says the profile can start here: it is offered, and a microVM has its RuntimeClass. An unrunnable profile must never
+// become a plain container (weaker isolation), so every path that makes a pod asks first.
+func (r *DeviceReconciler) profileRunnable(profile laboratoryv1alpha1.DeviceProfile) bool {
+	p := string(profile.Effective())
+	if !r.Profiles.Supported(p) {
+		return false
+	}
+	return p != nodecap.ProfileMicroVM || r.runtimeClassFor(p) != nil
+}
+
+// refuseUnrunnableProfile fails closed: it records the reason and returns errProfileUnsupported for a device whose profile cannot run.
+func (r *DeviceReconciler) refuseUnrunnableProfile(device *laboratoryv1alpha1.Device) error {
+	if r.profileRunnable(device.Spec.Profile) {
+		return nil
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(device, corev1.EventTypeWarning, "ProfileUnsupported", "the profile %q is not supported by this laboratory; the device does not start", device.Spec.Profile.Effective())
+	}
+	return errProfileUnsupported
+}
+
+// profileNodeSelector is the lab node selector plus the label of the device's profile. A container device selects its label only
+// when the chart turned the profile labels on, so a cluster whose nodes carry none schedules as before.
+func (r *DeviceReconciler) profileNodeSelector(profile string) map[string]string {
+	extra := r.Profiles.Selector(profile)
+	if len(extra) == 0 {
+		return r.LabNodeSelector
+	}
+	out := make(map[string]string, len(r.LabNodeSelector)+len(extra))
+	maps.Copy(out, r.LabNodeSelector)
+	maps.Copy(out, extra)
+	return out
+}
+
+// runtimeClassFor is the RuntimeClass of the pod: only a microVM device has one. The class carries the implementation label
+// and the pod overhead.
+func (r *DeviceReconciler) runtimeClassFor(profile string) *string {
+	if profile != nodecap.ProfileMicroVM || !r.Profiles.MicroVM || r.MicroVMRuntimeClass == "" {
+		return nil
+	}
+	return &r.MicroVMRuntimeClass
 }

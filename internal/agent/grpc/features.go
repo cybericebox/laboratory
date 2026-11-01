@@ -15,8 +15,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/internal/tenant"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -54,8 +56,12 @@ type Features struct {
 	// DeviceDefaults are the operator's device defaults and maxima (the same chart values): a lab's need against its
 	// reservation is counted with them as the scheduler counts it.
 	DeviceDefaults limits.DeviceDefaults
+	// Profiles says which device profiles are offered and how they map to nodes (the chart's microvm and profileLabels values).
+	Profiles nodecap.ProfilePolicy
 	// GroupPods is how a group's own pods are sized (the maximum CreateLabGroups accepts) and the default size without one.
 	GroupPods GroupPodsFeature
+	// GroupLimits are the most users and labs a group may be made for and the counts it gets by default.
+	GroupLimits grouppods.Limits
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
@@ -78,6 +84,7 @@ type featuresEntry struct {
 // SetFeatures sets the platform features the agent reports (GetFeatures, Monitoring).
 func (h *Handler) SetFeatures(f Features) {
 	h.features = f
+	h.capabilitiesEnforced = true
 	h.statePersistence = f.StatePersistence
 }
 
@@ -117,8 +124,10 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			}
 			p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
 			base = &protobuf.FeaturesResponse{
-				Tenant:    name,
-				Lifecycle: cloneLifecycleFeature(f.Lifecycle),
+				Tenant:          name,
+				ContractVersion: client.ContractVersion,
+				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
+				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,
 					DefaultDebounceMs:  f.Debounce.Milliseconds(),
@@ -160,6 +169,12 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 					AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
 				},
 			}
+			// the chart says what is configured; the nodes say what they can do
+			verdict, err := h.nodeVerdict(ctx, f.StatePersistence, lifecycleConfigured(f.Lifecycle))
+			if err != nil {
+				return nil, err
+			}
+			applyNodeSupport(base, verdict)
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}

@@ -927,3 +927,46 @@ func TestClusterEnvGivesStoppedHoldsAndQueueTime(t *testing.T) {
 		t.Fatal("lab b is not in the plan input")
 	}
 }
+
+// Required means a snapshot for the devices that keep state: a lab with a persistent database and an ordinary web server stops, waiting for
+// the snapshot of the database only. The web device neither makes the request fail nor is asked for a capture.
+func TestLifecycleRequiredMixedLabSnapshotsOnlyThePersistentDevice(t *testing.T) {
+	r, l, d, c, _ := requiredReadyFixture(t)
+	ctx := context.Background()
+	l.Spec.Devices = append(l.Spec.Devices, lab.DeviceTemplate{Name: "web2", Type: lab.DeviceTypeContainer, Image: "base"}, lab.DeviceTemplate{Name: "sw", Type: lab.DeviceTypeUnmanagedSwitch})
+	if err := c.Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	plain := &lab.Device{ObjectMeta: metav1.ObjectMeta{Name: "a-web2", Namespace: "g", UID: "device-web2", Labels: map[string]string{names.LabelLab: "a"}, OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: "a", UID: l.UID}}}, Spec: lab.DeviceSpec{LabRef: "a", Name: "web2", Type: lab.DeviceTypeContainer, Image: "base"}}
+	if err := c.Create(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ValidateRequiredSnapshot(ctx, l); err != nil {
+		t.Fatalf("a device that keeps no state must not fail the required snapshot of the others: %v", err)
+	}
+	// the persistent device is still held to its checkpoint handshake
+	d.Status.RuntimeReports = nil
+	if err := c.Status().Update(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ValidateRequiredSnapshot(ctx, l); err == nil {
+		t.Fatal("the persistent device without a native checkpoint was accepted")
+	}
+	// the capture passes skip the device that keeps no state: its pod has no state status, and that is not MissingDeviceState
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "web2-pod", Namespace: "g", UID: "pod-web2"}}
+	finish := func(string, string, error) (bool, ctrl.Result, error) {
+		t.Fatal("a device that keeps no state was asked for a capture")
+		return true, ctrl.Result{}, nil
+	}
+	targets := []lifecycleStopRuntime{{d: plain, pods: []corev1.Pod{pod}}}
+	next := &lab.LabLifecycleStatus{}
+	if handled, _, err := r.prepareLifecycleCaptures(ctx, l, next, targets, finish); handled || err != nil {
+		t.Fatalf("prepare: %v %v", handled, err)
+	}
+	if handled, _, err := r.commitLifecycleCaptures(ctx, l, next, targets, finish); handled || err != nil {
+		t.Fatalf("commit: %v %v", handled, err)
+	}
+	if !next.SnapshotComplete {
+		t.Fatal("with nothing to capture the barrier is complete")
+	}
+}

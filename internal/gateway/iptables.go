@@ -35,6 +35,9 @@ type IPTablesManager struct {
 	ip6 netfilter
 	// inputInstalled is true once the INPUT policy stands.
 	inputInstalled bool
+	// MaxConnectionsPerLab is the most connections a lab (its /24) may hold open to the outside, NewConnectionsPerSecondPerLab the most it may
+	// open in a second; 0 = no limit. Only a NEW connection is looked at, after the established traffic has passed.
+	MaxConnectionsPerLab, NewConnectionsPerSecondPerLab int
 }
 
 func NewIPTablesManager(extIface string) (*IPTablesManager, error) {
@@ -52,6 +55,8 @@ const (
 	labIfaces = "lab+"
 	// sourceChain holds one rule per lab that drops what a lab interface sends with a source outside the lab's own subnet.
 	sourceChain = "LABSRC"
+	// limitChain holds the per-lab limits of NEW connections to the outside (see IPTablesManager.MaxConnectionsPerLab).
+	limitChain = "LABLIMIT"
 )
 
 // egressChains are the two names the egress filter alternates between, so a rebuild never empties the chain in use.
@@ -186,11 +191,47 @@ func (m *IPTablesManager) setupForwardRules() error {
 			return fmt.Errorf("remove the open FORWARD rule: %w", err)
 		}
 	}
-	rules := [][]string{
+	limited, err := m.setupLimitChain()
+	if err != nil {
+		return err
+	}
+	var rules [][]string
+	if limited {
+		// a NEW connection of a lab is checked against its limits; whatever is not NEW goes on to the accepting rules
+		rules = append(rules, []string{"-i", labIfaces, "-o", m.extIface, "-m", "conntrack", "--ctstate", "NEW", "-j", limitChain})
+	}
+	rules = append(rules,
 		// lab{N} -> internet
-		{"-i", labIfaces, "-o", m.extIface, "-j", "ACCEPT"},
+		[]string{"-i", labIfaces, "-o", m.extIface, "-j", "ACCEPT"},
 		// return traffic from internet -> lab{N}
-		{"-i", m.extIface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
+		[]string{"-i", m.extIface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
+	)
+	jump := []string{"-i", labIfaces, "-o", m.extIface, "-m", "conntrack", "--ctstate", "NEW", "-j", limitChain}
+	if !limited {
+		// limits switched off (or never on): a jump left by an earlier run in a surviving network namespace goes
+		for {
+			ok, err := m.ipt.Exists("filter", "FORWARD", jump...)
+			if err != nil || !ok {
+				break
+			}
+			if err := m.ipt.Delete("filter", "FORWARD", jump...); err != nil {
+				return fmt.Errorf("remove the old limit jump: %w", err)
+			}
+		}
+	} else {
+		// A pod whose rules survive a restart may already hold the accepting rules, and the jump must stand before them: take the accepting
+		// rules out and put them back after it. The filter is closed for that moment (the policy is DROP), never open.
+		for _, r := range rules[1:] {
+			for {
+				ok, err := m.ipt.Exists("filter", "FORWARD", r...)
+				if err != nil || !ok {
+					break
+				}
+				if err := m.ipt.Delete("filter", "FORWARD", r...); err != nil {
+					return fmt.Errorf("reorder the FORWARD rules: %w", err)
+				}
+			}
+		}
 	}
 	for _, r := range rules {
 		if err := m.ipt.AppendUnique("filter", "FORWARD", r...); err != nil {
@@ -198,6 +239,33 @@ func (m *IPTablesManager) setupForwardRules() error {
 		}
 	}
 	return nil
+}
+
+// setupLimitChain (re)builds the chain of the per-lab limits and says whether there is anything in it. The lab is the /24 of the source address
+// (every lab of a group has its own /24 of the internet network): one rule counts the connections of all labs, each against its own prefix.
+func (m *IPTablesManager) setupLimitChain() (bool, error) {
+	if m.MaxConnectionsPerLab <= 0 && m.NewConnectionsPerSecondPerLab <= 0 {
+		return false, nil
+	}
+	if err := m.ensureChain(limitChain); err != nil {
+		return false, err
+	}
+	if err := m.ipt.ClearChain("filter", limitChain); err != nil {
+		return false, fmt.Errorf("prepare chain %s: %w", limitChain, err)
+	}
+	if m.MaxConnectionsPerLab > 0 {
+		if err := m.ipt.Append("filter", limitChain, "-m", "connlimit", "--connlimit-above", fmt.Sprint(m.MaxConnectionsPerLab), "--connlimit-mask", "24", "--connlimit-saddr", "-j", "DROP"); err != nil {
+			return false, fmt.Errorf("connection limit: %w", err)
+		}
+	}
+	if m.NewConnectionsPerSecondPerLab > 0 {
+		rate := fmt.Sprintf("%d/second", m.NewConnectionsPerSecondPerLab)
+		if err := m.ipt.Append("filter", limitChain, "-m", "hashlimit", "--hashlimit-name", "cice_lab_new", "--hashlimit-mode", "srcip", "--hashlimit-srcmask", "24",
+			"--hashlimit-above", rate, "--hashlimit-burst", fmt.Sprint(m.NewConnectionsPerSecondPerLab), "-j", "DROP"); err != nil {
+			return false, fmt.Errorf("new connection rate limit: %w", err)
+		}
+	}
+	return true, nil
 }
 
 // setupEgressChain builds the destination filter of the traffic the gateway forwards to the outside: every range of deny is

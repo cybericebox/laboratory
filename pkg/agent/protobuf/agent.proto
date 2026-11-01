@@ -187,6 +187,10 @@ message ItemResult {
   // A machine code for a FAILED item, when the failure has one: RESERVATION_REQUIRED | RESERVATION_NOT_FOUND |
   // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA. Empty otherwise (error is the text).
   string reason = 5;
+  // Set by CreateLabGroups for an item that was created or exists: the sizes assigned to the group's own pods (from expected_users /
+  // expected_labs, the defaults, or the sizes sent), so the caller sees what the counts became.
+  PodSize vpn_size = 6;
+  PodSize gateway_size = 7;
 }
 
 message BatchResult {repeated ItemResult results = 1;}
@@ -253,6 +257,14 @@ message LabGroupItem {
   // that group_pods reports, else the item is refused (InvalidArgument).
   PodSize vpn_size = 8;
   PodSize gateway_size = 9;
+  // The simple way to size the group's own pods: how many VPN users and how many labs (at the same time) the group is made for. The
+  // agent computes the sizes (formulas in code, from measurements) and the pods are created at exactly that size and not changed;
+  // more than expected still works, within the margin of the formula. Over the maximum (FeaturesResponse.group_limits) the item is
+  // refused (InvalidArgument). Setting either one means the counts are used (the sizes above are then ignored); a group that sets
+  // neither count nor size gets the default counts (group_limits.default_users, default_labs). Only vpn_size / gateway_size
+  // (and no count): the old behaviour, as before.
+  int32 expected_users = 11;
+  int32 expected_labs = 12;
   // The reservation the group runs under (its id as given to CreateReservations); required. The group's own pods (VPN,
   // gateway) count against it. The agent writes the reserved label laboratory.cybericebox.com/reservation from it.
   string reservation_id = 10;
@@ -604,6 +616,15 @@ message PodFailure {
 message LabGroupPod {
   string name = 1;
   PodScheduling scheduling = 2;
+  // Live usage of the pod (Monitoring, ListLabGroups): CPU and memory now, the size it runs with (requests = limits) and the load
+  // it serves: VPN clients of the group (vpn) or labs that use the internet (gateway). usage_available is false when the metrics
+  // are not available (cpu_millicores and memory_bytes are then 0).
+  int64 cpu_millicores = 3;
+  int64 memory_bytes = 4;
+  bool usage_available = 5;
+  int64 cpu_limit_millicores = 6;
+  int64 memory_limit_bytes = 7;
+  int32 units = 8;
 }
 message LabDeviceStatus {
 	string name = 1;
@@ -623,6 +644,10 @@ message LabDeviceStatus {
 	// 0 when there is no data (the pod has not run long enough, or is not throttled).
 	int32 cpu_throttled_percent = 13;
 	int32 cpu_throttle_window_seconds = 14;
+	// Why the device container last restarted in place (the kubelet's last termination of a container: OOMKilled, Error, ...) and
+	// when. Empty / 0 when it never restarted. restart_count counts the restarts; only the device restarts, never the lab.
+	string last_restart_reason = 15;
+	int64 last_restart_unix_ms = 16;
 	// Set only for a device with state persistence.
 	DeviceSnapshotStatus snapshot = 30;
 	// Scheduler state of the device pod; absent when the scheduler does not track it.
@@ -870,6 +895,19 @@ message CapacityResponse {
   bool has_current = 20;
   int64 current_cpu_millicores = 21;
   int64 current_memory_bytes = 22;
+  // The device profiles this laboratory offers and whether they can run (container, microvm; never vm for now). A profile
+  // that is switched off is absent; an empty list is an older agent (the caller takes container as available).
+  repeated NodeProfileCapacity node_profiles = 23;
+}
+
+// One device profile as the nodes of this laboratory can run it. No node names or counts: the cluster layout stays private.
+message NodeProfileCapacity {
+  string profile = 1;                 // "container" | "microvm"
+  bool available_now = 2;             // a running, schedulable node can run it
+  bool scale_up_known = 3;            // the chart told which profiles its autoscaler node groups can add
+  bool available_after_scale_up = 4;  // meaningful only with scale_up_known
+  int64 overhead_cpu_millicores = 5;  // added to every pod of the profile (RuntimeClass overhead); 0 for container
+  int64 overhead_memory_bytes = 6;
 }
 
 message FeaturesResponse {
@@ -892,6 +930,19 @@ message FeaturesResponse {
   TenantQuotaFeature tenant_quota = 12;
   LifecycleFeature lifecycle = 13;
   ReservationsFeature reservations = 14;
+  // The API contract version of this agent (pkg/agent/client ContractVersion, "major.minor"): the same major, and a minor not
+  // below the one the caller was built against, means every call of the caller exists. Empty = an agent older than the field.
+  string contract_version = 15;
+  GroupLimitsFeature group_limits = 16;
+}
+
+// The limits on the groups of this cluster (the chart's groupLimits): the most users and labs a group may be made for, and the
+// counts a group gets when its item sets none.
+message GroupLimitsFeature {
+  int32 max_users = 1;
+  int32 max_labs = 2;
+  int32 default_users = 3;
+  int32 default_labs = 4;
 }
 
 // How reservations work on this laboratory.
@@ -1004,6 +1055,13 @@ message StatePersistenceFeature {
   int64 registry_quota_bytes = 6;
   // The most entries (files, directories, links) one snapshot layer may hold.
   int32 max_entries = 7;
+  // Why `available` is false although the cluster is configured for persistence: the node-agents check their node at start (the
+  // containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Grammar:
+  // "<CODE>:<n>/<m>" with CODE one of CONTAINERD_ROOT_MISSING, SNAPSHOTTER_MISSING, RUNTIME_SOCKET_UNAVAILABLE,
+  // SNAPSHOT_REGISTRY_UNREACHABLE, PERSISTENCE_DISABLED, NODE_UNCONFIRMED (the code most nodes give), n the lab nodes that do not
+  // confirm and m the lab nodes asked. Never a node name, a path or an error text. Empty when available, when persistence is off by
+  // configuration, or when no node has reported yet.
+  string unavailable_reason = 8;
 }
 
 // The platform image cache (PrewarmImages works only when it is enabled).
@@ -1270,6 +1328,12 @@ message LifecycleFeature {
   bool confirmed_runtime = 3;
   bool retained_restart = 4;
   bool full_group_stop = 5;
+  // Why a capability the cluster is configured for is false: the node-agents check their node at start and the answer is what the
+  // nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Same
+  // grammar as StatePersistenceFeature.unavailable_reason, with CGROUP_V2_MISSING, RUNTIME_SOCKET_UNAVAILABLE, OBSERVATION_DISABLED and
+  // NODE_UNCONFIRMED for the observation. The observation's reason wins when both fail (it holds back every capability). Empty when
+  // nothing configured is held back.
+  string unavailable_reason = 6;
 }
 
 // Frozen additive interface; no profile is implied by the presence of these types.

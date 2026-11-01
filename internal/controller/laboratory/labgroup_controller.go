@@ -40,6 +40,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -51,6 +52,10 @@ const labSubnetPrefixLen = 24
 
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
+	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab limit a lab's connections to the outside through a NEW gateway pod (0 = none).
+	GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab int
+	// VPNFirewall is how the VPN pods created from now on forward: "nft" (no connection tracking) or "" / "iptables".
+	VPNFirewall string
 	client.Client
 	// Reader provides direct identity reads for lifecycle side effects.
 	Reader                 client.Reader
@@ -95,6 +100,8 @@ type LabGroupReconciler struct {
 	SupportEmail string
 	// LabNodeSelector is applied to VPN and gateway pod specs.
 	LabNodeSelector map[string]string
+	// Profiles: with the profile labels on, the VPN and gateway pods select the container profile label like a container device.
+	Profiles nodecap.ProfilePolicy
 	// LabTolerations is applied to VPN and gateway pod specs.
 	LabTolerations []corev1.Toleration
 	// AgentEnabled gates creation of the management-agent RoleBinding in each
@@ -114,6 +121,8 @@ type LabGroupReconciler struct {
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
 	// copied into every group namespace and referenced by the VPN and gateway pods.
 	ImagePullSecrets []string
+	// BandwidthEnabled gives the gateway pods made from now on the file with their bandwidth ceiling (see mountOwnAnnotations).
+	BandwidthEnabled bool
 	// Scheduled makes the group's VPN and gateway pods wait for the scheduler to
 	// dispatch them (see labgroup_sched.go). Off: they start as soon as the group is created.
 	Scheduled bool
@@ -160,6 +169,16 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
+	// Only lg-* namespaces are wired by the node-agent (cni-gate sends every other namespace to the real CNI, and the admission policies refuse
+	// the group label and the network annotations elsewhere). A group recorded under the old naming (the bare group name) is not served: it
+	// would run without the layer-2 isolation. It can be deleted; it is not provisioned.
+	if !strings.HasPrefix(ns, laboratoryv1alpha1.LabGroupNamespacePrefix) {
+		logger.Info("LabGroup namespace has no lg- prefix: the group is not provisioned", "namespace", ns)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&lg, corev1.EventTypeWarning, "LegacyNamespace", "namespace %s is not an lg-* namespace: this group is not provisioned (delete it and create it again)", ns)
+		}
+		return ctrl.Result{}, nil
+	}
 	r.rollout.begin(ns)
 	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
@@ -492,10 +511,31 @@ func (r *LabGroupReconciler) drainGroupWorkloads(ctx context.Context, ns string)
 	if err := r.List(ctx, &clients, client.InNamespace(ns)); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
+	podAbsent := false // the VPN pod of the group is gone for good (decided once, when a client needs it)
+	checked := false
 	for i := range clients.Items {
-		if clients.Items[i].DeletionTimestamp.IsZero() {
-			if err := r.Delete(ctx, &clients.Items[i]); err != nil && !errors.IsNotFound(err) {
+		c := &clients.Items[i]
+		if c.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, c); err != nil && !errors.IsNotFound(err) {
 				return false, err
+			}
+			continue
+		}
+		// The finalizer of the VPN binary removes the client's WireGuard peer inside the pod. With no pod (a suspended group, the Deployment
+		// at zero) the peer went with it, and nobody is left to strip the finalizer: the group would never be deleted.
+		if controllerutil.ContainsFinalizer(c, names.FinalizerVPN) {
+			if !checked {
+				var err error
+				if podAbsent, err = groupPodAbsent(ctx, r.groupReader(), ns, names.ComponentVPN); err != nil {
+					return false, err
+				}
+				checked = true
+			}
+			if podAbsent {
+				controllerutil.RemoveFinalizer(c, names.FinalizerVPN)
+				if err := r.Update(ctx, c); err != nil && !errors.IsNotFound(err) {
+					return false, err
+				}
 			}
 		}
 	}
@@ -754,8 +794,9 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
-					NodeSelector:       r.LabNodeSelector,
+					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
+					Affinity:           groupPodAffinity(),
 					Containers: []corev1.Container{{
 						Name:            names.ComponentVPN,
 						Resources:       r.GroupPods.VPNFor(size),
@@ -783,6 +824,12 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 				},
 			},
 		},
+	}
+	if r.VPNFirewall == "nft" {
+		// Only a NEW VPN pod is made with the nft forwarding: a pod that exists keeps the firewall it runs (a change of its environment would
+		// restart it and drop the WireGuard sessions of the group).
+		c := &d.Spec.Template.Spec.Containers[0]
+		c.Env = append(c.Env, corev1.EnvVar{Name: "VPN_FIREWALL", Value: "nft"})
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps, r.TerminationGraceSeconds)
 	return r.Create(ctx, d)
@@ -864,21 +911,25 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
-					NodeSelector:       r.LabNodeSelector,
+					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
+					Affinity:           groupPodAffinity(),
 					Containers: []corev1.Container{{
 						Name:            names.ComponentGateway,
 						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),
-						Env:             append(r.gatewayEnv(ns), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
+						Env:             append(append(r.gatewayEnv(ns), r.gatewayLimitsEnv()...), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
 					}},
 				},
 			},
 		},
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentGateway, gatewayCaps, r.TerminationGraceSeconds)
+	if r.BandwidthEnabled {
+		mountOwnAnnotations(&d.Spec.Template.Spec, names.ComponentGateway)
+	}
 	return r.Create(ctx, d)
 }
 
@@ -1325,6 +1376,19 @@ func (r *LabGroupReconciler) gatewayEnv(ns string) []corev1.EnvVar {
 	}
 }
 
+// gatewayLimitsEnv is the per-lab limits of a NEW gateway pod. They are not part of gatewayEnv, which also brings the gateways that exist to
+// the current environment: a change of the environment of a running gateway would restart it and cut the NAT connections of its labs.
+func (r *LabGroupReconciler) gatewayLimitsEnv() []corev1.EnvVar {
+	var env []corev1.EnvVar
+	if r.GatewayMaxConnectionsPerLab > 0 {
+		env = append(env, corev1.EnvVar{Name: "GATEWAY_MAX_CONNECTIONS_PER_LAB", Value: fmt.Sprint(r.GatewayMaxConnectionsPerLab)})
+	}
+	if r.GatewayNewConnectionsPerSecondPerLab > 0 {
+		env = append(env, corev1.EnvVar{Name: "GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB", Value: fmt.Sprint(r.GatewayNewConnectionsPerSecondPerLab)})
+	}
+	return env
+}
+
 // convergeGateway brings the security settings of an existing gateway Deployment to the current ones and says
 // whether anything changed.
 func (r *LabGroupReconciler) convergeGateway(d *appsv1.Deployment) bool {
@@ -1394,4 +1458,16 @@ func (r *LabGroupReconciler) ensureOperatorBinding(ctx context.Context, ns strin
 		RoleRef:    want,
 		Subjects:   []rbacv1.Subject{subject},
 	})
+}
+
+// groupNodeSelector is the lab node selector plus, with the profile labels on, the container profile label.
+func (r *LabGroupReconciler) groupNodeSelector() map[string]string {
+	extra := r.Profiles.Selector(nodecap.ProfileContainer)
+	if len(extra) == 0 {
+		return r.LabNodeSelector
+	}
+	out := make(map[string]string, len(r.LabNodeSelector)+len(extra))
+	maps.Copy(out, r.LabNodeSelector)
+	maps.Copy(out, extra)
+	return out
 }

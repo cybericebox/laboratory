@@ -2,11 +2,13 @@ package laboratory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,7 +23,7 @@ func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace,
 		return nil, err
 	}
 	if len(nodes.Items) == 0 {
-		return nil, fmt.Errorf("native placement node inventory unavailable")
+		return nil, reconcileutil.Waiting(fmt.Errorf("native placement node inventory unavailable"), 0)
 	}
 	policy := nativePlacementPolicy{}
 	if len(placement) > 0 {
@@ -43,19 +45,19 @@ func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace,
 			continue
 		}
 		if node.Labels[names.LabelNodeAgentReady] != "true" {
-			return nil, fmt.Errorf("native placement node observer unavailable")
+			return nil, reconcileutil.Waiting(fmt.Errorf("native placement node observer unavailable"), 0)
 		}
 		ready := false
 		for _, condition := range node.Status.Conditions {
 			ready = ready || condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue
 		}
 		if !ready || node.Status.NodeInfo.BootID == "" {
-			return nil, fmt.Errorf("native placement node unavailable")
+			return nil, reconcileutil.Waiting(fmt.Errorf("native placement node unavailable"), 0)
 		}
 		scopes = append(scopes, lab.OwnedRuntimeIdentity{ContainerIDs: []string{}, CgroupPaths: []string{}, PortKeys: []string{}, ScopeKind: kind, ScopeUID: owner, OwnerUID: owner, Namespace: namespace, LabName: name, OperationID: op, Revision: revision, Generation: generation, NodeName: node.Name, NodeBootID: node.Status.NodeInfo.BootID})
 	}
 	if len(scopes) == 0 {
-		return nil, fmt.Errorf("native Linux placement scope unavailable")
+		return nil, reconcileutil.Waiting(fmt.Errorf("native Linux placement scope unavailable"), 0)
 	}
 	return scopes, nil
 }
@@ -92,7 +94,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	for n := range devices.Items {
 		d := &devices.Items[n]
 		if objectOwnedBy(d, string(l.UID)) {
-			if err := r.ensureOwnedVNI(ctx, d, false); err != nil {
+			if err := r.pinOwnedVNI(ctx, d, !l.DeletionTimestamp.IsZero()); err != nil {
 				return err
 			}
 		}
@@ -100,7 +102,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	for n := range connections.Items {
 		c := &connections.Items[n]
 		if objectOwnedBy(c, string(l.UID)) {
-			if err := r.ensureOwnedVNI(ctx, c, false); err != nil {
+			if err := r.pinOwnedVNI(ctx, c, !l.DeletionTimestamp.IsZero()); err != nil {
 				return err
 			}
 		}
@@ -211,12 +213,23 @@ func (r *LabReconciler) releaseRecordedVNIs(ctx context.Context, l *lab.Lab) err
 			if reused {
 				continue
 			}
-			if err := poolpkg.ReleaseOwnedIndex(ctx, r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
+			if err := r.retireLease(ctx, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// pinOwnedVNI pins the lease of an owner of a live Lab for the lifecycle observation (ensureOwnedVNI without allocating). For a Lab that
+// is being deleted a lease that is already retired, or already back in the pool, is a lease that has been released (the stop of the lab,
+// the sweeper, a repeated pass): there is nothing to pin and the deletion goes on instead of failing for ever on it.
+func (r *LabReconciler) pinOwnedVNI(ctx context.Context, object client.Object, deleting bool) error {
+	err := r.ensureOwnedVNI(ctx, object, false)
+	if deleting && (errors.Is(err, poolpkg.ErrLeaseAbsent) || errors.Is(err, poolpkg.ErrLeaseRetired)) {
+		return nil
+	}
+	return err
 }
 
 func (r *LabReconciler) ensureOwnedVNI(ctx context.Context, object client.Object, allocate bool) error {
@@ -273,22 +286,27 @@ func (r *LabReconciler) releaseDefaultOffVNI(ctx context.Context, index uint, le
 		if uid == "" {
 			return fmt.Errorf("actual VNI owner UID missing")
 		}
-		var parents lab.LabList
-		if err := r.lifecycleReader().List(ctx, &parents); err != nil {
-			return err
-		}
-		for _, parent := range parents.Items {
-			for _, scope := range parent.Status.ScopeInventory {
-				for _, binding := range scope.VNIBindings {
-					if binding.UID == uid && !lab.VNILeaseReleased(&parent, binding) {
-						return fmt.Errorf("retained native VNI obligation is unresolved")
+		// A native obligation (a node still has to confirm that it dropped the fabric of the VNI) can only be resolved by
+		// runtime observation. With the observation off nobody resolves it, and waiting for it left the lease held for good
+		// (the 223 leaked VNIs): the quarantine of the retirement is what protects the number then.
+		if r.RuntimeObservation {
+			var parents lab.LabList
+			if err := r.lifecycleReader().List(ctx, &parents); err != nil {
+				return err
+			}
+			for _, parent := range parents.Items {
+				for _, scope := range parent.Status.ScopeInventory {
+					for _, binding := range scope.VNIBindings {
+						if binding.UID == uid && !lab.VNILeaseReleased(&parent, binding) {
+							return fmt.Errorf("retained native VNI obligation is unresolved")
+						}
 					}
 				}
 			}
 		}
-		return poolpkg.ReleaseOwnedIndex(ctx, r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation})
+		return r.retireLease(ctx, poolpkg.Lease{Index: index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation})
 	}
-	return poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize).ReleaseIndex(ctx, index)
+	return r.retireIndex(ctx, index)
 }
 
 // Historical declarations may gain positive native inventory after Start was

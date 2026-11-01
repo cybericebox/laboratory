@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -137,6 +138,20 @@ func creationReceiptToProto(l *lab.Lab) *protobuf.LabCreationReceipt {
 		return nil
 	}
 	return &protobuf.LabCreationReceipt{GroupUid: birth.GroupUID, NamespaceUid: birth.NamespaceUID, OperationId: birth.OperationID, Revision: birth.Revision, DefinitionHash: birth.DefinitionHash, CreationId: birth.CreationID, LabUid: birth.LabUID, Committed: true}
+}
+
+// birthCommitGrace is how long a created Lab may wait for its birth receipt to be committed (the commit follows the Create
+// at once; a retry of the same create finishes an interrupted one). A Lab still uncommitted after it was abandoned by its
+// creator, and a delete must not be refused for good: the Lab would leak with its group.
+var birthCommitGrace = 2 * time.Minute
+
+// birthDeleteReady is birthWriteReady for a delete: an uncommitted birth blocks it only while it can still be committed.
+func birthDeleteReady(l *lab.Lab) error {
+	err := birthWriteReady(l)
+	if err != nil && time.Since(l.CreationTimestamp.Time) > birthCommitGrace {
+		return nil
+	}
+	return err
 }
 
 func birthWriteReady(l *lab.Lab) error {

@@ -32,7 +32,9 @@ type LabGatewayReconciler struct {
 	IPT      *IPTablesManager
 	Cfg      *Config
 	Recorder record.EventRecorder
-	applied  map[string]appliedNetwork
+	// Shaper keeps the lab interfaces to the bandwidth ceiling of the pod (nil: no shaping).
+	Shaper  *Shaper
+	applied map[string]appliedNetwork
 }
 
 func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -145,6 +147,9 @@ func (r *LabGatewayReconciler) clearNetwork(old appliedNetwork) error {
 	removeNetworkAddress(old)
 	r.IPT.DelMasquerade(old.CIDR)
 	r.IPT.DelAntiSpoof(old.Iface, old.CIDR)
+	if r.Shaper != nil {
+		r.Shaper.Forget(old.Iface)
+	}
 	return nil
 }
 func (r *LabGatewayReconciler) dhcpFailure(ctx context.Context, gw *laboratoryv1alpha1.LabGateway, err error) (ctrl.Result, error) {
@@ -278,6 +283,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		}
 		r.applied[gw.Name] = desired
 	}
+	r.shape(gw, ifaceName)
 	state := r.applied[gw.Name]
 	if dhcpEnabled {
 		gwIP := firstHostIP(cidr)
@@ -327,4 +333,15 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	}
 	labstatus.SetReady(&newStatus.Conditions, gw.Generation, true, labstatus.ReasonReady, "lab internet gateway ready")
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, gw, newStatus)
+}
+
+// shape puts the bandwidth ceiling of the pod on a lab interface. A lab whose ceiling cannot be set is still served (its internet is
+// the point), but not silently: the event says so, and the next reconcile tries again.
+func (r *LabGatewayReconciler) shape(gw *laboratoryv1alpha1.LabGateway, iface string) {
+	if r.Shaper == nil {
+		return
+	}
+	if err := r.Shaper.Track(iface); err != nil && r.Recorder != nil {
+		r.Recorder.Eventf(gw, corev1.EventTypeWarning, "BandwidthLimitFailed", "the bandwidth ceiling of %s is not applied: %v", iface, err)
+	}
 }

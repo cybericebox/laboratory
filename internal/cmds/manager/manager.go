@@ -216,16 +216,29 @@ func Run() {
 	if cfg.RuntimeObservation {
 		serviceReleaseObserver = laboratorycontroller.NativeGroupServiceReleaseObserver{Client: mgr.GetClient()}
 	}
+	profilePolicy, err := cfg.Profiles.Policy()
+	if err != nil {
+		setupLog.Error(err, "device profiles config")
+		os.Exit(1)
+	}
+	var profilePolicyOverheadCPU, profilePolicyOverheadMemory string
+	if profilePolicy.MicroVM {
+		profilePolicyOverheadCPU, profilePolicyOverheadMemory = cfg.Profiles.MicroVMOverheadCPU, cfg.Profiles.MicroVMOverheadMemory
+	}
 	if err = (&laboratorycontroller.LabGroupReconciler{
-		Reader:                  mgr.GetAPIReader(),
-		ServiceReleaseObserver:  serviceReleaseObserver,
-		Scheduled:               cfg.SchedulerEnabled,
-		Client:                  mgr.GetClient(),
-		Scheme:                  mgr.GetScheme(),
-		Recorder:                mgr.GetEventRecorderFor("labgroup"),
-		PublicVPNEndpoint:       cfg.PublicVPNEndpoint,
-		WGDemuxMode:             cfg.WGDemuxMode,
-		VPNBaseNetwork:          cfg.VPNBaseNetwork,
+		Profiles:                    profilePolicy,
+		Reader:                      mgr.GetAPIReader(),
+		ServiceReleaseObserver:      serviceReleaseObserver,
+		Scheduled:                   cfg.SchedulerEnabled,
+		BandwidthEnabled:            cfg.Bandwidth.Enabled,
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		Recorder:                    mgr.GetEventRecorderFor("labgroup"),
+		PublicVPNEndpoint:           cfg.PublicVPNEndpoint,
+		WGDemuxMode:                 cfg.WGDemuxMode,
+		VPNBaseNetwork:              cfg.VPNBaseNetwork,
+		VPNFirewall:                 cfg.VPNFirewall,
+		GatewayMaxConnectionsPerLab: cfg.GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab: cfg.GatewayNewConnectionsPerSecondPerLab,
 		InetBaseNetwork:         cfg.InetBaseNetwork,
 		VPNImage:                cfg.VPNImage,
 		Mirror:                  mirror,
@@ -256,13 +269,31 @@ func Run() {
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
+		Reader:         mgr.GetAPIReader(),
 		VPNBaseNetwork: cfg.VPNBaseNetwork,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
 	}
+	if cfg.Bandwidth.Enabled {
+		bw := cfg.Bandwidth.Config()
+		if err := bw.Validate(); err != nil {
+			setupLog.Error(err, "bandwidth config")
+			os.Exit(1)
+		}
+		if err = (&laboratorycontroller.BandwidthReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Config: bw, EntryNamespaces: cfg.BandwidthEntryNamespaces}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Bandwidth")
+			os.Exit(1)
+		}
+	}
+	vniRetirer := &laboratorycontroller.VNIRetirer{Client: mgr.GetClient(), Interval: cfg.VNIRetireFlush}
+	if err = mgr.Add(vniRetirer); err != nil {
+		setupLog.Error(err, "unable to add the VNI retirer")
+		os.Exit(1)
+	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+		VNI:                       vniRetirer,
+		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 		LabNodeSelector:           labNodeSelector,
 		LabTolerations:            labTolerations,
 		Reader:                    mgr.GetAPIReader(),
@@ -324,11 +355,12 @@ func Run() {
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
 				Aging:          time.Duration(cfg.SchedulerAgingSeconds) * time.Second,
 				Maximum:        capacity,
+				Profiles:       profilePolicy,
 				NodeTimeout:    cfg.CapacityNodeTimeout,
 				// the cleanup of unreserved work gives the same notice as the end of a reservation
 				UnreservedNotice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 			},
-			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 			GroupPods:       cfg.GroupPods,
 			LabNodeSelector: labNodeSelector,
 			LabTolerations:  labTolerations,
@@ -337,6 +369,10 @@ func Run() {
 			setupLog.Error(err, "unable to add the scheduler")
 			os.Exit(1)
 		}
+	}
+	microVMRuntimeClass := ""
+	if profilePolicy.MicroVM {
+		microVMRuntimeClass = cfg.Profiles.MicroVMRuntimeClass
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
 		Scheduled:               cfg.SchedulerEnabled,
@@ -349,9 +385,11 @@ func Run() {
 		LabTolerations:          labTolerations,
 		PriorityClass:           cfg.DevicePriorityClass,
 		SchedulerName:           cfg.LabSchedulerName,
+		Profiles:                profilePolicy,
+		MicroVMRuntimeClass:     microVMRuntimeClass,
 		TerminationGraceSeconds: cfg.LabPodTerminationGraceSeconds,
 		NetConfigImage:          cfg.NetConfigImage,
-		Defaults:                laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+		Defaults:                laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 		Security: laboratorycontroller.PodSecurity{
 			UserNamespaces: cfg.DeviceUserNamespaces, EphemeralStorage: cfg.DeviceEphemeralStorage,
 		},
@@ -418,6 +456,10 @@ func Run() {
 			setupLog.Error(err, "unable to add lifecycle retirement sweep")
 			os.Exit(1)
 		}
+	}
+	if err = mgr.Add(&laboratorycontroller.VNISweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: cfg.VNISweepInterval, Quarantine: cfg.VNIQuarantine, Grace: cfg.VNISweepInterval, RuntimeObservation: cfg.RuntimeObservation, Retirer: vniRetirer}); err != nil {
+		setupLog.Error(err, "unable to add the VNI sweeper")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 

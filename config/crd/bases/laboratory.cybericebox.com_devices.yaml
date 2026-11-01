@@ -221,6 +221,13 @@ spec:
                 description: Name is the logical device name within the lab (matches
                   DeviceTemplate.name).
                 type: string
+              profile:
+                description: Profile is how the device runs (see DeviceTemplate.Profile);
+                  empty is container.
+                enum:
+                - container
+                - microvm
+                type: string
               resources:
                 description: Resources sets the container resource requests/limits
                   for this device.

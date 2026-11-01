@@ -5,8 +5,10 @@ package nodeagentd
 import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
+	"github.com/go-logr/logr"
 
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -17,7 +19,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,6 +37,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodeagent"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/internal/vniledger"
 )
 
 var scheme = runtime.NewScheme()
@@ -67,7 +72,7 @@ func Run() {
 		log.Error(err, "init flow manager")
 		os.Exit(1)
 	}
-	defer func() { _ = flows.Close() }()
+	ledger := attachVNILedger(flows, cfg, log)
 
 	pingOVS := func(ctx context.Context) error {
 		if err := ovs.Ping(ctx); err != nil {
@@ -162,6 +167,10 @@ func Run() {
 		os.Exit(1)
 	}
 
+	setupBandwidth(mgr, cfg, flows)
+
+	setupVNIOrphans(mgr, cfg, ovs, flows, ledger, log)
+
 	if err := (&nodeagent.ConnectionReconciler{
 		Client:      mgr.GetClient(),
 		NodeName:    cfg.NodeName,
@@ -181,6 +190,8 @@ func Run() {
 		Flows:    flows,
 		CRISock:  cfg.CRISock,
 	}
+	askedPersistence := cfg.StatePersistence
+	pre := preflightNode(cfg, log)
 	if cfg.RuntimeObservation {
 		if err := nodeagent.SetupRuntimeObservation(mgr, cfg, networkAttach); err != nil {
 			log.Error(err, "setup native runtime observation")
@@ -232,7 +243,7 @@ func Run() {
 	}
 
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := nodeagent.SetupNodeReadiness(mgr, cfg); err != nil {
+	if err := setupReadiness(mgr, cfg, pre, askedPersistence, log); err != nil {
 		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
@@ -270,6 +281,35 @@ var containerIfacePrefixes = []string{"docker", "cni", "flannel", "weave", "veth
 
 // nodeAddress returns the first non-loopback, non-container-bridge IPv4 of this host (Geneve VTEP).
 // Can be overridden with NODE_ADDRESS env var.
+// setupVNIOrphans runs, at start and then every two minutes, the pass that removes the flows of a VNI no lease holds (a node that was away
+// while its labs were deleted, a release that never ran). Whatever a lease holds, and whatever cannot be judged, is left alone.
+func setupVNIOrphans(mgr ctrl.Manager, cfg *nodeagent.Config, ovs *nodeagent.OVSManager, flows *nodeagent.FlowManager, ledger *vniledger.Ledger, log logr.Logger) {
+	if err := mgr.Add(&nodeagent.VNIOrphanReconciler{
+		Reader:   mgr.GetAPIReader(),
+		OVS:      ovs,
+		Flows:    flows,
+		Ledger:   ledger,
+		Recorder: mgr.GetEventRecorderFor("node-agent-vni-orphans"),
+		NodeName: cfg.NodeName,
+	}); err != nil {
+		log.Error(err, "setup VNIOrphanReconciler")
+		os.Exit(1)
+	}
+}
+
+// attachVNILedger gives the flow manager the ledger of the VNIs this node carries flows of (the operator keeps a VNI from the pool while it
+// is in any node's ledger). It is attached before anything can program a flow; a flow is installed only after its VNI is recorded.
+func attachVNILedger(flows *nodeagent.FlowManager, cfg *nodeagent.Config, log logr.Logger) *vniledger.Ledger {
+	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		log.Error(err, "create the client of the VNI ledger")
+		os.Exit(1)
+	}
+	ledger := &vniledger.Ledger{Client: c, Reader: c, Namespace: names.SystemNamespace, Node: cfg.NodeName}
+	flows.Ledger = ledger
+	return ledger
+}
+
 func nodeAddress() (string, error) {
 	if addr := os.Getenv("NODE_ADDRESS"); addr != "" {
 		return addr, nil
@@ -301,4 +341,69 @@ func nodeAddress() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no non-loopback IPv4 address found; set NODE_ADDRESS env")
+}
+
+// setupBandwidth holds the Geneve traffic of this node to its class with OVS meters (package bandwidth); off by default. The ceilings
+// are the operator's, read from the key of this node in the mounted ConfigMap.
+func setupBandwidth(mgr ctrl.Manager, cfg *nodeagent.Config, flows *nodeagent.FlowManager) {
+	if !cfg.Bandwidth.Enabled {
+		return
+	}
+	if err := mgr.Add(&nodeagent.BandwidthWatcher{NodeName: cfg.NodeName, Flows: flows}); err != nil {
+		ctrl.Log.WithName("node-agent").Error(err, "setup BandwidthWatcher")
+		os.Exit(1)
+	}
+}
+
+// preflightNode checks what the node can do for the lifecycle of a lab. A feature that cannot work here is switched off in this process
+// and published on the Node (and told in an Event): the node-agent goes on serving pod networking, it never hangs or exits for it.
+func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightResult {
+	pre := nodeagent.Preflight(context.Background(), cfg.PreflightInput())
+	for _, f := range pre.Failures() {
+		log.Info("WARNING: not available on this node, switched off", "reason", f)
+	}
+	cfg.Apply(pre)
+	return pre
+}
+
+// addPersistenceRetry repeats the failed check of state persistence and starts the snapshot engine in this process when it passes.
+func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, labeler *nodeagent.NodeLabeler, log logr.Logger) error {
+	input := cfg.PreflightInput()
+	input.Persistence = true
+	rec := mgr.GetEventRecorderFor("node-agent-preflight")
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName}}
+	return mgr.Add(&nodeagent.PreflightRetry{
+		Log: log.WithName("preflight-retry"), Input: input, First: first,
+		Enable: func() error {
+			cfg.StatePersistence = true
+			if err := nodeagent.SetupStateEngine(mgr, cfg); err != nil {
+				cfg.StatePersistence = false
+				return err
+			}
+			return nil
+		},
+		Annotate: func(ctx context.Context, value string) error {
+			labeler.SetAnnotation(names.AnnotationStatePersistence, value) // the labeler asserts it again every minute
+			patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{names.AnnotationStatePersistence: value}}})
+			return mgr.GetClient().Patch(ctx, node.DeepCopy(), client.RawPatch(types.MergePatchType, patch))
+		},
+		Told: func(message string) { rec.Event(node, corev1.EventTypeNormal, "LifecyclePreflightRecovered", message) },
+	})
+}
+
+// retryFailedPersistence repeats a persistence check that failed at the start: the registry of a fresh cluster is often not up yet.
+func retryFailedPersistence(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, asked bool, labeler *nodeagent.NodeLabeler, log logr.Logger) error {
+	if _, bad := nodeagent.IsUnavailable(pre.StatePersistence); !bad || !asked {
+		return nil
+	}
+	return addPersistenceRetry(mgr, cfg, pre.StatePersistence, labeler, log)
+}
+
+// setupReadiness repeats a persistence check that failed at the start, then makes the node usable for labs.
+func setupReadiness(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, askedPersistence bool, log logr.Logger) error {
+	labeler := nodeagent.NewNodeLabeler(mgr, cfg, pre)
+	if err := retryFailedPersistence(mgr, cfg, pre, askedPersistence, labeler, log); err != nil {
+		return fmt.Errorf("persistence check retry: %w", err)
+	}
+	return nodeagent.SetupNodeReadiness(mgr, cfg, labeler)
 }

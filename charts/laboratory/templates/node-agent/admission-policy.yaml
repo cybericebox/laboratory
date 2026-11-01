@@ -2,10 +2,13 @@
 {{- /*
 RBAC cannot limit a patch of nodes to one label of one node, so this policy does. The node-agent's ServiceAccount may patch the Node object of
 its own node (the node name is in the bound token of its pod) and change nothing but the label laboratory.cybericebox.com/node-agent-ready,
-which may only be "true", and the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field). See DEPLOY.md, "Which nodes run labs".
+which may only be "true", the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field) and the two
+annotations cybericebox.com/state-persistence and cybericebox.com/runtime-observation, the result of its start-up check (ready, disabled or
+"unavailable: <CODE>: <detail>"). See DEPLOY.md, "Which nodes run labs".
 */ -}}
 {{- $nodeAgent := printf "system:serviceaccount:%s:laboratory-node-agent" .Release.Namespace }}
 {{- $key := "laboratory.cybericebox.com/node-agent-ready" }}
+{{- $annotationKeys := "['cybericebox.com/state-persistence', 'cybericebox.com/runtime-observation']" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -30,6 +33,10 @@ spec:
       expression: "object.metadata.?labels.orValue({})"
     - name: oldLabels
       expression: "oldObject.metadata.?labels.orValue({})"
+    - name: newAnnotations
+      expression: "object.metadata.?annotations.orValue({})"
+    - name: oldAnnotations
+      expression: "oldObject.metadata.?annotations.orValue({})"
   validations:
     - expression: "variables.ownNode != '' && variables.ownNode == object.metadata.name"
       message: "the node-agent may change only the Node of the node it runs on"
@@ -40,8 +47,14 @@ spec:
     - expression: "object.spec.?unschedulable == oldObject.spec.?unschedulable && object.spec.?providerID == oldObject.spec.?providerID && object.spec.?podCIDR == oldObject.spec.?podCIDR && object.spec.?podCIDRs == oldObject.spec.?podCIDRs && object.spec.?configSource == oldObject.spec.?configSource"
       message: "the node-agent may not change the spec of a node (unschedulable, ...)"
       reason: Forbidden
-    - expression: "object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
+    - expression: "object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
       message: {{ printf "the node-agent may change only the label %s of its node" $key | quote }}
+      reason: Forbidden
+    - expression: "variables.newAnnotations.all(k, k in {{ $annotationKeys }} || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k in {{ $annotationKeys }} || k in variables.newAnnotations)"
+      message: "the node-agent may change only the annotations cybericebox.com/state-persistence and cybericebox.com/runtime-observation of its node"
+      reason: Forbidden
+    - expression: "variables.newAnnotations.all(k, !(k in {{ $annotationKeys }}) || variables.newAnnotations[k].matches('^(ready|disabled|unavailable: [A-Z_]+: .{0,500})$'))"
+      message: "the check annotations are ready, disabled or unavailable: CODE: detail"
       reason: Forbidden
     - expression: "variables.newLabels.all(k, k == '{{ $key }}' ? variables.newLabels[k] == 'true' : (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k]))"
       message: {{ printf "the node-agent may only set the label %s to true, and change no other label" $key | quote }}
@@ -226,5 +239,89 @@ metadata:
   name: laboratory-node-agent-lab-scope
 spec:
   policyName: laboratory-node-agent-lab-scope
+  validationActions: [Deny]
+---
+# The VNI ledger: the node-agent writes the ConfigMap vni-ledger-<its node> and no other ConfigMap.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-ledger
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [configmaps]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+  validations:
+    - expression: "variables.ownNode != '' && object.metadata.name == 'vni-ledger-' + variables.ownNode"
+      message: "the node-agent may write only the VNI ledger ConfigMap of the node it runs on"
+      reason: Forbidden
+    - expression: "'laboratory.cybericebox.com/vni-ledger' in object.metadata.?labels.orValue({}) && object.metadata.?labels.orValue({})['laboratory.cybericebox.com/vni-ledger'] == 'true' && 'laboratory.cybericebox.com/node' in object.metadata.?annotations.orValue({}) && object.metadata.?annotations.orValue({})['laboratory.cybericebox.com/node'] == variables.ownNode"
+      message: "the VNI ledger ConfigMap carries its label and the name of its node"
+      reason: Forbidden
+    - expression: "!has(object.data) || object.data.all(k, k.matches('^[0-9]{1,8}$') && int(k) <= 16777215)"
+      message: "a VNI ledger has only VNI numbers (0 to 16777215) as keys"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-ledger
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-node-agent-ledger
+  validationActions: [Deny]
+---
+# Nobody but the node-agent of a node touches that node's VNI ledger ConfigMap: not even a cluster administrator (a ledger that is changed or
+# deleted by hand stops holding the VNIs of the flows its node still carries). The one exception is the namespace controller, only while the
+# namespace is being deleted. A deliberate removal means removing this policy first.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-vni-ledger-guard
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [configmaps]
+  matchConditions:
+    - name: a-ledger
+      expression: "(request.operation == 'DELETE' ? oldObject : object).metadata.name.startsWith('vni-ledger-') || 'laboratory.cybericebox.com/vni-ledger' in (request.operation == 'DELETE' ? oldObject : object).metadata.?labels.orValue({}) || (request.operation == 'UPDATE' && 'laboratory.cybericebox.com/vni-ledger' in oldObject.metadata.?labels.orValue({}))"
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: name
+      expression: "(request.operation == 'DELETE' ? oldObject : object).metadata.name"
+  validations:
+    - expression: >-
+        (request.userInfo.username == {{ $nodeAgent | quote }} && request.operation != 'DELETE' && variables.ownNode != '' && variables.name == 'vni-ledger-' + variables.ownNode)
+        || (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:namespace-controller' && namespaceObject.status.phase == 'Terminating')
+      message: "a VNI ledger ConfigMap is written only by the node-agent of its node and is never deleted by hand (remove the policy laboratory-vni-ledger-guard first)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-vni-ledger-guard
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-vni-ledger-guard
   validationActions: [Deny]
 {{- end }}

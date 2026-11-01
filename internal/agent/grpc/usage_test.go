@@ -12,6 +12,7 @@ import (
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -151,5 +152,70 @@ func TestFillLabUsageNil(t *testing.T) {
 	}
 	if lab.Status.Devices[0].UsageAvailable {
 		t.Errorf("usage must be marked unavailable without metrics API")
+	}
+}
+
+// A readiness poll asks for one lab per call. The pod metrics are read for the whole cluster at most once per refresh and
+// shared by the calls, not once per call (the slow metrics API made the poll ~10 labs a minute).
+func TestNamespaceUsageIsSharedBetweenCalls(t *testing.T) {
+	calls := 0
+	fake := metricsfake.NewSimpleClientset()
+	fake.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		calls++
+		return true, &metricsv1beta1.PodMetricsList{Items: []metricsv1beta1.PodMetrics{
+			*podMetrics("team-a", "p1", "l1", "d", rl("100m", "64Mi")),
+			*podMetrics("team-b", "p2", "l2", "d", rl("200m", "64Mi")),
+		}}, nil
+	})
+	h := &Handler{metrics: fake}
+	ctx := context.Background()
+	for i := 0; i < 20; i++ {
+		ns := []string{"team-a", "team-b"}[i%2]
+		if u := h.namespaceUsage(ctx, ns); len(u) != 1 {
+			t.Fatalf("call %d: %+v", i, u)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("want one metrics read for 20 calls, got %d", calls)
+	}
+	if u := h.namespaceUsage(ctx, "empty"); u == nil || len(u) != 0 {
+		t.Fatalf("a namespace without pods has an empty, non-nil usage: %+v", u)
+	}
+}
+
+// The VPN and gateway pods of a group show their live usage, the size they run with and the load they serve in the monitoring
+// snapshot: without it the sizing formula cannot be checked against what the pods really use.
+func TestGroupPodUsageIsFilledForTheMonitoring(t *testing.T) {
+	folded := foldGroupPodUsage([]metricsv1beta1.PodMetrics{
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "g-ns", Name: "vpn-1", Labels: map[string]string{"app": "vpn"}}, Containers: []metricsv1beta1.ContainerMetrics{{Usage: rl("40m", "100Mi")}, {Usage: rl("5m", "8Mi")}}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "g-ns", Name: "gw-1", Labels: map[string]string{"app": "gateway"}}, Containers: []metricsv1beta1.ContainerMetrics{{Usage: rl("3m", "9Mi")}}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "g-ns", Name: "other", Labels: map[string]string{}}, Containers: []metricsv1beta1.ContainerMetrics{{Usage: rl("1", "1Gi")}}},
+	})
+	if v := folded["g-ns"]["vpn"]; v.cpuMillicores != 45 || v.memoryBytes != 108<<20 {
+		t.Fatalf("vpn usage: %+v", v)
+	}
+	h := &Handler{}
+	g := &laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Size: &laboratoryv1alpha1.GroupPodSize{CPUMillicores: 80, MemoryBytes: 264 << 20}}}}
+	p := &protobuf.LabGroup{Status: &protobuf.LabGroupStatus{Pods: []*protobuf.LabGroupPod{{Name: "vpn"}}}}
+	h.fillGroupPodUsage(g, p, folded["g-ns"], 7, 12)
+	byName := map[string]*protobuf.LabGroupPod{}
+	for _, e := range p.Status.Pods {
+		byName[e.Name] = e
+	}
+	v, gw := byName["vpn"], byName["gateway"]
+	if v == nil || gw == nil {
+		t.Fatalf("both pods are reported (the gateway without a scheduler record too): %+v", p.Status.Pods)
+	}
+	if !v.UsageAvailable || v.CpuMillicores != 45 || v.MemoryBytes != 108<<20 || v.CpuLimitMillicores != 80 || v.MemoryLimitBytes != 264<<20 || v.Units != 7 {
+		t.Errorf("vpn: %+v", v)
+	}
+	if gw.Units != 12 || gw.CpuMillicores != 3 {
+		t.Errorf("gateway: %+v", gw)
+	}
+	// metrics not available: the size and the load are still reported, usage_available is false
+	q := &protobuf.LabGroup{Status: &protobuf.LabGroupStatus{}}
+	h.fillGroupPodUsage(g, q, nil, 1, 1)
+	if len(q.Status.Pods) != 2 || q.Status.Pods[0].UsageAvailable {
+		t.Errorf("without metrics: %+v", q.Status.Pods)
 	}
 }

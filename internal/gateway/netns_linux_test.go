@@ -3,6 +3,7 @@
 package gateway
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -152,4 +153,87 @@ func TestNetnsGatewayAnswersNothingOnTheLabSide(t *testing.T) {
 			t.Errorf("the policy is left after RemoveInput:\n%s", out)
 		}
 	})
+}
+
+// The limits of a lab towards the outside with the real iptables: connections held open past the limit are refused for that lab only (its
+// /24), a burst of new connections past the rate is cut, traffic of connections that exist is not looked at.
+func TestNetnsGatewayLimitsNewConnectionsPerLab(t *testing.T) {
+	nstest.Require(t)
+	for _, ns := range []string{"net", "lab", "lab2"} {
+		nstest.NS(t, ns)
+	}
+	nstest.Veth(t, "", "eth0", "203.0.113.2/24", "net", "n0", "203.0.113.1/24")
+	nstest.Veth(t, "", "lab1", "10.9.0.1/24", "lab", "l0", "10.9.0.2/24")
+	nstest.Veth(t, "", "lab2", "10.9.1.1/24", "lab2", "m0", "10.9.1.2/24")
+	t.Cleanup(func() {
+		for _, dev := range []string{"eth0", "lab1", "lab2"} {
+			_, _ = nstest.Try("", "ip", "link", "del", dev)
+		}
+	})
+	nstest.Run(t, "lab", "ip", "route", "add", "default", "via", "10.9.0.1")
+	nstest.Run(t, "lab2", "ip", "route", "add", "default", "via", "10.9.1.1")
+	nstest.Run(t, "net", "ip", "route", "add", "default", "via", "203.0.113.2")
+	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
+	_, _ = nstest.Try("", "conntrack", "-F")
+	nstest.Echo(t, "net", "tcp", "0.0.0.0:7400")
+	tcpNet := nstest.Listen(t, "net", "tcp", "0.0.0.0:7401")
+
+	m, err := NewIPTablesManager("eth0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.MaxConnectionsPerLab, m.NewConnectionsPerSecondPerLab = 3, 1000
+	t.Cleanup(m.RemoveInput)
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range [][2]string{{"lab1", "10.9.0.0/24"}, {"lab2", "10.9.1.0/24"}} {
+		if err := m.AddAntiSpoof(l[0], l[1]); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.AddMasquerade(l[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var held []*nstest.Dialog
+	for i := 0; i < 3; i++ {
+		d := nstest.Persistent(t, "lab", "tcp", "203.0.113.1:7400")
+		if !d.Exchange(t) {
+			t.Fatalf("connection %d within the limit was refused", i+1)
+		}
+		held = append(held, d)
+	}
+	if nstest.Reach(t, "lab", "tcp", "203.0.113.1:7401", tcpNet) {
+		t.Fatal("the fourth connection of the lab passed the limit of 3")
+	}
+	if !nstest.Reach(t, "lab2", "tcp", "203.0.113.1:7401", tcpNet) {
+		t.Fatal("another lab was hurt by the first lab's connections")
+	}
+	for _, d := range held {
+		if !d.Exchange(t) {
+			t.Fatal("a connection that exists was looked at by the limit")
+		}
+	}
+	// the rate: a gateway with a limit of 2 new connections a second (and a burst of 2)
+	m.MaxConnectionsPerLab, m.NewConnectionsPerSecondPerLab = 0, 2
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	burst := `import socket,threading
+ok=[0]
+def c():
+    try:
+        s=socket.create_connection(("203.0.113.1",7401),timeout=2); s.close(); ok[0]+=1
+    except Exception: pass
+ts=[threading.Thread(target=c) for _ in range(40)]
+[t.start() for t in ts]; [t.join() for t in ts]
+print(ok[0])`
+	out, err := nstest.Try("lab2", "python3", "-c", burst)
+	if err != nil {
+		t.Fatalf("burst: %v %s", err, out)
+	}
+	passed, _ := strconv.Atoi(strings.TrimSpace(out))
+	if passed < 1 || passed > 8 {
+		t.Fatalf("40 new connections at once against 2 a second: %d passed", passed)
+	}
 }

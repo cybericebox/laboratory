@@ -14,6 +14,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -31,6 +32,7 @@ var testFeatures = Features{
 		},
 		DefaultVPN: grouppods.Overhead{CPU: 100, Memory: 320 << 20}, DefaultGateway: grouppods.Overhead{CPU: 10, Memory: 32 << 20},
 	},
+	GroupLimits: grouppods.Limits{MaxUsers: 10, MaxLabs: 50, DefaultUsers: 1, DefaultLabs: 5},
 }
 
 func featuresHandler(t *testing.T, f Features, tenants ...*laboratoryv1alpha1.Tenant) *Handler {
@@ -169,5 +171,31 @@ func TestFeaturesReservations(t *testing.T) {
 	}
 	if r := f.GetReservations(); !r.GetRequired() || r.GetEndingNoticeSeconds() != 0 {
 		t.Fatalf("a chart notice of 0 is reported as 0: %v", r)
+	}
+}
+
+// The agent reports the API contract it implements, so a caller checks compatibility by contract and not by image tag.
+func TestFeaturesReportTheContractVersion(t *testing.T) {
+	h := featuresHandler(t, testFeatures, newTenantTenant("a", true, nil))
+	got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetContractVersion() != client.ContractVersion {
+		t.Fatalf("contract_version = %q, want %q", got.GetContractVersion(), client.ContractVersion)
+	}
+}
+
+// GetFeatures tells the group limits of this agent (the chart's groupLimits): a client reads them, it does not know them.
+func TestFeaturesReportTheGroupLimits(t *testing.T) {
+	f := testFeatures
+	f.GroupLimits = grouppods.Limits{MaxUsers: 7, MaxLabs: 33, DefaultUsers: 2, DefaultLabs: 4}
+	h := featuresHandler(t, f, newTenantTenant("a", true, nil))
+	got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := got.GetGroupLimits(); l.GetMaxUsers() != 7 || l.GetMaxLabs() != 33 || l.GetDefaultUsers() != 2 || l.GetDefaultLabs() != 4 {
+		t.Fatalf("group_limits = %+v", l)
 	}
 }

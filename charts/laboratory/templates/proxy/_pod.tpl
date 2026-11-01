@@ -46,6 +46,22 @@ spec:
     {{- /* The listen address (:8443), the probe port (:8081) and the TLS files (/etc/proxy/tls) are baked into the image. */}}
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
+  {{- if .Values.proxy.l7.proxyProtocol.trustedFrom }}
+    # The peers (the edge nodes) whose connections may begin with a PROXY protocol header; any other peer's header is ignored.
+    - name: L7_PROXY_PROTOCOL_FROM
+      value: {{ join "," .Values.proxy.l7.proxyProtocol.trustedFrom | quote }}
+    - name: L7_PROXY_PROTOCOL_TLV_TYPE
+      value: {{ .Values.proxy.l7.proxyProtocol.tlvType | quote }}
+  {{- with .Values.proxy.l7.proxyProtocol.secretRef }}
+    # The shared secret(s) the edge puts in a TLV of its PROXY v2 header (one value, or "current,next" while rotating), from a Secret that
+    # infrastructure makes: never a chart value.
+    - name: L7_PROXY_PROTOCOL_SECRETS
+      valueFrom:
+        secretKeyRef:
+          name: {{ .name }}
+          key: {{ .key }}
+  {{- end }}
+  {{- end }}
     - name: SESSION_COOKIE_NAME
       value: {{ .Values.proxy.l7.sessionCookieName | quote }}
     - name: SESSION_SECRET
@@ -93,6 +109,12 @@ spec:
       valueFrom:
         fieldRef:
           fieldPath: metadata.name
+    {{- if .Values.bandwidth.enabled }}
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    {{- end }}
     {{- if .Values.proxy.kindMode }}
     - name: KUBERNETES_SERVICE_HOST
       value: "127.0.0.1"
@@ -133,6 +155,11 @@ spec:
     - name: tls
       mountPath: /etc/proxy/tls
       readOnly: true
+    {{- if .Values.bandwidth.enabled }}
+    - name: bandwidth
+      mountPath: /etc/bandwidth
+      readOnly: true
+    {{- end }}
     resources:
       {{- toYaml .Values.proxy.l7.resources | nindent 6 }}
   {{- end }}
@@ -141,5 +168,13 @@ spec:
   - name: tls
     secret:
       secretName: proxy-tls
+  {{- if .Values.bandwidth.enabled }}
+  # The bandwidth limits of every node, written by the operator; the proxy reads the key of its own node. Optional: the pod starts
+  # before the operator has made the ConfigMap, and has no limit until it exists.
+  - name: bandwidth
+    configMap:
+      name: laboratory-bandwidth
+      optional: true
+  {{- end }}
   {{- end }}
 {{- end }}

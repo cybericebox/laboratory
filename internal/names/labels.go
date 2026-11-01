@@ -1,6 +1,10 @@
 package names
 
-import "strings"
+import (
+	"strings"
+
+	pubnames "github.com/cybericebox/laboratory/pkg/names"
+)
 
 // LabelPrefix is the prefix of every operator-internal label and annotation of
 // this platform. Labels with it are never copied from a Lab or LabGroup onto its
@@ -28,6 +32,19 @@ const (
 	// Every lab pod requires it (through the lab node selector of the chart), so no lab pod lands on a node without a working
 	// node-agent (a pod there would have no cni-gate and no OVS wiring).
 	LabelNodeAgentReady = LabelPrefix + "node-agent-ready"
+
+	// LabelProfileContainer and LabelProfileMicroVM are set on a node for every device profile it can run (a KVM node usually
+	// carries both). LabelRuntimeKataCLH is the implementation label: the node has Kata with Cloud Hypervisor. It stays inside the
+	// laboratory; the microVM RuntimeClass selects it.
+	LabelProfileContainer = "cybericebox.com/profile-container"
+	LabelProfileMicroVM   = "cybericebox.com/profile-microvm"
+	LabelRuntimeKataCLH   = "cybericebox.com/runtime-kata-clh"
+
+	// AnnotationStatePersistence and AnnotationRuntimeObservation are set on a node by its node-agent with the result of the check it made at
+	// start: "ready", "disabled" (not asked for) or "unavailable: <reason>". The management agent reports what the cluster really
+	// supports from them, not from the chart values.
+	AnnotationStatePersistence   = "cybericebox.com/state-persistence"
+	AnnotationRuntimeObservation = "cybericebox.com/runtime-observation"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
@@ -81,6 +98,20 @@ const (
 	// AnnotationDevice tags a pod/resource with its logical device name.
 	AnnotationDevice = "cybericebox.com/device"
 
+	// LabelNodeBandwidth is the label of a node with the bandwidth of its network in Mbit/s ("1562"; a trailing M or G is
+	// accepted). A node without it is taken as the chart default. AWS sets it from the launch template of the node group, Proxmox
+	// from the inventory.
+	LabelNodeBandwidth = "cybericebox.com/node-bandwidth"
+
+	// AnnotationBandwidthReserve on a platform pod is the bandwidth in Mbit/s the pod keeps for itself; it is taken off the bandwidth
+	// of the node the pod runs on, and of no other node.
+	AnnotationBandwidthReserve = "cybericebox.com/bandwidth-reserve"
+
+	// AnnotationBandwidthLimits is what the operator writes for the bandwidth protection: on a node the Geneve ceilings the
+	// node-agent applies, on a gateway, demux or L7 proxy pod the class and per-participant (per-lab) ceilings the pod applies
+	// itself. See package bandwidth for the format.
+	AnnotationBandwidthLimits = "cybericebox.com/bandwidth-limits"
+
 	// DefaultEth0 is the standard container ethernet interface name.
 	DefaultEth0 = "eth0"
 
@@ -130,9 +161,8 @@ const (
 // also set on device pods from the device name, and the platform prefix keeps a tenant from setting this one.
 const LabelComponent = LabelPrefix + "component"
 
-// ReservedDeviceNames are the names of the endpoints the platform provides in every lab (the VPN, the internet gateway)
-// and of its pods; a device may not have them.
-var ReservedDeviceNames = []string{"vpn", "gateway", "internet"}
+// ReservedDeviceNames are the names of the endpoints the platform provides in every lab; the list is public (pkg/names) so that callers share it.
+var ReservedDeviceNames = pubnames.ReservedDeviceNames
 
 // ProxyL7App is the `app` label value on the L7 proxy pod that terminates
 // external HTTPS and connects to exposed device Services. The web-exposure

@@ -49,7 +49,7 @@ type OVSManager struct {
 	client                  client.Client
 	ctx                     context.Context
 	mu                      sync.Mutex
-	vethMu                  sync.Mutex // serialize Pod netns wiring against replacement cleanup
+	vethMu                  heldMutex // serialize Pod netns wiring against replacement cleanup
 
 	// policingKbps is the rate a veth port of a device may send into the bridge (0 = unpoliced); set by SetPolicing.
 	policingKbps int
@@ -212,6 +212,7 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 	}
 
 	m := &OVSManager{bridge: bridge, client: ovs, ctx: ctx}
+	m.vethMu.name = "veth"
 	return m, m.ensureBridge()
 }
 

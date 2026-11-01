@@ -54,6 +54,12 @@ type FastPath struct {
 	entries bool                      // SetEntries has given at least one address
 	order   error                     // the last EnsureOrder's result
 
+	activityMu sync.Mutex
+	activity   map[uint32]uint64 // the byte total of each session at the last ActiveSessions
+
+	byteLimiter bool  // the programs were loaded with the byte limiter (false: the verifier refused it, only the packet bucket limits)
+	limiterErr  error // why the byte limiter did not load
+
 	query func(link.QueryOptions) (*link.QueryResult, error) // link.QueryPrograms; a seam for the tests
 }
 
@@ -77,7 +83,15 @@ func Open(o Options) (*FastPath, error) {
 	}
 	f := &FastPath{o: o, ext: ext, links: map[string]link.Link{}, busy: map[string]bool{}, sources: map[netip.Addr]netip.Addr{},
 		query: link.QueryPrograms}
-	if err := f.load(); err != nil {
+	// The byte limiter is tried first; a kernel whose verifier refuses it gets the programs without it (the packet bucket of the
+	// session stays the only limit, see SetRate), and the reason is kept for the caller to log.
+	err = f.load(!o.NoByteLimiter)
+	var verifier *ebpf.VerifierError
+	if err != nil && !o.NoByteLimiter && errors.As(err, &verifier) {
+		f.limiterErr = err
+		err = f.load(false)
+	}
+	if err != nil {
 		return nil, err
 	}
 	cfg := WgFastpathWgCfg{TtlNs: uint64(o.TTL), ExtIfindex: uint32(ext[0])}
@@ -108,13 +122,46 @@ func Open(o Options) (*FastPath, error) {
 	return f, nil
 }
 
-func (f *FastPath) load() error {
+// SetRate changes the packet rate of one session (both directions together) in the running fast path; rate 0 = unlimited. Sessions
+// already forwarded keep their tokens and meet the new rate at their next refill.
+func (f *FastPath) SetRate(rate float64, burst int) error {
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
+		return fmt.Errorf("read the config: %w", err)
+	}
+	cfg.RatePerS, cfg.Burst = 0, 0
+	if rate > 0 {
+		cfg.RatePerS, cfg.Burst = uint64(math.Ceil(rate)), uint64(max(burst, 1))
+	}
+	if err := f.objs.WgCfg.Put(uint32(0), cfg); err != nil {
+		return fmt.Errorf("write the config: %w", err)
+	}
+	return nil
+}
+
+// newSpec reads the programs; byteLimiter sets the constant the programs read, and with 0 the verifier drops the limiter's code.
+func (f *FastPath) newSpec(byteLimiter bool) (*ebpf.CollectionSpec, error) {
 	spec, err := LoadWgFastpath()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if f.o.MaxEntries > 0 {
 		spec.Maps[WgFastpathMapWgSessions].MaxEntries = uint32(f.o.MaxEntries)
+	}
+	v := uint32(0)
+	if byteLimiter {
+		v = 1
+	}
+	if err := spec.Variables[WgFastpathVarByteLimiter].Set(v); err != nil {
+		return nil, fmt.Errorf("set the byte limiter: %w", err)
+	}
+	return spec, nil
+}
+
+func (f *FastPath) load(byteLimiter bool) error {
+	spec, err := f.newSpec(byteLimiter)
+	if err != nil {
+		return err
 	}
 	opts := &ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: f.o.PinPath}}
 	err = spec.LoadAndAssign(&f.objs, opts)
@@ -123,13 +170,67 @@ func (f *FastPath) load() error {
 		for name := range spec.Maps {
 			_ = os.Remove(filepath.Join(f.o.PinPath, name))
 		}
+		if spec, err = f.newSpec(byteLimiter); err != nil {
+			return err
+		}
 		err = spec.LoadAndAssign(&f.objs, opts)
 	}
 	if err != nil {
 		return fmt.Errorf("load the fast path: %w", err)
 	}
 	f.spec = spec
+	f.byteLimiter = byteLimiter
 	return nil
+}
+
+// ByteLimiter says the programs limit by bytes (SetBandwidth works); false is the fallback with the packet bucket only, and
+// LimiterError says why.
+func (f *FastPath) ByteLimiter() bool { return f.byteLimiter }
+
+// LimiterError is why the byte limiter did not load (nil when it did).
+func (f *FastPath) LimiterError() error { return f.limiterErr }
+
+// SetBandwidth sets the byte limits of the fast path: sessionKbps is what one session may send (both directions together; 0 =
+// no limit of the session), classKbps what all sessions of the node may send (0 = none). It returns ErrNoByteLimiter when the programs
+// were loaded without the limiter. Sessions meet a new rate at their next packet.
+func (f *FastPath) SetBandwidth(sessionKbps, classKbps int64) error {
+	if !f.byteLimiter {
+		return ErrNoByteLimiter
+	}
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
+		return fmt.Errorf("read the config: %w", err)
+	}
+	l := byteLimits(sessionKbps, classKbps)
+	cfg.ByteRate, cfg.ByteBurst, cfg.ClassWindowNs, cfg.ClassWindowBytes = l.byteRate, l.byteBurst, l.windowNs, l.windowBytes
+	if err := f.objs.WgCfg.Put(uint32(0), cfg); err != nil {
+		return fmt.Errorf("write the config: %w", err)
+	}
+	return nil
+}
+
+// ActiveSessions counts the sessions that let at least minBytes through since the last call (the first call has nothing to compare with
+// and counts none). A session that only keeps its connection alive sends a few bytes now and then and is not counted: it would cut
+// the fair share of those who send.
+func (f *FastPath) ActiveSessions(minBytes uint64) (int, error) {
+	f.activityMu.Lock()
+	defer f.activityMu.Unlock()
+	next := map[uint32]uint64{}
+	active := 0
+	err := f.sessions(func(index uint32, v *WgFastpathWgFwd) {
+		if v.Flags&toClientFlag != 0 || v.Session != index {
+			return
+		}
+		next[index] = v.ByteTotal
+		if before, ok := f.activity[index]; ok && v.ByteTotal-before >= minBytes {
+			active++
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	f.activity = next
+	return active, nil
 }
 
 // externalDevices are the configured devices, or the one that holds the node's address.
@@ -227,7 +328,7 @@ func (f *FastPath) instance(kind string) (*ebpf.Program, error) {
 	}
 	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{MapReplacements: map[string]*ebpf.Map{
 		WgFastpathMapWgSessions: f.objs.WgSessions, WgFastpathMapWgEntries: f.objs.WgEntries,
-		WgFastpathMapWgEntrySeen: f.objs.WgEntrySeen, WgFastpathMapWgCfg: f.objs.WgCfg, WgFastpathMapWgStats: f.objs.WgStats,
+		WgFastpathMapWgEntrySeen: f.objs.WgEntrySeen, WgFastpathMapWgCfg: f.objs.WgCfg, WgFastpathMapWgStats: f.objs.WgStats, WgFastpathMapWgClass: f.objs.WgClass,
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("load another %s: %w", name, err)

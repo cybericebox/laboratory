@@ -18,8 +18,8 @@ import (
 // the agent). The defaults come from measuring: an idle VPN pod about 1m and 16Mi, up to 55m and 195Mi with ten active
 // peers (so 320Mi), a gateway about 1m and 8Mi: the data path is the kernel's WireGuard, the pod only manages peers and rules.
 type Config struct {
-	VPNCPU        string `env:"VPN_CPU" envDefault:"100m"`
-	VPNMemory     string `env:"VPN_MEMORY" envDefault:"320Mi"`
+	VPNCPU        string `env:"VPN_CPU" envDefault:"80m"`
+	VPNMemory     string `env:"VPN_MEMORY" envDefault:"264Mi"`
 	GatewayCPU    string `env:"GATEWAY_CPU" envDefault:"10m"`
 	GatewayMemory string `env:"GATEWAY_MEMORY" envDefault:"32Mi"`
 }

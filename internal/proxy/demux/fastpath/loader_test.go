@@ -478,3 +478,89 @@ func xdpProgram(t *testing.T, ifindex int) ebpf.ProgramID {
 	}
 	return id
 }
+
+// SetBandwidth writes the byte limits into the config the programs read.
+func TestSetBandwidthWritesTheConfig(t *testing.T) {
+	setup(t)
+	f := open(t, options(pinDir(t), demux.ModeTC))
+	if !f.ByteLimiter() || f.LimiterError() != nil {
+		t.Fatalf("the byte limiter loads on this kernel: %v", f.LimiterError())
+	}
+	if err := f.SetBandwidth(50_000, 340_000); err != nil {
+		t.Fatal(err)
+	}
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ByteRate != 6_250_000 || cfg.ByteBurst != 2_500_000 || cfg.ClassWindowNs != 1_000_000 || cfg.ClassWindowBytes != 42_500 {
+		t.Fatalf("%+v", cfg)
+	}
+	if cfg.TtlNs == 0 || cfg.ExtIfindex == 0 {
+		t.Fatalf("the other settings are kept: %+v", cfg)
+	}
+	if err := f.SetBandwidth(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.objs.WgCfg.Lookup(uint32(0), &cfg)
+	if cfg.ByteRate != 0 || cfg.ClassWindowBytes != 0 {
+		t.Fatalf("no limits: %+v", cfg)
+	}
+}
+
+// The fallback: loaded without the byte limiter, SetBandwidth says so, the packet bucket still takes a rate, and the programs attach
+// and forward like the others.
+func TestFallbackWithoutTheByteLimiter(t *testing.T) {
+	tp := setup(t)
+	o := options(pinDir(t), demux.ModeTC)
+	o.NoByteLimiter = true
+	f := open(t, o)
+	if f.ByteLimiter() {
+		t.Fatal("the byte limiter was asked off")
+	}
+	if err := f.SetBandwidth(1, 1); !errors.Is(err, ErrNoByteLimiter) {
+		t.Fatalf("want ErrNoByteLimiter, got %v", err)
+	}
+	if err := f.SetRate(4000, 400); err != nil {
+		t.Fatal(err)
+	}
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil || cfg.RatePerS != 4000 || cfg.Burst != 400 {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	upsertSession(t, f, tp)
+	if err := f.EnsureOrder(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A session counts as active when it let bytes through since the last call; the first call has nothing to compare with.
+func TestActiveSessionsCountsTheSessionsThatSend(t *testing.T) {
+	tp := setup(t)
+	f := open(t, options(pinDir(t), demux.ModeTC))
+	upsertSession(t, f, tp)
+	if n, err := f.ActiveSessions(1); err != nil || n != 0 {
+		t.Fatalf("the first call counts none: %d %v", n, err)
+	}
+	if n, err := f.ActiveSessions(1); err != nil || n != 0 {
+		t.Fatalf("a session that sent nothing is not active: %d %v", n, err)
+	}
+	var owner WgFastpathWgFwd
+	if err := f.objs.WgSessions.Lookup(WgFastpathWgKey{Index: serverIndex}, &owner); err != nil {
+		t.Fatal(err)
+	}
+	owner.ByteTotal += 10_000 // what the programs add as packets pass
+	if err := f.objs.WgSessions.Put(WgFastpathWgKey{Index: serverIndex}, owner); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.ActiveSessions(4096); err != nil || n != 1 {
+		t.Fatalf("10 kB passed: %d %v", n, err)
+	}
+	owner.ByteTotal += 32 // a keepalive
+	if err := f.objs.WgSessions.Put(WgFastpathWgKey{Index: serverIndex}, owner); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.ActiveSessions(4096); err != nil || n != 0 {
+		t.Fatalf("a keepalive does not make a session active: %d %v", n, err)
+	}
+}

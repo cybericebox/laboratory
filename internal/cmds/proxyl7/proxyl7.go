@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/bandwidth"
+
 	"github.com/cybericebox/laboratory/internal/errorlog"
 
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
@@ -107,6 +109,9 @@ func Run() {
 		os.Exit(1)
 	}
 
+	if len(cfg.ProxyProtocolFrom) > 0 && len(cfg.ProxyProtocolSecrets) == 0 {
+		log.Info("WARNING: L7_PROXY_PROTOCOL_FROM is set without L7_PROXY_PROTOCOL_SECRETS: a PROXY header from a listed peer is believed without proof that it comes from the edge")
+	}
 	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
 		log.Error(err, "init TLS cert watcher")
@@ -132,6 +137,12 @@ func Run() {
 				return err
 			}
 			defer func() { _ = ln.Close() }()
+			// The edge may put the client's address in a PROXY header in front of the TLS; only the listed peers are believed.
+			if ln, err = proxy.ProxyProtocolListener(ln, proxy.ProxyProtocol{
+				Trusted: cfg.ProxyProtocolFrom, Secrets: cfg.ProxyProtocolSecrets,
+				TLVType: cfg.ProxyProtocolTLVType, HeaderTimeout: cfg.ReadHeaderTimeout}); err != nil {
+				return err
+			}
 			return l7.RunLifecycle(ctx, httpsSrv, handler, reports, cfg.ReportInterval, cfg.LiveCheckInterval, func() error {
 				listening.Set()
 				return httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", "")
@@ -146,6 +157,20 @@ func Run() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// The bandwidth limits of this node come from the operator's ConfigMap (a volume, the key of this node): the class of the proxy and the
+	// ceiling of one participant. A pod made without the volume has no limits.
+	go func() {
+		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, os.Getenv("NODE_NAME"),
+			func(l bandwidth.Limits) {
+				handler.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+			},
+			func(err error) { log.Error(err, "read the bandwidth annotation") })
+		if err != nil {
+			log.Error(err, "watch the bandwidth annotation")
+		}
+	}()
 
 	log.Info("starting l7 proxy", "listen", cfg.Listen)
 	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), errorlog.Namespace("laboratory-system"), ctrl.Log.WithName("error-journal"))

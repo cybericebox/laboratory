@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -303,6 +304,9 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		}
 	}
 	if err := r.createDevicePod(ctx, device); err != nil {
+		if stderrors.Is(err, errProfileUnsupported) {
+			return ctrl.Result{}, nil // refused for good, with an event
+		}
 		return r.pullSecretWait(ctx, device, err)
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -510,6 +514,9 @@ func (r *DeviceReconciler) publishPlacement(ctx context.Context, device *laborat
 
 // createDevicePod starts the next incarnation of the device.
 func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+	if err := r.refuseUnrunnableProfile(device); err != nil {
+		return err
+	}
 	// Before the incarnation moves: a device that waits for its lab's pull Secret starts
 	// the same incarnation once it is there.
 	pullSecrets, err := r.devicePullSecrets(ctx, device)

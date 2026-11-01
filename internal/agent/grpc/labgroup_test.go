@@ -9,6 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -151,8 +153,10 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 	if g := a.Spec.Gateway.Size; g == nil || g.CPUMillicores != 15 || g.MemoryBytes != 24<<20 {
 		t.Fatalf("gateway size: %+v", g)
 	}
-	if b.Spec.VPN.Size != nil || b.Spec.Gateway.Size != nil {
-		t.Fatal("no size asked, none stored: the operator uses the chart's default")
+	// neither a size nor a count: the group is made for the default counts (1 user, 5 labs)
+	wv, wg := grouppods.VPNSize(1, 5), grouppods.GatewaySize(5)
+	if v, g := b.Spec.VPN.Size, b.Spec.Gateway.Size; v == nil || g == nil || v.CPUMillicores != wv.CPU || v.MemoryBytes != wv.Memory || g.CPUMillicores != wg.CPU || g.MemoryBytes != wg.Memory {
+		t.Fatalf("default counts: %+v %+v", v, g)
 	}
 	res, err = h.CreateLabGroups(ctx, req)
 	wantStates(t, res, err, stExists, stExists)
@@ -176,5 +180,86 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 		if _, err := groups.Get(ctx, it.Name, metav1.GetOptions{}); err == nil {
 			t.Errorf("%s: the group must not be created", name)
 		}
+	}
+}
+
+// A group is sized from the counts it is made for: the defaults (1 user, 5 labs) when it says nothing, the asked counts, a refusal
+// over the maximum (10 users, 50 labs), and the old sizes when only sizes are sent.
+func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.reservationsOptional = true
+	h.SetFeatures(testFeatures)
+	ctx := context.Background()
+	create := func(name string, it *protobuf.LabGroupItem) (*protobuf.BatchResult, error) {
+		it.Name = name
+		return h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{it}})
+	}
+	sizeOf := func(name string) (vpn, gw laboratoryv1alpha1.GroupPodSize) {
+		t.Helper()
+		g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, name, metav1.GetOptions{})
+		if err != nil || g.Spec.VPN.Size == nil || g.Spec.Gateway.Size == nil {
+			t.Fatalf("%s: %+v %v", name, g, err)
+		}
+		return *g.Spec.VPN.Size, *g.Spec.Gateway.Size
+	}
+	for _, c := range []struct {
+		name        string
+		item        *protobuf.LabGroupItem
+		users, labs int
+	}{
+		{"defaults", &protobuf.LabGroupItem{}, 1, 5},
+		{"explicit", &protobuf.LabGroupItem{ExpectedUsers: 5, ExpectedLabs: 40}, 5, 40},
+		{"only-users", &protobuf.LabGroupItem{ExpectedUsers: 10}, 10, 5},
+		{"max", &protobuf.LabGroupItem{ExpectedUsers: 10, ExpectedLabs: 50}, 10, 50},
+	} {
+		res, err := create(c.name, c.item)
+		wantStates(t, res, err, stCreated)
+		vpn, gw := sizeOf(c.name)
+		wantVPN, wantGW := grouppods.VPNSize(c.users, c.labs), grouppods.GatewaySize(c.labs)
+		if r := res.Results[0]; r.GetVpnSize().GetCpuMillicores() != wantVPN.CPU || r.GetGatewaySize().GetMemoryBytes() != wantGW.Memory {
+			t.Errorf("%s: the response must carry the assigned sizes: %+v", c.name, r)
+		}
+		if vpn.CPUMillicores != wantVPN.CPU || vpn.MemoryBytes != wantVPN.Memory || gw.CPUMillicores != wantGW.CPU || gw.MemoryBytes != wantGW.Memory {
+			t.Errorf("%s: vpn %+v gateway %+v, want %+v %+v", c.name, vpn, gw, wantVPN, wantGW)
+		}
+	}
+	for name, it := range map[string]*protobuf.LabGroupItem{
+		"too-many-users": {ExpectedUsers: 11},
+		"too-many-labs":  {ExpectedLabs: 51},
+		"negative":       {ExpectedUsers: -1},
+	} {
+		if _, err := create(name, it); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s must be refused with InvalidArgument: %v", name, err)
+		}
+	}
+	// the old way: only sizes, kept as sent
+	res, err := create("legacy", &protobuf.LabGroupItem{VpnSize: &protobuf.PodSize{CpuMillicores: 33, MemoryBytes: 70 << 20}, GatewaySize: &protobuf.PodSize{CpuMillicores: 9, MemoryBytes: 20 << 20}})
+	wantStates(t, res, err, stCreated)
+	if vpn, gw := sizeOf("legacy"); vpn.CPUMillicores != 33 || gw.MemoryBytes != 20<<20 {
+		t.Errorf("legacy sizes changed: %+v %+v", vpn, gw)
+	}
+	// repeated create with the same counts is the same group
+	res, err = create("explicit", &protobuf.LabGroupItem{ExpectedUsers: 5, ExpectedLabs: 40})
+	wantStates(t, res, err, stExists)
+}
+
+// The default group (nothing said) and a small group get the size of the formulas for their counts (VPN base 12m / 156Mi, gateway
+// 10m / 32Mi at least); a bigger group is bigger.
+func TestExpectedCountsGiveTheFormulaSizes(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.reservationsOptional = true
+	h.SetFeatures(testFeatures)
+	ctx := context.Background()
+	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "dflt"}, {Name: "floor-a", ExpectedUsers: 1, ExpectedLabs: 1}, {Name: "floor-b", ExpectedUsers: 10, ExpectedLabs: 50}}})
+	wantStates(t, res, err, stCreated, stCreated, stCreated)
+	for _, r := range res.Results[:2] {
+		if r.GetVpnSize().GetCpuMillicores() < 12 || r.GetVpnSize().GetMemoryBytes() < 156<<20 || r.GetGatewaySize().GetCpuMillicores() < 10 || r.GetGatewaySize().GetMemoryBytes() < 32<<20 {
+			t.Errorf("a small group is not smaller than the formula base: %+v", r)
+		}
+	}
+	big := res.Results[2]
+	f := grouppods.VPNSize(10, 50)
+	if big.GetVpnSize().GetCpuMillicores() != f.CPU || big.GetVpnSize().GetMemoryBytes() != f.Memory || big.GetVpnSize().GetMemoryBytes() <= res.Results[0].GetVpnSize().GetMemoryBytes() {
+		t.Errorf("a big group is sized by the formula and is bigger: %+v vs %+v", big.GetVpnSize(), f)
 	}
 }

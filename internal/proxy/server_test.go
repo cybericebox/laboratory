@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	proxyproto "github.com/pires/go-proxyproto"
 )
 
 func testServer(t *testing.T, cfg *L7Config) string {
@@ -198,5 +200,160 @@ func TestL7LimitsDefaults(t *testing.T) {
 	}
 	if cfg.MaxConnections != 2500 || cfg.LivePerClient != 200 || cfg.LivePerGroup != 1000 || cfg.LiveTotal != 2500 || cfg.AuthRate != 5 || cfg.AuthBurst != 20 {
 		t.Fatalf("%+v", cfg)
+	}
+}
+
+func proxyHeaderV1(src string) string { return "PROXY TCP4 " + src + " 10.0.0.1 5555 443\r\n" }
+
+// A listed peer's PROXY header gives the connection's address, and the header is optional for it; the header of any other peer is
+// consumed and ignored (nobody can claim an address); an empty list changes nothing.
+func TestProxyProtocolListener(t *testing.T) {
+	remote := func(trusted []string, send string) string {
+		t.Helper()
+		raw, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: trusted, HeaderTimeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		got := make(chan string, 1)
+		go func() {
+			c, err := ln.Accept()
+			if err != nil {
+				got <- "accept: " + err.Error()
+				return
+			}
+			defer c.Close()
+			buf := make([]byte, 5)
+			if _, err := io.ReadFull(c, buf); err != nil {
+				got <- "read: " + err.Error()
+				return
+			}
+			host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+			got <- host + " " + string(buf)
+		}()
+		c, err := net.Dial("tcp", raw.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		_, _ = io.WriteString(c, send+"hello")
+		select {
+		case v := <-got:
+			return v
+		case <-time.After(3 * time.Second):
+			t.Fatal("no connection")
+			return ""
+		}
+	}
+	if got := remote([]string{"127.0.0.0/8"}, proxyHeaderV1("198.51.100.7")); got != "198.51.100.7 hello" {
+		t.Errorf("trusted peer with a header: %q", got)
+	}
+	if got := remote([]string{"127.0.0.1"}, ""); got != "127.0.0.1 hello" {
+		t.Errorf("trusted peer without a header (optional): %q", got)
+	}
+	if got := remote([]string{"10.0.0.0/8"}, proxyHeaderV1("198.51.100.7")); got != "127.0.0.1 hello" {
+		t.Errorf("an untrusted peer's header must be consumed and ignored: %q", got)
+	}
+	if got := remote(nil, ""); got != "127.0.0.1 hello" {
+		t.Errorf("feature off: %q", got)
+	}
+	raw, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer raw.Close()
+	if ln, err := ProxyProtocolListener(raw, ProxyProtocol{HeaderTimeout: time.Second}); err != nil || ln != raw {
+		t.Errorf("an empty list must return the listener unchanged: %v", err)
+	}
+	if _, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"not-an-ip"}, HeaderTimeout: time.Second}); err == nil {
+		t.Error("a bad entry must fail")
+	}
+}
+
+func proxyHeaderV2(t *testing.T, src string, tlvType byte, value string) []byte {
+	t.Helper()
+	h := proxyproto.HeaderProxyFromAddrs(2, &net.TCPAddr{IP: net.ParseIP(src), Port: 1234}, &net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 443})
+	if value != "" {
+		if err := h.SetTLVs([]proxyproto.TLV{{Type: proxyproto.PP2Type(tlvType), Value: []byte(value)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := h.Format()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// With a secret set, the address of a header is used only when its TLV equals the current or the next secret; any other header (wrong
+// secret, none, another TLV type) leaves the peer address. Nothing about a secret is in an error or an address.
+func TestProxyProtocolSecret(t *testing.T) {
+	const cur, next = "current-secret-0123456789abcdefghij", "next-secret-0123456789abcdefghijkl"
+	remote := func(payload []byte) string {
+		t.Helper()
+		raw, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"127.0.0.1"}, Secrets: []string{cur, next}, TLVType: 0xE0, HeaderTimeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		got := make(chan string, 1)
+		go func() {
+			c, err := ln.Accept()
+			if err != nil {
+				got <- "accept: " + err.Error()
+				return
+			}
+			defer c.Close()
+			buf := make([]byte, 5)
+			if _, err := io.ReadFull(c, buf); err != nil {
+				got <- "read: " + err.Error()
+				return
+			}
+			host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+			got <- host
+		}()
+		c, err := net.Dial("tcp", raw.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		_, _ = c.Write(append(payload, "hello"...))
+		select {
+		case v := <-got:
+			return v
+		case <-time.After(3 * time.Second):
+			t.Fatal("no connection")
+			return ""
+		}
+	}
+	for name, tc := range map[string]struct {
+		payload []byte
+		want    string
+	}{
+		"current secret":     {proxyHeaderV2(t, "198.51.100.7", 0xE0, cur), "198.51.100.7"},
+		"next secret":        {proxyHeaderV2(t, "198.51.100.7", 0xE0, next), "198.51.100.7"},
+		"wrong secret":       {proxyHeaderV2(t, "198.51.100.7", 0xE0, "guess"), "127.0.0.1"},
+		"secret of a prefix": {proxyHeaderV2(t, "198.51.100.7", 0xE0, cur[:10]), "127.0.0.1"},
+		"another TLV type":   {proxyHeaderV2(t, "198.51.100.7", 0xE2, cur), "127.0.0.1"},
+		"no TLV":             {proxyHeaderV2(t, "198.51.100.7", 0xE0, ""), "127.0.0.1"},
+		"no header":          {nil, "127.0.0.1"},
+	} {
+		if got := remote(tc.payload); got != tc.want {
+			t.Errorf("%s: remote = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestProxyProtocolSecretIsNeverInAnError(t *testing.T) {
+	raw, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer raw.Close()
+	_, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"bad"}, Secrets: []string{"super-secret-value", "next-secret-value"}})
+	if err == nil || strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("an error must name the setting, not a secret: %v", err)
 	}
 }

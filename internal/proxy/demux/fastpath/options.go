@@ -20,6 +20,9 @@ type Options struct {
 	TTL        time.Duration // a session idle for longer is left to the slow path
 	Rate       float64       // per-session packets per second, both directions together; 0 = unlimited
 	Burst      int
+	// NoByteLimiter loads the programs without the byte limiter, as after a refusal of the verifier (an escape hatch, and how the tests
+	// run the fallback).
+	NoByteLimiter bool
 }
 
 // Stats are the fast path's counters summed over the CPUs, by the names of demux.FastPathResults.

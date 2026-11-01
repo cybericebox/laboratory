@@ -52,6 +52,7 @@ type DHCPRange struct {
 
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
 // +kubebuilder:validation:XValidation:rule="self.type != 'container' || !has(self.interfaces) || size(self.interfaces) <= 16",message="a container device has at most 16 interfaces"
+// +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile == 'container' || self.type == 'container'",message="only a container device has a profile"
 type DeviceTemplate struct {
 	// Name becomes part of the lab's web address (<name>-<code>.<domain>), so
 	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).
@@ -64,6 +65,9 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`
 	Image string     `json:"image,omitempty"`
+	// Profile is how the device runs: container (the default when empty) or microvm. vm is reserved and refused.
+	// +optional
+	Profile DeviceProfile `json:"profile,omitempty"`
 	// SecurityPreset names a device security profile (standard or extended). Only the name is exposed here; the concrete Linux capabilities behind it
 	// are an internal platform decision. Empty means standard.
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
