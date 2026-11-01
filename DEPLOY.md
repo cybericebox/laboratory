@@ -1083,8 +1083,8 @@ images:
   stamped on the Device when it is created, like the persistence choice itself: changing a Tenant later affects new devices only.
 - **Group overhead.** Every LabGroup runs a VPN pod and an internet gateway pod of its own. Their resources are chart values
   (`vpn.resources`, `inetGateway.resources`: `cpu` and `memory`, requests = limits, so the pods are Guaranteed). The defaults are
-  `100m`/`320Mi` for the VPN and `10m`/`32Mi` for the gateway. Measured on the local stand (kubectl top every 10 s): an idle VPN pod uses
-  1m CPU (p95 4m) and 16Mi; with ten active peers pulling pages in a loop it peaks at 55m CPU and 195Mi, so 320Mi leaves about half as headroom; an idle gateway uses 1m and 8Mi. The data path is the kernel's WireGuard and the pod only manages peers and firewall rules. The operator
+  `100m`/`320Mi` for the VPN and `100m`/`96Mi` for the gateway. Measured on the local stand (kubectl top every 10 s): an idle VPN pod uses
+  1m CPU (p95 4m) and 16Mi; with ten active peers pulling pages in a loop it peaks at 55m CPU and 195Mi, so 320Mi leaves about half as headroom; the gateway is a web proxy and a DNS answerer, so its CPU follows the traffic of the labs: about 1m per Mbit/s (kind, each lab 50 Mbit/s down, 2 Mbit/s up, 50 DNS q/s: 5 labs 102m average and 149m peak, 10 labs 113m and 208m peak; the test link, not the gateway, was the limit), memory 60-80Mi whatever the load, and a start under 10m CPU takes about 20 s. The VPN's data path is the kernel's WireGuard and its pod only manages peers and firewall rules. The operator
   uses them for a group created without an explicit size (see "Sizing of a group's own pods"); existing groups keep what they have (changing a value never restarts a live VPN). `GetCapacity`
   reports their sum as `group_overhead_cpu_millicores` and `group_overhead_memory_bytes`: what one group adds to its labs, for sizing a reservation.
 - **Resource quota.** The scheduler caps the sum of the CPU and memory requests of the tenant's dispatched pods (started, starting
@@ -2401,7 +2401,7 @@ The VPN and the gateway pod of a group are sized by the platform, not by the cha
   `base + per_unit * labs` that use the internet, at most `max_labs` labs; CPU and memory both; the maximum size is the base plus the per-unit
   value times the maximum. Values: `vpn.sizing` (`baseCpu`, `baseMemory`, `perUserCpu`, `perUserMemory`, `maxUsers`) and `inetGateway.sizing`
   (`baseCpu`, `baseMemory`, `perLabCpu`, `perLabMemory`, `maxLabs`). Measured: a VPN about 16Mi idle and about 195Mi and 55m with 10 active peers,
-  a gateway about 8Mi idle. `group_pods` also carries the default size (`vpn.resources`, `inetGateway.resources`), which must not exceed the maximum
+  a gateway 60-80Mi (page cache included) and about 1m CPU per Mbit/s of lab traffic; defaults `baseCpu: 20m`, `perLabCpu: 40m`, `baseMemory: 96Mi`, `perLabMemory: 2Mi`. `group_pods` also carries the default size (`vpn.resources`, `inetGateway.resources`), which must not exceed the maximum
   (the agent refuses to start otherwise).
 - **The backend computes the size** for the group it plans (the VPN for the event's largest team, the gateway for the group's internet labs) and
   passes it in `CreateLabGroups` (`vpn_size`, `gateway_size`: `cpu_millicores`, `memory_bytes`). The agent refuses a size that is not positive in both

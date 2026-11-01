@@ -202,18 +202,20 @@ inetGateway:
   limits:
     maxConnectionsPerLab: 4096
     newConnectionsPerSecondPerLab: 100
-  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi
-  # (traffic of labs through it is not measured yet).
+  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). The gateway is a web proxy and a DNS answerer:
+  # measured on kind with each lab downloading 50 Mbit/s, uploading 2 Mbit/s and asking 50 DNS q/s: about 1m CPU per Mbit/s
+  # (5 labs ~100 Mbit/s: 102m average, 149m peak; 10 labs: 113m, 208m peak, the test link was the limit), memory 60-80Mi
+  # (page cache included) whatever the load, a start under 10m CPU takes ~20 s.
   resources:
-    cpu: 10m
-    memory: 32Mi
+    cpu: 100m
+    memory: 96Mi
   # How the platform sizes the gateway pod of a group: base + perLab * labs that use the internet, at most maxLabs labs (see vpn.sizing).
-  # Measured idle: about 1m and 8Mi.
+  # With headroom over the measurement above: the CPU follows the traffic of the labs, the memory hardly grows.
   sizing:
-    baseCpu: 5m
-    baseMemory: 16Mi
-    perLabCpu: 2m
-    perLabMemory: 4Mi
+    baseCpu: 20m
+    baseMemory: 96Mi
+    perLabCpu: 40m
+    perLabMemory: 2Mi
     maxLabs: 50
   # The labs of a group reach only the public internet through its gateway. The denied internal ranges (the private
   # ranges, link-local and the cloud metadata service, loopback, CGNAT, multicast and reserved, and the IPv6
