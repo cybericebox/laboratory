@@ -1,7 +1,6 @@
 package egressproxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -311,36 +311,96 @@ func (p *Proxy) dial(ctx context.Context, ips []netip.Addr, port string) (net.Co
 	return nil, last
 }
 
-// readHTTPHead reads an HTTP/1.x request head (up to 16 kB) and returns the bytes read and the Host.
-func readHTTPHead(r io.Reader) ([]byte, string, error) {
-	const max = 16 << 10
-	var buf bytes.Buffer
-	br := bufio.NewReader(io.TeeReader(r, &buf))
-	line, err := br.ReadString('\n')
-	if err != nil {
-		return nil, "", err
-	}
-	// "GET /x HTTP/1.1": three words, the last starts with HTTP/
-	f := strings.Fields(line)
-	if len(f) != 3 || !strings.HasPrefix(f[2], "HTTP/") {
-		return nil, "", errors.New("not an HTTP request line")
-	}
-	host := ""
-	for buf.Len() <= max {
-		l, err := br.ReadString('\n')
-		if err != nil {
-			return nil, "", err
+// maxHTTPHead is the most the proxy reads before the end of a request head: a bigger head is refused, and nothing is buffered beyond it
+// (the read itself is bounded, not only the check after it).
+const maxHTTPHead = 16 << 10
+
+var errBadHTTP = errors.New("not an acceptable HTTP request")
+
+// readHTTPHead reads the head of one HTTP/1.x request (up to 16 kB, CRLF line ends) and returns what is to be sent on to the server and the
+// host name the proxy decided on. The head is checked the way a server would read it, so that the name the proxy judges is the name the
+// server serves: one Host only, an absolute-form target must carry the same host, no obsolete line folding, no space before a colon, no
+// CONNECT. The request is forwarded with "Connection: close" and without Upgrade / Proxy-Connection / Keep-Alive: one request per
+// connection, so the checks above are the checks of every request that is served.
+func readHTTPHead(r io.Reader) (forward []byte, host string, err error) {
+	buf := make([]byte, 0, 4096)
+	chunk := make([]byte, 2048)
+	end := -1
+	lr := io.LimitReader(r, maxHTTPHead+int64(len(chunk))) // never more than a head and one read past it
+	for end < 0 {
+		n, rerr := lr.Read(chunk)
+		buf = append(buf, chunk[:n]...)
+		if i := bytes.Index(buf, []byte("\r\n\r\n")); i >= 0 {
+			end = i + 4
+			break
 		}
-		l = strings.TrimRight(l, "\r\n")
-		if l == "" {
-			// br may have read ahead of the head: what was read is what the server must get
-			return buf.Bytes(), host, nil
+		if len(buf) > maxHTTPHead {
+			return nil, "", errBadHTTP
 		}
-		if i := strings.IndexByte(l, ':'); i > 0 && strings.EqualFold(strings.TrimSpace(l[:i]), "host") && host == "" {
-			host = strings.TrimSpace(l[i+1:])
+		if rerr != nil {
+			return nil, "", rerr
 		}
 	}
-	return nil, "", errors.New("HTTP head too large")
+	if end > maxHTTPHead+len(chunk) {
+		return nil, "", errBadHTTP
+	}
+	head, rest := buf[:end-4], buf[end:]
+	lines := strings.Split(string(head), "\r\n")
+	f := strings.Fields(lines[0])
+	if len(f) != 3 || !strings.HasPrefix(f[2], "HTTP/1.") || strings.EqualFold(f[0], "CONNECT") {
+		return nil, "", errBadHTTP
+	}
+	hostHeader, hosts := "", 0
+	var out []string
+	for _, l := range lines[1:] {
+		if l == "" || l[0] == ' ' || l[0] == '\t' { // empty line inside the head, or obsolete line folding
+			return nil, "", errBadHTTP
+		}
+		i := strings.IndexByte(l, ':')
+		if i <= 0 {
+			return nil, "", errBadHTTP
+		}
+		name := l[:i]
+		if strings.ContainsAny(name, " \t") { // "Host : x" is read as Host by some servers and not by others
+			return nil, "", errBadHTTP
+		}
+		switch strings.ToLower(name) {
+		case "host":
+			hosts++
+			hostHeader = strings.TrimSpace(l[i+1:])
+			out = append(out, l)
+		case "connection", "proxy-connection", "keep-alive", "upgrade":
+			// dropped: the request goes on with Connection: close
+		default:
+			out = append(out, l)
+		}
+	}
+	if hosts > 1 {
+		return nil, "", errBadHTTP
+	}
+	host = hostHeader
+	if t := f[1]; strings.HasPrefix(strings.ToLower(t), "http://") || strings.HasPrefix(strings.ToLower(t), "https://") {
+		u, uerr := url.Parse(t)
+		if uerr != nil || u.Host == "" || u.User != nil {
+			return nil, "", errBadHTTP
+		}
+		a, ar := NormalizeName(u.Host)
+		if host == "" {
+			host = u.Host
+		} else if h, hr := NormalizeName(host); ar != "" || hr != "" || a != h {
+			return nil, "", errBadHTTP // the target and the Host name different hosts
+		}
+	} else if !strings.HasPrefix(t, "/") && t != "*" {
+		return nil, "", errBadHTTP
+	}
+	var b bytes.Buffer
+	b.WriteString(lines[0] + "\r\n")
+	for _, l := range out {
+		b.WriteString(l + "\r\n")
+	}
+	b.WriteString("Connection: close\r\n\r\n")
+	b.Write(rest)
+	return b.Bytes(), host, nil
 }
 
 // Listen opens a TCP listener on all addresses of the pod.

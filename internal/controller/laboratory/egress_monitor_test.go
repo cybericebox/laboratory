@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,9 +57,13 @@ func newMonitorFixture(t *testing.T, labs ...string) *monitorFixture {
 	}))
 	t.Cleanup(gw.Close)
 	host, port, _ := net.SplitHostPort(strings.TrimPrefix(gw.URL, "http://"))
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gateway-x", Namespace: "lg-a", UID: "gw-uid", Labels: map[string]string{names.LabelComponent: names.ComponentGateway}},
+	yes := true
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lg-a", Labels: map[string]string{names.LabelGroup: "g"}}}
+	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "gateway-abc", Namespace: "lg-a", UID: "rs-uid", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: names.ComponentGateway, Controller: &yes}}}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gateway-x", Namespace: "lg-a", UID: "gw-uid", Labels: map[string]string{names.LabelComponent: names.ComponentGateway},
+		OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}}},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: host}}
-	objs := []client.Object{pod}
+	objs := []client.Object{ns, rs, pod}
 	for _, l := range labs {
 		objs = append(objs, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: l, Namespace: "lg-a"}})
 	}
@@ -162,5 +167,114 @@ func TestEgressMonitorClearsAFlagItDidNotSetInThisRun(t *testing.T) {
 	}
 	if f.flagged(t, "stale") != nil {
 		t.Error("a flag with nothing behind it must be taken off")
+	}
+}
+
+// Only the pods of the gateway Deployments that the operator made, in the namespaces of its groups, are asked; and what they answer is bounded.
+func TestEgressMonitorAsksOnlyItsOwnGateways(t *testing.T) {
+	f := newMonitorFixture(t, "l1")
+	yes := true
+	host, _, _ := net.SplitHostPort(strings.TrimPrefix(f.gateway.URL, "http://"))
+	mk := func(name, ns string, labels map[string]string, owners []metav1.OwnerReference) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID(name), Labels: labels, OwnerReferences: owners},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: host}}
+	}
+	gw := map[string]string{names.LabelComponent: names.ComponentGateway}
+	foreign := []client.Object{
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "not-a-group"}},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "other-rs", Namespace: "lg-a", UID: "other-uid", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "something-else", Controller: &yes}}}},
+		mk("no-owner", "lg-a", gw, nil),
+		mk("outside-groups", "not-a-group", gw, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}}),
+		mk("other-deployment", "lg-a", gw, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "other-rs", UID: "other-uid", Controller: &yes}}),
+		mk("wrong-rs-uid", "lg-a", gw, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "forged", Controller: &yes}}),
+	}
+	for _, o := range foreign {
+		if err := f.c.Create(context.Background(), o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pods, err := f.m.gatewayPods(context.Background())
+	if err != nil || len(pods) != 1 || pods[0].Name != "gateway-x" {
+		t.Fatalf("only the operator's own gateway is asked: %v %v", names2(pods), err)
+	}
+}
+
+func names2(pods []corev1.Pod) []string {
+	var out []string
+	for _, p := range pods {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+func TestEgressMonitorBoundsWhatAGatewayTells(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 30, 0, time.UTC)
+	since := now.Add(-5 * time.Minute)
+	long := strings.Repeat("a", 300)
+	var rows []egressproxy.Row
+	for i := 0; i < maxRowsPerMinute+50; i++ {
+		rows = append(rows, egressproxy.Row{Lab: "l", Host: "h" + strconv.Itoa(i), Conns: 1})
+	}
+	s := &egressproxy.Summaries{Minutes: []egressproxy.Minute{
+		{Start: now.Add(-time.Minute), Rows: rows}, // fine, trimmed to the cap
+		{Start: now.Add(10 * time.Minute)},         // from the future
+		{Start: now.Add(-2 * time.Hour)},           // older than an hour
+		{Start: since},                             // not after what was asked
+		{Start: now.Add(-2 * time.Minute), Rows: []egressproxy.Row{{Lab: "l", Host: long, Conns: 1}, {Lab: "l", Host: "ok.test", Conns: -4}, {Lab: "l", Host: "fine.test", Conns: 2}}},
+	}}
+	got := accept(s, since, now)
+	if len(got) != 2 || len(got[0].Rows) != maxRowsPerMinute {
+		t.Fatalf("minutes kept: %d (first has %d rows)", len(got), len(got[0].Rows))
+	}
+	if len(got[1].Rows) != 1 || got[1].Rows[0].Host != "fine.test" {
+		t.Fatalf("a long name and a negative count must be dropped: %+v", got[1].Rows)
+	}
+	many := &egressproxy.Summaries{}
+	for i := 0; i < 500; i++ {
+		many.Minutes = append(many.Minutes, egressproxy.Minute{Start: now.Add(-time.Duration(i+1) * 5 * time.Second)})
+	}
+	if got := accept(many, since, now); len(got) > maxMinutesPerPull {
+		t.Fatalf("%d minutes in one pull", len(got))
+	}
+}
+
+// A gateway that answers with more than the bound is not believed; the table of minutes does not grow past its cap.
+func TestEgressMonitorBodyAndTableAreBounded(t *testing.T) {
+	f := newMonitorFixture(t, "l1")
+	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"minutes":[{"start":"2026-11-01T11:59:00Z","rows":[{"lab":"l1","host":"`))
+		chunk := []byte(strings.Repeat("a", 1<<20))
+		for i := 0; i < 8; i++ { // 8 MB in one string
+			_, _ = w.Write(chunk)
+		}
+		_, _ = w.Write([]byte(`","conns":1}]}]}`))
+	}))
+	defer big.Close()
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(big.URL, "http://"))
+	p, _ := strconv.Atoi(port)
+	goodPort := f.m.Port
+	f.m.Port = p
+	var pod corev1.Pod
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "lg-a", Name: "gateway-x"}, &pod); err != nil {
+		t.Fatal(err)
+	}
+	pod.Status.PodIP = host
+	if err := f.c.Status().Update(context.Background(), &pod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.fetch(context.Background(), &pod, time.Time{}); err == nil {
+		t.Fatal("a body over the bound was accepted")
+	}
+	for i := 0; i < maxKeptMinutes+50; i++ {
+		f.m.minutes = append(f.m.minutes, monitorMinute{start: f.m.now().Add(-time.Second)})
+	}
+	*f.minutes = []egressproxy.Minute{{Start: time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC), Rows: []egressproxy.Row{{Lab: "l1", Host: "x.test", Conns: 1}}}}
+	pod.Status.PodIP, f.m.Port = strings.Split(strings.TrimPrefix(f.gateway.URL, "http://"), ":")[0], goodPort
+	if err := f.c.Status().Update(context.Background(), &pod); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.m.Pull(context.Background())
+	if len(f.m.minutes) > maxKeptMinutes+1 {
+		t.Fatalf("the table of minutes grew to %d", len(f.m.minutes))
 	}
 }

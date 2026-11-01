@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -132,18 +134,108 @@ func (m *EgressMonitor) Start(ctx context.Context) error {
 	}
 }
 
+// Limits on what a gateway may tell the operator: the operator believes only what a pod of its own says, and only so much of it.
+const (
+	maxSummaryBody    = 4 << 20
+	maxMinutesPerPull = 60
+	maxRowsPerMinute  = 5000
+	maxNameLen        = 253
+	maxKeptMinutes    = 200
+	summaryMaxAge     = time.Hour
+	summaryMaxFuture  = time.Minute
+	gatewayDeployment = names.ComponentGateway
+)
+
+// gatewayPods are the running pods of the gateway Deployments that the operator itself made, in the namespaces of its LabGroups: a pod that
+// carries the label but is not owned (through its ReplicaSet) by the Deployment "gateway" in a namespace labelled as a group's is not asked.
 func (m *EgressMonitor) gatewayPods(ctx context.Context) ([]corev1.Pod, error) {
+	var nss corev1.NamespaceList
+	if err := m.Reader.List(ctx, &nss, client.HasLabels{names.LabelGroup}); err != nil {
+		return nil, err
+	}
+	groups := map[string]bool{}
+	for i := range nss.Items {
+		groups[nss.Items[i].Name] = true
+	}
 	var pods corev1.PodList
 	if err := m.Reader.List(ctx, &pods, client.MatchingLabels{names.LabelComponent: names.ComponentGateway}); err != nil {
 		return nil, err
 	}
 	var out []corev1.Pod
+	owned := map[string]bool{} // ReplicaSet (namespace/name) -> owned by the gateway Deployment
 	for _, p := range pods.Items {
-		if p.Status.Phase == corev1.PodRunning && p.Status.PodIP != "" && p.DeletionTimestamp.IsZero() {
+		if !groups[p.Namespace] || p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" || !p.DeletionTimestamp.IsZero() {
+			continue
+		}
+		rs := controllerRef(p.OwnerReferences, "ReplicaSet")
+		if rs == nil {
+			continue
+		}
+		key := p.Namespace + "/" + rs.Name + "/" + string(rs.UID)
+		ok, seen := owned[key]
+		if !seen {
+			var r appsv1.ReplicaSet
+			if err := m.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: rs.Name}, &r); err != nil {
+				continue
+			}
+			d := controllerRef(r.OwnerReferences, "Deployment")
+			ok = r.UID == rs.UID && d != nil && d.Name == gatewayDeployment
+			owned[key] = ok
+		}
+		if ok {
 			out = append(out, p)
 		}
 	}
 	return out, nil
+}
+
+func controllerRef(refs []metav1.OwnerReference, kind string) *metav1.OwnerReference {
+	for i := range refs {
+		if refs[i].Controller != nil && *refs[i].Controller && refs[i].Kind == kind {
+			return &refs[i]
+		}
+	}
+	return nil
+}
+
+// accept keeps the minutes of a pull that can be true: after what was asked for, not from the future, not older than an hour, at most
+// maxMinutesPerPull of them, with at most maxRowsPerMinute rows each and names of a sane length.
+func accept(s *egressproxy.Summaries, since, now time.Time) []egressproxy.Minute {
+	var out []egressproxy.Minute
+	for _, min := range s.Minutes {
+		if len(out) >= maxMinutesPerPull {
+			break
+		}
+		if !min.Start.After(since) || min.Start.After(now.Add(summaryMaxFuture)) || min.Start.Before(now.Add(-summaryMaxAge)) {
+			continue
+		}
+		if len(min.Rows) > maxRowsPerMinute {
+			min.Rows = min.Rows[:maxRowsPerMinute]
+		}
+		if len(min.Caps) > maxRowsPerMinute {
+			min.Caps = min.Caps[:maxRowsPerMinute]
+		}
+		if len(min.Denials) > maxRowsPerMinute {
+			min.Denials = min.Denials[:maxRowsPerMinute]
+		}
+		rows := min.Rows[:0:0]
+		for _, r := range min.Rows {
+			if len(r.Lab) > maxNameLen || len(r.Host) > maxNameLen || r.Conns < 0 || r.Up < 0 || r.Down < 0 {
+				continue
+			}
+			rows = append(rows, r)
+		}
+		min.Rows = rows
+		caps := min.Caps[:0:0]
+		for _, c := range min.Caps {
+			if len(c.Lab) <= maxNameLen {
+				caps = append(caps, c)
+			}
+		}
+		min.Caps = caps
+		out = append(out, min)
+	}
+	return out
 }
 
 func (m *EgressMonitor) fetch(ctx context.Context, p *corev1.Pod, since time.Time) (*egressproxy.Summaries, error) {
@@ -169,7 +261,7 @@ func (m *EgressMonitor) fetch(ctx context.Context, p *corev1.Pod, since time.Tim
 		return nil, fmt.Errorf("the gateway answered %d", resp.StatusCode)
 	}
 	var s egressproxy.Summaries
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSummaryBody)).Decode(&s); err != nil {
 		return nil, err
 	}
 	return &s, nil
@@ -202,7 +294,7 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 			m.Log.Info("cannot pull the egress summaries of a gateway", "pod", client.ObjectKeyFromObject(p), "error", err.Error())
 			continue
 		}
-		for _, min := range s.Minutes {
+		for _, min := range accept(s, since, m.now()) {
 			egressMinutesPulled.Inc()
 			mm := monitorMinute{start: min.Start, hosts: map[string]map[labKey]bool{}, caps: map[labKey]bool{}}
 			for _, r := range min.Rows {
@@ -219,6 +311,9 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 			}
 			m.mu.Lock()
 			m.minutes = append(m.minutes, mm)
+			if len(m.minutes) > maxKeptMinutes {
+				m.minutes = m.minutes[len(m.minutes)-maxKeptMinutes:]
+			}
 			if min.Start.After(m.last[key]) {
 				m.last[key] = min.Start
 			}

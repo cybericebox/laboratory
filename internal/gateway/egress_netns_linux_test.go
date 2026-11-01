@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -311,6 +312,69 @@ except Exception as e:
 		}
 		if secs, _ := strconv.ParseFloat(dl[2], 64); secs > 4 {
 			t.Errorf("4 MB download with the upload at 64 kbit/s took %.1f s: the ACKs were counted", secs)
+		}
+	})
+
+	t.Run("only an ACK without payload is exempt from the upload ceiling, and it has a ceiling of its own", func(t *testing.T) {
+		sh := NewShaper()
+		if err := sh.SetLimits(50_000, 2_048); err != nil {
+			t.Fatal(err)
+		}
+		if err := sh.Track("lab1"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { sh.Forget("lab1") })
+		// TCP packets of a lab with only the ACK flag, with and without payload, sent raw (nobody answers; they are counted where they enter)
+		raw := `
+import socket, struct, sys
+n, payload, doff = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+opts = b"\x01\x01\x08\x0a" + b"\0" * 8 if doff == 8 else b""
+tcp = struct.pack(">HHIIBBHHH", 40000, 80, 1, 1, doff << 4, 0x10, 65535, 0, 0) + opts + b"z" * payload
+ip = struct.pack(">BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 1, 0, 64, 6, 0, socket.inet_aton("10.9.0.2"), socket.inet_aton("198.51.100.1"))
+s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+for _ in range(n):
+    try: s.sendto(ip + tcp, ("198.51.100.1", 0))
+    except OSError: pass
+`
+		stats := regexp.MustCompile(`Sent (\d+) bytes (\d+) pkt \(dropped (\d+),`)
+		// per police of the ingress, in the order of the filters: ACK of 40 bytes, ACK of 52 bytes, the ceiling
+		counters := func() (pkts, dropped [3]int, text string) {
+			text = nstest.Run(t, "", "tc", "-s", "filter", "show", "dev", "lab1", "parent", "ffff:")
+			m := stats.FindAllStringSubmatch(text, -1)
+			if len(m) != 3 {
+				t.Fatalf("expected the three polices of the ingress, got %d:\n%s", len(m), text)
+			}
+			for i := range m {
+				pkts[i], _ = strconv.Atoi(m[i][2])
+				dropped[i], _ = strconv.Atoi(m[i][3])
+			}
+			return
+		}
+		send := func(n, payload, doff int) {
+			if _, err := nstest.Try("lab", "python3", "-c", raw, strconv.Itoa(n), strconv.Itoa(payload), strconv.Itoa(doff)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// 2 MB of ACKs with 60 bytes of payload each: all of them meet the ceiling (a 1 MB burst passes, the rest is dropped), none the exempt polices
+		p0, d0, _ := counters()
+		send(20000, 60, 5)
+		p1, d1, text := counters()
+		if p1[2]-p0[2] < 15000 || d1[2]-d0[2] < 5000 {
+			t.Errorf("ACKs with a payload must be counted by the ceiling: %d seen, %d dropped\n%s", p1[2]-p0[2], d1[2]-d0[2], text)
+		}
+		if p1[0] != p0[0] || p1[1] != p0[1] {
+			t.Errorf("ACKs with a payload were taken for payload-less ones: %v -> %v", p0, p1)
+		}
+		// 30000 ACKs without payload, 40 and 52 bytes: they are the exempt ones, and they meet a ceiling of their own
+		p2, d2, _ := counters()
+		send(30000, 0, 5)
+		send(30000, 0, 8)
+		p3, d3, text := counters()
+		if p3[0]-p2[0] < 20000 || p3[1]-p2[1] < 20000 || p3[2] != p2[2] {
+			t.Errorf("payload-less ACKs must go to the exempt polices only: %v -> %v\n%s", p2, p3, text)
+		}
+		if d3[0]-d2[0] < 1000 || d3[1]-d2[1] < 1000 {
+			t.Errorf("the exempt ACKs have a ceiling of their own: dropped %v -> %v", d2, d3)
 		}
 	})
 
