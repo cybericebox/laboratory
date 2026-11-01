@@ -28,6 +28,10 @@ import (
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
+// interfaceWait is how often a lab whose interface is not in the pod yet is looked at again: the node-agent wires the legs of a pod that
+// was just replaced within a second or two, and every second here is a second the lab stays cut off.
+const interfaceWait = time.Second
+
 type LabGatewayReconciler struct {
 	client.Client
 	DHCP     *dhcp.Manager
@@ -249,7 +253,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		if err := r.patchStatus(ctx, gw, next); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: interfaceWait}, nil
 	}
 
 	cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
