@@ -192,6 +192,12 @@ func firstHostIP(cidr string) string {
 	return netutil.NextIP(ip).String()
 }
 
+func announceGateway(ctx context.Context, iface, cidr string) {
+	if err := announceARP(iface, net.ParseIP(firstHostIP(cidr))); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "cannot announce the gateway address to the lab", "iface", iface)
+	}
+}
+
 func (r *LabGatewayReconciler) networkFailure(ctx context.Context, obj *laboratoryv1alpha1.LabGateway, err error) (ctrl.Result, error) {
 	r.DHCP.Stop(obj.Spec.LabName)
 	if r.IPT != nil {
@@ -298,9 +304,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		}
 		r.applied[gw.Name] = desired
 		// The devices of the lab may still hold the hardware address of a gateway that was replaced: tell them who has the address now.
-		if err := announceARP(ifaceName, net.ParseIP(firstHostIP(cidr))); err != nil {
-			ctrl.LoggerFrom(ctx).Error(err, "cannot announce the gateway address to the lab", "iface", ifaceName)
-		}
+		announceGateway(ctx, ifaceName, cidr)
 		ctrl.LoggerFrom(ctx).Info("the lab is open: egress redirects and the source gate stand", "lab", gw.Spec.LabName, "iface", ifaceName)
 	}
 	r.shape(gw, ifaceName)

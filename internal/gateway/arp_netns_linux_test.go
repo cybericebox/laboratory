@@ -24,12 +24,12 @@ func TestNetnsAnnounceARPReachesTheSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_ARP)))
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(arpProto))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = unix.Close(fd) }()
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ARP), Ifindex: dev.Index}); err != nil {
+	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: arpProto, Ifindex: dev.Index}); err != nil {
 		t.Fatal(err)
 	}
 	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 3})
