@@ -5,6 +5,8 @@ package nodeagent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -92,5 +95,60 @@ func TestNetnsPortGoneFromOpenFlowIsRetiredForTheReplacement(t *testing.T) {
 	}
 	if _, present := owners[key]; present {
 		t.Fatalf("the old pod's port row must be gone so the replacement can take the key: %v", owners)
+	}
+}
+
+// A port that vanished leaves no flow behind that a new port with the same OpenFlow number could meet: not when the node-agent goes on
+// (the next refresh purges the number), and not when it restarts after the port is gone (the pipeline starts empty).
+func TestNetnsFlowsOfAVanishedPortDoNotMeetAReusedNumber(t *testing.T) {
+	nstest.Require(t)
+	for _, restart := range []bool{false, true} {
+		name := "refresh"
+		if restart {
+			name = "restart"
+		}
+		t.Run(name, func(t *testing.T) {
+			ovs, flows, dir, sock := nativeOwnerOVS(t)
+			gone, sibling, reused := groupPortKey(names.ComponentGateway, "g", 1), names.DevicePortKey("g", "sibling", "eth1"), groupPortKey(names.ComponentGateway, "g", 2)
+			for _, p := range []string{gone, sibling, reused} {
+				t.Cleanup(func() { _ = ovs.DelVethPort(p) })
+			}
+			add := func(port string, uid types.UID, requested int) {
+				t.Helper()
+				if err := ovs.AddVethPortOwned(port, uid); err != nil {
+					t.Fatal(err)
+				}
+				nstest.Run(t, "", "ovs-vsctl", "--db=unix:"+sock, "set", "Interface", port, fmt.Sprintf("ofport_request=%d", requested))
+			}
+			add(gone, "old-uid", 7)
+			add(sibling, "sibling-uid", 8)
+			ownerFixtureBind(t, flows, gone, sibling, 33)
+			dump := func(f *FlowManager) string {
+				return nstest.Run(t, "", "ovs-ofctl", "-O", "OpenFlow13", "dump-flows", "unix:"+f.proofSocket)
+			}
+			if out := dump(flows); !strings.Contains(out, "in_port=7") && !strings.Contains(out, "output:7") {
+				t.Fatalf("the fixture has no flow of port 7:\n%s", out)
+			}
+			// the port vanishes behind the node-agent's back
+			nstest.Run(t, "", "ip", "link", "del", gone)
+			nstest.Run(t, "", "ovs-vsctl", "--db=unix:"+sock, "--if-exists", "del-port", "t6-br", gone)
+			if restart {
+				if err := flows.Close(); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if flows, err = NewFlowManager(dir, "t6-br"); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = flows.Close() })
+			}
+			add(reused, "new-uid", 7)
+			if err := flows.refreshPorts(); err != nil {
+				t.Fatal(err)
+			}
+			if out := dump(flows); strings.Contains(out, "in_port=7") || strings.Contains(out, "output:7") {
+				t.Fatalf("a flow of the vanished port meets the port that reuses its number:\n%s", out)
+			}
+		})
 	}
 }
