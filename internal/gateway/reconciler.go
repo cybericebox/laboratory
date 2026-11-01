@@ -297,6 +297,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 			return r.networkFailure(ctx, gw, fmt.Errorf("open secured lab source gate: %w", err))
 		}
 		r.applied[gw.Name] = desired
+		ctrl.LoggerFrom(ctx).Info("the lab is open: egress redirects and the source gate stand", "lab", gw.Spec.LabName, "iface", ifaceName)
 	}
 	r.shape(gw, ifaceName)
 	state := r.applied[gw.Name]
