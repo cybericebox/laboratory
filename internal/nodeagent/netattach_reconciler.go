@@ -252,6 +252,13 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
+	return r.wireLegs(ctx, &pod, component, attachments, netnsPath)
+}
+
+// wireLegs wires the attachments of a pod into its netns, one leg at a time. A leg that cannot be wired is logged with its key and does not
+// hold back the others; the first such error is returned at the end, so the pass is retried with back-off and the leg heals by itself.
+func (r *NetworkAttachReconciler) wireLegs(ctx context.Context, pod *corev1.Pod, component string, attachments []NetAttachment, netnsPath string) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
 	recreated := false
 	// One lab's leg that cannot be wired now must not hold back the others (a group pod has a leg for each of its labs): the error is
 	// logged with its key, the loop goes on, and the first error is returned at the end so the pass is retried with back-off.
@@ -278,7 +285,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			targetIface = stableKey
 		}
 
-		if err := r.ensurePodPortOwner(ctx, &pod, stableKey); err != nil {
+		if err := r.ensurePodPortOwner(ctx, pod, stableKey); err != nil {
 			failed(stableKey, err)
 			continue
 		}
@@ -327,32 +334,32 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					tmpName := "x" + targetIface
 					if renErr := RenameInNetNS(netnsPath, targetIface, tmpName); renErr != nil {
 						log.Error(renErr, "rename stale iface failed, requeueing", "iface", targetIface)
-						return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+						return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 					}
 				}
 			}
 			log.Info("NetAttach: moving pod-side to netns", "podSide", podSide, "netns", netnsPath)
 			if err := MoveToNetNS(podSide, netnsPath); err != nil {
 				log.Error(err, "MoveToNetNS failed, requeueing", "podSide", podSide)
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 			}
 			log.Info("NetAttach: MoveToNetNS OK", "podSide", podSide)
 			if podSide != targetIface {
 				if err := RenameInNetNS(netnsPath, podSide, targetIface); err != nil {
 					log.Error(err, "RenameInNetNS failed, requeueing", "from", podSide, "to", targetIface)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 				}
 				log.Info("NetAttach: RenameInNetNS OK", "from", podSide, "to", targetIface)
 			}
 			if att.MAC != "" {
 				if err := SetMACInNetNS(netnsPath, targetIface, att.MAC); err != nil {
 					log.Error(err, "SetMACInNetNS failed, requeueing", "iface", targetIface)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 				}
 			}
 			if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
 				log.Error(err, "BringUpInNetNS failed, requeueing", "iface", targetIface)
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 			}
 			// node-agent is L2 only: it moves the veth in and brings it up.
 			// IP/MAC/route configuration is the device init-container's job.
@@ -364,7 +371,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				// Already in pod netns under correct name — ensure UP.
 				if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
 					log.Error(err, "BringUpInNetNS (steady-state) failed, requeueing", "iface", targetIface)
-					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, firstErr
 				}
 				log.Info("NetAttach: already in pod netns, ensured UP", "iface", targetIface)
 			} else if CheckInNetNS(netnsPath, podSide) == nil {
@@ -379,13 +386,13 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 							"to",
 							targetIface,
 						)
-						return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+						return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 					}
 					log.Info("NetAttach: recovery rename OK", "from", podSide, "to", targetIface)
 				}
 				if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
 					log.Error(err, "BringUpInNetNS (recovery) failed, requeueing", "iface", targetIface)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
 				}
 			} else {
 				// Not in root netns, not in pod netns — stale veth, recreate. A pod that makes this happen again and again (it can delete its
@@ -395,12 +402,12 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					// Restore peers already retired in this pass before entering
 					// this peer's cooldown; the capped peer remains untouched.
 					if recreated {
-						return ctrl.Result{RequeueAfter: time.Second}, nil
+						return ctrl.Result{RequeueAfter: time.Second}, firstErr
 					}
-					return ctrl.Result{RequeueAfter: wait}, nil
+					return ctrl.Result{RequeueAfter: wait}, firstErr
 				}
 				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
-				if err := r.cleanupPodPort(ctx, &pod, stableKey); err != nil {
+				if err := r.cleanupPodPort(ctx, pod, stableKey); err != nil {
 					return ctrl.Result{}, err
 				}
 				recreated = true
