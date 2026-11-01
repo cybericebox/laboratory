@@ -131,12 +131,15 @@ func applyShaping(iface string, down, up int64) error {
 			}
 		}
 	}
-	// 1: a pure ACK passes unpoliced. 2: the rest is policed.
-	if err := netlink.FilterAdd(pureACKFilter(link.Attrs().Index)); err != nil {
-		return fmt.Errorf("add the pure-ACK filter of %s: %w", iface, err)
+	// 1 and 2: a payload-less ACK is counted in a police of its own (see ackKbps). 3: everything else is policed at the ceiling.
+	for i, f := range pureACKFilters(link.Attrs().Index, ackKbps(down)) {
+		f.Priority = uint16(i + 1)
+		if err := netlink.FilterAdd(f); err != nil {
+			return fmt.Errorf("add the pure-ACK filter of %s: %w", iface, err)
+		}
 	}
 	if err := netlink.FilterAdd(&netlink.MatchAll{
-		FilterAttrs: netlink.FilterAttrs{LinkIndex: link.Attrs().Index, Parent: ingressHandle, Priority: 2, Protocol: unix.ETH_P_ALL},
+		FilterAttrs: netlink.FilterAttrs{LinkIndex: link.Attrs().Index, Parent: ingressHandle, Priority: 3, Protocol: unix.ETH_P_ALL},
 		Actions:     []netlink.Action{police},
 	}); err != nil {
 		return fmt.Errorf("add the police filter of %s (rate %d, burst %d): %w", iface, rate, policeBurst, err)
@@ -144,21 +147,42 @@ func applyShaping(iface string, down, up int64) error {
 	return nil
 }
 
-// pureACKFilter matches an IPv4 TCP segment with no IP options, a total length under 128 bytes and the ACK flag alone (no SYN, FIN, RST, PSH):
-// what a receiver sends back for the data it gets. It lets such a packet through before the police counts it.
-func pureACKFilter(linkIndex int) *netlink.U32 {
-	return &netlink.U32{
-		FilterAttrs: netlink.FilterAttrs{LinkIndex: linkIndex, Parent: ingressHandle, Priority: 1, Protocol: unix.ETH_P_IP},
-		Sel: &netlink.TcU32Sel{
-			Flags: netlink.TC_U32_TERMINAL,
-			Keys: []netlink.TcU32Key{
-				{Mask: 0xff00ff80, Val: 0x45000000, Off: 0},  // version 4, header length 5 words, total length below 128
-				{Mask: 0x00ff0000, Val: 0x00060000, Off: 8},  // protocol TCP
-				{Mask: 0x001f0000, Val: 0x00100000, Off: 32}, // TCP flags: ACK only (FIN SYN RST PSH clear)
-			},
-		},
-		Actions: []netlink.Action{&netlink.GenericAction{ActionAttrs: netlink.ActionAttrs{Action: netlink.TC_ACT_OK}}},
+// ackKbps is the ceiling of the payload-less ACKs of a lab: a receiver sends about one 52-byte ACK for two 1448-byte segments, so a
+// download of down kbit/s needs about down/56 kbit/s of them. Twice that is allowed, between 256 kbit/s and 4 Mbit/s: a lab cannot use
+// the exemption to send a stream of its own (a segment with payload, or a faster stream of empty ones, meets the police of the ceiling).
+func ackKbps(down int64) int64 {
+	if down <= 0 {
+		return 1024
 	}
+	return min(max(down/28, 256), 4096)
+}
+
+// pureACKFilters match an IPv4 TCP segment with the ACK flag alone (no SYN, FIN, RST, PSH) and NO payload: the total length is exactly the
+// 20-byte IP header plus a 20-byte TCP header (data offset 5, 40 bytes) or plus 32 bytes with the timestamp options (data offset 8, 52
+// bytes). Each has a police of its own at kbps, so what is exempt from the ceiling is bounded too.
+func pureACKFilters(linkIndex int, kbps int64) []*netlink.U32 {
+	mk := func(totalLen, offset uint32) *netlink.U32 {
+		police := netlink.NewPoliceAction()
+		rate := uint64(kbps) * 125
+		police.Rate = uint32(min(rate, 1<<32-1))
+		police.Burst = uint32(max(rate/10, 16<<10)) // a tenth of a second, at least a few hundred ACKs
+		police.Mtu = 1600
+		police.ExceedAction = netlink.TC_POLICE_SHOT
+		police.NotExceedAction = netlink.TC_POLICE_OK
+		return &netlink.U32{
+			FilterAttrs: netlink.FilterAttrs{LinkIndex: linkIndex, Parent: ingressHandle, Protocol: unix.ETH_P_IP},
+			Sel: &netlink.TcU32Sel{
+				Flags: netlink.TC_U32_TERMINAL,
+				Keys: []netlink.TcU32Key{
+					{Mask: 0xff00ffff, Val: 0x45000000 | totalLen, Off: 0},    // version 4, header length 5 words, total length exactly this
+					{Mask: 0x00ff0000, Val: 0x00060000, Off: 8},               // protocol TCP
+					{Mask: 0xf01f0000, Val: offset<<28 | 0x00100000, Off: 32}, // TCP data offset, and the flags: ACK only
+				},
+			},
+			Actions: []netlink.Action{police},
+		}
+	}
+	return []*netlink.U32{mk(40, 5), mk(52, 8)}
 }
 
 // clearIngress removes the ingress qdisc (and with it the filters) when there is one.

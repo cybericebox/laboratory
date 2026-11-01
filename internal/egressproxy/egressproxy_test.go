@@ -371,3 +371,126 @@ func TestCollectorMinutes(t *testing.T) {
 		t.Fatalf("a minute already pulled came again: %+v", again)
 	}
 }
+
+type countingReader struct {
+	read int
+	fill func(p []byte)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	c.fill(p)
+	c.read += len(p)
+	return len(p), nil
+}
+
+// The proxy never buffers more than a head (HTTP) or 64 kB (a ClientHello), whatever the client sends: the read itself is bounded.
+func TestReadsAreBounded(t *testing.T) {
+	garbage := &countingReader{fill: func(p []byte) {
+		for i := range p {
+			p[i] = 'a'
+		}
+	}}
+	if _, _, err := readHTTPHead(garbage); err == nil {
+		t.Fatal("an endless line was accepted as a head")
+	}
+	if garbage.read > maxHTTPHead+8192 {
+		t.Errorf("the HTTP head read took %d bytes, the bound is %d", garbage.read, maxHTTPHead)
+	}
+	// a request line that never ends with CRLF CRLF, in many small lines
+	lines := &countingReader{fill: func(p []byte) {
+		for i := range p {
+			p[i] = "X-A: b\r\n"[i%8]
+		}
+	}}
+	if _, _, err := readHTTPHead(io.MultiReader(strings.NewReader("GET / HTTP/1.1\r\n"), lines)); err == nil {
+		t.Fatal("an endless head was accepted")
+	}
+	if lines.read > maxHTTPHead+8192 {
+		t.Errorf("the endless head read took %d bytes", lines.read)
+	}
+	// a ClientHello cut into 1-byte records, without end
+	rec := []byte{22, 3, 1, 0, 1, 1}
+	tiny := &countingReader{fill: func(p []byte) {
+		for i := range p {
+			p[i] = rec[i%len(rec)]
+		}
+	}}
+	if _, err := ReadClientHello(tiny); err == nil {
+		t.Fatal("an endless ClientHello was accepted")
+	}
+	if tiny.read > maxHelloBytes+8192 {
+		t.Errorf("the ClientHello read took %d bytes, the bound is %d", tiny.read, maxHelloBytes)
+	}
+}
+
+// The checks of the HTTP head are the checks a server would apply: the name the proxy judges is the name the server serves, and every request
+// of a connection is one that was checked.
+func TestHTTPHeadChecks(t *testing.T) {
+	good := map[string]string{
+		"GET / HTTP/1.1\r\nHost: a.test\r\n\r\n":                          "a.test",
+		"GET http://a.test/x HTTP/1.1\r\nHost: a.test:80\r\n\r\n":         "a.test:80",
+		"GET http://A.TEST/x HTTP/1.1\r\nHost: a.test\r\n\r\n":            "a.test",
+		"GET http://a.test/x HTTP/1.0\r\n\r\n":                            "a.test",
+		"POST / HTTP/1.1\r\nHost: a.test\r\nContent-Length: 3\r\n\r\nabc": "a.test",
+		"OPTIONS * HTTP/1.1\r\nHost: a.test\r\n\r\n":                      "a.test",
+	}
+	for in, want := range good {
+		_, host, err := readHTTPHead(strings.NewReader(in))
+		if err != nil || host != want {
+			t.Errorf("%q -> %q %v, want %q", in, host, err, want)
+		}
+	}
+	bad := map[string]string{
+		"two Hosts":              "GET / HTTP/1.1\r\nHost: a.test\r\nHost: b.test\r\n\r\n",
+		"two Hosts, same":        "GET / HTTP/1.1\r\nHost: a.test\r\nhost: a.test\r\n\r\n",
+		"target and Host differ": "GET http://b.test/ HTTP/1.1\r\nHost: a.test\r\n\r\n",
+		"target with userinfo":   "GET http://u@a.test/ HTTP/1.1\r\nHost: a.test\r\n\r\n",
+		"folded header":          "GET / HTTP/1.1\r\nHost: a.test\r\nX-A: b\r\n c\r\n\r\n",
+		"folded Host":            "GET / HTTP/1.1\r\nX: y\r\n Host: b.test\r\nHost: a.test\r\n\r\n",
+		"space before colon":     "GET / HTTP/1.1\r\nHost : a.test\r\n\r\n",
+		"CONNECT":                "CONNECT a.test:443 HTTP/1.1\r\nHost: a.test\r\n\r\n",
+		"bare LF":                "GET / HTTP/1.1\nHost: a.test\n\n",
+		"bad target":             "GET a.test HTTP/1.1\r\nHost: a.test\r\n\r\n",
+		"not HTTP":               "SSH-2.0-OpenSSH_9.0\r\n\r\n",
+		"empty line in the head": "GET / HTTP/1.1\r\n\r\nHost: a.test\r\n\r\n",
+	}
+	for name, in := range bad {
+		if _, host, err := readHTTPHead(strings.NewReader(in)); err == nil && name != "empty line in the head" {
+			t.Errorf("%s was accepted (host %q)", name, host)
+		}
+	}
+	// "empty line in the head" is the end of the head: the second "request" is body, and the first has no Host
+	if _, host, _ := readHTTPHead(strings.NewReader(bad["empty line in the head"])); host != "" {
+		t.Errorf("the Host after the end of the head was taken: %q", host)
+	}
+	// forwarded as one request per connection
+	fwd, _, _ := readHTTPHead(strings.NewReader("GET / HTTP/1.1\r\nHost: a.test\r\nConnection: keep-alive\r\nUpgrade: websocket\r\nProxy-Connection: keep-alive\r\nKeep-Alive: 5\r\nX-Keep: 1\r\n\r\n"))
+	got := string(fwd)
+	for _, gone := range []string{"keep-alive", "Upgrade", "websocket", "Proxy-Connection", "Keep-Alive"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("%q must not be forwarded:\n%s", gone, got)
+		}
+	}
+	if !strings.Contains(got, "Connection: close\r\n\r\n") || !strings.Contains(got, "X-Keep: 1") || !strings.Contains(got, "Host: a.test") {
+		t.Errorf("the forwarded head:\n%s", got)
+	}
+}
+
+// Through the proxy: the server gets Connection: close, and a second request on the same connection is not served.
+func TestProxyServesOneRequestPerConnection(t *testing.T) {
+	f := newFixture(t)
+	c, err := net.Dial("tcp", f.httpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	_, _ = io.WriteString(c, "GET / HTTP/1.1\r\nHost: allowed.test\r\nConnection: keep-alive\r\n\r\nGET / HTTP/1.1\r\nHost: ngrok.io\r\n\r\n")
+	b, _ := io.ReadAll(c)
+	if n := strings.Count(string(b), "HTTP/1.1 200"); n != 1 {
+		t.Fatalf("%d responses on one connection:\n%s", n, b)
+	}
+	if strings.Contains(string(b), "ngrok") {
+		t.Errorf("the second request was served:\n%s", b)
+	}
+}
