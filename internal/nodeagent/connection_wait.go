@@ -25,6 +25,7 @@ const (
 	WaitInvalidNetworkIdx = "InvalidNetworkIndex"     // the lab network index is 0 or out of 1..254: the pod has no interface for it
 	WaitDevicePod         = "WaitingForDevicePod"     // the device's pod is not published yet
 	WaitOVSPort           = "WaitingForOVSPort"       // the port of an endpoint does not exist on this node yet
+	WaitPortOwner         = "WaitingForPortOwner"     // the port of an endpoint still belongs to the pod that was replaced (its new pod is being wired)
 	WaitVNIRelease        = "WaitingForVNIRelease"    // deleting: the nodes have not acknowledged the release of the lab's VNI yet
 	WaitCleanupBlocked    = "CleanupBlocked"          // deleting: a step of the cleanup cannot finish yet (the message says which error)
 	ReasonProgrammed      = "Programmed"              // the ports are programmed
@@ -67,6 +68,8 @@ func waitMessage(reason string) string {
 		return "the nodes have not acknowledged the release of the VNI of the lab yet (see status.scopeReports of the Lab)"
 	case WaitOVSPort:
 		return "the OVS port does not exist on this node yet"
+	case WaitPortOwner:
+		return "the port of the endpoint does not belong to its current pod yet (the pod was replaced and is being wired)"
 	}
 	return reason
 }

@@ -4,6 +4,7 @@ package nodeagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -133,6 +134,9 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		res, err = r.reconcileDeviceSwitch(ctx, conn, eps)
 	default:
 		res, err = r.reconcileDeviceDevice(ctx, conn, eps)
+	}
+	if portOwnerPending(err) {
+		return r.wait(ctx, conn, WaitPortOwner, waitMessage(WaitPortOwner), wiredRetryOnWait)
 	}
 	// Self-healing resync: veth recovery paths (SetupNetworks, NetworkAttach)
 	// can delete and re-create ports, after which OVS assigns new ofport numbers.
@@ -1014,4 +1018,11 @@ func (r *ConnectionReconciler) retireSwitchEndpoints(ctx context.Context, conn *
 	}
 
 	return nil
+}
+
+// portOwnerPending says whether an error of the Connection reconciler is only "the endpoint's port is not the current pod's yet": a pod
+// was replaced and its legs are being wired. It is waited for on a short timer; an error would back off for tens of seconds, and the
+// labs of the group would stay cut off that long after their legs were wired.
+func portOwnerPending(err error) bool {
+	return errors.Is(err, ErrPortOwnerChanged) || errors.Is(err, ErrPortOwnerUnknown)
 }
