@@ -25,12 +25,12 @@ func announceARP(iface string, ip net.IP) error {
 	if len(link.HardwareAddr) != 6 {
 		return fmt.Errorf("%s has no ethernet address", iface)
 	}
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_ARP)))
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(arpProto))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unix.Close(fd) }()
-	addr := &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ARP), Ifindex: link.Index, Halen: 6}
+	addr := &unix.SockaddrLinklayer{Protocol: arpProto, Ifindex: link.Index, Halen: 6}
 	copy(addr.Addr[:], []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	for _, op := range []uint16{1, 2} { // request, reply
 		if err := unix.Sendto(fd, arpFrame(link.HardwareAddr, ip4, op), 0, addr); err != nil {
@@ -40,7 +40,8 @@ func announceARP(iface string, ip net.IP) error {
 	return nil
 }
 
-func htons(v uint16) uint16 { return v<<8 | v>>8 }
+// arpProto is the Ethernet type of ARP in network byte order, as an AF_PACKET socket wants it.
+const arpProto = uint16(unix.ETH_P_ARP&0xff)<<8 | uint16(unix.ETH_P_ARP>>8)
 
 // arpFrame is an Ethernet frame with a gratuitous ARP of the given operation: sender and target protocol address are both ip.
 func arpFrame(mac net.HardwareAddr, ip net.IP, op uint16) []byte {
