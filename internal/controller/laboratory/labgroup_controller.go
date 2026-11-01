@@ -889,6 +889,11 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentGateway, gatewayCaps, r.TerminationGraceSeconds) {
 			changed = true
 		}
+		// A gateway that restarts anyway takes the size of the day with the restart (the proxy and the DNS answerer need more than the old
+		// forwarding-only size); a size alone never restarts a running gateway, and a size set for the group stays what it is.
+		if !equality.Semantic.DeepEqual(before, &existing.Spec.Template) && setGatewayResources(&existing.Spec.Template, r.GroupPods.GatewayFor(size)) {
+			changed = true
+		}
 		if !changed {
 			return nil
 		}
@@ -933,6 +938,19 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		mountOwnAnnotations(&d.Spec.Template.Spec, names.ComponentGateway)
 	}
 	return r.Create(ctx, d)
+}
+
+// setGatewayResources puts a size on the gateway container of a pod template; it reports whether it changed anything.
+func setGatewayResources(t *corev1.PodTemplateSpec, want corev1.ResourceRequirements) bool {
+	for i := range t.Spec.Containers {
+		c := &t.Spec.Containers[i]
+		if c.Name != names.ComponentGateway || equality.Semantic.DeepEqual(c.Resources, want) {
+			continue
+		}
+		c.Resources = want
+		return true
+	}
+	return false
 }
 
 // setComponentLabel puts LabelComponent on a pod template; it reports whether it changed anything. The Deployment's
