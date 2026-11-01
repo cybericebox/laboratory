@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
 	"github.com/cybericebox/laboratory/internal/nstest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,5 +51,46 @@ func TestNetnsWireLegsGoOnAfterAFailedLeg(t *testing.T) {
 	}
 	if owners[held] != live.UID {
 		t.Fatalf("the held port must stay with its live owner: owners %v", owners)
+	}
+}
+
+// The old pod of a group is gone and its veth died with its netns: the port row is still in OVSDB, OpenFlow no longer lists the port. The
+// retirement of that port must not wait for a port that cannot come back; the key goes to the replacement pod.
+func TestNetnsPortGoneFromOpenFlowIsRetiredForTheReplacement(t *testing.T) {
+	nstest.Require(t)
+	ovs, flows, _, _ := nativeOwnerOVS(t)
+	kube, old, replacement := ownerPods(t, names.ComponentGateway)
+	key := groupPortKey(names.ComponentGateway, "g", 1)
+	t.Cleanup(func() { _ = ovs.DelVethPort(key) })
+	if err := ovs.AddVethPortOwned(key, old.UID); err != nil {
+		t.Fatal(err)
+	}
+	if err := flows.AddT0Port(key, 22); err != nil {
+		t.Fatal(err)
+	}
+	nstest.Run(t, "", "ip", "link", "del", key)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := flows.refreshPorts(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := flows.client.PortNo(key); errors.Is(err, ofclient.ErrPortNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("OpenFlow still lists the port")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	r := &NetworkAttachReconciler{Client: kube, Reader: kube, NodeName: "node", OVS: ovs, Flows: flows}
+	if err := r.ensurePodPortOwner(context.Background(), replacement, key); err != nil {
+		t.Fatalf("a port that is gone from OpenFlow and whose pod is deleted counts as retired: %v", err)
+	}
+	owners, err := ovs.PortOwners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := owners[key]; present {
+		t.Fatalf("the old pod's port row must be gone so the replacement can take the key: %v", owners)
 	}
 }
