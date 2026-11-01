@@ -253,6 +253,15 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
 	recreated := false
+	// One lab's leg that cannot be wired now must not hold back the others (a group pod has a leg for each of its labs): the error is
+	// logged with its key, the loop goes on, and the first error is returned at the end so the pass is retried with back-off.
+	var firstErr error
+	failed := func(key string, err error) {
+		log.Error(err, "NetAttach: cannot wire the leg, going on with the others", "key", key)
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 	for _, att := range attachments {
 		stableKey := att.Name // a leg of a lab: its port is named by the lab's index
 		if component == "" {
@@ -270,12 +279,14 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		if err := r.ensurePodPortOwner(ctx, &pod, stableKey); err != nil {
-			return ctrl.Result{}, err
+			failed(stableKey, err)
+			continue
 		}
 		// Ensure the veth host-side is registered in OVS.
 		_, exists, err := r.OVS.FindPortByKey(stableKey)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("find veth port %q: %w", stableKey, err)
+			failed(stableKey, fmt.Errorf("find veth port %q: %w", stableKey, err))
+			continue
 		}
 		log.Info(
 			"NetAttach: attachment",
@@ -296,7 +307,8 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		if !exists {
 			if err := r.OVS.AddVethPortOwned(stableKey, pod.UID); err != nil {
-				return ctrl.Result{}, fmt.Errorf("add veth port %q: %w", stableKey, err)
+				failed(stableKey, fmt.Errorf("add veth port %q: %w", stableKey, err))
+				continue
 			}
 			log.Info("NetAttach: created veth pair", "hostSide", stableKey, "podSide", podSide)
 		}
@@ -404,6 +416,9 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// A replacement pod loses every peer together. Retire the entire stale
 	// batch before the one recovery requeue, instead of waiting a second per
 	// interface and rescanning all already-restored interfaces on every pass.
+	if firstErr != nil {
+		return ctrl.Result{}, firstErr
+	}
 	if recreated {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
