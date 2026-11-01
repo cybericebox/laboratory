@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -95,7 +94,8 @@ type EgressMonitor struct {
 	minutes []monitorMinute
 	flagged map[labKey]string // labs that carry the condition, with its message
 	primed  bool
-	seen    string // what the last pull saw (gateways, skipped pods); logged when it changes
+	cursors map[string]time.Time // namespace -> newest minute already in the log when this run started
+	seen    string               // what the last pull saw (gateways, skipped pods); logged when it changes
 }
 
 type labKey struct{ ns, lab string }
@@ -305,6 +305,29 @@ func (m *EgressMonitor) fetch(ctx context.Context, p *corev1.Pod, since time.Tim
 	return &s, nil
 }
 
+// firstSince is where pulling a gateway starts when it has not been seen by this run: after the newest minute of its group that the log
+// already holds (a restarted operator takes up the minutes it missed; the gateways keep an hour), else the last hour.
+func (m *EgressMonitor) firstSince(ns string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cursors == nil {
+		m.cursors = map[string]time.Time{}
+		if m.LogDir != "" {
+			cur, err := egressLogCursors(m.LogDir, m.now())
+			if err != nil {
+				m.Log.Error(err, "read where the egress connection log ends")
+			}
+			if cur != nil {
+				m.cursors = cur
+			}
+		}
+	}
+	if t, ok := m.cursors[ns]; ok {
+		return t
+	}
+	return m.now().Add(-time.Hour)
+}
+
 // Pull takes the new minutes of every gateway, writes the log, and re-evaluates the signals.
 func (m *EgressMonitor) Pull(ctx context.Context) error {
 	pods, err := m.gatewayPods(ctx)
@@ -324,7 +347,7 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 		since, ok := m.last[key]
 		m.mu.Unlock()
 		if !ok {
-			since = m.now().Add(-5 * time.Minute) // a gateway seen for the first time: its last few minutes
+			since = m.firstSince(p.Namespace)
 		}
 		s, err := m.fetch(ctx, p, since)
 		if err != nil {
@@ -377,12 +400,16 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 }
 
 func (m *EgressMonitor) writeLog(rows []EgressLogRow) error {
-	log := m.Log.WithName("egress-log")
-	for _, r := range rows {
-		log.Info("egress", "minute", r.Minute.Format(time.RFC3339), "namespace", r.Namespace, "lab", r.Lab, "host", r.Host,
-			"conns", r.Conns, "up", r.Up, "down", r.Down, "denied", r.Denied)
+	if m.LogDir == "" {
+		// without a directory the operator's own log is the connection log
+		log := m.Log.WithName("egress-log")
+		for _, r := range rows {
+			log.Info("egress", "minute", r.Minute.Format(time.RFC3339), "namespace", r.Namespace, "lab", r.Lab, "host", r.Host,
+				"conns", r.Conns, "up", r.Up, "down", r.Down, "denied", r.Denied)
+		}
+		return nil
 	}
-	if m.LogDir == "" || len(rows) == 0 {
+	if len(rows) == 0 {
 		return nil
 	}
 	if err := os.MkdirAll(m.LogDir, 0o750); err != nil {
@@ -417,26 +444,16 @@ func (m *EgressMonitor) writeLog(rows []EgressLogRow) error {
 	return m.pruneLog()
 }
 
-// pruneLog removes the daily files older than the retention.
+// pruneLog gzips the files of the days that are over and removes the ones older than the retention.
 func (m *EgressMonitor) pruneLog() error {
 	keep := m.LogRetention
 	if keep <= 0 {
 		keep = 30 * 24 * time.Hour
 	}
-	limit := m.now().UTC().Add(-keep).Format("2006-01-02")
-	entries, err := os.ReadDir(m.LogDir)
-	if err != nil {
+	if err := compressEgressLogDays(m.LogDir, m.now()); err != nil {
 		return err
 	}
-	for _, e := range entries {
-		n := e.Name()
-		if strings.HasPrefix(n, "egress-") && strings.HasSuffix(n, ".jsonl") && n[len("egress-"):len(n)-len(".jsonl")] < limit {
-			if err := os.Remove(filepath.Join(m.LogDir, n)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return removeEgressLogDaysBefore(m.LogDir, m.now().UTC().Add(-keep).Format(egressLogDay))
 }
 
 // signals are the labs to flag, with the reason text, from the minutes of the window.

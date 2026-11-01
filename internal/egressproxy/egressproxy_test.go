@@ -146,7 +146,7 @@ func newFixture(t *testing.T, configure ...func(*Proxy)) *fixture {
 		r.cache[n] = cacheEntry{ips: []netip.Addr{netip.MustParseAddr("203.0.113.9")}, expires: exp}
 	}
 	f.stats = NewCollector("gw-test")
-	f.p = &Proxy{Labs: labs, Resolver: r, Deny: NewDenylist(DefaultTunnelSuffixes), Stats: f.stats, Log: logr.Discard(), HostNewPerSecond: 5,
+	f.p = &Proxy{Labs: labs, Resolver: r, Deny: NewDenylist(DefaultTunnelSuffixes), Stats: f.stats, Log: logr.Discard(), HostNewPerSecond: 5, HostGatewayNewPerSecond: 0,
 		Dial: func(_ context.Context, addr string) (net.Conn, error) {
 			// the address the proxy looked up (203.0.113.9) is replaced by the test server of the port
 			if strings.HasSuffix(addr, ":443") {
@@ -274,7 +274,7 @@ func TestProxyLimits(t *testing.T) {
 	if ok == 0 || refused == 0 || ok > 5 {
 		t.Fatalf("per-host new connection rate: %d served, %d refused", ok, refused)
 	}
-	g := newFixture(t, func(p *Proxy) { p.HostNewPerSecond = 0; p.LabMaxConns = 1 })
+	g := newFixture(t, func(p *Proxy) { p.HostNewPerSecond = 0; p.HostGatewayNewPerSecond = 0; p.LabMaxConns = 1 })
 	hold, _ := net.Dial("tcp", g.httpAddr) // holds the only slot while it sends nothing
 	time.Sleep(100 * time.Millisecond)
 	out, _ := httpGet(g.httpAddr, "allowed.test")
@@ -492,5 +492,39 @@ func TestProxyServesOneRequestPerConnection(t *testing.T) {
 	}
 	if strings.Contains(string(b), "ngrok") {
 		t.Errorf("the second request was served:\n%s", b)
+	}
+}
+
+// New connections to one host name: 5 a second for a lab, and 20 a second for all the labs of a gateway together.
+func TestHostRatePerLabAndPerGateway(t *testing.T) {
+	p := &Proxy{HostNewPerSecond: 5, HostGatewayNewPerSecond: 20}
+	take := func(lab, host string, n int) (served int, last string) {
+		for i := 0; i < n; i++ {
+			if reason := p.hostAllowed(lab, host); reason == "" {
+				served++
+			} else {
+				last = reason
+			}
+		}
+		return served, last
+	}
+	if served, last := take("lab-a", "busy.test", 8); served != 5 || last != ReasonHostRate {
+		t.Fatalf("one lab gets 5 new connections to a name, then its own limit: served %d, refused by %q", served, last)
+	}
+	// each lab has its own allowance of 5 until the gateway's 20 (lab-a has used 5, labs b, c, d use 15)
+	for _, lab := range []string{"lab-b", "lab-c", "lab-d"} {
+		if served, _ := take(lab, "busy.test", 5); served != 5 {
+			t.Fatalf("%s must have its own 5: %d", lab, served)
+		}
+	}
+	if served, last := take("lab-e", "busy.test", 1); served != 0 || last != ReasonHostGatewayRate {
+		t.Fatalf("the gateway as a whole is at 20: served %d, refused by %q", served, last)
+	}
+	if served, _ := take("lab-e", "other.test", 5); served != 5 {
+		t.Fatalf("another name is not affected: %d", served)
+	}
+	off := &Proxy{}
+	if take2 := off.hostAllowed("lab-a", "x"); take2 != "" {
+		t.Fatalf("without limits everything passes: %q", take2)
 	}
 }

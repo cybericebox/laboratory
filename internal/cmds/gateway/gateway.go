@@ -169,8 +169,8 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 	proxy := &egressproxy.Proxy{
 		Labs: labs, Resolver: resolver, Deny: deny, Stats: stats, Log: log.WithName("egress-proxy"),
 		MaxConnAge:       time.Duration(cfg.EgressMaxConnSeconds) * time.Second,
-		HostNewPerSecond: cfg.EgressHostNewPerSecond,
-		LabMaxConns:      cfg.MaxConnectionsPerLab, LabNewPerSecond: cfg.NewConnectionsPerSecondPerLab,
+		HostNewPerSecond: cfg.EgressHostNewPerSecond, HostGatewayNewPerSecond: cfg.EgressHostGatewayNewPerSecond,
+		LabMaxConns: cfg.MaxConnectionsPerLab, LabNewPerSecond: cfg.NewConnectionsPerSecondPerLab,
 	}
 	dns := &egressproxy.DNS{Labs: labs, Resolver: resolver, Deny: deny, Stats: stats, Log: log.WithName("egress-dns"), QueriesPerSecond: cfg.EgressDNSQueriesPerSecond}
 

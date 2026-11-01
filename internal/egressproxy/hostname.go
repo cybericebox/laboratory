@@ -7,17 +7,18 @@ import (
 
 // Why a connection is refused. The words are the labels of the summaries and of the log.
 const (
-	ReasonNoName   = "no-name"   // no SNI / no Host
-	ReasonIPName   = "ip-name"   // the name is an IP address (literal, decimal, hex, bracketed)
-	ReasonBadName  = "bad-name"  // not a host name
-	ReasonECH      = "ech"       // the ClientHello hides its name
-	ReasonDenied   = "tunnel"    // a known tunnel service
-	ReasonResolve  = "resolve"   // the name does not resolve to a public address
-	ReasonHostRate = "host-rate" // too many new connections to one name
-	ReasonLabRate  = "lab-rate"  // the lab is at its caps
-	ReasonNotTLS   = "not-tls"
-	ReasonNotHTTP  = "not-http"
-	ReasonUnknown  = "unknown-lab"
+	ReasonNoName          = "no-name"           // no SNI / no Host
+	ReasonIPName          = "ip-name"           // the name is an IP address (literal, decimal, hex, bracketed)
+	ReasonBadName         = "bad-name"          // not a host name
+	ReasonECH             = "ech"               // the ClientHello hides its name
+	ReasonDenied          = "tunnel"            // a known tunnel service
+	ReasonResolve         = "resolve"           // the name does not resolve to a public address
+	ReasonHostRate        = "host-rate"         // too many new connections of a lab to one name
+	ReasonHostGatewayRate = "host-gateway-rate" // too many new connections of all the labs of a gateway to one name
+	ReasonLabRate         = "lab-rate"          // the lab is at its caps
+	ReasonNotTLS          = "not-tls"
+	ReasonNotHTTP         = "not-http"
+	ReasonUnknown         = "unknown-lab"
 )
 
 // DefaultTunnelSuffixes are the names of services whose purpose is to carry a lab's traffic somewhere else (a reverse tunnel out, a VPN

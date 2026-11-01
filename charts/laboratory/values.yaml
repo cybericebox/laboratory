@@ -246,8 +246,10 @@ internetEgress:
     # The most DNS questions a lab may ask in a second ("" = 50).
     queriesPerSecond: ""
   proxy:
-    # The most new connections per second to one host name through one gateway ("" = 5), and the longest a connection lives in seconds ("" = 600).
+    # The most new connections per second one lab opens to one host name ("" = 5), the most all the labs of one gateway open to it together
+    # ("" = 20), and the longest a connection lives in seconds ("" = 600).
     hostNewPerSecond: ""
+    hostGatewayNewPerSecond: ""
     maxConnSeconds: ""
     # Replaces the built-in list of tunnel services the proxy refuses (comma separated suffixes; "-" = none; "" = the built-in list).
     tunnelSuffixes: ""
@@ -260,8 +262,19 @@ internetEgress:
     hostLabs: 20
     capMinutes: 3
   log:
-    # With a directory (a volume mounted into the operator pod) the connection log is also written in daily files kept for retentionDays;
-    # without, it is in the operator's log (logger egress-log) only, kept as long as the cluster's log collection keeps it.
+    # The connection log (lab, host name, minute, connections, bytes up/down, denied) is for the cluster's administrator only: it is kept in
+    # daily files on a volume of the operator, gzipped when the day is over, for retentionDays. With persistence the chart makes the volume
+    # (a PersistentVolumeClaim, ReadWriteOnce, so the operator Deployment is Recreate: an upgrade stops the old operator before it starts the
+    # new one) and the operator goes on where the log ends after a restart (the gateways keep the last hour). Search it with
+    #   kubectl -n <ns> exec deploy/laboratory-controller-manager -- /manager egress-log --host pypi.org --lab <lab> --from 2026-11-01
+    # Size: a row is ~150 bytes, one per lab and host name a minute; 100 labs that reach 10 names each fill ~150 MB a day before gzip (~15 MB
+    # after), 30 days ~0.6 GB: the default has room for ten times that.
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""     # empty = the cluster's default class
+    # Instead of persistence: a directory the operator already has (a volume you mount yourself). Empty without persistence: the log is then
+    # in the operator's own log only (logger egress-log), kept as long as the cluster's log collection keeps it.
     dir: ""
     retentionDays: 30
 

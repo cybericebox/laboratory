@@ -51,7 +51,7 @@ type Summaries struct {
 type rowKey struct{ lab, host string }
 type capKey struct{ lab, reason string }
 
-// Collector keeps per-minute summaries and serves the finished ones. It keeps the last Keep minutes (default 30) and nothing else:
+// Collector keeps per-minute summaries and serves the finished ones. It keeps the last Keep minutes (default 60, an hour) and nothing else:
 // the operator pulls them every minute and keeps the log.
 type Collector struct {
 	Gateway string
@@ -67,7 +67,7 @@ type Collector struct {
 }
 
 func NewCollector(gateway string) *Collector {
-	return &Collector{Gateway: gateway, Keep: 30, Now: time.Now}
+	return &Collector{Gateway: gateway, Keep: 60, Now: time.Now}
 }
 
 func (c *Collector) rollLocked() {

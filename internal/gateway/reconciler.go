@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -37,7 +38,7 @@ type LabGatewayReconciler struct {
 	Shaper *Shaper
 	// Labs tells the web proxy and the DNS answerer which lab an address belongs to (nil: no egress services).
 	Labs    *egressproxy.LabMap
-	applied map[string]appliedNetwork
+	applied appliedMap
 }
 
 func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -85,7 +86,7 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.clearNetwork(appliedNetwork{Iface: iface, CIDR: cidr}); err != nil {
 			return ctrl.Result{}, err
 		}
-		delete(r.applied, gw.Name)
+		r.applied.del(gw.Name)
 		next := gw.Status
 		next.Conditions = slices.Clone(next.Conditions)
 		next.Phase = laboratoryv1alpha1.LabGatewayPhasePending
@@ -115,11 +116,11 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 			r.Labs.Delete(cidr)
 		}
 	}
-	if old, ok := r.applied[gw.Name]; ok {
+	if old, ok := r.applied.get(gw.Name); ok {
 		if err := r.clearNetwork(old); err != nil {
 			return ctrl.Result{}, err
 		}
-		delete(r.applied, gw.Name)
+		r.applied.del(gw.Name)
 	}
 	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
 	return ctrl.Result{}, r.Update(ctx, gw)
@@ -143,7 +144,11 @@ func (r *LabGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err != nil {
 		return err
 	}
-	return b.Complete(reconcileutil.Quiet(r))
+	workers := 1
+	if r.Cfg != nil && r.Cfg.ReconcileWorkers > 1 {
+		workers = r.Cfg.ReconcileWorkers
+	}
+	return b.WithOptions(controller.Options{MaxConcurrentReconciles: workers}).Complete(reconcileutil.Quiet(r))
 }
 func (r *LabGatewayReconciler) clearNetwork(old appliedNetwork) error {
 	if err := r.IPT.BlockLab(old.Iface); err != nil {
@@ -169,15 +174,12 @@ func (r *LabGatewayReconciler) dhcpFailure(ctx context.Context, gw *laboratoryv1
 	if r.IPT != nil {
 		r.IPT.DenyDHCP(iface)
 	}
-	if old, ok := r.applied[gw.Name]; ok {
-		old.DHCPKnown = false
-		r.applied[gw.Name] = old
-	}
+	r.applied.update(gw.Name, func(a *appliedNetwork) { a.DHCPKnown = false })
 	next := gw.Status
 	next.Conditions = slices.Clone(next.Conditions)
 	next.Phase = laboratoryv1alpha1.LabGatewayPhaseConfiguring
 	next.DHCPReady = false
-	if _, ok := r.applied[gw.Name]; ok {
+	if _, ok := r.applied.get(gw.Name); ok {
 		next.NATReady = true
 	}
 	labstatus.SetReady(&next.Conditions, gw.Generation, false, "DHCPFailed", err.Error())
@@ -203,10 +205,7 @@ func (r *LabGatewayReconciler) networkFailure(ctx context.Context, obj *laborato
 	if r.IPT != nil {
 		r.IPT.DenyDHCP(names.LabIfaceNameByIndex(obj.Spec.NetworkIndex))
 	}
-	if old, ok := r.applied[obj.Name]; ok {
-		old.DHCPKnown = false
-		r.applied[obj.Name] = old
-	}
+	r.applied.update(obj.Name, func(a *appliedNetwork) { a.DHCPKnown = false })
 
 	next := obj.Status
 	next.Conditions = slices.Clone(next.Conditions)
@@ -229,20 +228,17 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	if dhcpErr != nil {
 		return r.dhcpFailure(ctx, gw, dhcpErr)
 	}
-	if r.applied == nil {
-		r.applied = map[string]appliedNetwork{}
-	}
 
 	// Wait for lab{N} interface to appear (created by node-agent via OVS).
 	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 	link, linkErr := netlink.LinkByName(ifaceName)
 	if linkErr != nil {
 		r.DHCP.Stop(gw.Spec.LabName)
-		if old, ok := r.applied[gw.Name]; ok {
+		if old, ok := r.applied.get(gw.Name); ok {
 			if err := r.clearNetwork(old); err != nil {
 				return r.networkFailure(ctx, gw, err)
 			}
-			delete(r.applied, gw.Name)
+			r.applied.del(gw.Name)
 		}
 		next := gw.Status
 		next.Conditions = slices.Clone(next.Conditions)
@@ -262,7 +258,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	}
 
 	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
-	previous, known := r.applied[gw.Name]
+	previous, known := r.applied.get(gw.Name)
 	if gatewayNetworkNeedsSetup(known, previous, desired, link, cidr) {
 		if err := r.IPT.BlockLab(ifaceName); err != nil {
 			return r.networkFailure(ctx, gw, fmt.Errorf("close lab source gate: %w", err))
@@ -273,7 +269,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 			if err := r.clearNetwork(previous); err != nil {
 				return r.networkFailure(ctx, gw, err)
 			}
-			delete(r.applied, gw.Name)
+			r.applied.del(gw.Name)
 		}
 		// Assign first host IP of the lab's /24 to the interface (idempotent).
 		if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
@@ -302,13 +298,13 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		if err := r.IPT.UnblockLab(ifaceName); err != nil {
 			return r.networkFailure(ctx, gw, fmt.Errorf("open secured lab source gate: %w", err))
 		}
-		r.applied[gw.Name] = desired
+		r.applied.set(gw.Name, desired)
 		// The devices of the lab may still hold the hardware address of a gateway that was replaced: tell them who has the address now.
 		announceGateway(ctx, ifaceName, cidr)
 		ctrl.LoggerFrom(ctx).Info("the lab is open: egress redirects and the source gate stand", "lab", gw.Spec.LabName, "iface", ifaceName)
 	}
 	r.shape(gw, ifaceName)
-	state := r.applied[gw.Name]
+	state, _ := r.applied.get(gw.Name)
 	if dhcpEnabled {
 		gwIP := firstHostIP(cidr)
 		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
@@ -337,7 +333,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	}
 	state.DHCPKnown = true
 	state.DHCP = dhcpEnabled
-	r.applied[gw.Name] = state
+	r.applied.set(gw.Name, state)
 	if dhcpEnabled && !r.DHCP.Healthy(gw.Spec.LabName) {
 		return r.dhcpFailure(ctx, gw, fmt.Errorf("DHCP socket is unavailable"))
 	}
