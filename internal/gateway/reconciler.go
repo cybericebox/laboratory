@@ -297,6 +297,10 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 			return r.networkFailure(ctx, gw, fmt.Errorf("open secured lab source gate: %w", err))
 		}
 		r.applied[gw.Name] = desired
+		// The devices of the lab may still hold the hardware address of a gateway that was replaced: tell them who has the address now.
+		if err := announceARP(ifaceName, net.ParseIP(firstHostIP(cidr))); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "cannot announce the gateway address to the lab", "iface", ifaceName)
+		}
 		ctrl.LoggerFrom(ctx).Info("the lab is open: egress redirects and the source gate stand", "lab", gw.Spec.LabName, "iface", ifaceName)
 	}
 	r.shape(gw, ifaceName)
