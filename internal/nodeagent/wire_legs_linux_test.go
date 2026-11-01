@@ -13,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -30,7 +29,7 @@ func TestNetnsWireLegsGoOnAfterAFailedLeg(t *testing.T) {
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(live, fresh).Build()
 
 	held, free := names.GWHostPortKey("g", 1), names.GWHostPortKey("g", 2)
-	if err := ovs.AddVethPortOwned(held, types.UID(live.UID)); err != nil {
+	if err := ovs.AddVethPortOwned(held, live.UID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ovs.DelVethPort(held); _ = ovs.DelVethPort(free) })
