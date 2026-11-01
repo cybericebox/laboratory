@@ -89,7 +89,8 @@ func Run() {
 	dhcpMgr := dhcp.NewManager()
 	defer dhcpMgr.Close()
 	labs := egressproxy.NewLabMap()
-	if _, err := startEgress(cfg, labs, log); err != nil {
+	// The listeners stand before the reconciler exists: it installs the redirects of a lab's 80/443/53 only after this returns.
+	if err := startEgress(cfg, labs, log); err != nil {
 		log.Error(err, "start the egress services")
 		os.Exit(1)
 	}
@@ -145,11 +146,11 @@ func Run() {
 }
 
 // startEgress starts the web proxy, the DNS answerer and the summaries page of the gateway. They run for the life of the process.
-func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger) (*egressproxy.Collector, error) {
+func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger) error {
 	upstreams := splitList(cfg.EgressDNSUpstreams)
 	resolver, err := egressproxy.NewResolver(upstreams)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	suffixes := egressproxy.DefaultTunnelSuffixes
 	switch cfg.EgressTunnelSuffixes {
@@ -173,23 +174,23 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 	ctx := context.Background()
 	httpL, err := egressproxy.Listen(cfg.EgressHTTPPort)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	tlsL, err := egressproxy.Listen(cfg.EgressTLSPort)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dnsTCP, err := egressproxy.Listen(cfg.EgressDNSPort)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dnsUDP, err := net.ListenPacket("udp4", ":"+strconv.Itoa(cfg.EgressDNSPort))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	statsL, err := egressproxy.Listen(cfg.EgressStatsPort)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for name, f := range map[string]func() error{
 		"web proxy (80)":  func() error { return proxy.Serve(ctx, httpL, false) },
@@ -209,7 +210,7 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 		}()
 	}
 	log.Info("egress services started", "http", cfg.EgressHTTPPort, "tls", cfg.EgressTLSPort, "dns", cfg.EgressDNSPort, "summaries", cfg.EgressStatsPort, "upstreams", upstreams)
-	return stats, nil
+	return nil
 }
 
 func splitList(s string) []string {
