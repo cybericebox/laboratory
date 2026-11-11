@@ -175,6 +175,13 @@ func (e *Engine) SetDefinitions(key LabKey, uid string, checks []labchecks.Check
 	rt.rebuild()
 }
 
+// HasPods reports whether the lab has a device pod on this node.
+func (e *Engine) HasPods(key LabKey) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.pods[key]) > 0
+}
+
 // SetPod takes a device pod of this node (new, or changed).
 func (e *Engine) SetPod(p PodInfo) {
 	e.mu.Lock()

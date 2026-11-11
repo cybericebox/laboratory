@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,12 +97,21 @@ func TestEvalCustom(t *testing.T) {
 
 // fakeObserver answers from tables.
 type fakeObserver struct {
+	mu    sync.Mutex
 	files map[string]FileFacts
 	exec  func(ExecSpec) (ExecResult, error)
 	calls []string
 }
 
+func (f *fakeObserver) set(path string, facts FileFacts) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[path] = facts
+}
+
 func (f *fakeObserver) ReadFile(_ context.Context, p string, _ bool) (FileFacts, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "file "+p)
 	facts, ok := f.files[p]
 	if !ok {
@@ -111,7 +121,9 @@ func (f *fakeObserver) ReadFile(_ context.Context, p string, _ bool) (FileFacts,
 }
 
 func (f *fakeObserver) Exec(_ context.Context, s ExecSpec) (ExecResult, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "exec")
+	f.mu.Unlock()
 	if f.exec == nil {
 		return ExecResult{Started: true}, nil
 	}

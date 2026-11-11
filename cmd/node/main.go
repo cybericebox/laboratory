@@ -1,10 +1,11 @@
 //go:build linux
 
-// node is the per-node image's binary: node-agent, install-cni, netconfig and cni-gate.
+// node is the per-node image's binary: node-agent, install-cni, netconfig, cni-gate, and the lab checker (checker, checker-health).
 // cni-gate is also started by its own name: the host copy in /opt/cni/bin/cni-gate.
 package main
 
 import (
+	"github.com/cybericebox/laboratory/internal/cmds/checkerd"
 	"github.com/cybericebox/laboratory/internal/cmds/cnigate"
 	"github.com/cybericebox/laboratory/internal/cmds/installcni"
 	"github.com/cybericebox/laboratory/internal/cmds/netconfig"
@@ -14,9 +15,11 @@ import (
 
 func main() {
 	multicall.Run(map[string]func(){
-		"node-agent":  nodeagentd.Run,
-		"install-cni": installcni.Run,
-		"netconfig":   netconfig.Run,
-		"cni-gate":    cnigate.Run,
+		"node-agent":     nodeagentd.Run,
+		"install-cni":    installcni.Run,
+		"netconfig":      netconfig.Run,
+		"cni-gate":       cnigate.Run,
+		"checker":        checkerd.Run,
+		"checker-health": checkerd.Health,
 	})
 }
