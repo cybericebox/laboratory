@@ -47,6 +47,7 @@ func startEnv(t *testing.T) client.Client {
 		t.Fatalf("start API server: %v", err)
 	}
 	t.Cleanup(func() { _ = env.Stop() })
+	testRestConfig = cfg
 	if err := laboratoryv1alpha1.AddToScheme(scheme.Scheme); err != nil {
 		t.Fatal(err)
 	}

@@ -60,13 +60,21 @@ func (w *fakeWriter) count(prefix string) int {
 }
 
 type fakeBackend struct {
+	mu      sync.Mutex
 	obs     *fakeObserver
 	openErr error
 	opened  int
+	devices map[string]int
 }
 
-func (b *fakeBackend) Open(context.Context, PodInfo) (Observer, func(), error) {
+func (b *fakeBackend) Open(_ context.Context, pod PodInfo) (Observer, func(), error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.opened++
+	if b.devices == nil {
+		b.devices = map[string]int{}
+	}
+	b.devices[pod.Device]++
 	if b.openErr != nil {
 		return nil, nil, b.openErr
 	}
@@ -105,7 +113,7 @@ func newRig(t *testing.T, max int, checks ...labchecks.Check) *rig {
 	return r
 }
 
-func (r *rig) setContent(c string) { r.b.obs.files["/f"] = present(c) }
+func (r *rig) setContent(c string) { r.b.obs.set("/f", present(c)) }
 
 func (r *rig) pod(device string, ready bool) {
 	r.e.SetPod(PodInfo{Lab: lab1, Device: device, Name: "p-" + device, UID: "pu-" + device, Ready: ready})
