@@ -66,7 +66,7 @@ func resultObject(lab LabKey, r laboratoryv1alpha1.CheckResult) *unstructured.Un
 
 // PublishCheck applies one entry of status.checks.
 func (w *StatusWriter) PublishCheck(ctx context.Context, lab LabKey, r laboratoryv1alpha1.CheckResult) error {
-	err := w.Client.Status().Patch(ctx, resultObject(lab, r), client.Apply, client.FieldOwner(ManagerForCheck(r.ID)), client.ForceOwnership)
+	err := w.Client.SubResource("status").Apply(ctx, client.ApplyConfigurationFromUnstructured(resultObject(lab, r)), client.FieldOwner(ManagerForCheck(r.ID)), client.ForceOwnership)
 	if err != nil {
 		return fmt.Errorf("apply check %q of %s: %w", r.ID, lab, err)
 	}
@@ -76,7 +76,7 @@ func (w *StatusWriter) PublishCheck(ctx context.Context, lab LabKey, r laborator
 // AckRun applies status.checksRunAck.
 func (w *StatusWriter) AckRun(ctx context.Context, lab LabKey, token int64) error {
 	obj := labObject(lab, map[string]any{"checksRunAck": token})
-	if err := w.Client.Status().Patch(ctx, obj, client.Apply, client.FieldOwner(AckManager), client.ForceOwnership); err != nil {
+	if err := w.Client.SubResource("status").Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(AckManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("acknowledge run %d of %s: %w", token, lab, err)
 	}
 	return nil

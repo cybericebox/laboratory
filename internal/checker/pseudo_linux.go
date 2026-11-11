@@ -11,7 +11,7 @@ func pseudoFS(fd int) bool {
 	if err := unix.Fstatfs(fd, &sfs); err != nil {
 		return true
 	}
-	switch int64(sfs.Type) {
+	switch sfs.Type {
 	case unix.PROC_SUPER_MAGIC, unix.SYSFS_MAGIC, unix.CGROUP_SUPER_MAGIC, unix.CGROUP2_SUPER_MAGIC, unix.DEVPTS_SUPER_MAGIC,
 		unix.BPF_FS_MAGIC, unix.DEBUGFS_MAGIC, unix.TRACEFS_MAGIC, unix.SECURITYFS_MAGIC, unix.NSFS_MAGIC, unix.SELINUX_MAGIC:
 		return true

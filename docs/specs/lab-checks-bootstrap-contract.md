@@ -2,15 +2,15 @@
 
 **Agent API contract version:** 1.4 -> 1.5. Everything here is additive: new field numbers, no renames, no removals. An old daemon keeps working; an old agent simply lacks the fields.
 
-**Design record:** `docs/specs/2026-11-11-lab-checkers-bootstrap-devices.md` in the platform repo (sections 3, 4.1, 4.2, 5, 7). **Scope of this step:** the data model, the Secrets, the validation, the report and the manual-run request. Nothing runs yet.
+**Design record:** `docs/specs/2026-11-11-lab-checkers-bootstrap-devices.md` in the platform repo (sections 3, 4.1, 4.2, 5, 7). **Scope of this step:** the data model, the Secrets, the validation, the report and the manual-run request. The checker is described in `lab-checker.md`.
 
 The launcher and the pod-spec changes it needs (stager init container, memory volume, startup and readiness probes, recreation of a pod whose service ended, `status.bootstrap`) are built: see `DEPLOY.md`, "Device bootstrap and the service command", and package `internal/launcher`.
 
 Not implemented (deliberately):
 
-- the checker component (the DaemonSet that reads files, runs commands, keeps the schedule, writes `status.checks`);
+- ~~the checker component~~ (done in the step after this one: `docs/specs/lab-checker.md`; the DaemonSet is rendered while `checks.enabled` is true, and its keepalive is a Lease per node);
 - the terminal component and the proxy route for it;
-- full VMs, the guest agent, network checks, the keepalive of the checker;
+- full VMs, the guest agent, network checks, a report of the checker keepalive to the daemon (the Lease exists; `agent.proto` has no field for it yet);
 - the generated `clientset/applyconfiguration` was not regenerated (the generator does not run on the Go 1.27 toolchain); the typed clientset used by the agent and the operator is unaffected.
 
 ## 1. What travels where
@@ -90,7 +90,7 @@ Mechanism: the agent writes the annotation `laboratory.cybericebox.com/run-check
 
 ## 6. Options and refusals
 
-Helm values (both default `false`, independent): `checks.enabled`, `terminal.enabled`. They render as `CHECKS_ENABLED` and `TERMINAL_ENABLED` in the shared env map (the agent deployment and the operator ConfigMap read the same values); the agent reports them in `GetFeatures`/`Monitoring`. No DaemonSet is added by this step.
+Helm values (both default `false`, independent): `checks.enabled`, `terminal.enabled`. They render as `CHECKS_ENABLED` and `TERMINAL_ENABLED` in the shared env map (the agent deployment and the operator ConfigMap read the same values); the agent reports them in `GetFeatures`/`Monitoring`. No DaemonSet is added by this step (the checker came with the next one: `docs/specs/lab-checker.md`; `features.checks.enabled` then also needs the DaemonSet to exist).
 
 A lab that carries checks while `checks` is off, or a terminal device while `terminal` is off, is refused at `CreateLabs` with `INVALID_ARGUMENT`. `UpdateLabs` with checks and `RunChecks` are refused while `checks` is off. Bootstrap does not depend on either option. The refusal applies when the agent runs with its features set (always in production).
 

@@ -94,7 +94,7 @@ func idMapOf(info string) (IDMap, error) {
 	conv := func(in []ociMapping) []IDRange {
 		out := make([]IDRange, 0, len(in))
 		for _, m := range in {
-			out = append(out, IDRange{ContainerID: m.ContainerID, HostID: m.HostID, Size: m.Size})
+			out = append(out, IDRange(m))
 		}
 		return out
 	}

@@ -136,6 +136,10 @@ func NewEngine(cfg Config) *Engine {
 func (e *Engine) SetLab(info LabInfo) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if len(info.Refs) == 0 {
+		delete(e.labs, info.Key) // a lab without checks is nothing to keep
+		return
+	}
 	rt := e.labs[info.Key]
 	if rt == nil || rt.info.UID != info.UID {
 		rt = &labRuntime{defs: map[string]*labchecks.Check{}, entries: map[string]*entry{}}

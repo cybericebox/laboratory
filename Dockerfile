@@ -5,7 +5,7 @@
 #   controller  /manager                                  distroless static, non-root, no shell
 #   agent       /agent                                    distroless static, non-root, no shell
 #   proxy       /proxy  (proxy-l7, proxy-wg)              distroless static, non-root, no shell
-#   node        /node   (node-agent, install-cni, netconfig, cni-gate), /probe (device readiness) + Open vSwitch    alpine (root and a shell:
+#   node        /node   (node-agent, install-cni, netconfig, cni-gate, checker), /probe (device readiness, lab checks) + Open vSwitch    alpine (root and a shell:
 #               it drives OVS and pod networking on the host, and start-ovs.sh and the init scripts are shell)
 #   lab         /lab    (vpn, gateway) + the iptables and nft binaries only                     built from scratch: no shell,
 #               no package manager (root: the pods need NET_ADMIN, which Kubernetes gives only to root)

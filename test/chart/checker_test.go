@@ -226,3 +226,19 @@ func TestCheckerTemplateHasRoomForASecondContainer(t *testing.T) {
 		}
 	}
 }
+
+// The agent reports checks as available only while the DaemonSet exists, and may read exactly that one object, only while the option is on.
+func TestAgentMayReadOnlyTheCheckerDaemonSet(t *testing.T) {
+	var role rbacv1.Role
+	render(t, "templates/agent/role-checker.yaml", &role, checksOn...)
+	if len(role.Rules) != 1 || strings.Join(role.Rules[0].ResourceNames, ",") != "laboratory-checker" || strings.Join(role.Rules[0].Verbs, ",") != "get" || strings.Join(role.Rules[0].Resources, ",") != "daemonsets" {
+		t.Errorf("rules %+v", role.Rules)
+	}
+	out, err := helmTemplate(t, agentSet...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "laboratory-agent-checker") {
+		t.Error("the agent's right to read the checker is rendered while the option is off")
+	}
+}

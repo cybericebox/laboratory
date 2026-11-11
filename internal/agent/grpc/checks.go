@@ -217,10 +217,10 @@ func (h *Handler) requireTerminal(spec *laboratoryv1alpha1.LabSpec) error {
 
 // requireChecks refuses checks when the laboratory's checks option is off.
 func (h *Handler) requireChecks(set *checkSet) error {
-	if set.empty() || !h.capabilitiesEnforced || h.features.ChecksEnabled {
+	if set.empty() || !h.capabilitiesEnforced || h.checksAvailable() {
 		return nil
 	}
-	return fmt.Errorf("the lab carries checks, but the checks option is off on this laboratory (features.checks.enabled is false)")
+	return fmt.Errorf("the lab carries checks, but %s", h.checksUnavailableText())
 }
 
 // ---- stamping the non-secret part into the CR spec -------------------------------------------------------------------
@@ -391,8 +391,8 @@ type runChecksRequest struct {
 
 // RunChecks records a manual run of checks. Acceptance only: the result of a check comes in LabStatus.checks.
 func (h *Handler) RunChecks(ctx context.Context, in *protobuf.RunChecksRequest) (*protobuf.BatchResult, error) {
-	if h.capabilitiesEnforced && !h.features.ChecksEnabled {
-		return nil, status.Error(codes.FailedPrecondition, "the checks option is off on this laboratory (features.checks.enabled is false)")
+	if h.capabilitiesEnforced && !h.checksAvailable() {
+		return nil, status.Error(codes.FailedPrecondition, h.checksUnavailableText())
 	}
 	items := in.GetItems()
 	if len(items) == 0 {
@@ -568,7 +568,7 @@ func checkResultsToProto(in []laboratoryv1alpha1.CheckResult) []*protobuf.CheckR
 // checksFeature and bootstrapFeature are the parts of GetFeatures for the contract.
 func (h *Handler) checksFeature() *protobuf.ChecksFeature {
 	return &protobuf.ChecksFeature{
-		Enabled: h.features.ChecksEnabled, MaxChecksPerLab: labchecks.MaxChecksPerLab, MaxPartsPerCheck: labchecks.MaxPartsPerCheck,
+		Enabled: h.checksAvailable(), MaxChecksPerLab: labchecks.MaxChecksPerLab, MaxPartsPerCheck: labchecks.MaxPartsPerCheck,
 		MaxTimeLimitSeconds: labchecks.MaxCheckTimeLimit, MaxScheduleSeconds: labchecks.MaxScheduleSeconds, MaxDetailBytes: labchecks.MaxResultDetailBytes,
 	}
 }
