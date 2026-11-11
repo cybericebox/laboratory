@@ -107,6 +107,9 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	var lab laboratoryv1alpha1.Lab
 	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
+		if errors.IsNotFound(err) {
+			publishLabInitiatedDropped(req.Namespace, req.Name, nil, false)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -887,7 +890,8 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	// The VPN and Internet segments are ready once their LabVPN / LabGateway
 	// report Ready. The VPN pod admits client traffic to a lab only while
 	// Status.VPN.Ready is true, so this must be kept in sync.
-	vpnReady, err := r.segmentReady(ctx, lab.Namespace, lab.Spec.VPN.Enabled, names.LabVPNObjectName(lab.Name), &laboratoryv1alpha1.LabVPN{})
+	vpnLeg := &laboratoryv1alpha1.LabVPN{}
+	vpnReady, err := r.segmentReady(ctx, lab.Namespace, lab.Spec.VPN.Enabled, names.LabVPNObjectName(lab.Name), vpnLeg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -895,6 +899,10 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// The block of connections started by the lab is reported only as the gateway of the group confirmed it on the lab's LabVPN: a group
+	// whose VPN pod still runs an older program never confirms, and the lab is then not reported as blocked.
+	publishLabInitiatedDropped(lab.Namespace, lab.Name, vpnLeg, lab.Spec.VPN.Enabled)
+	labInitiatedBlocked := labInitiatedBlockedStatus(lab, vpnLeg)
 	if (lab.Spec.VPN.Enabled && !vpnReady) || (lab.Spec.Internet.Enabled && !inetReady) {
 		allReady = false
 	}
@@ -946,6 +954,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 	if !lifecycleChanged && reflect.DeepEqual(resources, lab.Status.Resources) && newPhase == lab.Status.Phase &&
 		vpnReady == lab.Status.VPN.Ready &&
+		labInitiatedBlocked == lab.Status.VPN.LabInitiatedBlocked &&
 		inetReady == lab.Status.Internet.Ready &&
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
 		sameRefsByName(connRefs, lab.Status.Connections, func(ref laboratoryv1alpha1.ConnectionRef) string { return ref.Name }) &&
@@ -962,6 +971,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	lab.Status.Resources = resources
 	lab.Status.VPN.Ready = vpnReady
+	lab.Status.VPN.LabInitiatedBlocked = labInitiatedBlocked
 	lab.Status.Internet.Ready = inetReady
 	lab.Status.Devices = refs
 	lab.Status.Connections = connRefs

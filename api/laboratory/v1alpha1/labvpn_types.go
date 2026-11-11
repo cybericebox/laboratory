@@ -53,6 +53,15 @@ type LabVPNStatus struct {
 	Phase       LabVPNPhase         `json:"phase,omitempty"`
 	DHCPEnabled bool                `json:"dhcpEnabled,omitempty"`
 	DHCPReady   bool                `json:"dhcpReady,omitempty"`
+	// LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
+	// starts towards a VPN client, has applied it to this lab (the lab's spec.vpn.reverseConnections is false). Written only by a program
+	// that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
+	// +optional
+	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`
+	// LabInitiatedDropped counts the packets the block dropped for this lab since the VPN process started. For the cluster
+	// administrator's metrics; it is not part of the agent API.
+	// +optional
+	LabInitiatedDropped int64 `json:"labInitiatedDropped,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional

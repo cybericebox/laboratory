@@ -100,3 +100,17 @@ func TestNFTBaseScriptGate(t *testing.T) {
 		t.Error("the open path must stay stateless")
 	}
 }
+
+// A lab that may not start connections is counted by an element of blocked_labs; the rule that drops by that set comes last.
+func TestNFTCountsWhatABlockedLabSendsAndNothingAcceptedIt(t *testing.T) {
+	s := scriptFor(t, nftRule(t, "5", "a", "lab1", false), nftRule(t, "6", "a", "lab1", false), nftRule(t, "5", "b", "lab2", true))
+	if strings.Count(s, `add element ip cicevpn blocked_labs { "lab1" counter }`) != 1 || strings.Contains(s, `blocked_labs { "lab2"`) {
+		t.Errorf("blocked_labs holds the default labs once each:\n%s", s)
+	}
+	base := nftBaseScript("wg0")
+	drop := `forward oifname "wg0" iifname @blocked_labs drop`
+	accept := "@reply_rev ct state established,related"
+	if !strings.Contains(base, drop) || strings.Index(base, drop) < strings.Index(base, accept) {
+		t.Errorf("the counting drop must come after the rules that accept replies:\n%s", base)
+	}
+}

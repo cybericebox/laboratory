@@ -183,6 +183,10 @@ type LabStatus struct {
 type LabNetworkStatus struct {
 	Ready bool   `json:"ready,omitempty"`
 	CIDR  string `json:"cidr,omitempty"`
+	// LabInitiatedBlocked (VPN segment only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards
+	// VPN clients. False while the lab's group still has a VPN pod with an older program, or while the lab is not yet applied there.
+	// +optional
+	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`
 }
 
 // DeviceRef summarises a materialised Device's readiness.

@@ -38,6 +38,9 @@ type IPTablesManager struct {
 	quiesced      bool
 	// nft, when set, replaces the iptables relation chains: the forwarding is nftables without connection tracking (nft_forward_linux.go).
 	nft NFTCommand
+	// dropBase holds the packets the block rules dropped before the last rewrite of the access rules, by lab interface (a rewrite
+	// starts the kernel counters again); with the counters now in the kernel it is the total since the process started.
+	dropBase map[string]uint64
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -298,4 +301,45 @@ func counterInt64(n uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(n)
+}
+
+// foldDrops adds counts read before a rewrite to the total. The caller holds forwardMu.
+func (m *IPTablesManager) foldDrops(counts map[string]uint64) {
+	if len(counts) == 0 {
+		return
+	}
+	if m.dropBase == nil {
+		m.dropBase = map[string]uint64{}
+	}
+	for iface, n := range counts {
+		m.dropBase[iface] += n
+	}
+}
+
+// LabDropCounts is the number of packets that a lab without the switch sent towards the clients and the gate dropped (new connections
+// and anything that is not a reply), by lab interface, since this process started. It is for the operator's metrics only.
+func (m *IPTablesManager) LabDropCounts(ctx context.Context) (map[string]uint64, error) {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	var now map[string]uint64
+	if m.nftOn() {
+		var err error
+		if now, err = m.nftDropCounters(ctx); err != nil {
+			return nil, err
+		}
+	} else {
+		saved, err := m.commands.Save(ctx)
+		if err != nil {
+			return nil, err
+		}
+		now = parseBlockCounters(saved)
+	}
+	out := make(map[string]uint64, len(m.dropBase)+len(now))
+	for iface, n := range m.dropBase {
+		out[iface] = n
+	}
+	for iface, n := range now {
+		out[iface] += n
+	}
+	return out, nil
 }

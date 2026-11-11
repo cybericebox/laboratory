@@ -851,6 +851,11 @@ spec:
                 properties:
                   cidr:
                     type: string
+                  labInitiatedBlocked:
+                    description: |-
+                      LabInitiatedBlocked (VPN segment only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards
+                      VPN clients. False while the lab's group still has a VPN pod with an older program, or while the lab is not yet applied there.
+                    type: boolean
                   ready:
                     type: boolean
                 type: object
@@ -1590,6 +1595,11 @@ spec:
                 properties:
                   cidr:
                     type: string
+                  labInitiatedBlocked:
+                    description: |-
+                      LabInitiatedBlocked (VPN segment only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards
+                      VPN clients. False while the lab's group still has a VPN pod with an older program, or while the lab is not yet applied there.
+                    type: boolean
                   ready:
                     type: boolean
                 type: object

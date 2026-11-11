@@ -58,6 +58,7 @@ type AccessReconciler struct {
 	revokeClients     []string
 	revokeReissued    map[string]bool
 	activationPending bool
+	dropPublished     map[string]time.Time
 	initialChecked    bool
 }
 
@@ -117,6 +118,9 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", policyIdentityError)
 		}
 		return ctrl.Result{}, fmt.Errorf("%s", policyIdentityError)
+	}
+	if err := r.publishLabEnforcement(ctx, labsByName, legs.Items); err != nil {
+		return ctrl.Result{}, fmt.Errorf("publish the lab block state: %w", err)
 	}
 	hasStopped := false
 	for _, l := range labs.Items {

@@ -63,13 +63,14 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	}
 	st := l.Status
 	status := &protobuf.LabStatus{
-		Phase:         string(st.Phase),
-		VpnCidr:       st.VPN.CIDR,
-		InternetCidr:  st.Internet.CIDR,
-		Ready:         st.Phase == laboratoryv1alpha1.PhaseReady,
-		VpnReady:      st.VPN.Ready,
-		InternetReady: st.Internet.Ready,
-		ImageWarning:  st.ImageWarning,
+		Phase:                  string(st.Phase),
+		VpnCidr:                st.VPN.CIDR,
+		InternetCidr:           st.Internet.CIDR,
+		Ready:                  st.Phase == laboratoryv1alpha1.PhaseReady,
+		VpnReady:               st.VPN.Ready,
+		VpnLabInitiatedBlocked: st.VPN.LabInitiatedBlocked && !l.Spec.VPN.ReverseConnections,
+		InternetReady:          st.Internet.Ready,
+		ImageWarning:           st.ImageWarning,
 	}
 	status.Retirement = retirementToProto(l, l.Status.Retirement)
 	status.Lifecycle = lifecycleToProto(l)
@@ -116,7 +117,7 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	// Retained configuration or an old Ready status must never expose stopped
 	// intent as accessible runtime. Keep phases/CIDRs/snapshot history intact.
 	if l.Spec.Lifecycle != nil && !exactRunningProjection(l) {
-		status.Ready, status.VpnReady, status.InternetReady = false, false, false
+		status.Ready, status.VpnReady, status.InternetReady, status.VpnLabInitiatedBlocked = false, false, false, false
 		status.Access, status.AccessUrls = nil, nil
 		for _, d := range status.Devices {
 			d.Ready = false
