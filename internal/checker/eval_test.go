@@ -10,9 +10,9 @@ import (
 	"github.com/cybericebox/laboratory/internal/labchecks"
 )
 
-func sp(s string) *string  { return &s }
-func bp(b bool) *bool      { return &b }
-func mp(m uint32) *uint32  { return &m }
+func sp(s string) *string { return &s }
+func bp(b bool) *bool     { return &b }
+func mp(m uint32) *uint32 { return &m }
 func present(content string) FileFacts {
 	return FileFacts{Exists: true, Regular: true, Mode: 0o640, UID: 0, GID: 33, User: "root", Group: "www-data", Content: []byte(content)}
 }
@@ -192,8 +192,10 @@ func TestObserverErrorsBecomeSafeReasons(t *testing.T) {
 
 type fakeErr struct{ err error }
 
-func (f *fakeErr) ReadFile(context.Context, string, bool) (FileFacts, error) { return FileFacts{}, f.err }
-func (f *fakeErr) Exec(context.Context, ExecSpec) (ExecResult, error)         { return ExecResult{}, f.err }
+func (f *fakeErr) ReadFile(context.Context, string, bool) (FileFacts, error) {
+	return FileFacts{}, f.err
+}
+func (f *fakeErr) Exec(context.Context, ExecSpec) (ExecResult, error) { return ExecResult{}, f.err }
 
 func TestRunCheckTimeLimitCoversTheWholeRun(t *testing.T) {
 	var limits []time.Duration
