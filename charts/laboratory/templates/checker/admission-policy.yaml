@@ -1,0 +1,83 @@
+{{- if and .Values.checks.enabled .Values.operator.admissionPolicy.enabled }}
+{{- /*
+RBAC cannot say "only these fields" or "only the Lease of this node". These policies do, for the checker's ServiceAccount (the node name
+is in the bound token of its pod, as for the node-agent).
+*/ -}}
+{{- $checker := printf "system:serviceaccount:%s:laboratory-checker" .Release.Namespace }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-checker-status
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [laboratory.cybericebox.com]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [labs/status]
+  matchConditions:
+    - name: from-the-checker
+      expression: request.userInfo.username == {{ $checker | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: newStatus
+      expression: "object.?status.orValue({})"
+    - name: oldStatus
+      expression: "oldObject.?status.orValue({})"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec == oldObject.spec && object.metadata.uid == oldObject.metadata.uid && object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) && object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
+      message: "the checker may change only the status of a Lab, from a bound node"
+      reason: Forbidden
+    - expression: "variables.newStatus.all(k, k in ['checks', 'checksRunAck'] || (k in variables.oldStatus && variables.oldStatus[k] == variables.newStatus[k])) && variables.oldStatus.all(k, k in ['checks', 'checksRunAck'] || k in variables.newStatus)"
+      message: "the checker may change only status.checks and status.checksRunAck"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-checker-status
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-checker-status
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-checker-lease
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [coordination.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [leases]
+  matchConditions:
+    - name: from-the-checker
+      expression: request.userInfo.username == {{ $checker | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+  validations:
+    - expression: "variables.ownNode != '' && (object.metadata.name == 'laboratory-checker-' + variables.ownNode || (size('laboratory-checker-' + variables.ownNode) > 253 && object.metadata.name.startsWith('laboratory-checker-')))"
+      message: "the checker may write only the Lease of the node it runs on"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-checker-lease
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-checker-lease
+  validationActions: [Deny]
+{{- end }}

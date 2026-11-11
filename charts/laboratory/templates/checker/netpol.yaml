@@ -1,0 +1,23 @@
+{{- if and .Values.checks.enabled .Values.checks.networkPolicy.enabled }}
+{{- /*
+The checker accepts no inbound connection and calls out to the API server only (the container runtime is a socket on the node). No DNS: the
+in-cluster client uses the API server's address from the environment.
+*/ -}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "laboratory.checker.selectorLabels" . | nindent 6 }}
+  # An empty rule makes ingress default-deny.
+  ingress:
+    - {}
+  egress:
+    - toEntities:
+        - kube-apiserver
+{{- end }}

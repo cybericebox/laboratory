@@ -1,0 +1,66 @@
+{{- if .Values.checks.enabled }}
+{{- /*
+The lab checker (docs/specs/lab-checks-bootstrap-contract.md; DEPLOY.md, "Lab checks"). A DaemonSet of its own, apart from the node-agent:
+the node-agent wires the network of every new pod, and a fault or a load of the checks must not reach it. Made only while checks.enabled
+is true; with it off, nothing here is rendered.
+*/ -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.checker.selectorLabels" . | nindent 4 }}
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "laboratory.checker.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "laboratory.checker.selectorLabels" . | nindent 8 }}
+        {{- include "laboratory.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: laboratory-checker
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      # The cluster network, not the host's: the checker only calls out (the API server and the container runtime socket), and no
+      # port of the node is opened for it. No host PID, no host IPC.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      # Where the node-agent runs: the lab nodes (labWorkloads), with the same tolerations for the startup taints.
+      {{- with .Values.labWorkloads.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - key: node.cilium.io/agent-not-ready
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.labWorkloads.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        {{- include "laboratory.checker.container" . | nindent 8 }}
+        {{- with include "laboratory.checker.extraContainers" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- include "laboratory.checker.volumes" . | nindent 8 }}
+        {{- with include "laboratory.checker.extraVolumes" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
+{{- end }}

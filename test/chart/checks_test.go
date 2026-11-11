@@ -51,15 +51,16 @@ func TestChecksAndTerminalSwitchesAreIndependent(t *testing.T) {
 	}
 }
 
-// Even with both options on the chart renders no checker or terminal component: this step adds only the switches.
-func TestNoCheckerOrTerminalDaemonSetYet(t *testing.T) {
+// The terminal has no component yet: its switch alone renders nothing, and with both on only the checker is rendered.
+func TestNoTerminalComponentYet(t *testing.T) {
 	out, err := helmTemplate(t, append(append([]string{}, agentSet...), "--set", "checks.enabled=true", "--set", "terminal.enabled=true")...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, bad := range []string{"laboratory-checker", "laboratory-terminal"} {
-		if strings.Contains(out, bad) {
-			t.Errorf("the chart renders %q, but the components are not part of the contract step", bad)
-		}
+	if strings.Contains(out, "laboratory-terminal") {
+		t.Error("the chart renders a terminal component, which is not part of this step")
+	}
+	if !strings.Contains(out, "laboratory-checker") {
+		t.Error("checks.enabled=true must render the checker")
 	}
 }
