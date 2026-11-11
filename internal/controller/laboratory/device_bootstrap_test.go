@@ -51,7 +51,7 @@ func mounts(c corev1.Container, volume string) []corev1.VolumeMount {
 // The exact shape of a bootstrapped device pod.
 func TestBootstrappedPodSpec(t *testing.T) {
 	d := bootstrapDevice()
-	_, _, ann, spec := readinessReconciler().workloadTemplate(d, false)
+	_, _, ann, spec := readinessReconciler().workloadTemplate(d)
 
 	main := spec.Containers[0]
 	wantCmd := []string{names.ProbeBinary, "launch", "-bootstrap", "-user", "www-data:www-data", "-workdir", "/srv", "--", "/usr/sbin/nginx", "-g", "daemon off;"}
@@ -106,7 +106,7 @@ func TestBootstrappedPodSpec(t *testing.T) {
 
 // The Secret reaches no container but the stager, and no bootstrap value is in any environment or command.
 func TestBootstrapSecretIsMountedOnlyInTheStager(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(bootstrapDevice(), false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(bootstrapDevice())
 	for _, c := range append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...) {
 		got := mounts(c, names.BootstrapSecretVolume)
 		if c.Name == names.BootstrapInitContainer {
@@ -147,7 +147,7 @@ func TestReadinessNeedsBootstrapAndTheDevicesCondition(t *testing.T) {
 	d := bootstrapDevice()
 	d.Spec.WaitReadyFile = true
 	d.Spec.Exposure = &laboratoryv1alpha1.ExposureSpec{Web: &laboratoryv1alpha1.WebExposure{Port: 8080}}
-	_, _, _, spec := readinessReconciler().workloadTemplate(d, false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(d)
 	want := []string{names.ProbeBinary, "ready", "-file", names.BootstrapOKFile + ":" + names.ReadyFile, "-port", "8080", "-scheme", "http"}
 	if got := spec.Containers[0].ReadinessProbe.Exec.Command; !slices.Equal(got, want) {
 		t.Fatalf("readiness = %v, want %v", got, want)
@@ -158,7 +158,7 @@ func TestReadinessNeedsBootstrapAndTheDevicesCondition(t *testing.T) {
 func TestDeviceWithoutBootstrapOrServiceIsUnchanged(t *testing.T) {
 	r := readinessReconciler()
 	plain := readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80}, true)
-	_, _, annPlain, specPlain := r.workloadTemplate(plain, false)
+	_, _, annPlain, specPlain := r.workloadTemplate(plain)
 	if specPlain.Containers[0].Command != nil || specPlain.Containers[0].StartupProbe != nil || specPlain.Containers[0].SecurityContext.RunAsUser != nil {
 		t.Fatalf("a plain device must keep the image's entrypoint and user: %+v", specPlain.Containers[0])
 	}
@@ -173,7 +173,7 @@ func TestDeviceWithoutBootstrapOrServiceIsUnchanged(t *testing.T) {
 	// A service block that names no command or arguments changes nothing either: the image decides.
 	withUser := readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80}, true)
 	withUser.Spec.Service = &laboratoryv1alpha1.DeviceService{User: "app", WorkingDir: "/app"}
-	_, _, annUser, specUser := r.workloadTemplate(withUser, false)
+	_, _, annUser, specUser := r.workloadTemplate(withUser)
 	if !reflect.DeepEqual(specPlain, specUser) || !reflect.DeepEqual(annPlain, annUser) {
 		t.Fatal("a service block without a command must not change the pod")
 	}
@@ -182,7 +182,7 @@ func TestDeviceWithoutBootstrapOrServiceIsUnchanged(t *testing.T) {
 func TestServiceCommandOverrideWithoutBootstrap(t *testing.T) {
 	d := readinessDevice(nil, false)
 	d.Spec.Service = &laboratoryv1alpha1.DeviceService{Command: []string{"/app"}, Args: []string{"--x"}, User: "1000"}
-	_, _, ann, spec := readinessReconciler().workloadTemplate(d, false)
+	_, _, ann, spec := readinessReconciler().workloadTemplate(d)
 	c := spec.Containers[0]
 	if !slices.Equal(c.Command, []string{names.ProbeBinary, "launch", "-user", "1000", "--", "/app", "--x"}) {
 		t.Fatalf("command = %v", c.Command)
@@ -287,7 +287,7 @@ func TestMicroVMDeviceBootstrapsLikeAContainer(t *testing.T) {
 	r.Security = PodSecurity{UserNamespaces: true}
 	d := bootstrapDevice()
 	d.Spec.Profile = laboratoryv1alpha1.DeviceProfile(nodecap.ProfileMicroVM)
-	_, _, ann, spec := r.workloadTemplate(d, false)
+	_, _, ann, spec := r.workloadTemplate(d)
 	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != "kata-clh" || spec.HostUsers != nil {
 		t.Fatalf("microVM specifics lost: runtime %v hostUsers %v", spec.RuntimeClassName, spec.HostUsers)
 	}
@@ -296,7 +296,7 @@ func TestMicroVMDeviceBootstrapsLikeAContainer(t *testing.T) {
 	}
 	// A container device in the same cluster is in a user namespace.
 	d.Spec.Profile = ""
-	_, _, _, spec = r.workloadTemplate(d, false)
+	_, _, _, spec = r.workloadTemplate(d)
 	if spec.HostUsers == nil || *spec.HostUsers {
 		t.Fatal("container devices keep their user namespace")
 	}

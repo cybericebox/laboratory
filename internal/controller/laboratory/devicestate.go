@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -307,11 +306,8 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		}
 	}
 	if err := r.createDevicePod(ctx, device); err != nil {
-		if stderrors.Is(err, errProfileUnsupported) {
-			return ctrl.Result{}, nil // refused for good, with an event
-		}
-		if refused, serr := r.handleRefusal(ctx, device, err); refused {
-			return ctrl.Result{}, serr // refused for good, with an event and the reason in the status
+		if refused, serr := r.refusedForGood(ctx, device, err); refused {
+			return ctrl.Result{}, serr // refused with an event: nothing to retry
 		}
 		return r.pullSecretWait(ctx, device, err)
 	}

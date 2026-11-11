@@ -38,7 +38,7 @@ func initContainer(spec corev1.PodSpec, name string) *corev1.Container {
 }
 
 func TestDeviceWithoutPortOrMarkerHasNoProbe(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, false), false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, false))
 	if mainContainer(spec).ReadinessProbe != nil || initContainer(spec, names.ProbeInitContainer) != nil || len(spec.Volumes) != 0 {
 		t.Fatalf("a device that publishes nothing and waits for nothing keeps its pod as it was: %+v", spec)
 	}
@@ -49,7 +49,7 @@ func TestProxiedPortGetsAnAutomaticProbe(t *testing.T) {
 		name, protocol, scheme string
 	}{{"http", "http", "http"}, {"https", "https", "https"}, {"default is http", "", "http"}, {"other is tcp", "grpc", "tcp"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 8080, Protocol: tc.protocol}, false), false)
+			_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 8080, Protocol: tc.protocol}, false))
 			p := mainContainer(spec).ReadinessProbe
 			if p == nil || p.Exec == nil {
 				t.Fatalf("readiness probe = %+v", p)
@@ -63,7 +63,7 @@ func TestProxiedPortGetsAnAutomaticProbe(t *testing.T) {
 }
 
 func TestMarkerFileProbe(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, true), false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, true))
 	p := mainContainer(spec).ReadinessProbe
 	if p == nil || p.Exec == nil {
 		t.Fatalf("readiness probe = %+v", p)
@@ -75,7 +75,7 @@ func TestMarkerFileProbe(t *testing.T) {
 }
 
 func TestMarkerAndPortProbeChecksBoth(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 443, Protocol: "https"}, true), false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 443, Protocol: "https"}, true))
 	want := []string{names.ProbeBinary, "ready", "-file", names.ReadyFile, "-port", "443", "-scheme", "https"}
 	if got := mainContainer(spec).ReadinessProbe.Exec.Command; !slices.Equal(got, want) {
 		t.Fatalf("command = %v, want %v", got, want)
@@ -84,7 +84,7 @@ func TestMarkerAndPortProbeChecksBoth(t *testing.T) {
 
 // Readiness only ever withholds traffic: it never kills (no liveness probe, no startup probe) and it is generous.
 func TestProbeTimingAndNoKilling(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, true), false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, true))
 	c := mainContainer(spec)
 	p := c.ReadinessProbe
 	if p.InitialDelaySeconds != 0 || p.PeriodSeconds != 2 || p.SuccessThreshold != 1 || p.FailureThreshold < 10 || p.TimeoutSeconds < 2 {
@@ -96,7 +96,7 @@ func TestProbeTimingAndNoKilling(t *testing.T) {
 }
 
 func TestProbeInstallPlumbing(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, true), false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(nil, true))
 	ic := initContainer(spec, names.ProbeInitContainer)
 	if ic == nil {
 		t.Fatalf("init containers = %+v", spec.InitContainers)
@@ -132,7 +132,7 @@ func TestProbeInstallPlumbing(t *testing.T) {
 func TestProbeInstallerRunsAfterNetconfig(t *testing.T) {
 	d := readinessDevice(nil, true)
 	d.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}
-	_, _, _, spec := readinessReconciler().workloadTemplate(d, false)
+	_, _, _, spec := readinessReconciler().workloadTemplate(d)
 	var order []string
 	for _, ic := range spec.InitContainers {
 		order = append(order, ic.Name)
@@ -145,7 +145,7 @@ func TestProbeInstallerRunsAfterNetconfig(t *testing.T) {
 // Without the node image there is nothing to install the probe from: the device runs as before rather than never ready.
 func TestNoProbeWithoutTheNodeImage(t *testing.T) {
 	r := &DeviceReconciler{Defaults: testDefaults}
-	_, _, _, spec := r.workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80, Protocol: "http"}, true), false)
+	_, _, _, spec := r.workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80, Protocol: "http"}, true))
 	if mainContainer(spec).ReadinessProbe != nil || len(spec.InitContainers) != 0 || len(spec.Volumes) != 0 {
 		t.Fatalf("pod = %+v", spec)
 	}

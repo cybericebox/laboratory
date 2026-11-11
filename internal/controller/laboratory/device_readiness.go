@@ -32,12 +32,7 @@ const (
 	readinessFailureThreshold = 15
 )
 
-// readinessCommand is the argument list of the probe for the device, or nil when the device has nothing to wait for.
-func readinessCommand(device *laboratoryv1alpha1.Device) []string {
-	return readinessCommandFor(device, false)
-}
-
-// readinessCommandFor adds, for a device that runs a bootstrap, the marker of its success: the device is Ready only when the
+// readinessCommandFor is the argument list of the probe for the device, or nil when the device has nothing to wait for. It adds, for a device that runs a bootstrap, the marker of its success: the device is Ready only when the
 // bootstrap succeeded AND the condition of the device holds; with no condition of its own, Ready follows the bootstrap.
 func readinessCommandFor(device *laboratoryv1alpha1.Device, bootstrapped bool) []string {
 	var args []string

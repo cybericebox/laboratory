@@ -12,7 +12,8 @@ func launchMain(args []string) {
 	os.Exit(launcher.Main(args, os.Stderr))
 }
 
-// stageMain is "probe stage SRC DIR": the init container that moves the bootstrap list from the Secret into the memory volume.
+// stageMain is "probe stage SRC DIR": the init container that moves the bootstrap list from the Secret into the memory
+// volume.
 func stageMain(args []string) {
 	if len(args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: probe stage SRC DIR")

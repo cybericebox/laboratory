@@ -27,7 +27,7 @@ func TestLabelsReachDeviceAndPod(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "ctf-web", Labels: dl},
 		Spec:       laboratoryv1alpha1.DeviceSpec{LabRef: "ctf", Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"},
 	}
-	podLabels, selector, _, _ := (&DeviceReconciler{}).workloadTemplate(device, false)
+	podLabels, selector, _, _ := (&DeviceReconciler{}).workloadTemplate(device)
 	if podLabels["event"] != "e1" || podLabels["app"] != "web" || podLabels[names.LabelDevice] != "web" {
 		t.Fatalf("pod labels: %v", podLabels)
 	}
@@ -50,7 +50,7 @@ func TestTenantStampReachesDeviceAndPod(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "ctf-web", Labels: dl},
 		Spec:       laboratoryv1alpha1.DeviceSpec{LabRef: "ctf", Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"},
 	}
-	podLabels, _, _, _ := (&DeviceReconciler{}).workloadTemplate(device, false)
+	podLabels, _, _, _ := (&DeviceReconciler{}).workloadTemplate(device)
 	if podLabels[names.LabelTenant] != "ta" {
 		t.Fatalf("pod labels: %v", podLabels)
 	}
@@ -62,7 +62,7 @@ func TestDevicePodSafeToEvictFalse(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "ctf-web"},
 		Spec:       laboratoryv1alpha1.DeviceSpec{LabRef: "ctf", Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"},
 	}
-	_, _, annotations, _ := (&DeviceReconciler{}).workloadTemplate(device, false)
+	_, _, annotations, _ := (&DeviceReconciler{}).workloadTemplate(device)
 	if annotations[names.AnnotationSafeToEvict] != "false" {
 		t.Fatalf("annotations: %v", annotations)
 	}

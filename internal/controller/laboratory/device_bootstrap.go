@@ -100,6 +100,15 @@ func (r *DeviceReconciler) refuseUnbootstrappable(device *laboratoryv1alpha1.Dev
 	return nil
 }
 
+// refusedForGood says the pod was refused for a reason that waiting does not change: an unrunnable profile (an event was
+// recorded) or a bootstrap that cannot be started (event and reason in the status).
+func (r *DeviceReconciler) refusedForGood(ctx context.Context, device *laboratoryv1alpha1.Device, err error) (bool, error) {
+	if stderrors.Is(err, errProfileUnsupported) {
+		return true, nil
+	}
+	return r.handleRefusal(ctx, device, err)
+}
+
 // handleRefusal turns a refusal into a status and an event. It reports whether err was one (nothing is retried then).
 func (r *DeviceReconciler) handleRefusal(ctx context.Context, device *laboratoryv1alpha1.Device, err error) (bool, error) {
 	var refused *errBootstrapRefused

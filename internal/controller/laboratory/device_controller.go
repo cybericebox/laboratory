@@ -296,12 +296,8 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
 	ready := dep.Status.AvailableReplicas >= 1
-	bootstrap, err := r.workloadBootstrap(ctx, device)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
 
-	if err := r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready, bootstrap); err != nil {
+	if err := r.publishWorkloadPlacement(ctx, device, nodeName, podIP, podName, ready); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
@@ -394,8 +390,8 @@ func networkAnnotation(device *laboratoryv1alpha1.Device, stableMAC bool) string
 // workloadTemplate is the pod of a device, shared by the Deployment and the
 // bare-Pod (state persistence) modes: the labels, selector labels, pod
 // annotations and the pod spec running the device image.
-func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, stableMAC bool) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
-	return r.workloadTemplateFor(device, stableMAC, podPlan{})
+func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
+	return r.workloadTemplateFor(device, false, podPlan{})
 }
 
 // workloadTemplateFor is workloadTemplate for a pod whose start is known: from a saved state, for repair, or as an attempt
@@ -545,7 +541,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	if err := r.refuseUnbootstrappable(device); err != nil {
 		return err
 	}
-	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
+	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device)
 	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
 		return err
 	}
@@ -850,6 +846,15 @@ func (r *DeviceReconciler) devicesForLab(ctx context.Context, obj client.Object)
 		}
 	}
 	return out
+}
+
+// publishWorkloadPlacement publishes the placement of a Deployment's pod together with the state of its bootstrap.
+func (r *DeviceReconciler) publishWorkloadPlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool) error {
+	bootstrap, err := r.workloadBootstrap(ctx, device)
+	if err != nil {
+		return err
+	}
+	return r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready, bootstrap)
 }
 
 func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool, bootstrap *laboratoryv1alpha1.DeviceBootstrapStatus) error {

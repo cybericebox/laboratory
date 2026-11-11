@@ -29,12 +29,12 @@ func TestDevicePodProfile(t *testing.T) {
 	base := map[string]string{"pool": "lab"}
 	r := &DeviceReconciler{LabNodeSelector: base, Profiles: nodecap.ProfilePolicy{MicroVM: true}, MicroVMRuntimeClass: "cybericebox-microvm"}
 
-	_, _, _, spec := r.workloadTemplate(deviceOf(""), false)
+	_, _, _, spec := r.workloadTemplate(deviceOf(""))
 	if spec.RuntimeClassName != nil || len(spec.NodeSelector) != 1 || spec.NodeSelector["pool"] != "lab" {
 		t.Fatalf("a container device schedules as before (profile labels off): %v %v", spec.RuntimeClassName, spec.NodeSelector)
 	}
 
-	_, _, _, spec = r.workloadTemplate(deviceOf(laboratoryv1alpha1.DeviceProfileMicroVM), false)
+	_, _, _, spec = r.workloadTemplate(deviceOf(laboratoryv1alpha1.DeviceProfileMicroVM))
 	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != "cybericebox-microvm" {
 		t.Fatalf("runtimeClassName: %v", spec.RuntimeClassName)
 	}
@@ -47,17 +47,17 @@ func TestDevicePodProfile(t *testing.T) {
 
 	// no user namespace of the host and no TUN resource for a microVM (it has its own kernel); a container keeps both
 	r.Security.UserNamespaces = true
-	_, _, _, spec = r.workloadTemplate(deviceOf(laboratoryv1alpha1.DeviceProfileMicroVM), false)
+	_, _, _, spec = r.workloadTemplate(deviceOf(laboratoryv1alpha1.DeviceProfileMicroVM))
 	if spec.HostUsers != nil {
 		t.Fatalf("a microVM pod must not set hostUsers: %v", *spec.HostUsers)
 	}
-	_, _, _, spec = r.workloadTemplate(deviceOf(""), false)
+	_, _, _, spec = r.workloadTemplate(deviceOf(""))
 	if spec.HostUsers == nil || *spec.HostUsers {
 		t.Fatal("a container device keeps its user namespace")
 	}
 
 	r.Profiles.Labels = true
-	_, _, _, spec = r.workloadTemplate(deviceOf(""), false)
+	_, _, _, spec = r.workloadTemplate(deviceOf(""))
 	if spec.NodeSelector[names.LabelProfileContainer] != "true" || spec.RuntimeClassName != nil {
 		t.Fatalf("profile labels on: a container device selects its label: %v", spec.NodeSelector)
 	}
@@ -131,7 +131,7 @@ func TestUnrunnableProfileFailsClosedOnEveryPodPath(t *testing.T) {
 			}
 			// the spec itself never gets weaker: no RuntimeClass, so the user namespace and the TUN resource stay
 			r.Security.UserNamespaces = true
-			_, _, _, spec := r.workloadTemplate(d, false)
+			_, _, _, spec := r.workloadTemplate(d)
 			if spec.RuntimeClassName != nil || spec.HostUsers == nil || *spec.HostUsers {
 				t.Errorf("without a RuntimeClass the pod keeps its user namespace: %v %v", spec.RuntimeClassName, spec.HostUsers)
 			}
