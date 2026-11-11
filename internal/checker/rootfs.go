@@ -52,6 +52,7 @@ var (
 
 const (
 	maxLinks     = 40
+	maxSteps     = 4096 // components looked at in one path, links included
 	maxAttempts  = 4
 	maxLinkBytes = 4096
 )
@@ -120,8 +121,11 @@ func (r *RootFS) resolve(p string) (res resolved, ok bool, err error) {
 		dirs = dirs[:1]
 	}
 	fail := func(e error) (resolved, bool, error) { closeAll(); return resolved{}, false, e }
-	links := 0
+	links, steps := 0, 0
 	for len(queue) > 0 {
+		if steps++; steps > maxSteps {
+			return fail(ErrTooManyLinks)
+		}
 		comp := queue[0]
 		queue = queue[1:]
 		cur := dirs[len(dirs)-1]

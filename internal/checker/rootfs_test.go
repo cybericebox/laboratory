@@ -5,6 +5,7 @@ package checker
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,5 +238,26 @@ func TestIDMapTranslatesHostNumbers(t *testing.T) {
 	}
 	if got, ok := (IDMap{}).UID(1234); !ok || got != 1234 {
 		t.Errorf("empty map must be the identity: %d, %v", got, ok)
+	}
+}
+
+// A link that expands into an enormous path costs a bounded number of steps.
+func TestPathWorkIsBounded(t *testing.T) {
+	tr := newTree(t)
+	if err := os.MkdirAll(filepath.Join(tr.root, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 39 links, each to a path of 300 components: far over the step limit.
+	long := strings.Repeat("d/../", 150)
+	for i := 0; i < 39; i++ {
+		next := fmt.Sprintf("/hop%d", i+1)
+		if i == 38 {
+			next = "/app/flag.txt"
+		}
+		tr.link(fmt.Sprintf("hop%d", i), long+strings.TrimPrefix(next, "/"))
+	}
+	_, err := tr.open().Observe("/hop0", true, IDMap{})
+	if !errors.Is(err, ErrTooManyLinks) {
+		t.Fatalf("got %v", err)
 	}
 }
