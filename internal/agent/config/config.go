@@ -118,6 +118,10 @@ type Config struct {
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled: two independent options, both off by
+	// default. A lab with checks (or a terminal device) is refused while the matching option is off; GetFeatures reports them.
+	ChecksEnabled   bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
 	// AdmissionStaleAfter is how long a pending child admission of another lab that wrote nothing blocks its group before the
 	// next claim clears it (ADMISSION_STALE_AFTER).
 	AdmissionStaleAfter time.Duration `env:"ADMISSION_STALE_AFTER" envDefault:"10m"`

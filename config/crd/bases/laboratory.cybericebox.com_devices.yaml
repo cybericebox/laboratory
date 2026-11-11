@@ -39,6 +39,15 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
+              bootstrap:
+                description: Bootstrap says the device has a bootstrap list in the
+                  Secret <device>-bootstrap (see DeviceTemplate).
+                properties:
+                  enabled:
+                    description: 'Enabled: the Secret exists (or is being written)
+                      and the service must not start before the bootstrap is done.'
+                    type: boolean
+                type: object
               code:
                 description: |-
                   Code is the short random code that makes the workload name <name>-<code>
@@ -257,6 +266,35 @@ spec:
                 - standard
                 - extended
                 type: string
+              service:
+                description: Service is the service command of a container device
+                  (see DeviceTemplate).
+                properties:
+                  args:
+                    description: Args are the arguments of the command.
+                    items:
+                      maxLength: 4096
+                      type: string
+                    maxItems: 256
+                    type: array
+                  command:
+                    description: Command is the entrypoint list.
+                    items:
+                      maxLength: 4096
+                      type: string
+                    maxItems: 64
+                    type: array
+                  user:
+                    description: User is the user (name or uid[:gid]) the service
+                      runs as.
+                    maxLength: 128
+                    type: string
+                  workingDir:
+                    description: WorkingDir is the working directory of the service
+                      (an absolute path).
+                    maxLength: 4096
+                    type: string
+                type: object
               state:
                 description: |-
                   State is the optional state-persistence policy and operator controls of
@@ -371,6 +409,28 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              terminal:
+                description: Terminal enables the browser terminal of the device (see
+                  DeviceTemplate).
+                properties:
+                  command:
+                    description: Command starts the terminal session; empty means
+                      /bin/sh.
+                    items:
+                      maxLength: 4096
+                      type: string
+                    maxItems: 32
+                    type: array
+                  enabled:
+                    description: Enabled turns the terminal on. A lab with a terminal
+                      is refused by a laboratory whose terminal option is off.
+                    type: boolean
+                  user:
+                    description: User the session runs as; empty means the user of
+                      the service.
+                    maxLength: 128
+                    type: string
+                type: object
               type:
                 description: DeviceType distinguishes network device kinds.
                 enum:
@@ -390,6 +450,31 @@ spec:
           status:
             description: DeviceStatus defines the observed state of Device.
             properties:
+              bootstrap:
+                description: Bootstrap is the observed bootstrap of the device; absent
+                  for a device without one. Written by the launcher side (not yet
+                  built).
+                properties:
+                  attempts:
+                    description: Attempts is the number of attempts made so far (at
+                      most three, internal/labchecks.BootstrapMaxAttempts).
+                    format: int32
+                    type: integer
+                  phase:
+                    description: BootstrapPhase is where the bootstrap of a device
+                      is.
+                    enum:
+                    - none
+                    - pending
+                    - done
+                    - failed
+                    type: string
+                  reason:
+                    description: Reason is a short explanation of a failed or pending
+                      bootstrap (at most 256 bytes).
+                    maxLength: 256
+                    type: string
+                type: object
               cpuThrottle:
                 description: |-
                   CPUThrottle is how much the CPU limit holds the device back. The node-agent of the pod's node keeps it; absent means

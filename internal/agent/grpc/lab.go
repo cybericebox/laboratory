@@ -14,6 +14,8 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
+	"github.com/cybericebox/laboratory/internal/labchecks"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -29,6 +31,9 @@ type labVariant struct {
 	env           deviceVars
 	// creds are the pull credentials of the variant's private images; write-only.
 	creds []*protobuf.RegistryCredential
+	// bootstrap and checks are the variant's common bootstrap lists and checks (secret material, see checks.go).
+	bootstrap []*protobuf.DeviceBootstrap
+	checks    *protobuf.LabChecks
 }
 
 // parseVariants parses and validates the variants of a CreateLabs request. A variant id
@@ -53,7 +58,14 @@ func parseVariants(in []*protobuf.LabVariant, persistence bool) (map[string]*lab
 		if err := validateRegistryCredentials(v.GetRegistryCredentials()); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "variant %q: %s", v.GetVariantId(), status.Convert(err).Message())
 		}
-		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env, creds: v.GetRegistryCredentials(), rawDefinition: append([]byte(nil), v.GetSpecJson()...)}
+		if err := validateBootstrapLists(mergeBootstrapLists(v.GetBootstrap()), &spec); err != nil {
+			return nil, invalid("variant %q: %v", v.GetVariantId(), err)
+		}
+		if err := validateCheckSet(checksFromProto(v.GetChecks()), &spec); err != nil {
+			return nil, invalid("variant %q: %v", v.GetVariantId(), err)
+		}
+		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env, creds: v.GetRegistryCredentials(), rawDefinition: append([]byte(nil), v.GetSpecJson()...),
+			bootstrap: v.GetBootstrap(), checks: v.GetChecks()}
 	}
 	return out, nil
 }
@@ -84,23 +96,14 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	for _, v := range variants {
-		for i := range v.spec.Devices {
-			if err := names.ValidateNewDeviceName(v.spec.Devices[i].Name); err != nil {
-				return nil, invalid("variant %q: %v", v.id, err)
-			}
-		}
-		if err := h.features.Limits.CheckSpec(&v.spec); err != nil {
-			return nil, invalid("variant %q: %v", v.id, err)
-		}
-		if err := h.checkProfiles(&v.spec); err != nil {
-			return nil, invalid("variant %q: %v", v.id, err)
-		}
-		if err := checkSpecImages(policy, &v.spec); err != nil {
-			return nil, status.Errorf(codes.PermissionDenied, "variant %q: %v", v.id, err)
+		if err := h.admitVariant(v, policy); err != nil {
+			return nil, err
 		}
 	}
 	refs := make([]*protobuf.ItemRef, len(items))
 	envs := make([]deviceVars, len(items))
+	boots := make([]bootstrapLists, len(items))
+	sets := make([]*checkSet, len(items))
 	for i, it := range items {
 		refs[i] = nsRef(it.GetLabGroup(), it.GetName())
 		if err := names.ValidateID(it.GetName()); err != nil {
@@ -127,6 +130,9 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		}
 		envs[i] = mergeEnvLists(variantEnvList(v), it.GetEnv())
 		if err := validateEnv(envs[i], specDevices(&v.spec)); err != nil {
+			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
+		}
+		if boots[i], sets[i], err = h.itemContract(v, it); err != nil {
 			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
 		}
 	}
@@ -159,7 +165,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if refusals[i] != nil {
 			return failedResult(refs[i], refusals[i])
 		}
-		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], in.GetLabels())
+		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], labContract{bootstrap: boots[i], checks: sets[i]}, in.GetLabels())
 		if err != nil {
 			return failedResult(refs[i], err)
 		}
@@ -220,7 +226,48 @@ func specHash(spec *laboratoryv1alpha1.LabSpec, dep deploySpec) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *protobuf.LabItem, v *labVariant, env deviceVars, common map[string]string) (protobuf.ItemState, error) {
+// admitVariant refuses a variant whose spec the platform cannot run: names, limits, profiles, images, and the options (the terminal).
+func (h *Handler) admitVariant(v *labVariant, policy imagepolicy.Policy) error {
+	for i := range v.spec.Devices {
+		if err := names.ValidateNewDeviceName(v.spec.Devices[i].Name); err != nil {
+			return invalid("variant %q: %v", v.id, err)
+		}
+	}
+	if err := h.features.Limits.CheckSpec(&v.spec); err != nil {
+		return invalid("variant %q: %v", v.id, err)
+	}
+	if err := h.checkProfiles(&v.spec); err != nil {
+		return invalid("variant %q: %v", v.id, err)
+	}
+	if err := checkSpecImages(policy, &v.spec); err != nil {
+		return status.Errorf(codes.PermissionDenied, "variant %q: %v", v.id, err)
+	}
+	if err := h.requireTerminal(&v.spec); err != nil {
+		return invalid("variant %q: %v", v.id, err)
+	}
+	return nil
+}
+
+// itemContract merges the variant's and the item's bootstrap lists and checks and validates them against the variant's spec.
+func (h *Handler) itemContract(v *labVariant, it *protobuf.LabItem) (bootstrapLists, *checkSet, error) {
+	boot := mergeBootstrapLists(v.bootstrap, it.GetBootstrap())
+	if err := validateBootstrapLists(boot, &v.spec); err != nil {
+		return nil, nil, err
+	}
+	set := pickChecks(v.checks, it.GetChecks())
+	if err := validateCheckSet(set, &v.spec); err != nil {
+		return nil, nil, err
+	}
+	return boot, set, h.requireChecks(set)
+}
+
+// labContract is the secret bootstrap and checks material of one lab to create.
+type labContract struct {
+	bootstrap bootstrapLists
+	checks    *checkSet
+}
+
+func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *protobuf.LabItem, v *labVariant, env deviceVars, contract labContract, common map[string]string) (protobuf.ItemState, error) {
 	h.lifecycleAdmissionMu.Lock()
 	defer h.lifecycleAdmissionMu.Unlock()
 	name := crName(it.GetName())
@@ -249,6 +296,8 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	v.spec.DeepCopyInto(&lab.Spec)
 	// Only the agent names the pull Secret, from the credentials sent with the deploy.
 	lab.Spec.ImagePullSecret = labRegistrySecretName(name, v.creds)
+	// Only the agent says that a bootstrap list or checks exist (their Secrets are written below).
+	stampContract(&lab.Spec, contract.bootstrap, contract.checks)
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(it.GetName()))
 	if id := it.GetReservationId(); id != "" {
 		lab.Labels[names.LabelReservation] = crName(id)
@@ -304,21 +353,32 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		}
 		return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 	}
-	devices := sortedKeys(env)
-	if state != protobuf.ItemState_ITEM_STATE_CREATED {
-		// An existing lab: every device ends with the Secret of this call (or none).
-		devices = devices[:0]
-		for i := range out.Spec.Devices {
-			devices = append(devices, out.Spec.Devices[i].Name)
-		}
-	}
-	if err := h.writeDeviceSecrets(ctx, out, devices, env); err != nil {
+	if err := h.writeDeviceSecrets(ctx, out, createSecrets(out, state, env, contract)); err != nil {
 		return 0, err
 	}
 	if err := h.writeRegistrySecret(ctx, out, v.creds); err != nil {
 		return 0, err
 	}
 	return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
+}
+
+// createSecrets is what a create writes: for a new lab the devices that have variables or a list, for an existing one every
+// device, so that each ends with the Secrets of this call (or none).
+func createSecrets(out *laboratoryv1alpha1.Lab, state protobuf.ItemState, vars deviceVars, contract labContract) labSecrets {
+	if state == protobuf.ItemState_ITEM_STATE_CREATED {
+		return labSecrets{devices: sortedKeys(vars), env: vars, bootstrap: contract.bootstrap, checks: contract.checks}
+	}
+	sec := labSecrets{env: vars, bootstrap: bootstrapLists{}, checks: contract.checks}
+	for i := range out.Spec.Devices {
+		name := out.Spec.Devices[i].Name
+		sec.devices = append(sec.devices, name)
+		if b := contract.bootstrap[name]; b != nil {
+			sec.bootstrap[name] = b
+		} else {
+			sec.bootstrap[name] = &labchecks.Bootstrap{}
+		}
+	}
+	return sec
 }
 
 // existingLab answers a create of a name that exists: the same spec (by hash) is fine,
@@ -416,6 +476,10 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 type labPlan struct {
 	labels labelPlan
 	env    deviceVars
+	// bootstrap lists and checks of the request (common first, then the item's): the protos are shared, never changed
+	bootstrap    [][]*protobuf.DeviceBootstrap
+	checksCommon *protobuf.LabChecks
+	checksItem   *protobuf.LabChecks
 	// reservation: attach to this reservation id (see attachReservation)
 	reservation *string
 }
@@ -427,6 +491,8 @@ func planLabChanges(common, item *protobuf.LabChanges) (labPlan, error) {
 		return p, err
 	}
 	p.env = mergeEnvLists(common.GetEnv(), item.GetEnv())
+	p.bootstrap = [][]*protobuf.DeviceBootstrap{common.GetBootstrap(), item.GetBootstrap()}
+	p.checksCommon, p.checksItem = common.GetChecks(), item.GetChecks()
 	var c, i *string
 	if common != nil {
 		c = common.ReservationId
@@ -498,6 +564,8 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 	}
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
 	var cur *laboratoryv1alpha1.Lab
+	var boot bootstrapLists
+	var set *checkSet
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var err error
 		if cur, err = labs.Get(ctx, crName(ref.GetName()), metav1.GetOptions{}); err != nil {
@@ -514,6 +582,20 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 		}
 		if len(p.env) > 0 {
 			if err := validateEnv(p.env, specDevices(&cur.Spec)); err != nil {
+				return invalid("%v", err)
+			}
+		}
+		if boot, set = p.contract(); len(boot) > 0 || set != nil {
+			if err := validateBootstrapLists(boot, &cur.Spec); err != nil {
+				return invalid("%v", err)
+			}
+			if err := validateCheckSet(set, &cur.Spec); err != nil {
+				return invalid("%v", err)
+			}
+			if err := h.requireChecks(set); err != nil {
+				return invalid("%v", err)
+			}
+			if err := checkUpdateTargets(cur, boot, set); err != nil {
 				return invalid("%v", err)
 			}
 		}
@@ -538,10 +620,16 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 	if err != nil {
 		return err
 	}
-	if len(p.env) == 0 {
+	if len(p.env) == 0 && len(boot) == 0 && set == nil {
 		return nil
 	}
-	return h.writeDeviceSecrets(ctx, cur, sortedKeys(p.env), p.env)
+	return h.writeDeviceSecrets(ctx, cur, labSecrets{devices: sortedKeys(p.env), env: p.env, bootstrap: boot, checks: set})
+}
+
+// contract builds the request's bootstrap lists and checks afresh (they are normalized in place when validated, so the
+// plan, which several labs share, keeps only the protos).
+func (p labPlan) contract() (bootstrapLists, *checkSet) {
+	return mergeBootstrapLists(p.bootstrap...), pickChecks(p.checksCommon, p.checksItem)
 }
 
 // DeleteLabs deletes Labs. Deletion is asynchronous: until it is finished, creating the

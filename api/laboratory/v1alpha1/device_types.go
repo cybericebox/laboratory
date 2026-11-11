@@ -54,6 +54,15 @@ type DeviceSpec struct {
 	// WaitReadyFile: the device is Ready only once /run/ready exists inside the container (see DeviceTemplate).
 	// +optional
 	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
+	// Service is the service command of a container device (see DeviceTemplate).
+	// +optional
+	Service *DeviceService `json:"service,omitempty"`
+	// Terminal enables the browser terminal of the device (see DeviceTemplate).
+	// +optional
+	Terminal *DeviceTerminal `json:"terminal,omitempty"`
+	// Bootstrap says the device has a bootstrap list in the Secret <device>-bootstrap (see DeviceTemplate).
+	// +optional
+	Bootstrap *DeviceBootstrapSpec `json:"bootstrap,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
@@ -208,6 +217,9 @@ type DeviceStatus struct {
 	// not throttled (or no data yet).
 	// +optional
 	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
+	// Bootstrap is the observed bootstrap of the device; absent for a device without one. Written by the launcher side (not yet built).
+	// +optional
+	Bootstrap *DeviceBootstrapStatus `json:"bootstrap,omitempty"`
 }
 
 // DeviceCPUThrottle is the share of the CFS periods in which the device container was throttled (it used up its CPU limit

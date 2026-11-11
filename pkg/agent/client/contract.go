@@ -15,7 +15,7 @@ import "fmt"
 // com.cybericebox.laboratory.api-contract.
 const (
 	ContractMajor = 1
-	ContractMinor = 4
+	ContractMinor = 5
 )
 
 // ContractVersion is the contract of this build of the SDK.

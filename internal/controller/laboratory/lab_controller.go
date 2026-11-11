@@ -525,6 +525,9 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
 				WaitReadyFile:  tmpl.WaitReadyFile,
+				Service:        tmpl.Service,
+				Terminal:       tmpl.Terminal,
+				Bootstrap:      tmpl.Bootstrap,
 				State:          r.deviceStateSpec(ten, tmpl),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
 				ImageDigests:   r.deviceDigests(lab, tmpl),
@@ -820,7 +823,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
 			failure = sc.Failure
 		}
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure, CPUThrottle: d.Status.CPUThrottle})
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure, CPUThrottle: d.Status.CPUThrottle, Bootstrap: d.Status.Bootstrap})
 		ready := d.Status.Ready
 		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
 			ready = false
@@ -996,10 +999,27 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 }
 
 // buildAccessEntries returns the externally-visible URL for each web-exposed
-// device in the lab. Empty if BaseDomain is unset.
+// device in the lab (none if BaseDomain is unset), then one entry with protocol
+// "terminal" for each device that enables the browser terminal. A terminal entry
+// has no port and no URL: the platform issues the link later.
 // The host is the name of the device's existing web Service, never recomputed;
 // a device whose Service does not exist yet is skipped.
 func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
+	return append(r.buildWebAccessEntries(ctx, lab, snapshots...), terminalAccessEntries(lab)...)
+}
+
+// terminalAccessEntries is one entry per device with spec.terminal.enabled.
+func terminalAccessEntries(lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+	var out []laboratoryv1alpha1.AccessEntry
+	for _, d := range lab.Spec.Devices {
+		if d.Terminal != nil && d.Terminal.Enabled {
+			out = append(out, laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"})
+		}
+	}
+	return out
+}
+
+func (r *LabReconciler) buildWebAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
 	if r.BaseDomain == "" {
 		return nil
 	}
