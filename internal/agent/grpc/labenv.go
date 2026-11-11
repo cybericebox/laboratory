@@ -110,6 +110,10 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 	if life := spec.Lifecycle; life != nil && (life.DesiredState != lifecycleRunning || life.OperationID == "" || life.Revision != 1 || life.Terminal || life.SnapshotMode != "") {
 		return spec, fmt.Errorf("lifecycle intent must use UID-fenced StopLabs/StartLabs; only fenced initial Running revision1 is a birth")
 	}
+	clearStamped(&spec)
+	if err := validateDeviceExtras(&spec); err != nil {
+		return spec, fmt.Errorf("spec_json: %w", err)
+	}
 	for i := range spec.Devices {
 		if err := validatePersistence(&spec.Devices[i], persistence); err != nil {
 			return spec, fmt.Errorf("spec_json: device %q: %w", spec.Devices[i].Name, err)
@@ -162,8 +166,12 @@ func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) err
 //
 // For each device in devices: the Secret is written when it has variables, otherwise
 // removed. Writing the same values again is safe.
-func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha1.Lab, devices []string, env deviceVars) error {
-	token := variableWriteToken(lab, devices, env)
+//
+// The same claim also covers the bootstrap Secrets "<device object name>-bootstrap" and the checks Secret "<lab>-checks"
+// (see checks.go): they are written under the same rules and with the same guarantee, never read back.
+func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha1.Lab, sec labSecrets) error {
+	devices, env := sec.devices, sec.env
+	token := sec.token(lab)
 	if err := h.claimVariableWrite(ctx, lab, token); err != nil {
 		return err
 	}
@@ -197,6 +205,12 @@ func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha
 		if _, err := secrets.Create(ctx, s, metav1.CreateOptions{}); err != nil {
 			return err
 		}
+	}
+	if err := h.writeBootstrapSecrets(ctx, lab, sec.bootstrap); err != nil {
+		return err
+	}
+	if err := h.writeChecksSecret(ctx, lab, sec.checks); err != nil {
+		return err
 	}
 	return h.finishVariableWrite(ctx, lab, token)
 }

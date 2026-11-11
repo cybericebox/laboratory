@@ -26,6 +26,11 @@ type Config struct {
 	// limits of every node (BANDWIDTH_ENTRY_NAMESPACES, comma separated).
 	BandwidthEntryNamespaces []string `env:"BANDWIDTH_ENTRY_NAMESPACES" envSeparator:","`
 	RuntimeObservation       bool     `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled (the same two the management agent reads):
+	// the options of lab checks and the browser terminal. Nothing in the operator acts on them yet; the checker and the terminal
+	// components will.
+	ChecksEnabled   bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).
 	GatewayMaxConnectionsPerLab          int `env:"GATEWAY_MAX_CONNECTIONS_PER_LAB" envDefault:"0"`

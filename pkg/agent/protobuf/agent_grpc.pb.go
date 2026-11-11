@@ -54,6 +54,7 @@ const (
 	LabManager_PrewarmImages_FullMethodName          = "/labmanager.LabManager/PrewarmImages"
 	LabManager_ResetDevices_FullMethodName           = "/labmanager.LabManager/ResetDevices"
 	LabManager_RescueDevices_FullMethodName          = "/labmanager.LabManager/RescueDevices"
+	LabManager_RunChecks_FullMethodName              = "/labmanager.LabManager/RunChecks"
 	LabManager_ExportDeviceSnapshot_FullMethodName   = "/labmanager.LabManager/ExportDeviceSnapshot"
 )
 
@@ -167,6 +168,13 @@ type LabManagerClient interface {
 	// the image entrypoint (enable=true), or back to normal (enable=false), to repair a
 	// configuration that makes the service crash.
 	RescueDevices(ctx context.Context, in *RescueDevicesRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	// RunChecks asks for a manual run of checks of labs (contract 1.5). Explicit (lab_group, lab) items; each lists the check ids to run
+	// or none for every check that allows a manual run. The answer is acceptance per lab only (ITEM_STATE_UPDATED: the request was
+	// recorded for the checker), never a result: results come in Monitoring (LabStatus.checks). FAILED: the lab has no checks, an id
+	// is unknown or does not allow a manual run. The call answers FAILED_PRECONDITION as a whole when the laboratory has the checks
+	// option off (features.checks.enabled is false). The request is recorded as the annotation
+	// laboratory.cybericebox.com/run-checks on the Lab with a token that grows by one per accepted request.
+	RunChecks(ctx context.Context, in *RunChecksRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	// ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
 	// archive: the files that differ from the device's base image (the layers of the snapshot
 	// chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
@@ -544,6 +552,16 @@ func (c *labManagerClient) RescueDevices(ctx context.Context, in *RescueDevicesR
 	return out, nil
 }
 
+func (c *labManagerClient) RunChecks(ctx context.Context, in *RunChecksRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_RunChecks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) ExportDeviceSnapshot(ctx context.Context, in *DeviceSnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[1], LabManager_ExportDeviceSnapshot_FullMethodName, cOpts...)
@@ -673,6 +691,13 @@ type LabManagerServer interface {
 	// the image entrypoint (enable=true), or back to normal (enable=false), to repair a
 	// configuration that makes the service crash.
 	RescueDevices(context.Context, *RescueDevicesRequest) (*BatchResult, error)
+	// RunChecks asks for a manual run of checks of labs (contract 1.5). Explicit (lab_group, lab) items; each lists the check ids to run
+	// or none for every check that allows a manual run. The answer is acceptance per lab only (ITEM_STATE_UPDATED: the request was
+	// recorded for the checker), never a result: results come in Monitoring (LabStatus.checks). FAILED: the lab has no checks, an id
+	// is unknown or does not allow a manual run. The call answers FAILED_PRECONDITION as a whole when the laboratory has the checks
+	// option off (features.checks.enabled is false). The request is recorded as the annotation
+	// laboratory.cybericebox.com/run-checks on the Lab with a token that grows by one per accepted request.
+	RunChecks(context.Context, *RunChecksRequest) (*BatchResult, error)
 	// ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
 	// archive: the files that differ from the device's base image (the layers of the snapshot
 	// chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
@@ -795,6 +820,9 @@ func (UnimplementedLabManagerServer) ResetDevices(context.Context, *DevicesReque
 }
 func (UnimplementedLabManagerServer) RescueDevices(context.Context, *RescueDevicesRequest) (*BatchResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method RescueDevices not implemented")
+}
+func (UnimplementedLabManagerServer) RunChecks(context.Context, *RunChecksRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method RunChecks not implemented")
 }
 func (UnimplementedLabManagerServer) ExportDeviceSnapshot(*DeviceSnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
 	return status.Error(codes.Unimplemented, "method ExportDeviceSnapshot not implemented")
@@ -1443,6 +1471,24 @@ func _LabManager_RescueDevices_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_RunChecks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RunChecksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).RunChecks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_RunChecks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).RunChecks(ctx, req.(*RunChecksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_ExportDeviceSnapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(DeviceSnapshotRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -1596,6 +1642,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RescueDevices",
 			Handler:    _LabManager_RescueDevices_Handler,
+		},
+		{
+			MethodName: "RunChecks",
+			Handler:    _LabManager_RunChecks_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

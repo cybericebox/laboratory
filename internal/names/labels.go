@@ -71,6 +71,11 @@ const (
 	// creates; the operator ignores it.
 	AnnotationSpecHash = LabelPrefix + "spec-hash"
 
+	// AnnotationRunChecks is written on a Lab by the management agent's RunChecks call: JSON {"token":N,"ids":[...]} where
+	// token grows by one with every accepted request and ids are the check ids to run (empty = all manual-run checks). The
+	// checker takes the request and writes N into status.checksRunAck.
+	AnnotationRunChecks = LabelPrefix + "run-checks"
+
 	// AnnotationUserLabels lists the user labels copied onto an object from its
 	// Lab or LabGroup, so a label removed there is removed here too.
 	AnnotationUserLabels = LabelPrefix + "user-labels"

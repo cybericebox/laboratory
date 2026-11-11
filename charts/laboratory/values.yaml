@@ -108,6 +108,16 @@ profileLabels:
   # On: container devices (and the VPN and gateway pods) select cybericebox.com/profile-container=true. Off (default): scheduling as before,
   # so a cluster whose nodes carry no profile labels is unchanged. Turn it on only after every container node carries the label.
   enabled: false
+# Optional parts of the laboratory (two independent options, both off by default). The management agent refuses a lab that carries
+# the matching feature while its option is off, and reports both in GetFeatures (features.checks.enabled, features.terminal.enabled).
+# Today they only gate the data model: the checker and the terminal components (DaemonSets) are built later and will be started by
+# these same switches.
+checks:
+  # Lab checks: a lab may carry checks (file and custom observations of its devices) and the RunChecks call is accepted.
+  enabled: false
+terminal:
+  # Browser terminal: a container device may ask for a terminal (devices[].terminal.enabled) and the lab reports a "terminal" access entry.
+  enabled: false
 microvm:
   # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).
   enabled: false

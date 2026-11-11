@@ -144,6 +144,14 @@ service LabManager {
   // configuration that makes the service crash.
   rpc RescueDevices(RescueDevicesRequest) returns (BatchResult) {}
 
+  // RunChecks asks for a manual run of checks of labs (contract 1.5). Explicit (lab_group, lab) items; each lists the check ids to run
+  // or none for every check that allows a manual run. The answer is acceptance per lab only (ITEM_STATE_UPDATED: the request was
+  // recorded for the checker), never a result: results come in Monitoring (LabStatus.checks). FAILED: the lab has no checks, an id
+  // is unknown or does not allow a manual run. The call answers FAILED_PRECONDITION as a whole when the laboratory has the checks
+  // option off (features.checks.enabled is false). The request is recorded as the annotation
+  // laboratory.cybericebox.com/run-checks on the Lab with a token that grows by one per accepted request.
+  rpc RunChecks(RunChecksRequest) returns (BatchResult) {}
+
   // ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
   // archive: the files that differ from the device's base image (the layers of the snapshot
   // chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
@@ -352,6 +360,11 @@ message LabVariant {
   // Lab.spec.imagePullSecret to it; any imagePullSecret in spec_json is ignored. They
   // are write-only: never returned, logged or put in a status.
   repeated RegistryCredential registry_credentials = 4;
+  // Bootstrap lists of the devices, common to every lab of the variant (contract 1.5). Secret material, like env: stored in the
+  // per-device Secret <device>-bootstrap, never in the CR spec and never returned.
+  repeated DeviceBootstrap bootstrap = 5;
+  // The checks of the lab, common to every lab of the variant. Presence matters: an item's own `checks` replaces the variant's.
+  LabChecks checks = 6;
 }
 message LabItem {
   string lab_group = 1;
@@ -366,6 +379,10 @@ message LabItem {
   string expected_group_uid = 8;
   // The reservation the lab runs under; required, and independent of its LabGroup's (see LabGroupItem.reservation_id).
   string reservation_id = 9;
+  // This lab's own bootstrap lists; they replace the variant's list of the same device.
+  repeated DeviceBootstrap bootstrap = 10;
+  // This lab's own checks; when present they replace the variant's checks as a whole.
+  LabChecks checks = 11;
 }
 message CreateLabsRequest {
   map<string, string> labels = 1;
@@ -381,6 +398,13 @@ message LabChanges {
   repeated DeviceEnv env = 2;
   // Attach only, as LabGroupChanges.reservation_id: the lab's spec and pods are untouched.
   optional string reservation_id = 3;
+  // Rewrite the bootstrap Secret of every listed device with exactly this list (an empty list removes it). Only a device that
+  // had a bootstrap at creation (spec.devices[].bootstrap.enabled) can have one rewritten.
+  repeated DeviceBootstrap bootstrap = 4;
+  // Rewrite the checks Secret of the lab with exactly these checks (the whole set). Only a lab that had checks at creation can be
+  // rewritten, and the ids, devices and manual_run flags must stay the same (the CR spec does not change); the expected values,
+  // parts, mode, schedule and time limit may change.
+  LabChecks checks = 5;
 }
 message UpdateLabItem {
   string lab_group = 1;
@@ -545,6 +569,106 @@ message DeviceEnv {
   string device = 1;
   map<string, string> vars = 2;
 }
+
+// ---- Device bootstrap and lab checks (contract 1.5; docs/specs/lab-checks-bootstrap-contract.md) -------------------------------
+
+// DeviceBootstrap is the bootstrap list of one device with the values already filled in. Secret material: it travels like
+// DeviceEnv, is stored in the Secret <device>-bootstrap (key bootstrap.json) and is never put on a CR or returned. A list with no
+// script and no files removes the Secret. The device must be a container device of the lab.
+message DeviceBootstrap {
+  string device = 1;
+  string script = 2;                   // text; at most 64 KiB
+  string interpreter = 3;              // absolute path to run the script with; empty = /bin/sh
+  repeated BootstrapFile files = 4;    // at most 32; script and file contents together at most 512 KiB
+  int32 time_limit_seconds = 5;        // per attempt, 1..3600; 0 = 300
+}
+message BootstrapFile {
+  string path = 1;      // absolute, clean
+  bytes content = 2;    // at most 256 KiB
+  string owner = 3;     // name or numeric id; empty = root
+  string group = 4;
+  uint32 mode = 5;      // permission bits (0644 is 420); 0 = 0644
+}
+
+// LabChecks is the complete set of checks of a lab. Secret material (it holds expected values): stored in the Secret <lab>-checks
+// (key checks.json), never put on a CR or returned. The CR spec only lists the ids, devices and manual-run flags.
+message LabChecks {repeated Check items = 1;}
+enum CheckMode {
+  CHECK_MODE_UNSPECIFIED = 0;   // refused
+  CHECK_MODE_ONCE = 1;          // stops after the first pass
+  CHECK_MODE_CONTINUOUS = 2;    // the current state matters
+}
+message Check {
+  string id = 1;                    // 1..64 characters, unique in the lab
+  string device = 2;                // a container device of the lab
+  CheckMode mode = 3;
+  int32 schedule_seconds = 4;       // 0 = no schedule (manual only); at most 86400, not below the time limit
+  bool manual_run = 5;              // RunChecks may run it
+  int32 time_limit_seconds = 6;     // 1..600; 0 = 30
+  repeated CheckPart parts = 7;     // 1..8, all must hold in the same run
+}
+message CheckPart {
+  oneof observation {
+    FileObservation file = 1;
+    CustomObservation custom = 2;
+  }
+}
+// FileObservation reads a file of the device; every expectation is optional, at least one is required.
+message FileObservation {
+  string path = 1;                       // absolute, clean
+  optional bool exists = 2;              // true: exists; false: absent (then no other expectation)
+  optional string content_contains = 3;
+  optional string content_matches = 4;   // RE2 regular expression
+  optional uint32 mode = 5;              // permission bits
+  optional string owner = 6;
+  optional string group = 7;
+}
+// CustomObservation runs a command or a script in the device; exit code 0 is "passed".
+message CustomObservation {
+  repeated string command = 1;           // exactly one of command and script
+  string script = 2;
+  string interpreter = 3;                // for a script; empty = /bin/sh
+  string user = 4;                       // empty = root
+  optional string output_contains = 5;
+  optional string output_matches = 6;    // RE2 regular expression
+}
+
+enum CheckState {
+  CHECK_STATE_UNKNOWN = 0;      // no result yet
+  CHECK_STATE_PASSED = 1;
+  CHECK_STATE_NOT_PASSED = 2;
+  CHECK_STATE_ERROR = 3;        // could not be made (device not ready, command did not start or ran over its limit); the consumer keeps the previous state
+}
+// CheckResult is the last published result of one check. Only CHANGES are published: the entry changes when the state, value
+// or detail changes, so a Monitoring delta carries it once. Never show detail to a participant.
+message CheckResult {
+  string id = 1;
+  CheckState state = 2;
+  int64 first_passed_unix_ms = 3;   // 0 = never passed
+  int64 changed_unix_ms = 4;        // when the state last changed
+  string value = 5;                 // optional, at most 256 bytes
+  string detail = 6;                // for the author or the teacher, at most 2048 bytes
+}
+
+enum BootstrapPhase {
+  BOOTSTRAP_PHASE_NONE = 0;      // no bootstrap, or nothing observed yet
+  BOOTSTRAP_PHASE_PENDING = 1;
+  BOOTSTRAP_PHASE_DONE = 2;
+  BOOTSTRAP_PHASE_FAILED = 3;    // the attempts are used up
+}
+// BootstrapStatus holds no secret: the reason is a short text for the author.
+message BootstrapStatus {
+  BootstrapPhase phase = 1;
+  int32 attempts = 2;
+  string reason = 3;             // at most 256 bytes
+}
+
+message RunChecksItem {
+  string lab_group = 1;
+  string lab = 2;
+  repeated string check_ids = 3;   // none = every check that allows a manual run
+}
+message RunChecksRequest {repeated RunChecksItem items = 1;}
 message LabStatus {
   string phase = 1;
   string vpn_cidr = 2;
@@ -565,6 +689,10 @@ message LabStatus {
   LabLifecycleStatus lifecycle = 41;
   ResourceAllocation resources = 42;
   RetirementStatus retirement = 43;
+  // The results of the lab checks (contract 1.5), one entry per check that has a result.
+  repeated CheckResult checks = 44;
+  // The RunChecks token the checker has taken (the annotation token it has seen).
+  int64 checks_run_ack = 45;
 }
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
 // refreshes it at a limited rate, so position can lag by seconds.
@@ -652,6 +780,8 @@ message LabDeviceStatus {
 	DeviceSnapshotStatus snapshot = 30;
 	// Scheduler state of the device pod; absent when the scheduler does not track it.
 	PodScheduling scheduling = 31;
+	// The bootstrap of the device (contract 1.5); absent for a device without one.
+	BootstrapStatus bootstrap = 32;
 }
 // DeviceSnapshotStatus is the state of a device's writable-layer snapshots.
 message DeviceSnapshotStatus {
@@ -665,6 +795,8 @@ message LabConnectionStatus {
   string name = 1;
   bool ready = 2;
 }
+// protocol is http or https for a web port. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0 and
+// no url, the platform issues the link later.
 message LabAccessEntry {
   string device = 1;
   int32 port = 2;
@@ -934,6 +1066,30 @@ message FeaturesResponse {
   // below the one the caller was built against, means every call of the caller exists. Empty = an agent older than the field.
   string contract_version = 15;
   GroupLimitsFeature group_limits = 16;
+  // Optional parts of the laboratory (contract 1.5). A lab with checks is refused when checks.enabled is false, a lab with a terminal
+  // device when terminal.enabled is false. Absent = an agent older than the fields (nothing of it).
+  ChecksFeature checks = 17;
+  TerminalFeature terminal = 18;
+  BootstrapFeature bootstrap = 19;
+}
+
+message ChecksFeature {
+  bool enabled = 1;
+  int32 max_checks_per_lab = 2;
+  int32 max_parts_per_check = 3;
+  int32 max_time_limit_seconds = 4;
+  int32 max_schedule_seconds = 5;
+  int32 max_detail_bytes = 6;
+}
+message TerminalFeature {bool enabled = 1;}
+// The limits of a device bootstrap; bootstrap itself is always available.
+message BootstrapFeature {
+  int32 max_script_bytes = 1;
+  int32 max_files = 2;
+  int32 max_file_bytes = 3;
+  int32 max_total_bytes = 4;
+  int32 max_time_limit_seconds = 5;
+  int32 max_attempts = 6;
 }
 
 // The limits on the groups of this cluster (the chart's groupLimits): the most users and labs a group may be made for, and the

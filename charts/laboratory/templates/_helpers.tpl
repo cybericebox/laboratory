@@ -235,6 +235,8 @@ EGRESS_MAX_CONN_SECONDS: {{ .Values.internetEgress.proxy.maxConnSeconds | quote 
 EGRESS_TUNNEL_SUFFIXES: {{ .Values.internetEgress.proxy.tunnelSuffixes | quote }}
 EGRESS_ICMP_PER_SECOND: {{ .Values.internetEgress.icmpPerSecond | quote }}
 VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
+CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
+TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
 STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
 STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
 STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}

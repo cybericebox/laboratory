@@ -75,10 +75,13 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	status.Lifecycle = lifecycleToProto(l)
 	status.Resources = retiredStorageToProto(l, labAllocationToProto(l, sizing...))
 	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
+	status.Checks = checkResultsToProto(st.Checks)
+	status.ChecksRunAck = st.ChecksRunAck
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
 			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
-			Snapshot: snapshotStatusToProto(st.Devices[i].State),
+			Snapshot:  snapshotStatusToProto(st.Devices[i].State),
+			Bootstrap: bootstrapStatusToProto(st.Devices[i].Bootstrap),
 		})
 		if t := st.Devices[i].CPUThrottle; t != nil {
 			last := status.Devices[len(status.Devices)-1]
@@ -105,7 +108,10 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	for i := range st.Access {
 		a := &st.Access[i]
 		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
-		status.AccessUrls = append(status.AccessUrls, a.URL)
+		if a.URL != "" {
+			// a terminal entry has no link yet: the platform issues it
+			status.AccessUrls = append(status.AccessUrls, a.URL)
+		}
 	}
 	// Retained configuration or an old Ready status must never expose stopped
 	// intent as accessible runtime. Keep phases/CIDRs/snapshot history intact.

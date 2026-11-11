@@ -22,6 +22,10 @@ type LabSpec struct {
 	// ignored.
 	// +optional
 	ImagePullSecret string `json:"imagePullSecret,omitempty"`
+	// Checks lists the checks of the lab without their definitions (those are in the Secret <lab>-checks). Only the
+	// management agent sets it; a value in a client's spec is ignored.
+	// +optional
+	Checks *LabChecksSpec `json:"checks,omitempty"`
 }
 
 // LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
@@ -86,6 +90,17 @@ type DeviceTemplate struct {
 	// A port published through the web exposure is checked in any case, whatever this says. Container devices only.
 	// +optional
 	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
+	// Service is the service command of a container device, set by the platform from the image configuration. Empty fields
+	// mean "not provided": the image decides.
+	// +optional
+	Service *DeviceService `json:"service,omitempty"`
+	// Terminal enables a browser terminal for the device. Refused by a laboratory whose terminal option is off.
+	// +optional
+	Terminal *DeviceTerminal `json:"terminal,omitempty"`
+	// Bootstrap is set by the management agent when it received a bootstrap list for the device; a value sent in the spec is
+	// replaced. The list is in the Secret <device>-bootstrap, never here.
+	// +optional
+	Bootstrap *DeviceBootstrapSpec `json:"bootstrap,omitempty"`
 }
 
 // DevicePersistence is the per-device state-persistence request of a topology.
@@ -146,6 +161,14 @@ type LabStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+	// Checks are the results of the lab checks, one entry per check that has a result; the checker writes only changes.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Checks []CheckResult `json:"checks,omitempty"`
+	// ChecksRunAck is the RunChecks request token the checker has taken (see the annotation names.AnnotationRunChecks).
+	// +optional
+	ChecksRunAck int64 `json:"checksRunAck,omitempty"`
 }
 
 // LabNetworkStatus reports the allocated CIDR for a network segment.
@@ -167,6 +190,9 @@ type DeviceRef struct {
 	// CPUThrottle is the device's CPU throttling (see DeviceStatus.CPUThrottle); absent means none.
 	// +optional
 	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
+	// Bootstrap is the bootstrap state of the device (see DeviceStatus.Bootstrap); absent without a bootstrap.
+	// +optional
+	Bootstrap *DeviceBootstrapStatus `json:"bootstrap,omitempty"`
 }
 
 // DeviceStateInfo is the organizer-facing view of a device's snapshots.
@@ -188,10 +214,12 @@ type ConnectionRef struct {
 
 // AccessEntry describes a single externally reachable endpoint.
 type AccessEntry struct {
-	Device   string `json:"device"`
-	Port     int32  `json:"port"`
+	Device string `json:"device"`
+	Port   int32  `json:"port"`
+	// Protocol is http or https for a web port, and "terminal" for the browser terminal of the device.
 	Protocol string `json:"protocol"`
-	URL      string `json:"url"`
+	// URL is the address of a web port. A terminal entry has no URL: the daemon issues the link later.
+	URL string `json:"url,omitempty"`
 }
 
 // +genclient
