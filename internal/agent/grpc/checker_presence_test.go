@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -19,11 +20,21 @@ func TestChecksFeatureNeedsTheCheckerComponent(t *testing.T) {
 		t.Fatal("the option is on but there is no checker DaemonSet: checks must be reported unavailable")
 	}
 	checks := &protobuf.LabChecks{Items: []*protobuf.Check{fileCheck("cfg", "web")}}
-	res := createContractLab(t, h, &protobuf.LabVariant{SpecJson: contractSpecJSON(t, nil, "web"), Checks: checks}, &protobuf.LabItem{})
-	invalidArg(t, res, nil, "checker is not installed")
+	res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{
+		Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: contractSpecJSON(t, nil, "web"), Checks: checks}},
+		Items:    []*protobuf.LabItem{{LabGroup: "team-lab", Name: "x", VariantId: "v"}}})
+	invalidArg(t, res, err, "checker is not installed")
 
 	h2, k8s2 := contractHandler(t, Features{ChecksEnabled: true, CheckerRequired: true})
-	if _, err := k8s2.AppsV1().DaemonSets(names.SystemNamespace).Create(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: names.CheckerDaemonSet, Namespace: names.SystemNamespace}}, metav1.CreateOptions{}); err != nil {
+	if _, err := k8s2.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: names.SystemNamespace}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k8s2.AppsV1().DaemonSets(names.SystemNamespace).Create(ctx, &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: names.CheckerDaemonSet, Namespace: names.SystemNamespace},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "checker"}},
+			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "checker"}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "x"}}}},
+		}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if !h2.checksFeature().Enabled {
