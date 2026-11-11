@@ -32,6 +32,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "probe install:", err)
 			os.Exit(1)
 		}
+	case "launch":
+		launchMain(os.Args[2:])
+	case "stage":
+		stageMain(os.Args[2:])
 	case "ready":
 		fs := flag.NewFlagSet("ready", flag.ExitOnError)
 		file := fs.String("file", "", "marker file that must exist")

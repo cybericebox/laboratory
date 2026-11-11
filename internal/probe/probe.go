@@ -34,7 +34,8 @@ const (
 
 // Check is what makes a device ready. Every set part must pass; an empty Check is an error, not success.
 type Check struct {
-	// File is a marker the application creates; the check passes once it exists.
+	// File is a marker the application creates; the check passes once it exists. Several markers are separated like the
+	// entries of PATH (filepath.ListSeparator) and must all exist.
 	File string
 	// Port is a port the application must answer on, with Scheme tcp (a connection is accepted), http or https (an HTTP
 	// answer with a status below 500: any answer proves the application serves; 4xx is a page behind a login, not a
@@ -48,8 +49,8 @@ func (c Check) Run(ctx context.Context, addrs func() []string) error {
 	if c.File == "" && c.Port == 0 {
 		return errors.New("nothing to check")
 	}
-	if c.File != "" {
-		if _, err := os.Stat(c.File); err != nil {
+	for _, f := range filepath.SplitList(c.File) {
+		if _, err := os.Stat(f); err != nil {
 			return fmt.Errorf("marker file: %w", err)
 		}
 	}
