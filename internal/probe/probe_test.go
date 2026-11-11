@@ -179,3 +179,21 @@ func TestInstallCopiesAnExecutable(t *testing.T) {
 		t.Fatalf("second install: %v", err)
 	}
 }
+
+func TestSeveralMarkersMustAllExist(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	c := Check{File: a + string(filepath.ListSeparator) + b}
+	if err := os.WriteFile(a, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background(), func() []string { return nil }); err == nil {
+		t.Fatal("one marker is missing: not ready")
+	}
+	if err := os.WriteFile(b, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background(), func() []string { return nil }); err != nil {
+		t.Fatalf("both markers exist: %v", err)
+	}
+}
