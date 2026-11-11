@@ -14,6 +14,9 @@ import (
 	"github.com/cybericebox/laboratory/internal/labchecks"
 )
 
+// writeTimeout bounds one write to the API server.
+const writeTimeout = 10 * time.Second
+
 // LabKey names a Lab.
 type LabKey struct{ Namespace, Name string }
 
@@ -481,7 +484,10 @@ func (e *Engine) Flush(ctx context.Context) {
 		if failed[w.lab] {
 			continue
 		}
-		if err := e.cfg.Writer.PublishCheck(ctx, w.lab, w.pub.Result(w.id)); err != nil {
+		wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+		err := e.cfg.Writer.PublishCheck(wctx, w.lab, w.pub.Result(w.id))
+		cancel()
+		if err != nil {
 			e.cfg.Log.Info("cannot publish a check result", "lab", w.lab.String(), "check", w.id, "error", err.Error())
 			failed[w.lab] = true
 			continue
@@ -516,7 +522,10 @@ func (e *Engine) Flush(ctx context.Context) {
 	}
 	e.mu.Unlock()
 	for _, a := range acks {
-		if err := e.cfg.Writer.AckRun(ctx, a.lab, a.token); err != nil {
+		wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+		err := e.cfg.Writer.AckRun(wctx, a.lab, a.token)
+		cancel()
+		if err != nil {
 			e.cfg.Log.Info("cannot acknowledge a manual run", "lab", a.lab.String(), "token", a.token, "error", err.Error())
 			failed[a.lab] = true
 			continue

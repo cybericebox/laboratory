@@ -284,7 +284,9 @@ func (w *Watcher) maybeLoad(key LabKey) {
 
 func (w *Watcher) load(key LabKey, uid string) {
 	var secret corev1.Secret
-	err := w.Reader.Get(w.ctx, types.NamespacedName{Namespace: key.Namespace, Name: key.Name + labchecks.ChecksSecretSuffix}, &secret)
+	ctx, cancel := context.WithTimeout(w.ctx, writeTimeout)
+	defer cancel()
+	err := w.Reader.Get(ctx, types.NamespacedName{Namespace: key.Namespace, Name: key.Name + labchecks.ChecksSecretSuffix}, &secret)
 	var checks []labchecks.Check
 	if err == nil {
 		checks, err = ParseChecksSecret(&secret)
