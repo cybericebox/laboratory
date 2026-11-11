@@ -2,6 +2,7 @@
 //
 //	probe install DIR                            copy this program to DIR/probe (the init container)
 //	probe ready [-file F] [-port N -scheme S]    exit 0 when the container is ready (the kubelet's exec probe)
+//	probe check-exec JSON | check-file JSON      one observation of a lab check, answered as JSON (internal/probe/check_wire.go)
 package main
 
 import (
@@ -47,6 +48,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "not ready:", err)
 			os.Exit(1)
 		}
+	case probe.CommandCheckExec, probe.CommandCheckFile:
+		os.Exit(probe.RunCheckCommand(os.Args[1], os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)
