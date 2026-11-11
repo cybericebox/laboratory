@@ -105,7 +105,7 @@ func TestNFTPlanIsOneTransactionWithoutConntrack(t *testing.T) {
 		t.Fatalf("one transaction expected, got %d", len(f.scripts))
 	}
 	s := f.scripts[0]
-	for _, want := range []string{"flush set ip cicevpn allow_fwd", "add element ip cicevpn allow_fwd { \"lab1\" . 10.8.0.5 . 10.9.3.0/24 }", "add element ip cicevpn allow_rev { \"lab1\" . 10.9.3.0/24 . 10.8.0.5 }", "labnets { 10.9.3.0/24 }", "clients { 10.8.0.5 }"} {
+	for _, want := range []string{"flush set ip cicevpn allow_fwd", "add element ip cicevpn allow_fwd { \"lab1\" . 10.8.0.5 . 10.9.3.0/24 }", "add element ip cicevpn reply_rev { \"lab1\" . 10.9.3.0/24 . 10.8.0.5 }"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the transaction lacks %q:\n%s", want, s)
 		}
@@ -113,12 +113,13 @@ func TestNFTPlanIsOneTransactionWithoutConntrack(t *testing.T) {
 	if strings.Count(s, "counter comment \"cibacct:"+rule.BindingID+":") != 4 {
 		t.Errorf("a new pair gets its four accounting elements:\n%s", s)
 	}
-	if strings.Contains(s, "ct state") || strings.Contains(s, "conntrack") {
-		t.Errorf("no connection tracking in the gate:\n%s", s)
+	// the default lab may not start connections: its traffic is tracked (no notrack element) and only replies pass
+	if strings.Contains(s, "allow_rev {") || strings.Contains(s, "labnets {") || strings.Contains(s, "open_clients {") {
+		t.Errorf("a lab that may not start connections must not be in the stateless sets:\n%s", s)
 	}
-	// the base script marks the pair traffic notrack and closes the gate by policy
-	base := m.nftBaseScript()
-	for _, want := range []string{"notrack", "policy drop", "iifname \"wg0\" oifname \"wg0\" drop", "jump count_fwd", "jump count_rev"} {
+	// the base script marks the traffic of the open labs notrack and closes the gate by policy
+	base := nftBaseScript("wg0")
+	for _, want := range []string{"notrack", "policy drop", "ct state established,related ct direction reply", "iifname \"wg0\" oifname \"wg0\" drop", "jump count_fwd", "jump count_rev"} {
 		if !strings.Contains(base, want) {
 			t.Errorf("the base ruleset lacks %q", want)
 		}

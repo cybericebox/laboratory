@@ -60,7 +60,7 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	rule := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: vpn.AccessAllow, LabInterface: "lab1"}
+	rule := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: vpn.AccessAllow, LabInterface: "lab1", LabInitiated: true}
 	saved := nstest.Run(t, "", "iptables-save", "-c", "-t", "filter")
 	var meterRule string
 	for _, line := range strings.Split(saved, "\n") {

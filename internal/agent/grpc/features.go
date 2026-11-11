@@ -18,6 +18,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/internal/tenant"
+	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -137,6 +138,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				Checks:          h.checksFeature(),
 				Terminal:        &protobuf.TerminalFeature{Enabled: f.TerminalEnabled},
 				Bootstrap:       bootstrapFeature(),
+				Vpn:             h.vpnFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,
 					DefaultDebounceMs:  f.Debounce.Milliseconds(),
@@ -249,4 +251,10 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 		return &protobuf.LifecycleFeature{}
 	}
 	return proto.Clone(f).(*protobuf.LifecycleFeature)
+}
+
+// vpnFeature reports whether the VPN gates enforce the block of connections started by a lab towards a client. The answer comes from the
+// code that generates the rules (vpn.LabInitiatedBlockEnforced), so it cannot say true for a gate that does not install them.
+func (h *Handler) vpnFeature() *protobuf.VPNFeature {
+	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced()}
 }

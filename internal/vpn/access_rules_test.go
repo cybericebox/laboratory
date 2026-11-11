@@ -80,3 +80,15 @@ func TestTheSwitchIsPerLab(t *testing.T) {
 		}
 	}
 }
+
+// The capability the agent advertises is read off the generated rules of both gates.
+func TestLabInitiatedBlockEnforcedFollowsTheRules(t *testing.T) {
+	if !LabInitiatedBlockEnforced() {
+		t.Fatal("both gates restrict a default lab to replies: the capability must be true")
+	}
+	// The same probes by hand, so the function cannot be a constant that passes whatever the rules say.
+	_, open := accessGateRules("G", "wg0", ForwardRule{LabInterface: "lab1", ClientCIDR: "10.8.0.2/32", LabCIDR: "10.8.1.0/24", LabInitiated: true}, "F", "R")
+	if strings.Contains(open, "--ctdir") {
+		t.Fatal("an open lab has no restriction, so the probe must use the default pair")
+	}
+}
