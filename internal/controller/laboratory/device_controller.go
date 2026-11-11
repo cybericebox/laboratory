@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -295,8 +296,12 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
 	ready := dep.Status.AvailableReplicas >= 1
+	bootstrap, err := r.workloadBootstrap(ctx, device)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
-	if err := r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready); err != nil {
+	if err := r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready, bootstrap); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
@@ -321,7 +326,7 @@ func (r *DeviceReconciler) deleteWithdrawnWorkload(ctx context.Context, device *
 	if err := r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
 		return err
 	}
-	return r.publishDevicePlacement(ctx, device, "", "", "", false)
+	return r.publishDevicePlacement(ctx, device, "", "", "", false, nil)
 }
 
 // devicePodPlacement returns the NodeName/PodIP/PodName of the device's live pod,
@@ -390,6 +395,12 @@ func networkAnnotation(device *laboratoryv1alpha1.Device, stableMAC bool) string
 // bare-Pod (state persistence) modes: the labels, selector labels, pod
 // annotations and the pod spec running the device image.
 func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, stableMAC bool) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
+	return r.workloadTemplateFor(device, stableMAC, podPlan{})
+}
+
+// workloadTemplateFor is workloadTemplate for a pod whose start is known: from a saved state, for repair, or as an attempt
+// of a bootstrap (see device_bootstrap.go).
+func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device, stableMAC bool, plan podPlan) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
 	annotations = map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
 		names.AnnotationNetworks: networkAnnotation(device, stableMAC),
@@ -501,7 +512,9 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
-	r.withReadiness(device, &podSpec)
+	mode := launchModeFor(device, plan)
+	r.withReadiness(device, &podSpec, mode == launchRun)
+	r.withLauncher(device, &podSpec, annotations, mode, plan)
 	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
 	// optionally its own user namespace.
 	hardenPod(&podSpec, false, r.TerminationGraceSeconds)
@@ -527,6 +540,9 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	if err := r.refuseUnrunnableProfile(device); err != nil {
+		return err
+	}
+	if err := r.refuseUnbootstrappable(device); err != nil {
 		return err
 	}
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
@@ -729,6 +745,9 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		// Devices with state persistence run as bare Pods owned by the Device.
 		Owns(&corev1.Pod{}).
+		// The pods of a Deployment are not owned by the Device; those that bootstrap are watched, to see a container that
+		// restarted in place and has to be recreated.
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.devicesForBootstrapPod)).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLabGroup), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.
@@ -833,8 +852,12 @@ func (r *DeviceReconciler) devicesForLab(ctx context.Context, obj client.Object)
 	return out
 }
 
-func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool) error {
+func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool, bootstrap *laboratoryv1alpha1.DeviceBootstrapStatus) error {
 	updated := false
+	if bootstrap != nil && !equality.Semantic.DeepEqual(device.Status.Bootstrap, bootstrap) {
+		device.Status.Bootstrap = bootstrap
+		updated = true
+	}
 	if nodeName != device.Status.NodeName {
 		device.Status.NodeName = nodeName
 		updated = true

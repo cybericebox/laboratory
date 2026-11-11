@@ -1,7 +1,9 @@
 package laboratory
 
 import (
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -32,9 +34,22 @@ const (
 
 // readinessCommand is the argument list of the probe for the device, or nil when the device has nothing to wait for.
 func readinessCommand(device *laboratoryv1alpha1.Device) []string {
+	return readinessCommandFor(device, false)
+}
+
+// readinessCommandFor adds, for a device that runs a bootstrap, the marker of its success: the device is Ready only when the
+// bootstrap succeeded AND the condition of the device holds; with no condition of its own, Ready follows the bootstrap.
+func readinessCommandFor(device *laboratoryv1alpha1.Device, bootstrapped bool) []string {
 	var args []string
+	var files []string
+	if bootstrapped {
+		files = append(files, names.BootstrapOKFile)
+	}
 	if device.Spec.WaitReadyFile {
-		args = append(args, "-file", names.ReadyFile)
+		files = append(files, names.ReadyFile)
+	}
+	if len(files) > 0 {
+		args = append(args, "-file", strings.Join(files, string(filepath.ListSeparator)))
 	}
 	if web := webPort(device); web != nil {
 		scheme := probe.SchemeTCP
@@ -62,38 +77,13 @@ func webPort(device *laboratoryv1alpha1.Device) *laboratoryv1alpha1.WebExposure 
 // withReadiness adds the readiness probe to the device container (the first), with what it needs: the emptyDir, the init
 // container that fills it and the read-only mount. A device with nothing to wait for, or a platform without the node image
 // to copy the probe from, is left as it is.
-func (r *DeviceReconciler) withReadiness(device *laboratoryv1alpha1.Device, spec *corev1.PodSpec) {
-	command := readinessCommand(device)
+func (r *DeviceReconciler) withReadiness(device *laboratoryv1alpha1.Device, spec *corev1.PodSpec, bootstrapped bool) {
+	command := readinessCommandFor(device, bootstrapped)
 	if command == nil || r.NetConfigImage == "" {
 		return
 	}
-	spec.Volumes = append(spec.Volumes, corev1.Volume{
-		Name: names.ProbeVolume,
-		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
-			SizeLimit: ptrQuantity(resource.MustParse("16Mi")),
-		}},
-	})
-	spec.InitContainers = append(spec.InitContainers, corev1.Container{
-		Name:            names.ProbeInitContainer,
-		Image:           r.deviceImage(device, r.NetConfigImage),
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{names.ProbeImageBinary, "install", names.ProbeDir},
-		VolumeMounts:    []corev1.VolumeMount{{Name: names.ProbeVolume, MountPath: names.ProbeDir}},
-		// Requests equal limits, like every container of a device pod, so that the pod stays Guaranteed.
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
-		},
-		// It only copies a file into its own emptyDir: no capability, no escalation, no writable root file system.
-		SecurityContext: &corev1.SecurityContext{
-			Capabilities:             capsOf(),
-			AllowPrivilegeEscalation: ptrBool(false),
-			ReadOnlyRootFilesystem:   ptrBool(true),
-		},
-	})
+	r.ensureProbeInstall(device, spec)
 	c := &spec.Containers[0]
-	// Read-only: the participant is root in the device and must not be able to swap the probe for one that always says yes.
-	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: names.ProbeVolume, MountPath: names.ProbeDir, ReadOnly: true})
 	c.ReadinessProbe = &corev1.Probe{
 		ProbeHandler:        corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: command}},
 		InitialDelaySeconds: 0,
