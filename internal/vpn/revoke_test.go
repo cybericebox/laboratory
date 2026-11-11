@@ -18,7 +18,7 @@ func TestRevokedFlowsWithKnownClientsCoversBothDirections(t *testing.T) {
 		flow(4, "10.8.1.5", "10.7.0.3"),   // unauthorized lab initiative
 		flow(5, "10.244.0.2", "10.8.1.5"), // pod traffic: not a VPN client
 	}
-	rules := []AccessRule{{ClientName: "a", LabName: "l1", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: AccessAllow}}
+	rules := []AccessRule{{ClientName: "a", LabName: "l1", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: AccessAllow, LabInitiated: true}}
 	var ids []uint32
 	for _, f := range RevokedFlows(flows, []string{"10.8.1.0/24"}, rules, []string{"10.7.0.2/32", "10.7.0.3/32"}) {
 		ids = append(ids, f.ID)
@@ -40,7 +40,7 @@ func TestRevokedRoutedLabFlowUsesTrustedConntrackBinding(t *testing.T) {
 	other := allowed
 	other.ID = 2
 	other.Mark = FlowCountedMark | 2<<8
-	rules := []AccessRule{{ClientName: "p1", LabName: "a", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", LabInterface: "lab1", Action: AccessAllow}}
+	rules := []AccessRule{{ClientName: "p1", LabName: "a", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", LabInterface: "lab1", Action: AccessAllow, LabInitiated: true}}
 	got := RevokedFlows([]ConnFlow{allowed, other}, []string{"10.8.1.0/24", "10.8.2.0/24"}, rules, []string{"10.7.0.2/32"})
 	if len(got) != 1 || got[0].ID != 2 {
 		t.Fatalf("routed lab binding revoked wrongly: %+v", got)
@@ -89,5 +89,36 @@ func TestRevokedFlowsWithNoLabsOrNoRules(t *testing.T) {
 	// No allow rule at all: every client-to-lab connection is revoked (a group with its access removed).
 	if got := RevokedFlows(flows, []string{"10.8.1.0/24"}, nil); len(got) != 1 {
 		t.Fatalf("default deny: %v", got)
+	}
+}
+
+// A lab that may not start connections towards its clients loses the ones it had started (before the switch was turned off, or before
+// the rule existed); the connections its clients started are kept.
+func TestRevokedFlowsOfALabThatMayNotStartConnections(t *testing.T) {
+	flows := []ConnFlow{
+		flow(1, "10.7.0.2", "10.8.1.5"), // the client started it
+		flow(2, "10.8.1.5", "10.7.0.2"), // the lab started it
+	}
+	rule := func(labStarts bool) []AccessRule {
+		return []AccessRule{{ClientName: "a", LabName: "l1", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: AccessAllow, LabInitiated: labStarts}}
+	}
+	ids := func(rules []AccessRule) (out []uint32) {
+		for _, f := range RevokedFlows(flows, []string{"10.8.1.0/24"}, rules, []string{"10.7.0.2/32"}) {
+			out = append(out, f.ID)
+		}
+		return out
+	}
+	if got := ids(rule(false)); !slices.Equal(got, []uint32{2}) {
+		t.Fatalf("switch off: revoked %v, want only the flow the lab started", got)
+	}
+	if got := ids(rule(true)); len(got) != 0 {
+		t.Fatalf("switch on: revoked %v", got)
+	}
+	// A routed lab flow is recognised by its mark, not by its address.
+	marked := ConnFlow{ID: 3, Src: netip.MustParseAddr("10.99.0.2"), Dst: netip.MustParseAddr("10.7.0.2"), Mark: FlowCountedMark | 1<<8}
+	rules := rule(false)
+	rules[0].LabInterface = "lab1"
+	if got := RevokedFlows([]ConnFlow{marked}, []string{"10.8.1.0/24"}, rules, []string{"10.7.0.2/32"}); len(got) != 1 {
+		t.Fatalf("a marked flow of a lab that may not start connections was kept: %v", got)
 	}
 }

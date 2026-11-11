@@ -35,6 +35,8 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clien
 	type pair struct {
 		src, dst netip.Prefix
 		iface    string
+		// labStarts: the lab may start connections towards the client
+		labStarts bool
 	}
 	var allowed []pair
 	for _, r := range rules {
@@ -44,7 +46,7 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clien
 		s, sok := parsePrefix(r.SourceCIDR)
 		d, dok := parsePrefix(r.DestinationCIDR)
 		if sok && dok {
-			allowed = append(allowed, pair{s, d, r.LabInterface})
+			allowed = append(allowed, pair{s, d, r.LabInterface, r.LabInitiated})
 		}
 	}
 	var out []ConnFlow
@@ -66,7 +68,8 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clien
 				index, err := LabInterfaceIndex(a.iface)
 				labMatches = err == nil && uint32(index) == (f.Mark&LabIdentityMask)>>8
 			}
-			if a.src.Contains(src) && labMatches {
+			// A connection the lab started is allowed only by a pair whose lab may start connections.
+			if a.src.Contains(src) && labMatches && (!reverse || a.labStarts) {
 				ok = true
 				break
 			}

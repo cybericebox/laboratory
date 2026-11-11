@@ -47,6 +47,45 @@ func TestForwardBatchAppliesOnlyChangedOwnedRules(t *testing.T) {
 	}
 }
 
+// The switch of a lab reaches the kernel in one batch: the default blocks lab-started connections, turning the switch on or off is a
+// new application of the plan, and neither touches the FORWARD chain.
+func TestForwardBatchCarriesTheLabInitiatedSwitch(t *testing.T) {
+	commands := &recordingRuleCommand{saved: []byte("*filter\n:FORWARD DROP [0:0]\nCOMMIT\n")}
+	m := &IPTablesManager{wgIface: "wg0", commands: commands}
+	apply := func(labInitiated bool) string {
+		t.Helper()
+		plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
+			map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}}, []AccessPolicyRule{{Action: AccessAllow}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(commands.restores)
+		if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
+			t.Fatal(err)
+		}
+		if len(commands.restores) != before+1 {
+			t.Fatalf("restores %d -> %d, want one batch", before, len(commands.restores))
+		}
+		return string(commands.restores[len(commands.restores)-1])
+	}
+	blocked := apply(false)
+	if !strings.Contains(blocked, "-i lab1 -o wg0 -d 10.8.0.2/32 -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ") {
+		t.Fatalf("the default does not restrict the lab to replies:\n%s", blocked)
+	}
+	open := apply(true)
+	if strings.Contains(open, "--ctdir REPLY") || !strings.Contains(open, "-i lab1 -o wg0 -d 10.8.0.2/32 -j ") {
+		t.Fatalf("switch on, the lab side is still restricted:\n%s", open)
+	}
+	if again := apply(false); !strings.Contains(again, "--ctdir REPLY") {
+		t.Fatalf("switch off again, the restriction is missing:\n%s", again)
+	}
+	for _, body := range []string{blocked, open} {
+		if strings.Contains(body, "-F FORWARD") || strings.Contains(body, "-P FORWARD") {
+			t.Fatalf("a switch change touched the FORWARD chain:\n%s", body)
+		}
+	}
+}
+
 func TestForwardBatchFailureDoesNotSeedAppliedCache(t *testing.T) {
 	commands := &recordingRuleCommand{saved: []byte("*filter\nCOMMIT\n"), restoreErr: errors.New("restore rejected")}
 	m := &IPTablesManager{wgIface: "wg0", commands: commands}

@@ -21,7 +21,7 @@ func clientAccessInputsChanged(old, next *lab.LabGroupClient) bool {
 }
 
 func labAccessInputsChanged(old, next *lab.Lab) bool {
-	return old == nil || next == nil || old.Status.VPN.CIDR != next.Status.VPN.CIDR ||
+	return old == nil || next == nil || old.Status.VPN.CIDR != next.Status.VPN.CIDR || old.Spec.VPN.ReverseConnections != next.Spec.VPN.ReverseConnections ||
 		labAccessReady(old) != labAccessReady(next) ||
 		!reflect.DeepEqual(old.Spec.Lifecycle, next.Spec.Lifecycle) ||
 		!reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp)

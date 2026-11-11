@@ -18,6 +18,9 @@ type LabAccessSnapshot struct {
 	VPNCIDR   string
 	Ready     bool
 	Interface string
+	// LabInitiated: the lab allows its devices to START connections towards a client (Lab.spec.vpn.reverseConnections). False, the
+	// default: from the lab to a client only replies to connections the client started pass.
+	LabInitiated bool
 }
 
 // AccessRule permits packets from one WireGuard client to one lab VPN CIDR.
@@ -29,6 +32,9 @@ type AccessRule struct {
 	DestinationCIDR string
 	LabInterface    string
 	Action          AccessAction
+	// LabInitiated is the switch of the lab (see LabAccessSnapshot). It is not part of Identifier: switching it changes how the pair
+	// is forwarded, not which pair it is, so the pair keeps its counters.
+	LabInitiated bool
 }
 
 // Identifier is stable across reconciles and short enough for an iptables
@@ -106,7 +112,7 @@ func BuildAccessRules(clients []ClientAccessSnapshot, labs map[string]LabAccessS
 			if !lab.Ready || lab.VPNCIDR == "" {
 				continue
 			}
-			rule := AccessRule{ClientName: client.Name, LabName: labName, SourceCIDR: client.AssignedIP, DestinationCIDR: lab.VPNCIDR, LabInterface: lab.Interface, Action: AccessDeny}
+			rule := AccessRule{ClientName: client.Name, LabName: labName, SourceCIDR: client.AssignedIP, DestinationCIDR: lab.VPNCIDR, LabInterface: lab.Interface, Action: AccessDeny, LabInitiated: lab.LabInitiated}
 			allowed := false
 			denied := false
 			for _, policyRule := range policy {
