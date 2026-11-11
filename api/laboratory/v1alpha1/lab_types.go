@@ -6,6 +6,8 @@ import (
 
 // LabSpec defines the desired state of Lab.
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.lifecycle) || has(self.lifecycle)",message="explicit lifecycle intent cannot be removed"
+// +kubebuilder:validation:XValidation:rule="!has(self.vpn) || !has(self.vpn.reverseConnections) || !self.vpn.reverseConnections || (has(self.vpn.enabled) && self.vpn.enabled)",message="vpn.reverseConnections needs vpn.enabled"
+// +kubebuilder:validation:XValidation:rule="!has(self.internet) || !has(self.internet.reverseConnections) || !self.internet.reverseConnections",message="reverseConnections belongs to the vpn segment only"
 type LabSpec struct {
 	// Lifecycle is absent for legacy running laboratories.
 	// +optional
@@ -32,6 +34,12 @@ type LabSpec struct {
 type LabNetworkSpec struct {
 	Enabled    bool        `json:"enabled,omitempty"`
 	DHCPServer *DHCPServer `json:"dhcpServer,omitempty"`
+	// ReverseConnections (VPN segment only) allows a device of the lab to START connections towards a VPN client, the participant's
+	// own machine (a reverse shell, an out-of-band callback). False, the default, blocks them: the VPN gateway passes from the lab to a
+	// client only replies to connections the client started (TCP, UDP, ICMP and the ICMP errors that belong to them). Connections from
+	// a client to the devices, and between devices, are never affected. It needs vpn.enabled and has no meaning on the internet segment.
+	// +optional
+	ReverseConnections bool `json:"reverseConnections,omitempty"`
 }
 
 // DHCPServer enables the embedded DHCP server for a network segment.

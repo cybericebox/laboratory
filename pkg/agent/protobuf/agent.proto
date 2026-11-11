@@ -1071,7 +1071,17 @@ message FeaturesResponse {
   ChecksFeature checks = 17;
   TerminalFeature terminal = 18;
   BootstrapFeature bootstrap = 19;
+  // How the VPN gateway treats connections started by a lab (contract 1.5). Absent = an agent older than the field: it does not
+  // enforce the default, so a daemon must not send spec.vpn.reverseConnections to it and must not promise the participant that
+  // the lab cannot connect to the participant's machine.
+  VPNFeature vpn = 20;
 }
+
+// VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
+// a lab starts towards a VPN client (only replies to connections the client started pass from the lab to the client), and accept
+// the per-lab switch spec.vpn.reverseConnections that allows them (fixed at creation, like the rest of the lab spec). The switch is refused
+// when the lab has no VPN.
+message VPNFeature {bool reverse_connections = 1;}
 
 message ChecksFeature {
   bool enabled = 1;

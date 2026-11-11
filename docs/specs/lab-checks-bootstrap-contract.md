@@ -128,6 +128,15 @@ Refused with `INVALID_ARGUMENT` (the whole call, like a bad environment): a boot
 
 `pkg/agent/protobuf/agent.pb.go`, `agent_grpc.pb.go`, `agent.proto`, `pkg/agent/client` (`ContractMinor = 5`), `pkg/agent/protobuf/contract.lock`. CRDs: `config/crd/bases/` and `charts/laboratory/crds/` (`devices`, `labs`), and `api/laboratory/v1alpha1` with its deepcopy. The agent image label `com.cybericebox.laboratory.api-contract` is `1.5`.
 
+## 9a. Connections from the lab to the participant (`vpn.reverseConnections`)
+
+Added to 1.5 (unreleased, no version bump). Owner decision 2026-11-11: a lab must not be able to START a connection to a VPN client (a participant's machine) unless the author asked for it.
+
+- **Field:** `Lab.spec.vpn.reverseConnections` (bool, default false), in `spec_json` of the variant like the rest of the lab spec. False: the VPN gateway passes from the lab to a client only replies to flows the client started (TCP, UDP, ICMP and the ICMP errors that belong to such a flow). True: as before this change. Connections from a client to the devices and between devices are never affected. The exercise key is `topology.vpn.reverse_connections`.
+- **Validation:** `vpn.reverseConnections` needs `vpn.enabled` (CRD rule and `CreateLabs`: `INVALID_ARGUMENT`); on `internet` it is refused. Like the rest of the spec it is fixed at creation (`UpdateLabs` does not change it).
+- **Capability:** `FeaturesResponse.vpn` (field 20, `VPNFeature{reverse_connections}`): true only when this agent and its VPN pods enforce the default (both gates) and accept the switch; derived from the rule generators, never a constant. Absent (an older agent): the field is refused by the agent (unknown JSON key), and the caller must not promise the participant that the lab cannot call back.
+- **Existing labs after an upgrade:** the absent field means false, so a lab created before the change is blocked as soon as its group's VPN pod runs the new gateway program. A lab that relied on a reverse shell stops working until it is recreated with the switch on.
+
 ## 10. To verify on a real node (micro-VM / Kata and cluster behaviour)
 
 Built and unit-tested off-cluster; not verified without a Linux node with Kata:

@@ -463,6 +463,13 @@ spec:
                     type: object
                   enabled:
                     type: boolean
+                  reverseConnections:
+                    description: |-
+                      ReverseConnections (VPN segment only) allows a device of the lab to START connections towards a VPN client, the participant's
+                      own machine (a reverse shell, an out-of-band callback). False, the default, blocks them: the VPN gateway passes from the lab to a
+                      client only replies to connections the client started (TCP, UDP, ICMP and the ICMP errors that belong to them). Connections from
+                      a client to the devices, and between devices, are never affected. It needs vpn.enabled and has no meaning on the internet segment.
+                    type: boolean
                 type: object
               lifecycle:
                 description: Lifecycle is absent for legacy running laboratories.
@@ -547,11 +554,24 @@ spec:
                     type: object
                   enabled:
                     type: boolean
+                  reverseConnections:
+                    description: |-
+                      ReverseConnections (VPN segment only) allows a device of the lab to START connections towards a VPN client, the participant's
+                      own machine (a reverse shell, an out-of-band callback). False, the default, blocks them: the VPN gateway passes from the lab to a
+                      client only replies to connections the client started (TCP, UDP, ICMP and the ICMP errors that belong to them). Connections from
+                      a client to the devices, and between devices, are never affected. It needs vpn.enabled and has no meaning on the internet segment.
+                    type: boolean
                 type: object
             type: object
             x-kubernetes-validations:
             - message: explicit lifecycle intent cannot be removed
               rule: '!has(oldSelf.lifecycle) || has(self.lifecycle)'
+            - message: vpn.reverseConnections needs vpn.enabled
+              rule: '!has(self.vpn) || !has(self.vpn.reverseConnections) || !self.vpn.reverseConnections
+                || (has(self.vpn.enabled) && self.vpn.enabled)'
+            - message: reverseConnections belongs to the vpn segment only
+              rule: '!has(self.internet) || !has(self.internet.reverseConnections)
+                || !self.internet.reverseConnections'
           status:
             description: LabStatus defines the observed state of Lab.
             properties:
