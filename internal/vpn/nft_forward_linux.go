@@ -38,13 +38,6 @@ import (
 // A packet is counted only when the permission set let it pass; once a pair leaves the permission sets its counters stand still, so a retired
 // pair is read exactly and only then deleted (the same two steps as the iptables relation chains: close, read, delete). Every element of
 // the accounting sets carries the comment "cibacct:<binding>:<epoch>", the identity that survives a restart of the VPN process.
-const nftTable = "cicevpn"
-
-// nftAcceptMark is what the nft gate puts on a packet it lets through. The iptables FORWARD chain keeps its policy DROP and accepts ONLY a
-// packet that carries this mark: whatever happens to the nft table (not yet installed, deleted by a cleanup or a crash, emptied) nothing is
-// marked and nothing is forwarded. The mark exists only inside the pod's kernel; no packet arrives with it.
-const nftAcceptMark = "0x00ce0000"
-
 // NFTCommand is the nft binary (a stand-in in the tests).
 type NFTCommand interface {
 	// Apply runs a batch (one transaction).
@@ -81,41 +74,6 @@ func (m *IPTablesManager) UseNFT(c NFTCommand) { m.nft = c }
 
 func (m *IPTablesManager) nftOn() bool { return m.nft != nil }
 
-var accountingSets = []struct{ name, direction, kind string }{
-	{"acct_fwd", "F", "T"}, {"acct_rev", "R", "T"}, {"new_fwd", "F", "N"}, {"new_rev", "R", "N"},
-}
-
-func (m *IPTablesManager) nftBaseScript() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "add table ip %s\n", nftTable)
-	for _, set := range []string{"allow_fwd", "allow_rev"} {
-		fmt.Fprintf(&b, "add set ip %s %s { type ifname . ipv4_addr . ipv4_addr; flags interval; }\nflush set ip %s %s\n", nftTable, set, nftTable, set)
-	}
-	for _, s := range accountingSets {
-		fmt.Fprintf(&b, "add set ip %s %s { type ifname . ipv4_addr . ipv4_addr; flags interval; counter; }\n", nftTable, s.name)
-	}
-	for _, set := range []string{"labnets", "clients"} {
-		fmt.Fprintf(&b, "add set ip %s %s { type ipv4_addr; flags interval; }\nflush set ip %s %s\n", nftTable, set, nftTable, set)
-	}
-	for _, chain := range []string{"count_fwd", "count_rev"} {
-		fmt.Fprintf(&b, "add chain ip %s %s\nflush chain ip %s %s\n", nftTable, chain, nftTable, chain)
-	}
-	fmt.Fprintf(&b, "add rule ip %s count_fwd tcp flags & (syn | ack) == syn oifname . ip saddr . ip daddr @new_fwd\n", nftTable)
-	fmt.Fprintf(&b, "add rule ip %s count_fwd oifname . ip saddr . ip daddr @acct_fwd meta mark set %s accept\n", nftTable, nftAcceptMark)
-	fmt.Fprintf(&b, "add rule ip %s count_rev tcp flags & (syn | ack) == syn iifname . ip saddr . ip daddr @new_rev\n", nftTable)
-	fmt.Fprintf(&b, "add rule ip %s count_rev iifname . ip saddr . ip daddr @acct_rev meta mark set %s accept\n", nftTable, nftAcceptMark)
-	// raw hook: the traffic between the participants and the labs is not tracked; what is addressed to the pod itself (its status page, its ping) is
-	fmt.Fprintf(&b, "add chain ip %s prerouting { type filter hook prerouting priority -300; policy accept; }\nflush chain ip %s prerouting\n", nftTable, nftTable)
-	fmt.Fprintf(&b, "add rule ip %s prerouting iifname %q ip daddr @labnets notrack\n", nftTable, m.wgIface)
-	fmt.Fprintf(&b, "add rule ip %s prerouting iifname \"lab*\" ip daddr @clients notrack\n", nftTable)
-	// the gate: closed by policy; participants never reach each other through the pod
-	fmt.Fprintf(&b, "add chain ip %s forward { type filter hook forward priority -1; policy drop; }\nflush chain ip %s forward\n", nftTable, nftTable)
-	fmt.Fprintf(&b, "add rule ip %s forward iifname %q oifname %q drop\n", nftTable, m.wgIface, m.wgIface)
-	fmt.Fprintf(&b, "add rule ip %s forward iifname %q oifname . ip saddr . ip daddr @allow_fwd jump count_fwd\n", nftTable, m.wgIface)
-	fmt.Fprintf(&b, "add rule ip %s forward oifname %q iifname . ip saddr . ip daddr @allow_rev jump count_rev\n", nftTable, m.wgIface)
-	return b.String()
-}
-
 // nftSetupForward installs the nft gate and then lets the iptables FORWARD chain trust it. The order never leaves a window: FORWARD is DROP
 // from the first moment (ProtectInput sets it and this keeps it), the nft gate is installed closed (the permission sets are emptied; the
 // accounting sets survive, as the relation chains did, so the counters of a surviving network namespace are not lost), and only then
@@ -127,16 +85,10 @@ func (m *IPTablesManager) nftSetupForward() error {
 	if err := m.ipt.ClearChain("filter", "FORWARD"); err != nil {
 		return err
 	}
-	if err := m.nft.Apply(context.Background(), []byte(m.nftBaseScript())); err != nil {
+	if err := m.nft.Apply(context.Background(), []byte(nftBaseScript(m.wgIface))); err != nil {
 		return err
 	}
 	return m.ipt.AppendUnique("filter", "FORWARD", "-m", "mark", "--mark", nftAcceptMark+"/"+nftAcceptMark, "-j", "ACCEPT")
-}
-
-// nftElementKeys are the element keys of a binding in the permission and accounting sets.
-func nftKeys(r ForwardRule) (fwd, rev string) {
-	return fmt.Sprintf("%q . %s . %s", r.LabInterface, strings.TrimSuffix(r.ClientCIDR, "/32"), r.LabCIDR),
-		fmt.Sprintf("%q . %s . %s", r.LabInterface, r.LabCIDR, strings.TrimSuffix(r.ClientCIDR, "/32"))
 }
 
 type nftState struct {
@@ -335,37 +287,17 @@ func (m *IPTablesManager) nftApplyForwardPlan(ctx context.Context, plan ForwardP
 	for _, r := range plan.Allows {
 		wanted[r.BindingID] = r
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "flush set ip %s allow_fwd\nflush set ip %s allow_rev\nflush set ip %s labnets\nflush set ip %s clients\n", nftTable, nftTable, nftTable, nftTable)
-	labnets, clients := map[string]bool{}, map[string]bool{}
-	for _, r := range plan.Allows {
-		fwd, rev := nftKeys(r)
-		fmt.Fprintf(&b, "add element ip %s allow_fwd { %s }\nadd element ip %s allow_rev { %s }\n", nftTable, fwd, nftTable, rev)
-		if !labnets[r.LabCIDR] {
-			labnets[r.LabCIDR] = true
-			fmt.Fprintf(&b, "add element ip %s labnets { %s }\n", nftTable, r.LabCIDR)
+	script, err := nftPlanScript(plan, func(id string) bool { return state.epochs[id] != "" }, func() (string, error) {
+		var random [8]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", err
 		}
-		client := strings.TrimSuffix(r.ClientCIDR, "/32")
-		if !clients[client] {
-			clients[client] = true
-			fmt.Fprintf(&b, "add element ip %s clients { %s }\n", nftTable, client)
-		}
-		if state.epochs[r.BindingID] == "" {
-			var random [8]byte
-			if _, err := rand.Read(random[:]); err != nil {
-				return ApplyResult{}, err
-			}
-			comment := "cibacct:" + r.BindingID + ":" + hex.EncodeToString(random[:])
-			for _, s := range accountingSets {
-				key := fwd
-				if s.direction == "R" {
-					key = rev
-				}
-				fmt.Fprintf(&b, "add element ip %s %s { %s counter comment %q }\n", nftTable, s.name, key, comment)
-			}
-		}
+		return hex.EncodeToString(random[:]), nil
+	})
+	if err != nil {
+		return ApplyResult{}, err
 	}
-	if err := m.nft.Apply(ctx, []byte(b.String())); err != nil {
+	if err := m.nft.Apply(ctx, []byte(script)); err != nil {
 		return ApplyResult{}, err
 	}
 	m.forwardPlan = ForwardPlan{Allows: slices.Clone(plan.Allows), Decisions: slices.Clone(plan.Decisions)}
@@ -439,7 +371,7 @@ func (m *IPTablesManager) nftQuiesce(ctx context.Context) error {
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
 	m.quiesced = true
-	return m.nft.Apply(ctx, []byte(fmt.Sprintf("flush set ip %s allow_fwd\nflush set ip %s allow_rev\n", nftTable, nftTable)))
+	return m.nft.Apply(ctx, []byte(fmt.Sprintf("flush set ip %s allow_fwd\nflush set ip %s allow_rev\nflush set ip %s reply_rev\n", nftTable, nftTable, nftTable)))
 }
 
 func (m *IPTablesManager) nftCleanup() {

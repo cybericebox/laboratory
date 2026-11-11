@@ -50,7 +50,7 @@ func TestNetnsNFTForwardGatesBothDirectionsWithoutConntrack(t *testing.T) {
 	if nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) {
 		t.Fatal("the gate must be closed before the first plan")
 	}
-	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true}}, []AccessPolicyRule{{Action: AccessAllow}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestNetnsNFTForwardGatesBothDirectionsWithoutConntrack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	extra, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow})
+	extra, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow, LabInitiated: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestNetnsNFTNeverFailsOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed("after the setup, before a plan")
-	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true}}, []AccessPolicyRule{{Action: AccessAllow}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestNetnsNFTNeverFailsOpen(t *testing.T) {
 
 	// a transaction that fails (the process killed in the middle of an apply leaves the same: the batch is all or nothing)
 	broken := &IPTablesManager{ipt: m.ipt, wgIface: "wg0", nft: failingNFT{nativeNFT{}}, bindings: m.bindings, forwardPlan: m.forwardPlan, forwardReady: true}
-	other, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow})
+	other, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow, LabInitiated: true})
 	if err != nil {
 		t.Fatal(err)
 	}

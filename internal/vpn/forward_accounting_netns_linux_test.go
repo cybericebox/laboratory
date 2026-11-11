@@ -47,7 +47,7 @@ func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(m.Cleanup)
-	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true}}, []AccessPolicyRule{{Action: AccessAllow}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
 	}
 	additional := plan
 	additional.Allows = append(append([]ForwardRule(nil), plan.Allows...), ForwardRule{ClientName: "p1", LabName: "b", ClientCIDR: "10.8.0.2/32", LabCIDR: "10.8.2.0/24", LabInterface: "lab2"})
-	extra, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow})
+	extra, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow, LabInitiated: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestNetnsMeterCountsEveryPacketButOneParallelUDPInitiative(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(m.Cleanup)
-	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true}}, []AccessPolicyRule{{Action: AccessAllow}})
 	if err != nil {
 		t.Fatal(err)
 	}

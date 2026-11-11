@@ -77,7 +77,7 @@ func perfRun(t *testing.T, backend string) {
 	for c := 9; c >= 0; c-- {
 		for l := 50; l >= 1; l-- {
 			iface := fmt.Sprintf("lab%d", l)
-			r, err := forwardBinding(AccessRule{ClientName: fmt.Sprintf("p%d", c), LabName: fmt.Sprintf("l%d", l), SourceCIDR: fmt.Sprintf("10.8.0.%d/32", c+2), DestinationCIDR: fmt.Sprintf("10.8.%d.0/24", l), LabInterface: iface, Action: AccessAllow})
+			r, err := forwardBinding(AccessRule{ClientName: fmt.Sprintf("p%d", c), LabName: fmt.Sprintf("l%d", l), SourceCIDR: fmt.Sprintf("10.8.0.%d/32", c+2), DestinationCIDR: fmt.Sprintf("10.8.%d.0/24", l), LabInterface: iface, Action: AccessAllow, LabInitiated: true})
 			if err != nil {
 				t.Fatal(err)
 			}

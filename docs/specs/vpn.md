@@ -155,6 +155,7 @@ Secret (приватный никогда не покидает кластер),
 
 - **Статус:** ✅ Implemented (iptables); проверить на Linux-ноде (netns-тест не написан).
 - **Реализация:** `internal/vpn/access_rules.go` (`accessGateRules`, `labDirectionMatch`). По умолчанию правило lab→wg пары содержит `-m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY`: проходят только ответы на соединения клиента. Переключатель — `Lab.spec.vpn.reverseConnections` (`LabAccessSnapshot.LabInitiated` → `AccessRule` → `ForwardRule`, не входит в идентификатор пары). Смена значения переписывает access-цепочку одним batch; при выключении `RevokedFlows` удаляет уже открытые соединения лабы к клиентам.
+- nft (`VPN_FIREWALL=nft`): лаба без переключателя отслеживается conntrack (набор `reply_rev` + `ct state established,related ct direction reply`), открытые лабы остаются stateless/notrack; ключ notrack для lab→client — (интерфейс лабы, клиент). Скрипты — `internal/vpn/nft_script.go`.
 - Подробности и эксплуатация: DEPLOY.md, «Connections started by a lab towards a participant».
 
 #### REQ-VPN-021: Cleanup правил при graceful shutdown

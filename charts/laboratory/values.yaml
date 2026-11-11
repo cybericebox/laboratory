@@ -188,7 +188,8 @@ labScheduler:
 # ============================================================
 vpn:
   # How the VPN pod forwards between the participants and the labs. iptables: the relation chains with connection tracking. nft: nftables sets
-  # without connection tracking (a pair is allowed in both directions at once, statelessly; one lookup per packet whatever the number of pairs;
+  # without connection tracking for the labs that may start connections towards participants (spec.vpn.reverseConnections); the other labs, the
+  # default, are tracked, because only conntrack tells a reply from a new connection (a pair is allowed in both directions at once, statelessly, in an open lab; one lookup per packet whatever the number of pairs;
   # a revoked pair stops with its next packet; the counters of the pair's set elements are the accounting). Only the VPN pods created after the
   # change use it; a pod that exists keeps its firewall.
   firewall: iptables
