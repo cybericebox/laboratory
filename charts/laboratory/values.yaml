@@ -110,11 +110,33 @@ profileLabels:
   enabled: false
 # Optional parts of the laboratory (two independent options, both off by default). The management agent refuses a lab that carries
 # the matching feature while its option is off, and reports both in GetFeatures (features.checks.enabled, features.terminal.enabled).
-# Today they only gate the data model: the checker and the terminal components (DaemonSets) are built later and will be started by
-# these same switches.
+# checks.enabled also renders the lab checker, a DaemonSet of its own (apart from the node-agent). The terminal component is built later
+# and will be started by its switch.
 checks:
-  # Lab checks: a lab may carry checks (file and custom observations of its devices) and the RunChecks call is accepted.
+  # Lab checks: a lab may carry checks (file and custom observations of its devices), the RunChecks call is accepted, and the checker
+  # DaemonSet (templates/checker) runs on the lab nodes. It runs the image of the node-agent (/node checker), takes no inbound
+  # connection and needs no host namespace. DEPLOY.md, "Lab checks", lists its rights and what it needs on the node.
   enabled: false
+  # How many checks run at once on one node (a run is a file read or an exec in a device).
+  maxConcurrent: 4
+  # The containerd state directory of the node, where the runtime keeps the root file system of every container
+  # (<state>/io.containerd.runtime.v2.task/<namespace>/<container id>/rootfs). Mounted read-only at the same path. k0s: /run/k0s/containerd.
+  containerdState: /run/k0s/containerd
+  # The containerd namespace of the kubelet's CRI.
+  containerdNamespace: k8s.io
+  # Cilium policy of the checker pod: no ingress, egress to the API server only.
+  networkPolicy:
+    enabled: true
+  # The checker keeps a trimmed copy of every Lab of the cluster and of the pods of its own node; the limits bound it.
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+      ephemeral-storage: 16Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+      ephemeral-storage: 64Mi
 terminal:
   # Browser terminal: a container device may ask for a terminal (devices[].terminal.enabled) and the lab reports a "terminal" access entry.
   enabled: false

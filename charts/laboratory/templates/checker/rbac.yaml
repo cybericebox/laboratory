@@ -1,0 +1,83 @@
+{{- if .Values.checks.enabled }}
+{{- /* Every rule has its reason; DEPLOY.md, "Lab checks", lists them. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: laboratory-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-checker
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  # The labs: their checks (names and devices), the run-checks annotation, the readiness of the devices, the results. A Lab cannot be
+  # selected by node, so the checker watches them all and keeps only a stub of each lab without checks.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labs ]
+    verbs: [ get, list, watch ]
+  # The results (status.checks) and the acknowledgement (status.checksRunAck), by server-side apply. Nothing else of a Lab is written:
+  # no update of the object, no spec, no other resource.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labs/status ]
+    verbs: [ patch ]
+  # The device pods of its own node (the informer asks the API server for spec.nodeName=<node>; RBAC cannot restrict that): readiness.
+  - apiGroups: [ "" ]
+    resources: [ pods ]
+    verbs: [ get, list, watch ]
+  # The checks document of a lab, Secret <lab>-checks, by name, when the lab has a pod on the node and when it was rewritten. get
+  # only: no list, no watch (a watch would bring the checks of every lab to every node). RBAC cannot restrict a Secret to a name that
+  # does not exist yet; the reach is that of any Secret of the cluster, which is why the pod has no inbound port, no host namespace
+  # and a read-only root file system.
+  - apiGroups: [ "" ]
+    resources: [ secrets ]
+    verbs: [ get ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: laboratory-checker
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: laboratory-checker
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-checker
+    namespace: {{ .Release.Namespace }}
+---
+# The keepalive: one Lease per node in the release namespace. create cannot be limited to a name; the admission policy below does that.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ coordination.k8s.io ]
+    resources: [ leases ]
+    verbs: [ get, create, update, patch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-checker
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-checker
+    namespace: {{ .Release.Namespace }}
+{{- end }}
