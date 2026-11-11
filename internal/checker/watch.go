@@ -252,6 +252,10 @@ func (w *Watcher) onLab(o any, deleted bool) {
 	w.Engine.SetLab(info)
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if len(info.Refs) == 0 {
+		delete(w.labs, key)
+		return
+	}
 	st := w.labs[key]
 	if st == nil || st.uid != info.UID {
 		st = &watched{uid: info.UID, stale: true}

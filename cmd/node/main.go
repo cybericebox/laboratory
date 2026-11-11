@@ -1,6 +1,7 @@
 //go:build linux
 
-// node is the per-node image's binary: node-agent, install-cni, netconfig, cni-gate, and the lab checker (checker, checker-health).
+// node is the per-node image's binary: node-agent, install-cni, netconfig, cni-gate and the lab checker
+// (checker, checker-health).
 // cni-gate is also started by its own name: the host copy in /opt/cni/bin/cni-gate.
 package main
 

@@ -26,6 +26,8 @@ type Handler struct {
 	protobuf.UnimplementedLabManagerServer
 	cs  versioned.Interface
 	k8s kubernetes.Interface
+	// checker remembers whether the checker DaemonSet exists (see checksAvailable).
+	checker checkerPresence
 	// metrics is optional: nil when metrics-server is not installed. Live
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface

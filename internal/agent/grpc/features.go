@@ -66,6 +66,8 @@ type Features struct {
 	// checks, or with a terminal device, is refused while the matching one is off.
 	ChecksEnabled   bool
 	TerminalEnabled bool
+	// CheckerRequired: checks count as available only while the checker DaemonSet exists (production sets it with ChecksEnabled).
+	CheckerRequired bool
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.

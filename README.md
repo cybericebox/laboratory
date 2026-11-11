@@ -12,6 +12,7 @@ It consists of:
 - a **management agent**, a gRPC API (mTLS) through which one or more platform backends (**tenants**) drive the
   operator, each seeing only its own objects;
 - a **node-agent** DaemonSet that programs Open vSwitch (OVS) on every node and plugs lab devices into L2 segments;
+- an optional **checker** DaemonSet (`checks.enabled`) that runs the checks of the labs on its node (files and commands of the devices) and writes the results into the Lab status;
 - a **WireGuard VPN** server per lab group, reached through a shared **VPN demultiplexer**;
 - a shared **L7 HTTPS proxy** that fronts web challenges;
 - a per-group **internet gateway** (egress-only NAT, optional DHCP);
@@ -69,6 +70,7 @@ It consists of:
 | `manager` (operator) | `laboratory-controller` | controller-runtime manager with all reconcilers |
 | `agent` | `laboratory-agent` | gRPC management API (`LabManager`) in front of the CRDs |
 | `node-agent` | `laboratory-node` | per-node OVS programming, device port reconciliation, gRPC socket for the CNI gate |
+| `checker` | `laboratory-node` | optional (`checks.enabled`) DaemonSet apart from the node-agent: runs the file and command checks of the devices of its node, writes `Lab.status.checks`, keeps a Lease per node; see [DEPLOY.md](DEPLOY.md#lab-checks-the-checker) |
 | `install-cni`, `cni-gate` | `laboratory-node` | installs and runs the meta-CNI that keeps the cluster CNI in charge of `eth0` |
 | `netconfig` | `laboratory-node` | init container that configures lab interfaces inside a device pod |
 | `vpn` | `laboratory-lab` | per-group WireGuard server, peer management, access policy, flow accounting |
@@ -88,7 +90,7 @@ Images are published to Docker Hub for `linux/amd64` and `linux/arm64`:
 | `cybericebox/laboratory-controller` | operator (`/manager`) | distroless static | `controller` |
 | `cybericebox/laboratory-agent` | gRPC management API (`/agent`) | distroless static | `agent` |
 | `cybericebox/laboratory-proxy` | `/proxy` with `proxy-l7` and `proxy-wg` | distroless static | `proxy` |
-| `cybericebox/laboratory-node` | `/node` (node-agent, install-cni, netconfig, cni-gate), Open vSwitch, CNI plugins | alpine 3.24 | `node` |
+| `cybericebox/laboratory-node` | `/node` (node-agent, install-cni, netconfig, cni-gate, checker), Open vSwitch, CNI plugins | alpine 3.24 | `node` |
 | `cybericebox/laboratory-lab` | `/lab` (vpn, gateway), iptables (nft), iproute2, wg | alpine 3.24 | `lab` |
 
 Each image carries only the code of its own domain. The `proxy`, `node` and `lab` binaries start the component named by

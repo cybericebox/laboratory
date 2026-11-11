@@ -2,7 +2,7 @@
 //
 //	probe install DIR                            copy this program to DIR/probe (the init container)
 //	probe ready [-file F] [-port N -scheme S]    exit 0 when the container is ready (the kubelet's exec probe)
-//	probe check-exec JSON | check-file JSON      one observation of a lab check, answered as JSON (internal/probe/check_wire.go)
+//	probe check-exec JSON | check-file JSON      one observation of a lab check, answered as JSON (internal/probe)
 package main
 
 import (

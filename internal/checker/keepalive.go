@@ -72,7 +72,7 @@ func (k *Keepalive) Beat(ctx context.Context) error {
 			"renewTime":            now().UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
 		},
 	}}
-	if err := k.Client.Patch(ctx, lease, client.Apply, client.FieldOwner("lab-checker-keepalive"), client.ForceOwnership); err != nil {
+	if err := k.Client.Apply(ctx, client.ApplyConfigurationFromUnstructured(lease), client.FieldOwner("lab-checker-keepalive"), client.ForceOwnership); err != nil {
 		return fmt.Errorf("renew the lease of the checker of node %s: %w", k.Node, err)
 	}
 	return nil

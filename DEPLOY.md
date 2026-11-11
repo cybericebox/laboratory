@@ -832,6 +832,72 @@ Checks on a node (the bridge is `br-ovs`):
 
 Known limits (see `docs/research/2026-10-28-lab-bandwidth-plan.md`, "Open for owner"): the OVS meter counts the frame before the Geneve headers, so the Geneve class is scaled by `bandwidth.geneveOverheadFactor` (0.85); a flooded frame is copied to every remote node while the meter counts it once, so a lab's rate is divided by the number of remote nodes; the kernel fast path of the demux (tc and xdp) limits by bytes in the BPF program itself, so queueing disciplines do not matter: a byte bucket per session, written as the session's fair share of the class (the demux recounts the active sessions every 2 s), and one window for the class of the node. If the verifier of a kernel refuses the byte limiter the demux logs it and falls back to a packet rate per session (the packets of a session are assumed 1500 bytes; no class limit); the userspace demux adds a hop that is not counted. Nothing here is a guarantee: it is a ceiling.
 
+## Lab checks (the checker)
+
+`checks.enabled: true` (default `false`) switches on lab checks. The management agent then accepts labs that carry checks and the
+`RunChecks` call, reports `features.checks.enabled`, and the chart renders the **checker**: a DaemonSet of its own, `laboratory-checker`,
+apart from the node-agent (the node-agent wires the network of every new pod; a fault or load of the checks must not reach it). With the
+option off nothing of the checker is rendered. The design record is `docs/specs/2026-11-11-lab-checkers-bootstrap-devices.md` in the platform
+repository, the data model `docs/specs/lab-checks-bootstrap-contract.md`, the component `docs/specs/lab-checker.md`.
+
+What it does: on each lab node it watches the Labs, the device pods **of its own node** (a field selector the API server applies) and, by name,
+the Secret `<lab>-checks`; for the checks whose device runs on its node it makes two observations, `file` and `custom`, and writes the result into
+`Lab.status.checks[id]` (only when the state, the value or the detail changed) and the token of a manual run into `status.checksRunAck`.
+A device whose pod is not Ready, or whose bootstrap is not `done`, is not checked at all and its previous result stays.
+
+| Setting | Meaning |
+|---|---|
+| `checks.enabled` | the option; renders the DaemonSet, its RBAC, the Cilium policy and the admission policies |
+| `checks.maxConcurrent` (4) | runs at once on one node |
+| `checks.containerdState` (`/run/k0s/containerd`) | the containerd **state** directory of the nodes (not the root of `devices.statePersistence.containerdRoot`), where the runtime keeps `io.containerd.runtime.v2.task/<namespace>/<container id>/rootfs`; mounted read-only at the same path |
+| `checks.containerdNamespace` (`k8s.io`) | containerd namespace of the kubelet's CRI |
+| `checks.networkPolicy.enabled` (true) | CiliumNetworkPolicy: no ingress, egress to the API server only |
+| `checks.resources` | requests and limits of the checker (a trimmed copy of every Lab of the cluster and the pods of its node are cached) |
+
+The runtime socket is `nodeAgent.criSocket`; the placement is that of the node-agent (`labWorkloads`); the image is the node image (`/node checker`).
+
+**What it needs on the node, and why** (all in the one container `checker`; nothing is privileged):
+
+| Privilege | Why |
+|---|---|
+| hostPath socket `nodeAgent.criSocket` | the container runtime's exec and list calls, on the node, never through the API server. **This is the widest right of the pod**: a CRI socket controls every container of the node. No narrower mount exists; do not widen the pod beyond what is listed here |
+| hostPath `checks.containerdState`, read-only, `HostToContainer` | the root file system of a container is read from the node without running anything in the container. The mount shows the root directories of **all** containers of the node; the checker reads only the container it resolved from the pod of a checked device |
+| capability `DAC_READ_SEARCH` (all others dropped) | read a file the participant made unreadable, and the host users of a user namespace (a 0600 file of a user that maps to another host user). No write, no mount, no ptrace |
+| runs as uid 0 | the runtime socket is root-only; the root file system is read-only; no privilege escalation; seccomp `RuntimeDefault` |
+| no host network, PID or IPC; no port, no probe port | it accepts no inbound connection (exec probes look at two files; metrics are off; the Cilium policy denies ingress) |
+| ClusterRole: `labs` get/list/watch | the checks (names, devices), the `run-checks` annotation, bootstrap state, results. A Lab cannot be selected by node, so all are cached as stubs |
+| ClusterRole: `labs/status` patch | server-side apply of `status.checks` and `status.checksRunAck` only (the admission policy `laboratory-checker-status` refuses any other status field) |
+| ClusterRole: `pods` get/list/watch | readiness of the device pods of its node |
+| ClusterRole: `secrets` get | the checks document of a lab, one GET when the lab has a pod on the node and again after the agent rewrote it. No list, no watch. RBAC cannot narrow it to a Secret name; the reach is that of any Secret |
+| Role (release namespace): `leases` get/create/update/patch | the keepalive; the admission policy `laboratory-checker-lease` limits it to the Lease of the node of the token |
+
+**Files.** A file observation of a container device is read from the node: the path is resolved strictly inside the container's root by
+the checker itself, one component at a time with descriptor-relative no-follow calls, with its own handling of symbolic links (an absolute
+link means the container's root) and of `..` (never above the root), so a link planted by the participant cannot reach a file of the node.
+The tree seen is the root file system of the container (image and writable layer): `/proc`, `/sys`, `/dev` and the mounts the container makes for
+itself (volumes, `/etc/hosts`) are not part of it; a path below `/proc`, `/sys` or `/dev` gives the result `error`, and a check of such a state is a
+`custom` check. At most 1 MiB of a file is read; an expectation that is not found in a file larger than that is an `error`, not a failure. For a
+micro-VM device (Kata) the root is inside the guest, so the file is read by the in-device tool (`/.cib/probe/probe check-file`) run through the
+runtime's exec, as the user of the container.
+
+**Commands.** A `custom` observation runs `/.cib/probe/probe check-exec` in the device through the runtime's exec (the static tool every device
+mounts read-only). The tool switches to the requested user, runs the command or the script (a memory file, nothing written to the device) under
+the time limit, kills the whole process group at the limit and returns the exit code and at most 64 KiB of output as one JSON document. It can
+switch user only when the container's own user is root. The output is judged by the checker and never leaves it.
+
+**What is written.** `passed`, `not_passed`, `error`. `detail` names the part and the kind of expectation that did not hold, never an expected
+value, an output or file content. A failed run (`error`: the container is not running, the command did not start or ran over its limit, a file
+too large to decide) does not replace a published `passed`/`not_passed` until three scheduled runs in a row fail (a manual run publishes at once);
+`firstPassedMs` is never cleared; a `once` check that has passed is never run again.
+
+**Keepalive.** One Lease per node, `laboratory-checker-<node>` in the release namespace, label `laboratory.cybericebox.com/checker=true`,
+renewed every 20 s for 60 s, with the annotations `laboratory.cybericebox.com/checker-state` (`ready` or `unavailable: <CODE>: <detail>`, the start-up
+check of the node: a missing state directory is `STATE_DIR_MISSING`) and `.../checker-version`. A fresh Lease means that silence of a check is
+"no change". Nothing reads the Leases yet; see `docs/specs/lab-checker.md`.
+
+Check it: `kubectl -n laboratory-system get ds laboratory-checker`, `kubectl -n laboratory-system get lease -l laboratory.cybericebox.com/checker=true -o yaml`.
+A node where the files of containers cannot be read still runs custom checks and micro-VM devices; its Lease says why.
+
 ## 6. Uninstall
 
 ```bash

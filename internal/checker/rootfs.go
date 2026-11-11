@@ -204,7 +204,7 @@ func (r *RootFS) resolve(p string) (res resolved, ok bool, err error) {
 
 // Observe looks at p and, when wantContent is set and p is a regular file, reads up to MaxContent bytes of it.
 func (r *RootFS) Observe(p string, wantContent bool, ids IDMap) (FileFacts, error) {
-	var lastErr error = ErrChanged
+	lastErr := ErrChanged
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		facts, retry, err := r.observeOnce(p, wantContent, ids)
 		if !retry {
@@ -269,8 +269,11 @@ func (r *RootFS) observeOnce(p string, wantContent bool, ids IDMap) (facts FileF
 	return facts, false, nil
 }
 
+// permBits are the permission, setuid, setgid and sticky bits of a mode (uint16 on some hosts, uint32 on Linux).
+func permBits[T ~uint16 | ~uint32](m T) uint32 { return uint32(m) & 0o7777 }
+
 func factsOf(st *unix.Stat_t, ids IDMap) FileFacts {
-	f := FileFacts{Exists: true, Regular: st.Mode&unix.S_IFMT == unix.S_IFREG, Mode: uint32(st.Mode) & 0o7777}
+	f := FileFacts{Exists: true, Regular: st.Mode&unix.S_IFMT == unix.S_IFREG, Mode: permBits(st.Mode)}
 	var uok, gok bool
 	f.UID, uok = ids.UID(st.Uid)
 	f.GID, gok = ids.GID(st.Gid)
