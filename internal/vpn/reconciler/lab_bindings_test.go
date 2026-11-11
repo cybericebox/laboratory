@@ -69,3 +69,26 @@ func TestResumedVPNPodDoesNotOpenAStoppedLab(t *testing.T) {
 		t.Fatal("a running lab must stay reachable")
 	}
 }
+
+// The switch of the lab reaches the access snapshot, and a change of it is an access input (the rules are rebuilt).
+func TestLabSwitchReachesTheSnapshotAndTriggersARebuild(t *testing.T) {
+	mk := func(on bool) *lab.Lab {
+		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a"}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.7.0/24"}}}
+		l.Spec.VPN.Enabled, l.Spec.VPN.ReverseConnections = true, on
+		return l
+	}
+	snapshots, err := buildLabAccessSnapshots([]lab.Lab{*mk(false)}, nil)
+	if err != nil || snapshots["a"].LabInitiated {
+		t.Fatalf("the default must block: %+v %v", snapshots, err)
+	}
+	snapshots, err = buildLabAccessSnapshots([]lab.Lab{*mk(true)}, nil)
+	if err != nil || !snapshots["a"].LabInitiated {
+		t.Fatalf("the switch was lost: %+v %v", snapshots, err)
+	}
+	if !labAccessInputsChanged(mk(false), mk(true)) || !labAccessInputsChanged(mk(true), mk(false)) {
+		t.Fatal("a change of the switch did not trigger a rebuild")
+	}
+	if labAccessInputsChanged(mk(true), mk(true)) {
+		t.Fatal("an unchanged lab triggered a rebuild")
+	}
+}

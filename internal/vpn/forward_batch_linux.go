@@ -95,8 +95,8 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 				fmt.Fprintf(&body, "-A %s -m comment --comment %s -j ACCEPT\n", chain, counterComment(r.BindingID, epoch, direction, "T"))
 			}
 		}
-		fmt.Fprintf(&body, "-A %s -i %s -o %s -s %s -d %s -j %s\n", accessChain, m.wgIface, r.LabInterface, r.ClientCIDR, r.LabCIDR, relationChain(r.BindingID, "F"))
-		fmt.Fprintf(&body, "-A %s -i %s -o %s -d %s -j %s\n", accessChain, r.LabInterface, m.wgIface, r.ClientCIDR, relationChain(r.BindingID, "R"))
+		fwd, rev := accessGateRules(accessChain, m.wgIface, r, relationChain(r.BindingID, "F"), relationChain(r.BindingID, "R"))
+		body.WriteString(fwd + "\n" + rev + "\n")
 	}
 	body.WriteString("-A " + accessChain + " -j DROP\n")
 	body.WriteString("COMMIT\n")

@@ -1458,6 +1458,17 @@ table-0 flow (`in_port` to the VNI) is installed, so a port that has no flow, fo
 Check on a node: `ovs-vsctl get bridge br-ovs fail_mode` is `secure`, and `ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=0` has no
 `NORMAL` action and ends with `priority=0 actions=drop`.
 
+### Connections started by a lab towards a participant
+
+By default a device of a lab cannot **start** a connection to a VPN client (a participant's machine): from the lab to a client the VPN pod forwards only replies to connections the client started. Connections from a participant to the devices, and between devices, are not affected. A lab opts out with `spec.vpn.reverseConnections: true` (exercise key `topology.vpn.reverse_connections`), for a reverse shell or an out-of-band callback; it needs `vpn.enabled`. `GetFeatures.vpn.reverse_connections` tells a caller that this agent enforces the default.
+
+- **Where.** In the VPN pod's own network namespace, in the access chain of FORWARD (`internal/vpn`). A device cannot reach that namespace and has no other route to a client address, so it cannot change or bypass the rule.
+- **Rule (`VPN_FIREWALL=iptables`, the default).** The lab-to-client rule of a pair is `-i labN -o wg0 -d <client> -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j <relation chain>`. A packet that is not an established or related one in the reply direction falls to the final DROP of the chain: new connections, and also packets of a connection a device started earlier (they go in the original direction). TCP, UDP and ICMP are covered, ICMP errors that belong to a client-started flow (fragmentation needed, port unreachable) pass as RELATED. Conntrack helpers are off in the pod, so a payload (FTP active mode) cannot create a related connection: such a data connection from a device is lab-started and is blocked. With the switch on the rule has no conntrack match.
+- **Changing it.** The VPN pod reads the Lab and rebuilds the access chain in one `iptables-restore`: the relation chains, counters and conntrack entries stay, devices are not restarted, and sessions the client started keep running. Turning the switch off also deletes, through ctnetlink, the connections the lab had started towards clients (same mechanism as revoking access). The lab spec is not changed by the API after creation, so in practice the value is the one given at creation.
+- **Labs that exist when this is installed.** They have no value, which is `false`: blocked as soon as their group's VPN pod runs the new program (the operator rolls VPN pods one group at a time). A lab that relied on a reverse shell stops working until it is recreated with the switch on; its devices are not restarted by the change itself.
+- **Cost.** No new conntrack entries (these flows are tracked already for the accounting); one extra match on packets from the lab to a client. Blocked attempts are dropped silently and not counted (`lab_initiated_attempts` counts only what a lab with the switch on started).
+- **Not affected.** DHCP and the ping of the pod's own lab address are INPUT/OUTPUT of the VPN pod, not forwarding. IPv6 is not forwarded by the pod at all.
+
 ### Revoking access cuts live sessions
 
 FORWARD in the VPN pod accepts established connections before the access chain, so replacing the chain stops only new connections.

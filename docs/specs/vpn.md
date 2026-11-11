@@ -151,6 +151,12 @@ Secret (приватный никогда не покидает кластер),
 - WireGuard handshake/RX/TX сохраняются отдельно. Записи не содержат внешних IP, DNS/probe/DHCP или содержимого пакетов. Пропуск/сброс/переполнение видны как Partial; cap 512 строк — Truncated. Приватные checkpoints сохраняются в том же LabTrafficReport, в protobuf не передаются.
 - Это подтверждает пересылку VPN-сервером, а не принятие пакета приложением. Числовая ёмкость группы требует отдельного испытания реального трафика.
 
+#### REQ-VPN-022: Лаба не инициирует соединения к VPN-клиентам
+
+- **Статус:** ✅ Implemented (iptables); проверить на Linux-ноде (netns-тест не написан).
+- **Реализация:** `internal/vpn/access_rules.go` (`accessGateRules`, `labDirectionMatch`). По умолчанию правило lab→wg пары содержит `-m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY`: проходят только ответы на соединения клиента. Переключатель — `Lab.spec.vpn.reverseConnections` (`LabAccessSnapshot.LabInitiated` → `AccessRule` → `ForwardRule`, не входит в идентификатор пары). Смена значения переписывает access-цепочку одним batch; при выключении `RevokedFlows` удаляет уже открытые соединения лабы к клиентам.
+- Подробности и эксплуатация: DEPLOY.md, «Connections started by a lab towards a participant».
+
 #### REQ-VPN-021: Cleanup правил при graceful shutdown
 
 - **Источник:** общая практика.

@@ -18,7 +18,7 @@ func buildLabAccessSnapshots(labs []lab.Lab, legs []lab.LabVPN) (map[string]vpn.
 	result := make(map[string]vpn.LabAccessSnapshot, len(labs))
 	for i := range labs {
 		l := &labs[i]
-		result[l.Name] = vpn.LabAccessSnapshot{VPNCIDR: l.Status.VPN.CIDR, Ready: labAccessReady(l)}
+		result[l.Name] = vpn.LabAccessSnapshot{VPNCIDR: l.Status.VPN.CIDR, Ready: labAccessReady(l), LabInitiated: l.Spec.VPN.ReverseConnections}
 	}
 	interfaces := map[string]string{}
 	for i := range legs {
