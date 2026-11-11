@@ -1,6 +1,12 @@
 package vpn
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // accessGateRules are the two rules of a permitted pair in the access chain (iptables-restore syntax, without the trailing newline):
 // from the client to the lab, and from the lab to the client. Each jumps to the relation chain of the pair, which counts and accepts.
@@ -21,4 +27,43 @@ func labDirectionMatch(r ForwardRule) string {
 		return ""
 	}
 	return " -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY"
+}
+
+// blockCommentPrefix marks the rule that drops what a lab that may not start connections sends towards the clients and no pair accepted.
+// One rule per lab interface; its counter is the number of such packets.
+const blockCommentPrefix = "cibblk:"
+
+// accessBlockRules are the drop rules, one per lab interface of a lab without the switch, placed after the rules of the pairs in the access
+// chain. They are not needed for the decision (the chain ends in DROP) but they count what was refused.
+func accessBlockRules(chain, wgIface string, rules []ForwardRule) []string {
+	seen := map[string]bool{}
+	var ifaces []string
+	for _, r := range rules {
+		if !r.LabInitiated && !seen[r.LabInterface] {
+			seen[r.LabInterface] = true
+			ifaces = append(ifaces, r.LabInterface)
+		}
+	}
+	sort.Strings(ifaces)
+	out := make([]string, 0, len(ifaces))
+	for _, iface := range ifaces {
+		out = append(out, fmt.Sprintf("-A %s -i %s -o %s -m comment --comment %s%s -j DROP", chain, iface, wgIface, blockCommentPrefix, iface))
+	}
+	return out
+}
+
+var savedBlockLine = regexp.MustCompile(`^\[(\d+):\d+\] -A \S+ .*--comment "?` + blockCommentPrefix + `(lab\d+)"?(?:\s|$)`)
+
+// parseBlockCounters reads the packet counts of the block rules from iptables-save -c output, by lab interface.
+func parseBlockCounters(saved []byte) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, line := range strings.Split(string(saved), "\n") {
+		if m := savedBlockLine.FindStringSubmatch(line); m != nil {
+			n, err := strconv.ParseUint(m[1], 10, 64)
+			if err == nil {
+				out[m[2]] += n
+			}
+		}
+	}
+	return out
 }

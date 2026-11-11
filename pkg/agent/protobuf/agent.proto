@@ -693,6 +693,10 @@ message LabStatus {
   repeated CheckResult checks = 44;
   // The RunChecks token the checker has taken (the annotation token it has seen).
   int64 checks_run_ack = 45;
+  // True only when the VPN gateway of the lab's group has confirmed that it blocks connections the lab's devices start towards VPN
+  // clients (spec.vpn.reverseConnections is false and the gateway program enforces it). False in every other case: the switch is on,
+  // the lab has no VPN, or the group's VPN pod still runs an older program (after an upgrade) or has not applied the lab yet.
+  bool vpn_lab_initiated_blocked = 46;
 }
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
 // refreshes it at a limited rate, so position can lag by seconds.

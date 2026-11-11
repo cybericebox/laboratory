@@ -92,3 +92,26 @@ func TestLabInitiatedBlockEnforcedFollowsTheRules(t *testing.T) {
 		t.Fatal("an open lab has no restriction, so the probe must use the default pair")
 	}
 }
+
+func TestBlockRulesCountWhatTheDefaultLabsSendButOpenLabsAreNotCounted(t *testing.T) {
+	rules := []ForwardRule{
+		{LabInterface: "lab2"}, {LabInterface: "lab1"}, {LabInterface: "lab1"}, {LabInterface: "lab3", LabInitiated: true},
+	}
+	got := accessBlockRules("GATE", "wg0", rules)
+	want := []string{
+		"-A GATE -i lab1 -o wg0 -m comment --comment cibblk:lab1 -j DROP",
+		"-A GATE -i lab2 -o wg0 -m comment --comment cibblk:lab2 -j DROP",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestParseBlockCountersReadsIptablesSave(t *testing.T) {
+	saved := "*filter\n:GATE - [0:0]\n[12:900] -A GATE -i lab1 -o wg0 -m comment --comment cibblk:lab1 -j DROP\n" +
+		"[3:180] -A GATE -i lab2 -o wg0 -m comment --comment \"cibblk:lab2\" -j DROP\n[5:5] -A GATE -j DROP\nCOMMIT\n"
+	got := parseBlockCounters([]byte(saved))
+	if len(got) != 2 || got["lab1"] != 12 || got["lab2"] != 3 {
+		t.Fatalf("%v", got)
+	}
+}

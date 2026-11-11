@@ -72,6 +72,7 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	drops := parseBlockCounters(saved)
 	wanted := map[string]ForwardRule{}
 	for _, r := range plan.Allows {
 		wanted[r.BindingID] = r
@@ -98,11 +99,15 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 		fwd, rev := accessGateRules(accessChain, m.wgIface, r, relationChain(r.BindingID, "F"), relationChain(r.BindingID, "R"))
 		body.WriteString(fwd + "\n" + rev + "\n")
 	}
+	for _, rule := range accessBlockRules(accessChain, m.wgIface, plan.Allows) {
+		body.WriteString(rule + "\n")
+	}
 	body.WriteString("-A " + accessChain + " -j DROP\n")
 	body.WriteString("COMMIT\n")
 	if err := m.commands.Restore(ctx, []byte(body.String())); err != nil {
 		return ApplyResult{}, err
 	}
+	m.foldDrops(drops) // the access chain was rewritten: its counters start again
 	m.forwardPlan = ForwardPlan{Allows: slices.Clone(plan.Allows), Decisions: slices.Clone(plan.Decisions)}
 	m.forwardReady = true
 	// The gate is now closed for retired pairs. Keep their detached chains

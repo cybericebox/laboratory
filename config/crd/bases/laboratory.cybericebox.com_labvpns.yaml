@@ -163,6 +163,18 @@ spec:
                 type: boolean
               dhcpReady:
                 type: boolean
+              labInitiatedBlocked:
+                description: |-
+                  LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
+                  starts towards a VPN client, has applied it to this lab (the lab's spec.vpn.reverseConnections is false). Written only by a program
+                  that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
+                type: boolean
+              labInitiatedDropped:
+                description: |-
+                  LabInitiatedDropped counts the packets the block dropped for this lab since the VPN process started. For the cluster
+                  administrator's metrics; it is not part of the agent API.
+                format: int64
+                type: integer
               phase:
                 description: LabVPNPhase is the lifecycle phase of a LabVPN.
                 enum:

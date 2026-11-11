@@ -4452,9 +4452,13 @@ type LabStatus struct {
 	// The results of the lab checks (contract 1.5), one entry per check that has a result.
 	Checks []*CheckResult `protobuf:"bytes,44,rep,name=checks,proto3" json:"checks,omitempty"`
 	// The RunChecks token the checker has taken (the annotation token it has seen).
-	ChecksRunAck  int64 `protobuf:"varint,45,opt,name=checks_run_ack,json=checksRunAck,proto3" json:"checks_run_ack,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ChecksRunAck int64 `protobuf:"varint,45,opt,name=checks_run_ack,json=checksRunAck,proto3" json:"checks_run_ack,omitempty"`
+	// True only when the VPN gateway of the lab's group has confirmed that it blocks connections the lab's devices start towards VPN
+	// clients (spec.vpn.reverseConnections is false and the gateway program enforces it). False in every other case: the switch is on,
+	// the lab has no VPN, or the group's VPN pod still runs an older program (after an upgrade) or has not applied the lab yet.
+	VpnLabInitiatedBlocked bool `protobuf:"varint,46,opt,name=vpn_lab_initiated_blocked,json=vpnLabInitiatedBlocked,proto3" json:"vpn_lab_initiated_blocked,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *LabStatus) Reset() {
@@ -4604,6 +4608,13 @@ func (x *LabStatus) GetChecksRunAck() int64 {
 		return x.ChecksRunAck
 	}
 	return 0
+}
+
+func (x *LabStatus) GetVpnLabInitiatedBlocked() bool {
+	if x != nil {
+		return x.VpnLabInitiatedBlocked
+	}
+	return false
 }
 
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
@@ -12213,7 +12224,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x03lab\x18\x02 \x01(\tR\x03lab\x12\x1b\n" +
 	"\tcheck_ids\x18\x03 \x03(\tR\bcheckIds\"C\n" +
 	"\x10RunChecksRequest\x12/\n" +
-	"\x05items\x18\x01 \x03(\v2\x19.labmanager.RunChecksItemR\x05items\"\xfe\x05\n" +
+	"\x05items\x18\x01 \x03(\v2\x19.labmanager.RunChecksItemR\x05items\"\xb9\x06\n" +
 	"\tLabStatus\x12\x14\n" +
 	"\x05phase\x18\x01 \x01(\tR\x05phase\x12\x19\n" +
 	"\bvpn_cidr\x18\x02 \x01(\tR\avpnCidr\x12#\n" +
@@ -12237,7 +12248,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"retirement\x18+ \x01(\v2\x1c.labmanager.RetirementStatusR\n" +
 	"retirement\x12/\n" +
 	"\x06checks\x18, \x03(\v2\x17.labmanager.CheckResultR\x06checks\x12$\n" +
-	"\x0echecks_run_ack\x18- \x01(\x03R\fchecksRunAckJ\x04\b\x14\x10\x15\"\xb6\x01\n" +
+	"\x0echecks_run_ack\x18- \x01(\x03R\fchecksRunAck\x129\n" +
+	"\x19vpn_lab_initiated_blocked\x18. \x01(\bR\x16vpnLabInitiatedBlockedJ\x04\b\x14\x10\x15\"\xb6\x01\n" +
 	"\n" +
 	"Scheduling\x12\x14\n" +
 	"\x05group\x18\x01 \x01(\tR\x05group\x12\x1a\n" +

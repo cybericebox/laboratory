@@ -287,6 +287,10 @@ func (m *IPTablesManager) nftApplyForwardPlan(ctx context.Context, plan ForwardP
 	for _, r := range plan.Allows {
 		wanted[r.BindingID] = r
 	}
+	drops, err := m.nftDropCounters(ctx)
+	if err != nil {
+		return ApplyResult{}, err
+	}
 	script, err := nftPlanScript(plan, func(id string) bool { return state.epochs[id] != "" }, func() (string, error) {
 		var random [8]byte
 		if _, err := rand.Read(random[:]); err != nil {
@@ -300,6 +304,7 @@ func (m *IPTablesManager) nftApplyForwardPlan(ctx context.Context, plan ForwardP
 	if err := m.nft.Apply(ctx, []byte(script)); err != nil {
 		return ApplyResult{}, err
 	}
+	m.foldDrops(drops) // the set was emptied and filled again: its counters start again
 	m.forwardPlan = ForwardPlan{Allows: slices.Clone(plan.Allows), Decisions: slices.Clone(plan.Decisions)}
 	m.forwardReady = true
 	// The gate is closed for the pairs that left the plan: their counters stand still. Keep them until a fresh read and the report write
@@ -383,4 +388,47 @@ func (m *IPTablesManager) nftCleanup() {
 	m.forwardReady = false
 	m.bindings = nil
 	m.forwardMu.Unlock()
+}
+
+// nftDropCounters reads the packet counts of the elements of blocked_labs, by lab interface.
+func (m *IPTablesManager) nftDropCounters(ctx context.Context) (map[string]uint64, error) {
+	list, err := m.nft.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return parseNFTDrops(list)
+}
+
+func parseNFTDrops(list []byte) (map[string]uint64, error) {
+	out := map[string]uint64{}
+	if len(bytes.TrimSpace(list)) == 0 {
+		return out, nil
+	}
+	var doc struct {
+		Nftables []struct {
+			Set *struct {
+				Name string            `json:"name"`
+				Elem []json.RawMessage `json:"elem"`
+			} `json:"set"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(list, &doc); err != nil {
+		return nil, fmt.Errorf("parse nft list: %w", err)
+	}
+	for _, item := range doc.Nftables {
+		if item.Set == nil || item.Set.Name != "blocked_labs" {
+			continue
+		}
+		for _, raw := range item.Set.Elem {
+			var w struct {
+				Elem nftElem `json:"elem"`
+			}
+			var iface string
+			if json.Unmarshal(raw, &w) != nil || json.Unmarshal(w.Elem.Val, &iface) != nil || iface == "" {
+				continue
+			}
+			out[iface] += w.Elem.Counter.Packets
+		}
+	}
+	return out, nil
 }

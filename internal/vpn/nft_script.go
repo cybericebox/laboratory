@@ -37,6 +37,8 @@ func nftBaseScript(wgIface string) string {
 	// notrack: the lab prefixes and the (lab interface, client) pairs of the labs that may start connections. Every other pair is tracked.
 	fmt.Fprintf(&b, "add set ip %s labnets { type ipv4_addr; flags interval; }\nflush set ip %s labnets\n", nftTable, nftTable)
 	fmt.Fprintf(&b, "add set ip %s open_clients { type ifname . ipv4_addr; }\nflush set ip %s open_clients\n", nftTable, nftTable)
+	// the lab interfaces of the labs that may not start connections: what they send towards the clients and nothing accepted is dropped, and counted
+	fmt.Fprintf(&b, "add set ip %s blocked_labs { type ifname; counter; }\nflush set ip %s blocked_labs\n", nftTable, nftTable)
 	for _, chain := range []string{"count_fwd", "count_rev"} {
 		fmt.Fprintf(&b, "add chain ip %s %s\nflush chain ip %s %s\n", nftTable, chain, nftTable, chain)
 	}
@@ -57,6 +59,7 @@ func nftBaseScript(wgIface string) string {
 	fmt.Fprintf(&b, "add rule ip %s forward iifname %q oifname . ip saddr . ip daddr @allow_fwd jump count_fwd\n", nftTable, wgIface)
 	fmt.Fprintf(&b, "add rule ip %s forward oifname %q iifname . ip saddr . ip daddr @allow_rev jump count_rev\n", nftTable, wgIface)
 	fmt.Fprintf(&b, "add rule ip %s forward oifname %q iifname . ip saddr . ip daddr @reply_rev ct state established,related ct direction reply jump count_rev\n", nftTable, wgIface)
+	fmt.Fprintf(&b, "add rule ip %s forward oifname %q iifname @blocked_labs drop\n", nftTable, wgIface)
 	return b.String()
 }
 
@@ -78,13 +81,17 @@ func revSet(r ForwardRule) string {
 // elements of a binding that has none yet (haveEpoch says which have), so a restart keeps the counters of the pairs that stay.
 func nftPlanScript(plan ForwardPlan, haveEpoch func(bindingID string) bool, newEpoch func() (string, error)) (string, error) {
 	var b strings.Builder
-	for _, set := range []string{"allow_fwd", "allow_rev", "reply_rev", "labnets", "open_clients"} {
+	for _, set := range []string{"allow_fwd", "allow_rev", "reply_rev", "labnets", "open_clients", "blocked_labs"} {
 		fmt.Fprintf(&b, "flush set ip %s %s\n", nftTable, set)
 	}
-	labnets, open := map[string]bool{}, map[string]bool{}
+	labnets, open, blocked := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, r := range plan.Allows {
 		fwd, rev := nftKeys(r)
 		fmt.Fprintf(&b, "add element ip %s allow_fwd { %s }\nadd element ip %s %s { %s }\n", nftTable, fwd, nftTable, revSet(r), rev)
+		if !r.LabInitiated && !blocked[r.LabInterface] {
+			blocked[r.LabInterface] = true
+			fmt.Fprintf(&b, "add element ip %s blocked_labs { %q counter }\n", nftTable, r.LabInterface)
+		}
 		if r.LabInitiated {
 			if !labnets[r.LabCIDR] {
 				labnets[r.LabCIDR] = true
