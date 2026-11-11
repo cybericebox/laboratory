@@ -113,7 +113,7 @@ func TestDevicePodsGetTheTenantsPullSecretOnly(t *testing.T) {
 			t.Errorf("%s: %v", tn, got)
 		}
 	}
-	_, _, _, spec := r.workloadTemplate(dev("acme"), false)
+	_, _, _, spec := r.workloadTemplate(dev("acme"))
 	if len(spec.ImagePullSecrets) != 0 {
 		t.Fatalf("the template itself carries no pull secret: %v", spec.ImagePullSecrets)
 	}

@@ -36,7 +36,7 @@ func TestPodsCarryTheirPriorityClass(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{}
 	device.Spec.Name = "web"
 	device.Spec.LabRef = "lab"
-	_, _, _, spec := (&DeviceReconciler{PriorityClass: "laboratory-device"}).workloadTemplate(device, false)
+	_, _, _, spec := (&DeviceReconciler{PriorityClass: "laboratory-device"}).workloadTemplate(device)
 	if spec.PriorityClassName != "laboratory-device" {
 		t.Errorf("device: class %q, want laboratory-device", spec.PriorityClassName)
 	}
@@ -65,7 +65,7 @@ func TestPodsCarryTheLabSchedulerName(t *testing.T) {
 		}
 		device := &laboratoryv1alpha1.Device{}
 		device.Spec.Name, device.Spec.LabRef = "web", "lab"
-		_, _, _, spec := (&DeviceReconciler{SchedulerName: name}).workloadTemplate(device, false)
+		_, _, _, spec := (&DeviceReconciler{SchedulerName: name}).workloadTemplate(device)
 		if spec.SchedulerName != name {
 			t.Errorf("device: scheduler %q, want %q", spec.SchedulerName, name)
 		}

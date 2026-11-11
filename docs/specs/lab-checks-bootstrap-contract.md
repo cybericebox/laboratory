@@ -4,9 +4,10 @@
 
 **Design record:** `docs/specs/2026-11-11-lab-checkers-bootstrap-devices.md` in the platform repo (sections 3, 4.1, 4.2, 5, 7). **Scope of this step:** the data model, the Secrets, the validation, the report and the manual-run request. Nothing runs yet.
 
+The launcher and the pod-spec changes it needs (stager init container, memory volume, startup and readiness probes, recreation of a pod whose service ended, `status.bootstrap`) are built: see `DEPLOY.md`, "Device bootstrap and the service command", and package `internal/launcher`.
+
 Not implemented (deliberately):
 
-- the launcher that runs bootstrap inside the container, and every pod-spec change it needs (service container, memory volume, readiness);
 - the checker component (the DaemonSet that reads files, runs commands, keeps the schedule, writes `status.checks`);
 - the terminal component and the proxy route for it;
 - full VMs, the guest agent, network checks, the keepalive of the checker;
@@ -126,3 +127,16 @@ Refused with `INVALID_ARGUMENT` (the whole call, like a bad environment): a boot
 ## 9. Generated files a consumer takes
 
 `pkg/agent/protobuf/agent.pb.go`, `agent_grpc.pb.go`, `agent.proto`, `pkg/agent/client` (`ContractMinor = 5`), `pkg/agent/protobuf/contract.lock`. CRDs: `config/crd/bases/` and `charts/laboratory/crds/` (`devices`, `labs`), and `api/laboratory/v1alpha1` with its deepcopy. The agent image label `com.cybericebox.laboratory.api-contract` is `1.5`.
+
+## 10. To verify on a real node (micro-VM / Kata and cluster behaviour)
+
+Built and unit-tested off-cluster; not verified without a Linux node with Kata:
+
+- the memory emptyDir (`medium: Memory`) of a micro-VM pod lives in guest memory, is writable by the guest launcher and is not visible to the host after the pod ends;
+- the Secret volume of the stager init container reaches the guest through the runtime's file sharing (virtiofs/9p), although it is not mounted in the main container: check that nothing of it is readable from the main container, and what the host side keeps;
+- the termination message (`/dev/termination-log`) and the exit codes 78 and 79 reach the Kubernetes pod status from a Kata guest;
+- exec probes (startup every 2 s during the bootstrap, readiness every 2 s) in a micro-VM: the load they add, and that they run as the (non-root) service user and can read `/.cib/boot/ok`;
+- `syscall.Setgroups/Setgid/Setuid` and `exec` as the service user inside a user namespace (`hostUsers: false`) and in the micro-VM; that process 1 after exec is the service;
+- the writable layer of a container restarted in place is fresh (containerd), and image `VOLUME` paths do not keep data across the restart;
+- the kubelet's restart back-off (10 s, 20 s, ...) adds to the launcher's own pauses between attempts;
+- `HOME` handling: the launcher replaces `/root` with the service user's home; a device whose image or env Secret sets `HOME=/root` explicitly for a non-root user would get the user's home instead.

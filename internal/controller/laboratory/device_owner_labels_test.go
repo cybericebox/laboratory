@@ -14,7 +14,7 @@ func TestDevicePodOwnerIsALabelNotEnvironment(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{UID: "device-uid", OwnerReferences: []metav1.OwnerReference{{Kind: ownerKindLab, UID: "lab-uid"}}}}
 	device.Spec.Name = "web"
 	device.Spec.LabRef = "lab"
-	labels, selector, _, spec := (&DeviceReconciler{}).workloadTemplate(device, false)
+	labels, selector, _, spec := (&DeviceReconciler{}).workloadTemplate(device)
 	if labels[names.LabelLabUID] != "lab-uid" || labels[names.LabelDeviceUID] != "device-uid" {
 		t.Errorf("owner labels = %v", labels)
 	}
