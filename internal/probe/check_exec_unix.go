@@ -54,7 +54,7 @@ const nobodyID = 65534
 // passwd line is a user too and has the group of its own number. The name "nobody" exists even in an image that has no such line.
 func resolveUser(etc, user string) (account, error) {
 	name, group, hasGroup := strings.Cut(user, ":")
-	lines := strings.Split(string(readBounded(filepath.Join(etc, "passwd"), MaxIDFile)), "\n")
+	lines := strings.Split(string(readBounded(filepath.Join(etc, "passwd"))), "\n")
 	byName := func(match func(f []string) bool) (account, bool) {
 		for _, line := range lines {
 			f := strings.Split(line, ":")

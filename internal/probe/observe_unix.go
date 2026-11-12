@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -42,7 +41,7 @@ func (v view) observe(req ObserveRequest) ObserveResponse {
 	case KindDirectory:
 		return v.directory(req)
 	case KindProcess:
-		return v.processes()
+		return v.processes(req)
 	case KindPort:
 		return v.port(req)
 	case KindKernelParam:
@@ -56,7 +55,7 @@ func (v view) observe(req ObserveRequest) ObserveResponse {
 }
 
 func (v view) idNames() IDNames {
-	return ParseIDNames(readBounded(filepath.Join(v.etc, "passwd"), MaxIDFile), readBounded(filepath.Join(v.etc, "group"), MaxIDFile))
+	return ParseIDNames(readBounded(filepath.Join(v.etc, "passwd")), readBounded(filepath.Join(v.etc, "group")))
 }
 
 func notFound(err error) bool {
@@ -85,25 +84,24 @@ func (v view) directory(req ObserveRequest) ObserveResponse {
 	if !f.IsDir {
 		return ObserveResponse{Directory: f}
 	}
-	d, err := os.Open(req.Path)
-	if err != nil {
-		return ObserveResponse{Error: "cannot read the directory: " + errnoName(err)}
+	if len(req.Names) > MaxDirNames {
+		return ObserveResponse{Error: "too many names asked"}
 	}
-	defer func() { _ = d.Close() }()
-	entries, err := d.Readdirnames(MaxDirEntries + 1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return ObserveResponse{Error: "cannot read the directory: " + errnoName(err)}
-	}
-	if len(entries) > MaxDirEntries {
-		entries, f.Truncated = entries[:MaxDirEntries], true
-	}
-	for i, e := range entries {
-		if len(e) > MaxDirNameBytes {
-			entries[i] = e[:MaxDirNameBytes]
+	// Each asked name is answered by lstat on its own: the answer does not depend on how many entries the directory has, so padding
+	// the directory hides nothing.
+	for _, n := range req.Names {
+		if n == "" || n == "." || n == ".." || len(n) > MaxDirNameBytes || strings.ContainsAny(n, "/\x00") {
+			return ObserveResponse{Error: "bad entry name"}
+		}
+		_, err := os.Lstat(filepath.Join(req.Path, n))
+		switch {
+		case err == nil:
+			f.Present = append(f.Present, n)
+		case notFound(err):
+		default:
+			return ObserveResponse{Error: "cannot look for an entry: " + errnoName(err)}
 		}
 	}
-	sort.Strings(entries)
-	f.Entries = entries
 	return ObserveResponse{Directory: f}
 }
 
@@ -124,48 +122,133 @@ func modeBits(m fs.FileMode) uint32 {
 
 // ---- process -----------------------------------------------------------------------------------------------------------
 
-func (v view) processes() ObserveResponse {
+func (v view) processes(req ObserveRequest) ObserveResponse {
+	if req.Name == "" && req.Matches == "" {
+		return ObserveResponse{Error: "give a name or a pattern"}
+	}
+	var re *regexp.Regexp
+	if req.Matches != "" {
+		var err error
+		if re, err = regexp.Compile(req.Matches); err != nil {
+			return ObserveResponse{Error: "the pattern does not compile"}
+		}
+	}
 	ents, err := os.ReadDir(v.proc)
 	if err != nil {
 		return ObserveResponse{Error: "cannot read the process table: " + errnoName(err)}
 	}
 	names := v.idNames()
-	facts := &ProcessFacts{List: []Process{}}
-	for _, e := range ents {
+	facts := &ProcessFacts{}
+	for i, e := range ents {
+		if i >= MaxProcessScan {
+			facts.Incomplete++
+			break
+		}
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil || pid == v.self {
 			continue
 		}
-		p, ok := v.process(pid, names)
-		if !ok {
-			continue // it ended while we looked
+		p, state := v.process(pid, names)
+		switch state {
+		case procGone:
+			continue
+		case procUnreadable:
+			facts.Incomplete++
+			continue
+		case procCut:
+			facts.Incomplete++ // the command line is longer than what was looked at: judge it as far as it goes, but remember
 		}
-		if len(facts.List) >= MaxProcesses {
-			facts.Truncated = true
+		facts.Scanned++
+		if processMatch(req, re, p) {
+			facts.Found = true
 			break
 		}
-		facts.List = append(facts.List, p)
 	}
 	return ObserveResponse{Processes: facts}
 }
 
-func (v view) process(pid int, names IDNames) (Process, bool) {
+// processMatch: a process matches when every key that is given holds. The name is the command without its directory (the kernel keeps
+// 15 characters of it); the user is a name or a number.
+func processMatch(req ObserveRequest, re *regexp.Regexp, p Process) bool {
+	if req.Name != "" {
+		cut := len(req.Name) > 15 && p.Comm == req.Name[:15]
+		if p.Comm != req.Name && p.Arg0 != req.Name && !cut {
+			return false
+		}
+	}
+	if re != nil && !re.MatchString(p.Cmdline) {
+		return false
+	}
+	if req.User != "" {
+		if n, err := strconv.ParseUint(req.User, 10, 32); err == nil {
+			if uint32(n) != p.UID {
+				return false
+			}
+		} else if p.User != req.User {
+			return false
+		}
+	}
+	return true
+}
+
+type procState int
+
+const (
+	procOK procState = iota
+	procGone
+	procUnreadable
+	procCut
+)
+
+// process reads one process. procGone: it ended while we looked. procUnreadable: it is there but not readable (hidepid, a denied
+// read). procCut: its command line is longer than MaxCmdlineBytes.
+func (v view) process(pid int, names IDNames) (Process, procState) {
 	dir := filepath.Join(v.proc, strconv.Itoa(pid))
 	comm, err := os.ReadFile(filepath.Join(dir, "comm"))
 	if err != nil {
-		return Process{}, false
+		if notFound(err) || errors.Is(err, syscall.ESRCH) {
+			return Process{}, procGone
+		}
+		return Process{}, procUnreadable
 	}
 	p := Process{PID: pid, Comm: strings.TrimRight(string(comm), "\n")}
-	if raw := readBounded(filepath.Join(dir, "cmdline"), MaxCmdlineBytes); len(raw) > 0 {
+	state := procOK
+	raw, err := readLimited(filepath.Join(dir, "cmdline"), MaxCmdlineBytes+1)
+	switch {
+	case err != nil && (notFound(err) || errors.Is(err, syscall.ESRCH)):
+		return Process{}, procGone
+	case err != nil:
+		return Process{}, procUnreadable
+	case len(raw) > MaxCmdlineBytes:
+		raw, state = raw[:MaxCmdlineBytes], procCut
+	}
+	if len(raw) > 0 {
 		words := bytes.Split(bytes.TrimRight(raw, "\x00"), []byte{0})
 		// A server that renames itself ("nginx: master process /usr/sbin/nginx") has one word with spaces in it.
 		first, _, _ := strings.Cut(string(words[0]), " ")
 		p.Arg0 = filepath.Base(strings.TrimSuffix(first, ":"))
 		p.Cmdline = strings.ToValidUTF8(string(bytes.Join(words, []byte{' '})), "?")
 	}
-	p.UID = uidOfStatus(readBounded(filepath.Join(dir, "status"), 8192))
+	status, err := readLimited(filepath.Join(dir, "status"), 8192)
+	if err != nil {
+		if notFound(err) || errors.Is(err, syscall.ESRCH) {
+			return Process{}, procGone
+		}
+		return Process{}, procUnreadable
+	}
+	p.UID = uidOfStatus(status)
 	p.User = names.Users[p.UID]
-	return p, true
+	return p, state
+}
+
+// readLimited reads up to limit bytes of a file and returns the error, unlike readBounded.
+func readLimited(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, limit))
 }
 
 // uidOfStatus reads the real uid from the "Uid:" line of /proc/<pid>/status.
@@ -198,13 +281,18 @@ func (v view) port(req ObserveRequest) ObserveResponse {
 			}
 			return ObserveResponse{Error: "cannot read the socket table: " + errnoName(err)}
 		}
-		socks = append(socks, parseNetTable(string(raw), req.Protocol, req.Port)...)
+		found, bad := parseNetTable(string(raw), req.Protocol, req.Port)
+		if bad > 0 {
+			return ObserveResponse{Error: "the socket table has lines that cannot be read"}
+		}
+		socks = append(socks, found...)
 	}
 	facts := &PortFacts{Listeners: []Listener{}}
 	if len(socks) > MaxListeners {
 		socks, facts.Truncated = socks[:MaxListeners], true
 	}
-	owners := v.socketOwners(socks)
+	owners, incomplete := v.socketOwners(socks)
+	facts.OwnersIncomplete = incomplete
 	for _, s := range socks {
 		l := Listener{Protocol: req.Protocol, Addr: s.addr}
 		for _, o := range owners[s.inode] {
@@ -222,28 +310,36 @@ type sock struct {
 
 // parseNetTable reads /proc/net/tcp, tcp6, udp or udp6 and keeps the sockets that listen on port: tcp state LISTEN (0A), udp bound and
 // not connected (07).
-func parseNetTable(table, proto string, port int) []sock {
+func parseNetTable(table, proto string, port int) (out []sock, bad int) {
 	want := "0A"
 	if proto == "udp" {
 		want = "07"
 	}
-	var out []sock
 	for i, line := range strings.Split(table, "\n") {
+		if i == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
 		f := strings.Fields(line)
-		if i == 0 || len(f) < 10 || f[3] != want {
+		if len(f) < 10 {
+			bad++ // a line that cannot be read could be the socket that is asked about
 			continue
 		}
 		addr, p, ok := parseHexAddr(f[1])
-		if !ok || p != port {
+		if !ok {
+			bad++
+			continue
+		}
+		if f[3] != want || p != port {
 			continue
 		}
 		inode, err := strconv.ParseUint(f[9], 10, 64)
 		if err != nil {
+			bad++
 			continue
 		}
 		out = append(out, sock{addr: addr, inode: inode})
 	}
-	return out
+	return out, bad
 }
 
 // parseHexAddr reads "0100007F:1F90" (ipv4) and the 32-hex-digit ipv6 form: every 32-bit word is written in host byte order, which
@@ -269,10 +365,11 @@ func parseHexAddr(s string) (string, int, bool) {
 }
 
 // socketOwners finds the processes that hold the given sockets (by the "socket:[inode]" links of their descriptors).
-func (v view) socketOwners(socks []sock) map[uint64][]Process {
+func (v view) socketOwners(socks []sock) (map[uint64][]Process, bool) {
 	if len(socks) == 0 {
-		return nil
+		return nil, false
 	}
+	incomplete := false
 	want := map[string]uint64{}
 	for _, s := range socks {
 		want["socket:["+strconv.FormatUint(s.inode, 10)+"]"] = s.inode
@@ -280,7 +377,7 @@ func (v view) socketOwners(socks []sock) map[uint64][]Process {
 	out := map[uint64][]Process{}
 	ents, err := os.ReadDir(v.proc)
 	if err != nil {
-		return out
+		return out, true
 	}
 	names := v.idNames()
 	for _, e := range ents {
@@ -290,6 +387,9 @@ func (v view) socketOwners(socks []sock) map[uint64][]Process {
 		}
 		fds, err := os.ReadDir(filepath.Join(v.proc, e.Name(), "fd"))
 		if err != nil {
+			if !notFound(err) && !errors.Is(err, syscall.ESRCH) {
+				incomplete = true // a process we may not look into could hold the socket
+			}
 			continue
 		}
 		var proc *Process
@@ -301,7 +401,7 @@ func (v view) socketOwners(socks []sock) map[uint64][]Process {
 			}
 			if inode, ok := want[target]; ok && !held[inode] {
 				if proc == nil {
-					if p, ok := v.process(pid, names); ok {
+					if p, st := v.process(pid, names); st != procGone && st != procUnreadable {
 						proc = &p
 					} else {
 						break
@@ -312,7 +412,7 @@ func (v view) socketOwners(socks []sock) map[uint64][]Process {
 			}
 		}
 	}
-	return out
+	return out, incomplete
 }
 
 // ---- kernel_param ------------------------------------------------------------------------------------------------------
@@ -471,6 +571,9 @@ func (v view) permission(req ObserveRequest) ObserveResponse {
 	if json.Unmarshal(out, &facts) != nil {
 		return ObserveResponse{Error: "the permission test gave no answer"}
 	}
+	if facts.Error != "" {
+		return ObserveResponse{Error: facts.Error}
+	}
 	facts.UserFound = true
 	return ObserveResponse{Permission: &facts}
 }
@@ -483,7 +586,7 @@ func (v view) credentialOf(user string) (*syscall.Credential, bool) {
 	}
 	groups := []uint32{a.gid}
 	if a.name != "" {
-		for _, line := range strings.Split(string(readBounded(filepath.Join(v.etc, "group"), MaxIDFile)), "\n") {
+		for _, line := range strings.Split(string(readBounded(filepath.Join(v.etc, "group"))), "\n") {
 			f := strings.Split(line, ":")
 			if len(f) < 4 {
 				continue
@@ -506,15 +609,35 @@ func (v view) credentialOf(user string) (*syscall.Credential, bool) {
 // RunPermChild is the child of a permission test: it already runs as the user, asks the kernel three questions and prints the answer.
 func RunPermChild(path string) int { return writeJSON(permFacts(path)) }
 
-// permFacts asks for the user the process runs as.
+// permFacts asks for the user the process runs as. Only the kernel's own refusals count as "no": EACCES, EPERM, EROFS (for write) and
+// ETXTBSY (for write). Any other error (an I/O error, a loop of links, a name too long) is not an answer, and is reported as an error
+// so that "may not read" never passes on a failure.
 func permFacts(path string) PermissionFacts {
 	var f PermissionFacts
-	if _, err := os.Lstat(path); err == nil || !notFound(err) {
-		// Exists for this user means the path can be reached: search permission on every directory above it is part of the answer.
-		_, serr := os.Stat(path)
-		f.Exists = serr == nil || !notFound(serr)
+	if _, err := os.Stat(path); err != nil {
+		switch {
+		case notFound(err):
+			return f
+		case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
+			f.Exists = true // it is there, or at least the user may not look: the answer for every access is no
+			return f
+		default:
+			f.Error = "cannot look at the path: " + errnoName(err)
+			return f
+		}
 	}
-	can := func(mode uint32) bool { return unix.Faccessat(unix.AT_FDCWD, path, mode, unix.AT_EACCESS) == nil }
-	f.Read, f.Write, f.Execute = can(unix.R_OK), can(unix.W_OK), can(unix.X_OK)
+	f.Exists = true
+	ask := func(mode uint32, write bool) bool {
+		err := unix.Faccessat(unix.AT_FDCWD, path, mode, unix.AT_EACCESS)
+		switch {
+		case err == nil:
+			return true
+		case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM), write && (errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.ETXTBSY)):
+			return false
+		}
+		f.Error = "the access test failed: " + errnoName(err)
+		return false
+	}
+	f.Read, f.Write, f.Execute = ask(unix.R_OK, false), ask(unix.W_OK, true), ask(unix.X_OK, false)
 	return f
 }

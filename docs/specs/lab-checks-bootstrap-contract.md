@@ -172,7 +172,18 @@ Proto (`CheckPart` oneof, numbers 3..8): `DirectoryObservation`, `ProcessObserva
 | `permission` | `user`, `path`, and at least one of `read`, `write`, `execute`; each given boolean must equal the real answer. Tested with `faccessat(AT_EACCESS)` in a child that runs as the user (groups from `/etc/group`); nothing is opened for writing, nothing is changed. A missing path is `not_passed` |
 | `custom` | as before; `user` defaults to **nobody** (uid 65534 when the image has no such name); any other user, root included, is the author's explicit choice. The command gets a clean environment (`PATH` fixed, `HOME`, `LC_ALL=C`, `USER`/`LOGNAME`) and is looked up in that PATH; its working directory is `/` |
 
-Bounds of what the device returns: 4096 directory names, 8192 processes (command line 1024 bytes), 256 sockets of one port, a sysctl value of 4096 bytes, a request body of 64 KiB, a file of 256 KiB (a larger file is an `error` where the content or the checksum matters, never a silent fail). A list cut at its bound decides only what it can: a name found is found, a name not found is `error`.
+**What the program is asked, and what it returns.** It is never given the expected outcome (mode, owner, status, body rule, value, `running`, `listening`, `read`/`write`/`execute`). Where a set has to be searched, the search is done by the program over the whole set and only the result comes back, so a cap on the answer can never hide a match:
+
+- `directory`: the asked entry names are each answered by `lstat` (present or absent); the directory is never listed. Padding a directory with entries changes nothing. A name that cannot be looked up (no search permission) is an error.
+- `process`: the program scans the whole process table (except itself) and returns `found`, how many it scanned, and how many it could not see completely (an entry it may not read, a command line over 32 KiB, a table over 1 Mi entries). Not found with a non-zero `incomplete` is undecided, never "absent".
+- `port`: the sockets of the asked port from `/proc/net/{tcp,tcp6,udp,udp6}`, read in full; a line that cannot be read is an error; at most 256 are returned and `truncated` says more existed; owners are found from the descriptors of the processes, `ownersIncomplete` says some process could not be looked into.
+- `kernel_param`, `request`, `permission`: one value, one answer, one kernel verdict. For `permission` only the kernel's own refusals (EACCES, EPERM, and for write EROFS/ETXTBSY) are a "no"; any other failure is an error.
+
+**The rule for every observation: a cap hit, a read error, a timeout or an unreadable part is undecided (the result `error`, the previous state is kept), never `passed`, in the positive and the negative form alike** (`exists: false`, `listening: false`, `running: false`, `lacks_entries`, `read: false`). Content that was cut at its cap decides nothing, found or not (an anchor in a pattern would fit the cut): `contains`, `matches`, `checksum` of a file over 256 KiB, `output_*` of a command over 64 KiB, `body_*` of a response over 64 KiB are `error`; whatever else of the part can be judged still is, and a definite failure of another key is `not_passed`. A request that times out, or fails without a name, is `error`; a refusal, an unreachable network, a name that does not resolve and a failed TLS handshake are facts about the service (`not_passed`).
+
+Bounds: 256 names asked of one directory (64 per list in the check), 256 sockets listed for one port, a sysctl value of 4096 bytes, a request body of 64 KiB, a file of 256 KiB.
+
+A file expectation of `type` or `checksum` is read by the in-device program on every device (the node-side reader follows links and cannot tell what the path itself is).
 
 Features: `ChecksFeature.observations = 7` lists the kinds the checker runs: file, directory, process, port, kernel_param, request, permission, custom. A kind that is not listed is not run.
 

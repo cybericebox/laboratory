@@ -27,10 +27,10 @@ const (
 	KindPermission  = "permission"
 
 	// The bounds on what comes back.
-	MaxDirEntries     = 4096     // names of a directory
+	MaxDirNames       = 256      // names asked of one directory
 	MaxDirNameBytes   = 255      // one name
-	MaxProcesses      = 8192     // processes listed
-	MaxCmdlineBytes   = 1024     // command line of one process
+	MaxProcessScan    = 1 << 20  // entries of the process table looked at
+	MaxCmdlineBytes   = 32 << 10 // command line looked at (a longer one makes the process incomplete)
 	MaxListeners      = 256      // sockets listed for one port
 	MaxParamBytes     = 4096     // value of a sysctl
 	MaxRequestBody    = 64 << 10 // body of an HTTP answer
@@ -45,17 +45,23 @@ type ObserveRequest struct {
 	Kind string `json:"kind"`
 	// directory, permission
 	Path string `json:"path,omitempty"`
+	// directory: the entry names to look for directly in the directory (each is answered by lstat, so the answer never depends on
+	// the size of the directory)
+	Names []string `json:"names,omitempty"`
 	// port, request
 	Port     int    `json:"port,omitempty"`
 	Protocol string `json:"protocol,omitempty"` // port: tcp | udp; request: tcp | http | https
-	// kernel_param: the sysctl name with dots
+	// kernel_param: the sysctl name with dots. process: the command name to look for.
 	Name string `json:"name,omitempty"`
+	// process: a regular expression on the command line; the user (name or number) the process must belong to. A process is a match
+	// when every given key holds; the whole process table is scanned and only the result comes back.
+	Matches string `json:"matches,omitempty"`
 	// request
 	Host      string `json:"host,omitempty"`
 	Method    string `json:"method,omitempty"`
 	URLPath   string `json:"urlPath,omitempty"`
 	TimeoutMs int64  `json:"timeoutMs,omitempty"`
-	// permission: a user name of the device, or a number
+	// permission, process: a user name of the device, or a number
 	User string `json:"user,omitempty"`
 }
 
@@ -71,22 +77,21 @@ type ObserveResponse struct {
 	Permission  *PermissionFacts  `json:"permission,omitempty"`
 }
 
-// DirectoryFacts: Exists is false when the path is missing; IsDir false when it is something else. Entries are the names directly in
-// the directory (sorted, at most MaxDirEntries; Truncated says there were more).
+// DirectoryFacts: Exists is false when the path is missing; IsDir false when it is something else. Present are the asked names that
+// exist directly in the directory (by lstat).
 type DirectoryFacts struct {
-	Exists    bool     `json:"exists"`
-	IsDir     bool     `json:"isDir,omitempty"`
-	Mode      uint32   `json:"mode,omitempty"`
-	UID       uint32   `json:"uid,omitempty"`
-	GID       uint32   `json:"gid,omitempty"`
-	User      string   `json:"user,omitempty"`
-	Group     string   `json:"group,omitempty"`
-	Entries   []string `json:"entries,omitempty"`
-	Truncated bool     `json:"truncated,omitempty"`
+	Exists  bool     `json:"exists"`
+	IsDir   bool     `json:"isDir,omitempty"`
+	Mode    uint32   `json:"mode,omitempty"`
+	UID     uint32   `json:"uid,omitempty"`
+	GID     uint32   `json:"gid,omitempty"`
+	User    string   `json:"user,omitempty"`
+	Group   string   `json:"group,omitempty"`
+	Present []string `json:"present,omitempty"`
 }
 
-// Process is one process of the device. Comm is the kernel's name (at most 15 characters); Arg0 the first word of the command line
-// without its directory; Cmdline the whole command line, words joined by a space, cut at MaxCmdlineBytes.
+// Process is one process of the device as the matcher sees it. Comm is the kernel's name (at most 15 characters); Arg0 the first word of
+// the command line without its directory; Cmdline the command line, words joined by a space.
 type Process struct {
 	PID     int    `json:"pid"`
 	Comm    string `json:"comm"`
@@ -96,10 +101,13 @@ type Process struct {
 	User    string `json:"user,omitempty"`
 }
 
-// ProcessFacts lists the processes of the device except the probe itself (at most MaxProcesses).
+// ProcessFacts: the program scanned the process table (except itself) and Found says that a process matched. Incomplete counts what it
+// could not see completely (an entry it was not allowed to read, a command line longer than MaxCmdlineBytes, a table over
+// MaxProcessScan): when nothing matched and Incomplete is not zero, the absence is not known.
 type ProcessFacts struct {
-	List      []Process `json:"list"`
-	Truncated bool      `json:"truncated,omitempty"`
+	Found      bool `json:"found"`
+	Scanned    int  `json:"scanned"`
+	Incomplete int  `json:"incomplete,omitempty"`
 }
 
 // Listener is a socket that waits for connections (tcp: LISTEN; udp: bound and not connected) on the asked port. Addr is the local
@@ -115,6 +123,8 @@ type Listener struct {
 type PortFacts struct {
 	Listeners []Listener `json:"listeners"`
 	Truncated bool       `json:"truncated,omitempty"`
+	// OwnersIncomplete: some process could not be looked into, so a socket without an owner may have one.
+	OwnersIncomplete bool `json:"ownersIncomplete,omitempty"`
 }
 
 // KernelParamFacts: Exists is false when there is no such sysctl.
@@ -142,4 +152,6 @@ type PermissionFacts struct {
 	Read      bool `json:"read"`
 	Write     bool `json:"write"`
 	Execute   bool `json:"execute"`
+	// Error is set by the child of the test when the kernel gave an answer that is not a yes or a no.
+	Error string `json:"error,omitempty"`
 }
