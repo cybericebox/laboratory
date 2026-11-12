@@ -36,8 +36,7 @@ const (
 	termBaseDom = "challenges.example.com"
 )
 
-// termCodes are the base codes of the test devices, one per (lab, device): the console host of a device is <device>-<code> with the last
-// character moved on by the index of the terminal kind (names.AccessHostLabel).
+// termCodes are the codes of the test devices, one per (lab, device): the console host of a device is <device>-<code>t (names.AccessHostLabel).
 var termCodes = map[string]string{"lab1/kali": "k10", "lab1/plain": "p10", "lab1/unplaced": "u10", "stopped/kali": "k20", "lab3/kali": "k30", "lab2/kali": "k40"}
 
 // termHostFor is the console host of a device of the test cluster.
@@ -343,10 +342,10 @@ func TestTerminalAuthorizationMatrix(t *testing.T) {
 	deny("lab the policy does not allow", termHostFor("lab3", "kali"), good)
 	deny("lab stopped", termHostFor("stopped", "kali"), good)
 	deny("device without a console", termHostFor("lab1", "plain"), good)
-	deny("device that does not exist", "nope-ab1."+termBaseDom, good)
-	deny("right device, wrong code", "kali-zz1."+termBaseDom, good)
+	deny("device that does not exist", "nope-ab1t."+termBaseDom, good)
+	deny("right device, wrong code", "kali-zz1t."+termBaseDom, good)
 	deny("the device name alone, no code", "kali."+termBaseDom, good)
-	deny("the right code but the http slot", "kali-k10."+termBaseDom, good)
+	deny("the right code but the web kind", "kali-k10w."+termBaseDom, good)
 	deny("device not placed on a node yet", termHostFor("lab1", "unplaced"), good)
 	// a session of another group (the group does not exist in the cluster)
 	other := signCookie(t, jwtClaims{GroupID: "g-other", Client: "p-u1", Tenant: "acme", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
@@ -401,14 +400,14 @@ func TestConsoleHostOfAnotherLabOrGroupIsRefused(t *testing.T) {
 
 func TestConsoleHostRouting(t *testing.T) {
 	f := newTermFixture(t, nil)
-	// vnc, rdp and the two reserved slots answer like a host that does not exist
-	for _, host := range []string{"kali-k12." + termBaseDom, "kali-k13." + termBaseDom, "kali-k14." + termBaseDom, "kali-k15." + termBaseDom} {
+	// vnc, rdp, a reserved kind character and a label without a kind answer like a host that does not exist
+	for _, host := range []string{"kali-k10v." + termBaseDom, "kali-k10r." + termBaseDom, "kali-k10x." + termBaseDom, "kali-k100." + termBaseDom, "kali-k10." + termBaseDom} {
 		if rec := f.getHost(host, "/", nil); rec.Code != 404 {
 			t.Errorf("%s: %d", host, rec.Code)
 		}
 	}
 	// a web host is never a console: the label without the mark is looked up as a Service, and there is none
-	if rec := f.getHost("kali-k10."+termBaseDom, "/", nil); rec.Code != 404 {
+	if rec := f.getHost("kali-k10w."+termBaseDom, "/", nil); rec.Code != 404 {
 		t.Errorf("the web host of a console device served: %d", rec.Code)
 	}
 	// the old reserved host is gone

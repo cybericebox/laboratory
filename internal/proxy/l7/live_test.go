@@ -51,7 +51,7 @@ func TestLiveUpgradedConnectionIsClosedWhenAccessIsRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	fmt.Fprintf(c, "GET /term HTTP/1.1\r\nHost: web-abc123.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
+	fmt.Fprintf(c, "GET /term HTTP/1.1\r\nHost: web-abc12w.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
 	br := bufio.NewReader(c)
 	line, err := br.ReadString('\n')
 	if err != nil || !strings.Contains(line, "101") {
@@ -105,7 +105,7 @@ func TestLiveLongRequestIsCancelledWhenAccessIsRevoked(t *testing.T) {
 		}
 	}))
 	req, _ := http.NewRequest("GET", srv.URL+"/stream", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -137,7 +137,7 @@ func TestLiveDeadlineAndTenantChange(t *testing.T) {
 	started := make(chan struct{})
 	go func() {
 		req, _ := http.NewRequest("GET", srv.URL+"/hang", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 		close(started)
 		if resp, err := http.DefaultClient.Do(req); err == nil {
@@ -176,7 +176,7 @@ func TestLiveCapsRefuseRequestsPastTheCap(t *testing.T) {
 	h.WithLiveCaps(LiveCaps{PerClient: 2})
 	get := func() *http.Response {
 		req, _ := http.NewRequest("GET", srv.URL+"/slow", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -235,7 +235,7 @@ func TestAuthPathIsRateLimited(t *testing.T) {
 	h.WithAuthRateLimit(1, 2) // per lab and session 2 in a burst; the shared bucket is 20 times that
 	hit := func() int {
 		req, _ := http.NewRequest("GET", srv.URL+AuthPath+"?token=junk", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req.Host = "web-abc12w.challenges.example.com"
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -272,7 +272,7 @@ func TestAuthRateLimitIsKeyedByLabAndSession(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	a, b := "web-abc123.challenges.example.com", "web-def456.challenges.example.com"
+	a, b := "web-abc12w.challenges.example.com", "web-def456.challenges.example.com"
 	for i := 0; i < 6; i++ {
 		hit(a, "")
 	}

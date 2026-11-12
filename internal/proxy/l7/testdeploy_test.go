@@ -32,8 +32,8 @@ func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testi
 
 	call := func(client string) int {
 		tok := signCookie(t, jwtClaims{GroupID: "t-1", Client: client, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
-		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

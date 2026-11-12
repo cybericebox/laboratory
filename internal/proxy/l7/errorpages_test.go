@@ -12,7 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const errHost = "web-abc123.challenges.example.com"
+const errHost = "web-abc12w.challenges.example.com"
 
 func errHandler(t *testing.T, resolve func(task, groupID string) (string, error)) *Handler {
 	t.Helper()

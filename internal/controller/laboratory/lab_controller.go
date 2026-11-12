@@ -47,7 +47,7 @@ type LabReconciler struct {
 	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
 	// e.g. "challenges.cybericebox.com". An exposed device named "web" inside a
-	// lab is reachable as https://web-<code>.<BaseDomain> (names.WebHostLabel; code is 3-4 random
+	// lab is reachable as https://web-<code>w.<BaseDomain> (names.WebHostLabel; code is 3-4 random
 	// base36 chars fixed by the name of the device's Service). Written to
 	// Lab.Status.Access on Ready.
 	BaseDomain string
@@ -1010,9 +1010,9 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 // buildAccessEntries returns the externally-visible URL for each web-exposed
 // device in the lab (none if BaseDomain is unset), then one entry with protocol
 // "terminal" for each device that enables the browser terminal. A terminal entry
-// has no port; its URL is the console host of the device (names.AccessHostLabel: the
-// same <device>-<code> as the web host with the kind in the last character of the
-// code), empty until the device has its base code.
+// has no port; its URL is the console host of the device (names.AccessHostLabel:
+// <device>-<code>t, the web host's <device>-<code>w with the kind character t),
+// empty until the device has its code.
 // The host of a web port is the name of the device's existing web Service, never
 // recomputed; a device whose Service does not exist yet is skipped.
 func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {

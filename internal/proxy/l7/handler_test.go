@@ -82,8 +82,8 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 
 	send := func(token, body string) int {
-		req := httptest.NewRequest("POST", "http://web-abc123.challenges.example.com/secret/path?q=1", strings.NewReader(body))
-		req.Host = "web-abc123.challenges.example.com"
+		req := httptest.NewRequest("POST", "http://web-abc12w.challenges.example.com/secret/path?q=1", strings.NewReader(body))
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: token})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -121,8 +121,8 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
-	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -143,8 +143,8 @@ func TestHandler_ClientAndAuthorizer(t *testing.T) {
 		return signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	}
 	call := func(h *Handler, tok string) int {
-		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -186,8 +186,8 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 		WithAuthorizer(authorize)
 	call := func(sub string) int {
 		tok := signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
-		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -272,7 +272,7 @@ func TestSessionCookieIsNeverForwardedUpstream(t *testing.T) {
 	}))
 	_ = h
 	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	req.AddCookie(&http.Cookie{Name: "app", Value: "1"})
 	resp, err := http.DefaultClient.Do(req)

@@ -49,7 +49,7 @@ func TestShutdownRequestIsNotAdmittedOrMetered(t *testing.T) {
 	h.WithAccounting(m, func(string, string) (string, bool) { return "lab", true })
 	_ = h.Shutdown(context.Background())
 	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestFailedPreparationDoesNotAdmitOrCount(t *testing.T) {
 	m := NewMeter("b", time.Now())
 	h.WithAccounting(m, func(string, string) (string, bool) { return "lab", true }).WithReportPreparation(func(context.Context, string) error { return errors.New("restore unavailable") })
 	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

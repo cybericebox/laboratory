@@ -93,7 +93,7 @@ func TestDeviceCodesAreUniquePerNamespace(t *testing.T) {
 	for _, svc := range svcs.Items {
 		lab := svc.Labels[names.LabelLab]
 		d := devs[devices.Name(lab, "web")]
-		if svc.Name != workloadName(&d) {
+		if svc.Name != workloadName(&d)+"w" {
 			t.Fatalf("service %s, web workload %s", svc.Name, workloadName(&d))
 		}
 	}
@@ -127,7 +127,7 @@ func TestDeviceCodeSkipsTakenNames(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "other-db", Namespace: "team-alpha"},
 		Spec:       laboratoryv1alpha1.DeviceSpec{Name: "db", Code: "aaa", LabRef: "other", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "db-bbb", Namespace: "team-alpha"}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "db-bbbw", Namespace: "team-alpha"}}
 	r, _ := codeReconciler(t, taken, svc)
 	draw, lens := scriptedCodes("aaa", "bbb", "ccc")
 	r.newWebCode = draw

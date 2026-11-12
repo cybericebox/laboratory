@@ -12,7 +12,7 @@ import (
 )
 
 // A device that enables the terminal gets an access entry of protocol "terminal" with no port. Its url is the console host of the device,
-// <device>-<code> under the lab domain with the kind in the last character of the code, from the base code of the Device. It is empty
+// <device>-<code> under the lab domain with the kind character t, from the code of the Device. It is empty
 // while the device has no code or the lab domain is not set, and a device without a terminal gets no entry.
 func TestTerminalAccessEntries(t *testing.T) {
 	s := pruneScheme(t)
@@ -23,9 +23,9 @@ func TestTerminalAccessEntries(t *testing.T) {
 		{Name: "db", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}}}
 	dev := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name("lab1", "web"), Namespace: "team-alpha"}}
-	dev.Spec.Name, dev.Spec.LabRef, dev.Spec.Code = "web", "lab1", "k70"
+	dev.Spec.Name, dev.Spec.LabRef, dev.Spec.Code = "web", "lab1", "k7x"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(dev).Build()
-	for _, c2 := range []struct{ domain, url string }{{"", ""}, {"labs.example.com", "https://web-k71.labs.example.com"}} {
+	for _, c2 := range []struct{ domain, url string }{{"", ""}, {"labs.example.com", "https://web-k7xt.labs.example.com"}} {
 		r := &LabReconciler{Client: c, Scheme: s, BaseDomain: c2.domain}
 		got := r.buildAccessEntries(context.Background(), lab)
 		want := []laboratoryv1alpha1.AccessEntry{{Device: "web", Protocol: "terminal", URL: c2.url}, {Device: "new", Protocol: "terminal"}}

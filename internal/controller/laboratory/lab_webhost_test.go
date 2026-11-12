@@ -63,7 +63,7 @@ func TestEnsureWebServicesStableAcrossReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	svcs := webServices(t, c)
-	if len(svcs) != 1 || !regexp.MustCompile(`^web-[a-z0-9]{3}$`).MatchString(svcs[0].Name) {
+	if len(svcs) != 1 || !regexp.MustCompile(`^web-[a-z0-9]{3}w$`).MatchString(svcs[0].Name) {
 		t.Fatalf("services: %+v", svcs)
 	}
 	first := svcs[0].Name
@@ -92,7 +92,7 @@ func TestEnsureWebServicesRetriesOnConflict(t *testing.T) {
 	s := pruneScheme(t)
 	_ = corev1.AddToScheme(s)
 	_ = networkingv1.AddToScheme(s)
-	other := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-aaa", Namespace: "team-alpha",
+	other := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-aaaw", Namespace: "team-alpha",
 		Labels: map[string]string{names.LabelLab: "other", names.LabelDevice: "web"}}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(other).Build()
 	draw, lens := scriptedCodes("aaa", "aaa", "bbb")
@@ -102,15 +102,15 @@ func TestEnsureWebServicesRetriesOnConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got corev1.Service
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-bbb", Namespace: "team-alpha"}, &got); err != nil {
-		t.Fatalf("web-bbb missing: %v", err)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-bbbw", Namespace: "team-alpha"}, &got); err != nil {
+		t.Fatalf("web-bbbw missing: %v", err)
 	}
 	if got.Labels[names.LabelLab] != "lab1" {
 		t.Fatalf("labels: %v", got.Labels)
 	}
 	// the other lab's Service is untouched
 	var kept corev1.Service
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "web-aaa", Namespace: "team-alpha"}, &kept)
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "web-aaaw", Namespace: "team-alpha"}, &kept)
 	if kept.Labels[names.LabelLab] != "other" {
 		t.Fatalf("foreign service modified: %v", kept.Labels)
 	}
@@ -128,7 +128,7 @@ func TestEnsureWebServicesWidensToFourCharsAfterEightConflicts(t *testing.T) {
 	for i := 0; i < names.WebCodeAttempts; i++ {
 		code := fmt.Sprintf("c%02d", i)
 		codes = append(codes, code)
-		taken = append(taken, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-" + code, Namespace: "team-alpha"}})
+		taken = append(taken, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-" + code + "w", Namespace: "team-alpha"}})
 	}
 	codes = append(codes, "wxyz")
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(taken...).Build()
@@ -143,8 +143,8 @@ func TestEnsureWebServicesWidensToFourCharsAfterEightConflicts(t *testing.T) {
 		t.Fatalf("code lengths = %v, want %v", *lens, want)
 	}
 	var got corev1.Service
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-wxyz", Namespace: "team-alpha"}, &got); err != nil {
-		t.Fatalf("web-wxyz missing: %v", err)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-wxyzw", Namespace: "team-alpha"}, &got); err != nil {
+		t.Fatalf("web-wxyzw missing: %v", err)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestEnsureWebServicesGivesUpAfterAllAttempts(t *testing.T) {
 	_ = corev1.AddToScheme(s)
 	_ = networkingv1.AddToScheme(s)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(
-		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-aaaa", Namespace: "team-alpha"}},
-		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-aaa", Namespace: "team-alpha"}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-aaaaw", Namespace: "team-alpha"}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-aaaw", Namespace: "team-alpha"}},
 	).Build()
 	r := &LabReconciler{Client: c, Scheme: s, newWebCode: func(n int) (string, error) { return "aaaa"[:n], nil }}
 	if err := r.ensureWebServices(context.Background(), webLab("lab1", "uid-1")); err == nil {

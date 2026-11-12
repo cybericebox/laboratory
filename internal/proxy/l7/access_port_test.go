@@ -21,7 +21,7 @@ import (
 )
 
 func exposedPortService(protocol string, port int32) *corev1.Service {
-	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc123", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: protocol, Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP}}}}
+	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: protocol, Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP}}}}
 }
 
 func TestAccessDeclaredPortRealHandlerDestination(t *testing.T) {
@@ -50,7 +50,7 @@ func TestAccessDeclaredPortRealHandlerDestination(t *testing.T) {
 			reader := &accessCountingReader{Reader: c, gets: map[string]int{}}
 			h, _, _, cookie := liveFixture(t, http.NotFoundHandler())
 			h.WithAccessReader(&AccessReader{Reader: reader})
-			want := fmt.Sprintf("web-abc123.legacy.svc.cluster.local:%d", tc.port)
+			want := fmt.Sprintf("web-abc12w.legacy.svc.cluster.local:%d", tc.port)
 			transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				if address != want {
 					return nil, fmt.Errorf("handler selected %s instead of declared %s", address, want)
@@ -59,7 +59,7 @@ func TestAccessDeclaredPortRealHandlerDestination(t *testing.T) {
 			}}
 			defer transport.CloseIdleConnections()
 			h.transport = transport
-			req := httptest.NewRequest(http.MethodGet, "http://web-abc123.challenges.example.com/", nil)
+			req := httptest.NewRequest(http.MethodGet, "http://web-abc12w.challenges.example.com/", nil)
 			req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
