@@ -1057,10 +1057,13 @@ vni:
 # A node's bandwidth is its label cybericebox.com/node-bandwidth in Mbit/s (the cloud code sets it from the instance type, the Proxmox
 # inventory from the NIC); a node without it is defaultMbit. A platform pod declares what it keeps for itself with the annotation
 # cybericebox.com/bandwidth-reserve (Mbit/s); it is taken off the node the pod runs on and no other.
-# Off: nothing is limited. Switching it on gives the pods made from then on their limits (existing gateway pods keep none until
-# they are recreated); switching it off again: set the shares and caps to 0, the pods then limit nothing.
+# On by default. A node without the label is counted as defaultMbit (1000), so the fair sharing between participants and labs is exact
+# only where the label is set; the per-participant ceiling (caps.participantMbit) works regardless of the label.
+# Off: nothing is limited. Switching it on (also by upgrading from a version where it was off) gives the pods made from then on their
+# limits (existing gateway pods keep none until they are recreated); switching it off again: set enabled: false, and the shares and caps to 0
+# first, so the pods that already carry limits limit nothing.
 bandwidth:
-  enabled: false
+  enabled: true
   defaultMbit: 1000
   systemReserveMbit: 100
   shares:

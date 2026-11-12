@@ -803,7 +803,7 @@ kind that is filtered by a tenant list would complicate its deltas for little ga
 
 ## Bandwidth protection
 
-Off by default (`bandwidth.enabled`). On, no participant, lab or group can saturate a node or the cluster network. Per node and per direction
+On by default (`bandwidth.enabled: true`). On, no participant, lab or group can saturate a node or the cluster network. Per node and per direction
 
     U = the node's bandwidth - the system reserve - the reserves of the platform pods that run on that node
 
@@ -815,11 +815,11 @@ and U is divided into classes: the **entry** (the WireGuard demux and the L7 pro
 | the entry (participants of the VPN and of the web) | the demux (userspace: bytes per session, both directions; tc and xdp: the packet rate of the kernel fast path) and the L7 proxy (paced reads and writes, WebSockets too) | a token bucket per participant and one for the class; the share is the class divided by the participants active in the last seconds, up to the cap |
 | the internet | the gateway pod, on each lab interface | a token bucket filter on the egress (to the lab) and a police on the ingress (to the internet) |
 
-The label `cybericebox.com/node-bandwidth` gives a node's bandwidth in Mbit/s (`1562`, or `1562M`, `10G`); the cloud code sets it from the instance type, the Proxmox inventory from the NIC. A node without it is `bandwidth.defaultMbit` (1000). A platform pod keeps bandwidth for itself with the annotation `cybericebox.com/bandwidth-reserve` (Mbit/s), taken off the node it runs on and no other. This chart annotates the registry (100) and the agent (20); the backend and the frontends declare theirs in the platform chart. All numbers are estimates until the load test.
+The label `cybericebox.com/node-bandwidth` gives a node's bandwidth in Mbit/s (`1562`, or `1562M`, `10G`); the cloud code sets it from the instance type, the Proxmox inventory from the NIC. A node without it is counted as `bandwidth.defaultMbit` (1000), so the fair sharing is exact only where the label is set; the per-participant ceiling works regardless of the label. A platform pod keeps bandwidth for itself with the annotation `cybericebox.com/bandwidth-reserve` (Mbit/s), taken off the node it runs on and no other. This chart annotates the registry (100) and the agent (20); the backend and the frontends declare theirs in the platform chart. All numbers are estimates until the load test.
 
 Who computes what: the **operator** works every number out when something changes (a node's label, a pod that appears, moves or goes, a lab's gateway). It writes the gateways' ceilings as the annotation `cybericebox.com/bandwidth-limits` of each gateway pod, and the limits of every node into the ConfigMap `laboratory-bandwidth`, one key per node, in the namespace of the demux, of the L7 proxy and of the node-agent: the entry limits for the first two, the Geneve ceilings (the class and the cap of a lab) for the node-agent. The pods read their files and apply them themselves; the **node-agent** computes nothing and watches no pod, it reads the key of its own node and touches an OVS meter only when a rate changes (`mod-meter`; a delete would delete the flows that use the meter). The operator needs no right to write to nodes, and none to patch the demux, L7 or node-agent pods; it may read, make and change that one ConfigMap in those three namespaces.
 
-Switching on: a pod made before has no volume for its limits, so the **gateway pods that exist keep no ceiling until they are recreated** (changing the template of a Deployment would restart a team's gateway). The demux and L7 pods get the ConfigMap volume at the next rollout of their DaemonSet/Deployment. Switching off: set the shares and caps to 0, the pods then limit nothing; the meters of the node are removed when the node-agent sees zero limits.
+Switching on (also by upgrading from a chart where it was off, as it is on by default now): a pod made before has no volume for its limits, so the **gateway pods that exist keep no ceiling until they are recreated** (changing the template of a Deployment would restart a team's gateway). The demux and L7 pods get the ConfigMap volume at the next rollout of their DaemonSet/Deployment. Switching off: set the shares and caps to 0, the pods then limit nothing; the meters of the node are removed when the node-agent sees zero limits.
 
 Checks on a node (the bridge is `br-ovs`):
 
@@ -1517,7 +1517,7 @@ A lab with `internet.enabled` leaves through the gateway pod of its group, and *
 - ICMP echo is forwarded (5 a second per lab); every other TCP, UDP and protocol (SMTP, SSH, VPN, QUIC, DoT) is **dropped**. Traceroute shows
   the gateway as its last internal hop: ICMP errors from internal addresses never reach the lab (use `traceroute -I`; UDP probes are dropped).
 - Per lab: download `bandwidth.caps.labInternetMbit` (50 Mbit/s), upload `bandwidth.caps.labUploadKbps` (2 Mbit/s, pure ACKs not counted), and
-  a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`).
+  a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`, which is on by default).
 - The proxy keeps per-minute summaries (lab, host name, connections, bytes, refusals; no content, no user address). The operator pulls them
   every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy) and keeps the **connection
   log** for the cluster's administrator only (it is never sent to the daemon or any other client): by default on a PersistentVolumeClaim of
