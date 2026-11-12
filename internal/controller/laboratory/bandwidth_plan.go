@@ -64,7 +64,7 @@ func bandwidthPlan(cfg bandwidth.Config, nodes []corev1.Node, pods []corev1.Pod,
 		if senders > 0 {
 			entry = cfg.EntryClassKbps(minEntry, senders)
 		}
-		plan.nodes[node.Name] = bandwidth.Limits{ClassKbps: entry, CapKbps: cfg.ParticipantCapMbit * 1000, GeneveKbps: geneve.GeneveKbps, LabCapKbps: geneve.LabCapKbps}.Encode()
+		plan.nodes[node.Name] = bandwidth.Limits{ClassKbps: entry, CapKbps: cfg.ParticipantCapMbit * 1000, MinKbps: cfg.ParticipantMinKbps, GeneveKbps: geneve.GeneveKbps, LabCapKbps: geneve.LabCapKbps}.Encode()
 		labs := 0
 		for j := range onNode {
 			if isBandwidthGateway(&onNode[j]) {

@@ -25,6 +25,10 @@ type Config struct {
 	// ParticipantCapMbit, LabInternetCapMbit and LabGeneveCapMbit are the most one participant, one lab's internet and one lab's
 	// Geneve traffic may take, whatever is free.
 	ParticipantCapMbit, LabInternetCapMbit, LabGeneveCapMbit int64
+	// ParticipantMinKbps is the lower bound of one participant's share (0 = none): with very many active participants a person still gets
+	// this much, so a console session keeps working. It never lifts a share above the ceiling (a floor above the ceiling is clamped to it),
+	// so the sum of the shares may pass the entry class. It does not apply to the lab internet or Geneve shares.
+	ParticipantMinKbps int64
 	// LabUploadKbps is the most one lab may send to the internet (payload; the ACKs of what it downloads are not counted). UploadTotalMbit is the
 	// most all the labs of the cluster together may send; a lab's upload is scaled down when they would pass it (0 = no total).
 	LabUploadKbps, UploadTotalMbit int64
@@ -41,7 +45,7 @@ func DefaultConfig() Config {
 	return Config{
 		DefaultMbit: 1000, SystemReserveMbit: 100,
 		EntryShare: 50, InternetShare: 25, GeneveShare: 25,
-		ParticipantCapMbit: 50, LabInternetCapMbit: 50, LabGeneveCapMbit: 100,
+		ParticipantCapMbit: 20, ParticipantMinKbps: 1000, LabInternetCapMbit: 50, LabGeneveCapMbit: 100,
 		GeneveOverhead: 0.85, EntryOverhead: 0.85,
 		LabUploadKbps: 2048, UploadTotalMbit: 100,
 	}
@@ -52,7 +56,7 @@ func (c Config) Validate() error {
 	if c.DefaultMbit <= 0 {
 		return fmt.Errorf("bandwidth: the default node bandwidth must be positive")
 	}
-	if c.SystemReserveMbit < 0 || c.ParticipantCapMbit < 0 || c.LabInternetCapMbit < 0 || c.LabGeneveCapMbit < 0 || c.LabUploadKbps < 0 || c.UploadTotalMbit < 0 {
+	if c.SystemReserveMbit < 0 || c.ParticipantCapMbit < 0 || c.ParticipantMinKbps < 0 || c.LabInternetCapMbit < 0 || c.LabGeneveCapMbit < 0 || c.LabUploadKbps < 0 || c.UploadTotalMbit < 0 {
 		return fmt.Errorf("bandwidth: reserves and caps cannot be negative")
 	}
 	if c.EntryShare < 0 || c.InternetShare < 0 || c.GeneveShare < 0 || c.EntryShare+c.InternetShare+c.GeneveShare > 100 {
@@ -140,6 +144,20 @@ func FairShare(classKbps, capKbps int64, active int) int64 {
 		return 1
 	}
 	return share
+}
+
+// FairShareFloor is FairShare with a lower bound for one participant: a share below floorKbps becomes floorKbps, but never more than
+// capKbps (the ceiling wins over the floor). A floor of 0 is FairShare; an unlimited result (class 0 and cap 0) stays unlimited. With a
+// floor the shares of all the active participants together may pass the class.
+func FairShareFloor(classKbps, capKbps, floorKbps int64, active int) int64 {
+	share := FairShare(classKbps, capKbps, active)
+	if floorKbps <= 0 || share <= 0 || share >= floorKbps {
+		return share
+	}
+	if capKbps > 0 && floorKbps > capKbps {
+		floorKbps = capKbps
+	}
+	return max(share, floorKbps)
 }
 
 // LabInternetKbps is the ceiling of one lab's internet traffic when labs labs share the internet class of the node.

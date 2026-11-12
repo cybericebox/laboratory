@@ -163,8 +163,9 @@ func Run() {
 	go func() {
 		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, os.Getenv("NODE_NAME"),
 			func(l bandwidth.Limits) {
+				handler.Throttle().SetFloor(l.MinKbps)
 				handler.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
-				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps, "participantMinKbps", l.MinKbps)
 			},
 			func(err error) { log.Error(err, "read the bandwidth annotation") })
 		if err != nil {
