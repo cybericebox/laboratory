@@ -11,7 +11,6 @@ import (
 
 const (
 	maxName = 253
-	maxPath = 4096
 	maxID   = 256
 )
 
@@ -33,7 +32,7 @@ func validateOpen(r wire.OpenRequest) error {
 		name string
 		v    string
 		max  int
-	}{{"namespace", r.Namespace, maxName}, {"lab", r.Lab, maxName}, {"device", r.Device, maxName}, {"path", r.Path, maxPath},
+	}{{"namespace", r.Namespace, maxName}, {"lab", r.Lab, maxName}, {"device", r.Device, maxName},
 		{"client", r.Client, maxID}, {"group", r.Group, maxID}, {"user", r.User, 64}} {
 		if len(f.v) > f.max {
 			return fmt.Errorf("open request: %s is too long", f.name)
@@ -41,9 +40,6 @@ func validateOpen(r wire.OpenRequest) error {
 	}
 	if r.Namespace == "" || r.Lab == "" || r.Device == "" {
 		return errors.New("open request: namespace, lab and device are required")
-	}
-	if r.Size < 0 {
-		return errors.New("open request: negative size")
 	}
 	return nil
 }

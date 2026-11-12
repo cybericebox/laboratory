@@ -1,7 +1,7 @@
 {{- if include "laboratory.deviceAccess.enabled" . }}
 {{- /*
 The device access service (docs/specs/2026-11-12-device-access-and-checks.md, section 3; DEPLOY.md, "Device console"): a DaemonSet on the lab
-nodes, one container, the only component that holds the container runtime socket. It opens a shell or moves a file in a lab device for the L7
+nodes, one container, the only component that holds the container runtime socket. It opens a shell in a lab device for the L7
 proxy, which is the only caller its network policy admits. Made only while terminal.enabled is true.
 */ -}}
 {{- $socket := include "laboratory.deviceAccess.socket" . }}
@@ -93,16 +93,10 @@ spec:
               value: {{ $lim.perLab | quote }}
             - name: LIMIT_PER_NODE
               value: {{ $lim.perNode | quote }}
-            - name: LIMIT_TRANSFERS
-              value: {{ $lim.transfers | quote }}
-            - name: LIMIT_TRANSFERS_PER_CLIENT
-              value: {{ $lim.transfersPerClient | quote }}
             - name: IDLE_TIMEOUT
               value: {{ $lim.idleTimeout | quote }}
             - name: MAX_LIFETIME
               value: {{ $lim.maxLifetime | quote }}
-            - name: MAX_FILE_BYTES
-              value: {{ $lim.maxFileBytes | int64 | quote }}
             {{- if .Values.checks.enabled }}
             # The checker socket: the lab checker of this node runs the probe in a device through it (file permissions: group {{ .Values.checks.socketGid }}).
             - name: CHECKER_SOCKET

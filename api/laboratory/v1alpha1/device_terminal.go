@@ -10,10 +10,3 @@ func (d *Device) TerminalSettings() (enabled bool, command []string, user string
 	}
 	return true, a.Command, a.User
 }
-
-// TerminalFiles tells whether the author switched file transfer through the console on for this device (off unless the terminal entry says
-// so). The L7 proxy refuses file requests of a console without it.
-func (d *Device) TerminalFiles() bool {
-	a := AccessOf(d.Spec.Access, AccessTerminal)
-	return a != nil && a.Files
-}

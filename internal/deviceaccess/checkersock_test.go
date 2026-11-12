@@ -110,14 +110,14 @@ func TestCheckerRefusals(t *testing.T) {
 		"a command line": {body: func() []byte {
 			return probeBody(func(m map[string]any) { m["args"] = []string{"/bin/sh", "-c", "id"} })
 		}, status: 400, code: wire.CodeBadRequest},
-		"a user other than root":     {body: func() []byte { return probeBody(func(m map[string]any) { m["user"] = "1000" }) }, status: 400, code: wire.CodeBadRequest},
-		"an environment":             {body: func() []byte { return probeBody(func(m map[string]any) { m["env"] = []string{"A=B"} }) }, status: 400, code: wire.CodeBadRequest},
-		"a container id":             {body: func() []byte { return probeBody(func(m map[string]any) { m["container"] = cont1 }) }, status: 400, code: wire.CodeBadRequest},
-		"the console subcommand put": {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = probe.CommandPut }) }, status: 400, code: wire.CodeForbidden},
-		"the install subcommand":     {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = "install" }) }, status: 400, code: wire.CodeForbidden},
-		"the launch subcommand":      {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = "launch" }) }, status: 400, code: wire.CodeForbidden},
-		"an empty subcommand":        {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = "" }) }, status: 400, code: wire.CodeForbidden},
-		"an empty argument":          {body: func() []byte { return probeBody(func(m map[string]any) { m["arg"] = "" }) }, status: 400, code: wire.CodeBadRequest},
+		"a user other than root":              {body: func() []byte { return probeBody(func(m map[string]any) { m["user"] = "1000" }) }, status: 400, code: wire.CodeBadRequest},
+		"an environment":                      {body: func() []byte { return probeBody(func(m map[string]any) { m["env"] = []string{"A=B"} }) }, status: 400, code: wire.CodeBadRequest},
+		"a container id":                      {body: func() []byte { return probeBody(func(m map[string]any) { m["container"] = cont1 }) }, status: 400, code: wire.CodeBadRequest},
+		"the console subcommand resolve-user": {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = probe.CommandResolveUser }) }, status: 400, code: wire.CodeForbidden},
+		"the install subcommand":              {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = "install" }) }, status: 400, code: wire.CodeForbidden},
+		"the launch subcommand":               {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = "launch" }) }, status: 400, code: wire.CodeForbidden},
+		"an empty subcommand":                 {body: func() []byte { return probeBody(func(m map[string]any) { m["command"] = "" }) }, status: 400, code: wire.CodeForbidden},
+		"an empty argument":                   {body: func() []byte { return probeBody(func(m map[string]any) { m["arg"] = "" }) }, status: 400, code: wire.CodeBadRequest},
 		"a huge argument": {body: func() []byte {
 			return probeBody(func(m map[string]any) { m["arg"] = strings.Repeat("a", maxProbeArg+1) })
 		}, status: 400, code: wire.CodeBadRequest},

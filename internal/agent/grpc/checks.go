@@ -177,9 +177,6 @@ func validateAccess(d *laboratoryv1alpha1.DeviceTemplate) error {
 			if len(a.Command) > 0 || a.User != "" {
 				return fmt.Errorf("device %q: a %s access has no command or user", d.Name, a.Kind)
 			}
-			if a.Files {
-				return fmt.Errorf("device %q: only a terminal access has files", d.Name)
-			}
 			if a.Protocol != "" && (a.Kind != laboratoryv1alpha1.AccessHTTP || (a.Protocol != "http" && a.Protocol != "https")) {
 				return fmt.Errorf("device %q: only an http access has a protocol, http or https", d.Name)
 			}
@@ -200,11 +197,6 @@ func validateAccess(d *laboratoryv1alpha1.DeviceTemplate) error {
 			}
 			if len(a.User) > 128 || strings.ContainsAny(a.User, "\x00\n") {
 				return fmt.Errorf("device %q: invalid terminal user", d.Name)
-			}
-			// File transfer reads and writes through the probe that runs inside the device (container and microvm profiles). A profile
-			// that cannot run it cannot transfer files.
-			if a.Files && d.Profile == laboratoryv1alpha1.DeviceProfileVM {
-				return fmt.Errorf("device %q: file transfer through the console is not possible on a vm profile", d.Name)
 			}
 		default:
 			return fmt.Errorf("device %q: unknown access kind %q", d.Name, a.Kind)

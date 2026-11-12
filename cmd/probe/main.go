@@ -50,7 +50,7 @@ func main() {
 		}
 	case probe.CommandCheckExec, probe.CommandCheckFile, probe.CommandCheckObserve, probe.CommandCheckPerm:
 		os.Exit(probe.RunCheckCommand(os.Args[1], os.Args[2:]))
-	case probe.CommandResolveUser, probe.CommandPut, probe.CommandGet:
+	case probe.CommandResolveUser:
 		os.Exit(probe.RunConsoleCommand(os.Args[1], os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])

@@ -126,11 +126,6 @@ spec:
                               type: string
                             maxItems: 32
                             type: array
-                          files:
-                            description: |-
-                              Files switches file transfer through the console on (upload to and download from the device). Off by default. Terminal only; a
-                              device whose profile cannot run the probe inside (vm) is refused.
-                            type: boolean
                           kind:
                             description: |-
                               AccessKind is one way a participant reaches a device besides its network (design record docs/specs/2026-11-12-device-access-and-checks.md,
@@ -173,8 +168,6 @@ spec:
                         - message: only a terminal access has a command and a user
                           rule: self.kind == 'terminal' || (!has(self.command) &&
                             !has(self.user))
-                        - message: only a terminal access has files
-                          rule: self.kind == 'terminal' || !has(self.files)
                       maxItems: 4
                       type: array
                       x-kubernetes-list-map-keys:
@@ -611,10 +604,6 @@ spec:
                   properties:
                     device:
                       type: string
-                    files:
-                      description: Files is true on a terminal entry whose author
-                        switched file transfer on for the console.
-                      type: boolean
                     port:
                       format: int32
                       type: integer

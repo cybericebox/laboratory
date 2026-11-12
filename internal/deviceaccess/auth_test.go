@@ -107,7 +107,7 @@ func TestAuthRefusesAModifiedRequest(t *testing.T) {
 	now := time.Now()
 	k := bytes.Repeat([]byte("1"), 32)
 	mods := map[string]func(*wire.OpenRequest){
-		"kind":      func(r *wire.OpenRequest) { r.Kind = wire.KindPut },
+		"kind":      func(r *wire.OpenRequest) { r.Kind = "other" },
 		"namespace": func(r *wire.OpenRequest) { r.Namespace = "other" },
 		"lab":       func(r *wire.OpenRequest) { r.Lab = "other" },
 		"device":    func(r *wire.OpenRequest) { r.Device = "other" },
@@ -116,8 +116,6 @@ func TestAuthRefusesAModifiedRequest(t *testing.T) {
 		"user":      func(r *wire.OpenRequest) { r.User = "root" },
 		"cols":      func(r *wire.OpenRequest) { r.Cols++ },
 		"rows":      func(r *wire.OpenRequest) { r.Rows++ },
-		"path":      func(r *wire.OpenRequest) { r.Path = "/etc/shadow" },
-		"size":      func(r *wire.OpenRequest) { r.Size = 1 },
 		"client":    func(r *wire.OpenRequest) { r.Client = "other" },
 		"group":     func(r *wire.OpenRequest) { r.Group = "other" },
 		"time":      func(r *wire.OpenRequest) { r.Time++ },

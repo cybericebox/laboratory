@@ -129,10 +129,6 @@ spec:
       value: {{ .Values.terminal.limits.idleTimeout | quote }}
     - name: TERMINAL_MAX_LIFETIME
       value: {{ .Values.terminal.limits.maxLifetime | quote }}
-    - name: TERMINAL_MAX_FILE_BYTES
-      value: {{ .Values.terminal.limits.maxFileBytes | int64 | quote }}
-    - name: TERMINAL_MAX_SESSION_BYTES
-      value: {{ .Values.terminal.limits.maxSessionBytes | int64 | quote }}
     {{- end }}
     {{- if .Values.bandwidth.enabled }}
     - name: NODE_NAME

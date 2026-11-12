@@ -4,15 +4,11 @@ package probe
 
 import (
 	"bufio"
-	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"io"
-	"io/fs"
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // runResolveUser answers {"uid":..,"gid":..,"groups":[..],"home":".."} for "name", "uid", "name:group" or "uid:gid", looked up in the
@@ -109,72 +105,4 @@ func readIDFile(path string) [][]string {
 		out = append(out, strings.Split(line, ":"))
 	}
 	return out
-}
-
-// exitFor maps a file-system error to the exit code the service understands.
-func exitFor(err error) int {
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return ExitNotFound
-	case errors.Is(err, fs.ErrPermission):
-		return ExitDenied
-	case errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.ENXIO):
-		return ExitNotRegular
-	}
-	return ExitIO
-}
-
-// runPut writes standard input to the file. The file is opened without following a link in the last component and must be a regular
-// file (or is created as one): a device node, a FIFO or a directory is refused. It runs with the rights of the console's user.
-func runPut(path string) int {
-	// O_NONBLOCK so that opening a FIFO that nobody reads cannot hang; the type is checked on the open descriptor.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o644)
-	if err != nil {
-		return exitFor(err)
-	}
-	defer func() { _ = f.Close() }()
-	st, err := f.Stat()
-	if err != nil {
-		return ExitIO
-	}
-	if !st.Mode().IsRegular() {
-		return ExitNotRegular
-	}
-	if err := f.Truncate(0); err != nil {
-		return exitFor(err)
-	}
-	if _, err := io.Copy(f, os.Stdin); err != nil {
-		return exitFor(err)
-	}
-	if err := f.Close(); err != nil {
-		return ExitIO
-	}
-	return 0
-}
-
-// runGet writes the size and the content of a regular file. The size is read from the open descriptor, so the header and the
-// content are of the same file; if the file grows meanwhile, only the announced length is sent.
-func runGet(path string) int {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return exitFor(err)
-	}
-	defer func() { _ = f.Close() }()
-	st, err := f.Stat()
-	if err != nil {
-		return ExitIO
-	}
-	if !st.Mode().IsRegular() {
-		return ExitNotRegular
-	}
-	var head [8]byte
-	binary.BigEndian.PutUint64(head[:], uint64(st.Size()))
-	if _, err := os.Stdout.Write(head[:]); err != nil {
-		return ExitIO
-	}
-	n, err := io.Copy(os.Stdout, io.LimitReader(f, st.Size()))
-	if err != nil || n != st.Size() {
-		return ExitIO
-	}
-	return 0
 }

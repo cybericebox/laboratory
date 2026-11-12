@@ -36,16 +36,10 @@ type Conn interface {
 type Limits struct {
 	// PerClient, PerLab and PerNode bound the consoles open at once: of one client of one group, in one lab, and on this node.
 	PerClient, PerLab, PerNode int
-	// Transfers bounds the file transfers at once on the node; TransfersPerClient the ones of one client.
-	Transfers, TransfersPerClient int
 	// Idle closes a console that no byte crossed for that long. Lifetime closes any console at that age.
 	Idle, Lifetime time.Duration
-	// MaxFile is the largest file a transfer moves. The cap per session is held by the proxy, which knows the session.
-	MaxFile int64
 	// WriteTimeout bounds every write towards the proxy or the device: a peer that does not take bytes for that long is cut.
 	WriteTimeout time.Duration
-	// TransferTimeout is the longest a file transfer may take.
-	TransferTimeout time.Duration
 	// Cleanup bounds the time the clean-up of an exec may take.
 	Cleanup time.Duration
 }
@@ -53,9 +47,9 @@ type Limits struct {
 // DefaultLimits are the values of the chart defaults.
 func DefaultLimits() Limits {
 	return Limits{
-		PerClient: 3, PerLab: 10, PerNode: 200, Transfers: 16, TransfersPerClient: 2,
+		PerClient: 3, PerLab: 10, PerNode: 200,
 		Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
-		MaxFile: 16 << 20, WriteTimeout: 30 * time.Second, TransferTimeout: 10 * time.Minute, Cleanup: 10 * time.Second,
+		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second,
 	}
 }
 
@@ -64,14 +58,8 @@ func (l Limits) withDefaults() Limits {
 	if l.WriteTimeout <= 0 {
 		l.WriteTimeout = d.WriteTimeout
 	}
-	if l.TransferTimeout <= 0 {
-		l.TransferTimeout = d.TransferTimeout
-	}
 	if l.Cleanup <= 0 {
 		l.Cleanup = d.Cleanup
-	}
-	if l.MaxFile <= 0 {
-		l.MaxFile = d.MaxFile
 	}
 	return l
 }
@@ -87,7 +75,7 @@ type Config struct {
 	Tap Tap
 }
 
-// Service serves consoles and file transfers.
+// Service serves consoles.
 type Service struct {
 	rt      Runtime
 	auth    *Auth
@@ -108,7 +96,7 @@ type Service struct {
 func New(c Config) *Service {
 	reg := prometheus.NewRegistry()
 	s := &Service{rt: c.Runtime, auth: c.Auth, lim: c.Limits.withDefaults(), log: c.Log, tap: c.Tap, reg: reg, m: newMetrics(reg), active: map[*stream]struct{}{}}
-	s.counter = limiter{perClient: map[string]int{}, perLab: map[string]int{}, transfersPerClient: map[string]int{}}
+	s.counter = limiter{perClient: map[string]int{}, perLab: map[string]int{}}
 	return s
 }
 
@@ -145,8 +133,6 @@ func (s *Service) Serve(ctx context.Context, conn Conn) {
 	switch req.Kind {
 	case wire.KindConsole:
 		s.serveConsole(ctx, conn, req)
-	case wire.KindPut, wire.KindGet:
-		s.serveFile(ctx, conn, req)
 	default:
 		s.refuse(ctx, conn, req, wire.CodeBadRequest, fmt.Errorf("unknown kind %q", req.Kind))
 	}
@@ -229,12 +215,10 @@ func clientKey(req wire.OpenRequest) string { return req.Group + "/" + req.Clien
 
 // limiter counts the open streams.
 type limiter struct {
-	mu                 sync.Mutex
-	consoles           int
-	transfers          int
-	perClient          map[string]int
-	perLab             map[string]int
-	transfersPerClient map[string]int
+	mu        sync.Mutex
+	consoles  int
+	perClient map[string]int
+	perLab    map[string]int
 }
 
 func (l *limiter) acquireConsole(lim Limits, client, lab string) bool {
@@ -257,24 +241,6 @@ func (l *limiter) releaseConsole(client, lab string) {
 	l.consoles--
 	dec(l.perClient, client)
 	dec(l.perLab, lab)
-}
-
-func (l *limiter) acquireTransfer(lim Limits, client string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if lim.Transfers > 0 && l.transfers >= lim.Transfers || lim.TransfersPerClient > 0 && l.transfersPerClient[client] >= lim.TransfersPerClient {
-		return false
-	}
-	l.transfers++
-	l.transfersPerClient[client]++
-	return true
-}
-
-func (l *limiter) releaseTransfer(client string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.transfers--
-	dec(l.transfersPerClient, client)
 }
 
 func dec(m map[string]int, k string) {

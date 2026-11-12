@@ -45,11 +45,9 @@ const StreamPath = "/v1/stream"
 // Kinds of a stream the service serves.
 const (
 	KindConsole = "console"
-	KindPut     = "put"
-	KindGet     = "get"
 )
 
-// Codes of a refusal or of a failed transfer: the short words in OpenReply.Error and in the error message the browser gets. They name what
+// Codes of a refusal: the short words in OpenReply.Error and in the error message the browser gets. They name what
 // went wrong in the platform's terms and never carry text of the device.
 const (
 	CodeNotFound    = "not-found"
@@ -57,14 +55,7 @@ const (
 	CodeLimit       = "limit"
 	CodeBadRequest  = "bad-request"
 	CodeUnavailable = "unavailable"
-	CodeTooBig      = "too-big"
-	CodeDenied      = "denied"
-	CodeNotRegular  = "not-regular"
-	CodeIO          = "io"
-	CodeIncomplete  = "incomplete"
 	CodeBusy        = "busy"
-	// CodeFilesOff is answered by the proxy alone: the author did not switch file transfer on for this device. The service never sees the request.
-	CodeFilesOff = "files-off"
 	// CodeUnauthorized: the open request was not signed with a key the service accepts, or was stale or repeated. Nothing says which.
 	CodeUnauthorized = "unauthorized"
 )
@@ -81,7 +72,6 @@ const (
 	ReasonShutdown = "shutdown"
 	ReasonStalled  = "stalled"
 	ReasonRefused  = "refused"
-	ReasonTooBig   = "too-big"
 )
 
 // OpenRequest is the first message the proxy sends to the service. The caller names a device and nothing else about the
@@ -92,15 +82,12 @@ type OpenRequest struct {
 	Lab       string `json:"lab"`
 	Device    string `json:"device"`
 	// Command and User are the terminal settings of the device, as the lab author set them (empty: /bin/sh, and the user of the
-	// image). They are checked again in the service. Only a console uses them; a file transfer runs as the same user.
+	// image). They are checked again in the service.
 	Command []string `json:"command,omitempty"`
 	User    string   `json:"user,omitempty"`
 	// Cols and Rows are the initial size of the terminal (console only).
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
-	// Path is the file of a put or a get. Size is the length of the upload.
-	Path string `json:"path,omitempty"`
-	Size int64  `json:"size,omitempty"`
 	// Client and Group are the identifiers the proxy knows the participant by (a pseudonym, never an address). The service logs them and
 	// counts consoles per client; it does not interpret them.
 	Client string `json:"client,omitempty"`
@@ -116,8 +103,6 @@ type OpenReply struct {
 	OK bool `json:"ok"`
 	// Error is a short code (one of the Code constants) when OK is false.
 	Error string `json:"error,omitempty"`
-	// Size is the length of the file a get is about to send.
-	Size int64 `json:"size,omitempty"`
 }
 
 // ErrFrame is returned for a message that is not a valid frame.

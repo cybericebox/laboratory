@@ -75,14 +75,12 @@ type L7Config struct {
 	// The console (docs/specs/2026-11-12-device-access-and-checks.md): TerminalEnabled serves it on a host of its own per device (names.AccessHostLabel, the kind of access in the last character of the first label) under
 	// BaseDomain, relayed to the device access service pods of TerminalNamespace on TerminalPort. The limits mirror the chart values of the
 	// service (terminal.limits.*) and are enforced at the proxy as well.
-	TerminalEnabled    bool          `env:"TERMINAL_ENABLED" envDefault:"false"`
-	TerminalNamespace  string        `env:"TERMINAL_SERVICE_NAMESPACE"`
-	TerminalPort       int           `env:"TERMINAL_SERVICE_PORT" envDefault:"8080"`
-	TerminalPerClient  int           `env:"TERMINAL_PER_CLIENT" envDefault:"3"`
-	TerminalIdle       time.Duration `env:"TERMINAL_IDLE_TIMEOUT" envDefault:"30m"`
-	TerminalLifetime   time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
-	TerminalMaxFile    int64         `env:"TERMINAL_MAX_FILE_BYTES" envDefault:"16777216"`
-	TerminalMaxSession int64         `env:"TERMINAL_MAX_SESSION_BYTES" envDefault:"67108864"`
+	TerminalEnabled   bool          `env:"TERMINAL_ENABLED" envDefault:"false"`
+	TerminalNamespace string        `env:"TERMINAL_SERVICE_NAMESPACE"`
+	TerminalPort      int           `env:"TERMINAL_SERVICE_PORT" envDefault:"8080"`
+	TerminalPerClient int           `env:"TERMINAL_PER_CLIENT" envDefault:"3"`
+	TerminalIdle      time.Duration `env:"TERMINAL_IDLE_TIMEOUT" envDefault:"30m"`
+	TerminalLifetime  time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
 	// TerminalKeyFile is the file of the key shared with the device access service (a mounted Secret); every open request is signed with it.
 	TerminalKeyFile string `env:"TERMINAL_KEY_FILE" envDefault:"/etc/proxy/device-access-auth/current"`
 	// TerminalEmbedAllow and TerminalEmbedDeny are the lists of sites that may (and may not) show the console page in a frame; see
@@ -147,9 +145,8 @@ func LoadL7Config() (*L7Config, error) {
 		return cfg, fmt.Errorf("SESSION_IDLE_TTL and SESSION_MAX_TTL must be positive and SESSION_RENEW_BEFORE must be shorter than SESSION_IDLE_TTL")
 	}
 	if cfg.TerminalEnabled {
-		if cfg.TerminalNamespace == "" || cfg.TerminalPort < 1 || cfg.TerminalPort > 65535 || cfg.TerminalPerClient < 0 ||
-			cfg.TerminalMaxFile <= 0 || cfg.TerminalMaxSession < cfg.TerminalMaxFile {
-			return cfg, fmt.Errorf("TERMINAL_SERVICE_NAMESPACE, and TERMINAL_SERVICE_PORT are required with the console, TERMINAL_MAX_SESSION_BYTES must not be below TERMINAL_MAX_FILE_BYTES")
+		if cfg.TerminalNamespace == "" || cfg.TerminalPort < 1 || cfg.TerminalPort > 65535 || cfg.TerminalPerClient < 0 {
+			return cfg, fmt.Errorf("TERMINAL_SERVICE_NAMESPACE and TERMINAL_SERVICE_PORT are required with the console")
 		}
 	}
 	return cfg, nil

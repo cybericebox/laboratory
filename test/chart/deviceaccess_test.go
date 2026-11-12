@@ -193,7 +193,6 @@ func TestConsoleIsRefusedWithoutItsPolicies(t *testing.T) {
 		{[]string{"--set", "proxy.l7.enabled=false"}, "needs the L7 proxy"},
 		{[]string{"--set", "terminal.port=9102"}, "two different ports"},
 		{[]string{"--set", "terminal.fifoDir=relative/dir"}, "absolute paths"},
-		{[]string{"--set", "terminal.limits.maxSessionBytes=1"}, "maxSessionBytes"},
 	} {
 		out, err := helmTemplate(t, append(append([]string{}, consoleOn...), tc.set...)...)
 		if err == nil || !strings.Contains(out+err.Error(), tc.want) {
@@ -450,7 +449,7 @@ func TestProxyGetsTheConsoleSettings(t *testing.T) {
 		env[e.Name] = e.Value
 	}
 	for k, want := range map[string]string{"TERMINAL_ENABLED": "true", "TERMINAL_SERVICE_NAMESPACE": "laboratory-device-access", "TERMINAL_SERVICE_PORT": "8080",
-		"TERMINAL_PER_CLIENT": "5", "TERMINAL_MAX_FILE_BYTES": "16777216", "TERMINAL_MAX_SESSION_BYTES": "67108864"} {
+		"TERMINAL_PER_CLIENT": "5"} {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q", k, env[k], want)
 		}

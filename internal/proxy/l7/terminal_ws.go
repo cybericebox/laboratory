@@ -30,9 +30,8 @@ type hello struct {
 }
 
 type browserMsg struct {
-	Type    string `json:"type"`
-	Session string `json:"session,omitempty"`
-	Code    string `json:"code,omitempty"`
+	Type string `json:"type"`
+	Code string `json:"code,omitempty"`
 }
 
 func browserText(ctx context.Context, c *websocket.Conn, m browserMsg) error {
@@ -50,11 +49,6 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 		fail(w, r, http.StatusForbidden, pageGone, "forbidden")
 		return
 	}
-	token, err := newToken()
-	if err != nil {
-		fail(w, r, http.StatusInternalServerError, pageFailed, "internal error")
-		return
-	}
 	// Registered as a live request: when the policy denies the client or the lab stops, CheckLive closes it within seconds.
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -65,9 +59,8 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	}
 	defer h.live.remove(entry)
 
-	sess := &consoleSession{token: token, group: tg.claims.GroupID, client: tg.client, tenant: tg.claims.Tenant, namespace: tg.namespace, lab: tg.lab, dev: tg.device, host: tg.host,
-		base: tg.base, command: tg.info.Command, user: tg.info.User, files: tg.info.Files, entry: entry, ackCh: make(chan struct{}, 1), started: time.Now()}
-	sess.budget.Store(t.cfg.MaxSession)
+	sess := &consoleSession{group: tg.claims.GroupID, client: tg.client, tenant: tg.claims.Tenant, namespace: tg.namespace, lab: tg.lab, dev: tg.device,
+		base: tg.base, command: tg.info.Command, user: tg.info.User, entry: entry, ackCh: make(chan struct{}, 1), started: time.Now()}
 	if !t.add(sess) {
 		fail(w, r, http.StatusTooManyRequests, pageBusy, "too many consoles")
 		return
@@ -133,7 +126,7 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: browserCode(reply.Error)})
 		return wire.ReasonRefused
 	}
-	if err := browserText(ctx, browser, browserMsg{Type: "ready", Session: sess.token}); err != nil {
+	if err := browserText(ctx, browser, browserMsg{Type: "ready"}); err != nil {
 		return wire.ReasonError
 	}
 

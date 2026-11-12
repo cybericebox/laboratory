@@ -88,7 +88,7 @@ func Run() {
 	if cfg.TerminalEnabled {
 		tc := l7.DefaultTerminalConfig()
 		tc.Log = log.WithName("console")
-		tc.PerClient, tc.Idle, tc.Lifetime, tc.MaxFile, tc.MaxSession = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime, cfg.TerminalMaxFile, cfg.TerminalMaxSession
+		tc.PerClient, tc.Idle, tc.Lifetime = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime
 		keys, err := wire.NewKeyFiles(10*time.Second, cfg.TerminalKeyFile)
 		if err != nil {
 			log.Error(err, "the key shared with the device access service")

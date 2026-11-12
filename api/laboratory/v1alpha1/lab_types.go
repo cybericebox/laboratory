@@ -236,8 +236,6 @@ type AccessEntry struct {
 	// URL is the address of a web port, and of the console of a terminal entry (https://<device>-<code>t.<labs domain>; the last character of the first label is the kind of access). It is empty
 	// until the device has its code.
 	URL string `json:"url,omitempty"`
-	// Files is true on a terminal entry whose author switched file transfer on for the console.
-	Files bool `json:"files,omitempty"`
 }
 
 // +genclient

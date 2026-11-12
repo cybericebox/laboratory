@@ -37,7 +37,7 @@ const (
 )
 
 // termCodes are the codes of the test devices, one per (lab, device): the console host of a device is <device>-<code>t (names.AccessHostLabel).
-var termCodes = map[string]string{"lab1/kali": "k10", "lab1/plain": "p10", "lab1/unplaced": "u10", "lab1/nofiles": "n10", "stopped/kali": "k20", "lab3/kali": "k30", "lab2/kali": "k40"}
+var termCodes = map[string]string{"lab1/kali": "k10", "lab1/plain": "p10", "lab1/unplaced": "u10", "stopped/kali": "k20", "lab3/kali": "k30", "lab2/kali": "k40"}
 
 // termHostFor is the console host of a device of the test cluster.
 func termHostFor(labName, device string) string {
@@ -48,11 +48,10 @@ func termHostFor(labName, device string) string {
 // termHost is the console host of lab1/kali, the device most tests open.
 var termHost = termHostFor("lab1", "kali")
 
-// fakeService is a device access service that answers consoles with upper-cased echo and keeps uploaded files.
+// fakeService is a device access service that answers consoles with upper-cased echo.
 type fakeService struct {
 	srv   *httptest.Server
 	mu    sync.Mutex
-	files map[string][]byte
 	opens []wire.OpenRequest
 	// ended counts the consoles the service saw end; refuse, when set, is the code every open request is answered with.
 	ended  int
@@ -60,7 +59,7 @@ type fakeService struct {
 }
 
 func newFakeService(t *testing.T) *fakeService {
-	f := &fakeService{files: map[string][]byte{}}
+	f := &fakeService{}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -118,40 +117,6 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.ended++
 		f.mu.Unlock()
-	case wire.KindPut:
-		reply(wire.OpenReply{OK: true})
-		var buf bytes.Buffer
-		for {
-			_, m, err := c.Read(ctx)
-			if err != nil {
-				return
-			}
-			ft, p, _ := wire.Parse(m)
-			if ft == wire.TypeData {
-				buf.Write(p)
-				continue
-			}
-			break
-		}
-		f.mu.Lock()
-		f.files[req.Path] = buf.Bytes()
-		f.mu.Unlock()
-		reply(wire.OpenReply{OK: true})
-	case wire.KindGet:
-		f.mu.Lock()
-		data, ok := f.files[req.Path]
-		f.mu.Unlock()
-		if !ok {
-			reply(wire.OpenReply{Error: "not-found"})
-			return
-		}
-		reply(wire.OpenReply{OK: true, Size: int64(len(data))})
-		for b := data; len(b) > 0; {
-			n := min(len(b), wire.MaxData)
-			_ = c.Write(ctx, websocket.MessageBinary, wire.Data(b[:n]))
-			b = b[n:]
-		}
-		_ = c.Write(ctx, websocket.MessageBinary, wire.Close(wire.ReasonExit))
 	}
 }
 
@@ -168,8 +133,7 @@ func termDevice(labName, name string, enabled bool, node string) *lab.Device {
 	d := &lab.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name(labName, name), Namespace: termNS}}
 	d.Spec.Name, d.Spec.LabRef, d.Spec.Code = name, labName, termCodes[labName+"/"+name]
 	if enabled {
-		// file transfer is the author's option, off by default: only the device named "nofiles" has it off here
-		d.Spec.Access = []lab.DeviceAccess{{Kind: lab.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali", Files: name != "nofiles"}}
+		d.Spec.Access = []lab.DeviceAccess{{Kind: lab.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali"}}
 	}
 	d.Status.NodeName = node
 	return d
@@ -193,7 +157,6 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 		termDevice("lab1", "kali", true, "n1"),
 		termDevice("lab1", "plain", false, "n1"),
 		termDevice("lab1", "unplaced", true, ""),
-		termDevice("lab1", "nofiles", true, "n1"),
 		termDevice("stopped", "kali", true, "n1"),
 		termDevice("lab3", "kali", true, "n1"),
 	}
@@ -290,7 +253,7 @@ func TestTerminalPageAndHeaders(t *testing.T) {
 		}
 	}
 	en := f.get("/", map[string]string{"Accept-Language": "en-US,en;q=0.9"})
-	if !strings.Contains(en.Body.String(), `lang="en"`) || !strings.Contains(en.Body.String(), "Upload to the device") {
+	if !strings.Contains(en.Body.String(), `lang="en"`) {
 		t.Errorf("not English: %s", en.Body.String())
 	}
 	for _, name := range []string{"xterm.js", "xterm.css", "addon-fit.js", "addon-web-links.js", "terminal.js", "terminal.css"} {
@@ -304,6 +267,34 @@ func TestTerminalPageAndHeaders(t *testing.T) {
 	}
 	if a := f.get("/assets/../x", nil); a.Code == 200 {
 		t.Errorf("path escape served")
+	}
+}
+
+// There is no file transfer through the console: no controls on the page, no code for it in the page script, no route.
+func TestTerminalHasNoFileTransfer(t *testing.T) {
+	f := newTermFixture(t, nil)
+	body := f.get("/", nil).Body.String()
+	js, err := terminalFS.ReadFile("terminalassets/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"upload", "download", "/files", "XMLHttpRequest", "fetch("} {
+		if strings.Contains(strings.ToLower(body), bad) || strings.Contains(strings.ToLower(string(js)), strings.ToLower(bad)) {
+			t.Errorf("the console page or its script mentions %q", bad)
+		}
+	}
+	for _, path := range []string{"/files", "/files?path=/etc/passwd"} {
+		for _, method := range []string{"GET", "PUT"} {
+			req := httptest.NewRequest(method, "http://"+termHost+path, nil)
+			req.Host = termHost
+			req.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
+			req.Header.Set("Origin", "http://"+termHost)
+			rec := httptest.NewRecorder()
+			f.h.ServeHTTP(rec, req)
+			if rec.Code != 404 {
+				t.Errorf("%s %s: %d", method, path, rec.Code)
+			}
+		}
 	}
 }
 
@@ -413,23 +404,20 @@ func TestConsoleHostRouting(t *testing.T) {
 		t.Errorf("the web host of a console device served: %d", rec.Code)
 	}
 	// the old reserved host is gone
-	if rec := f.getHost("terminal."+termBaseDom, "/?lab=lab1&device=kali", nil); rec.Code != 404 {
+	if rec := f.getHost("terminal."+termBaseDom, "/", nil); rec.Code != 404 {
 		t.Errorf("the old reserved host served: %d", rec.Code)
 	}
-	// the socket and the files are on the host of the device, and the token of one console is no use on another host
-	c, token := f.openConsole("kali")
-	_ = c
+	// the page and the socket are on the host of the device
+	f.openConsole("kali")
 	other := termHostFor("lab1", "plain")
 	// Origin must be the host's own origin: the console host of another device of the same lab is another origin
 	if conn, _, err := f.dialSocketHost(termHost, "http://"+other); err == nil {
 		_ = conn.CloseNow()
 		t.Error("the socket opened for the origin of another device's console host")
 	}
-	if rec := f.getHost(other, "/files?session="+token+"&path=/tmp/a", nil); rec.Code == 200 {
-		t.Error("the token of a console worked on the host of another device")
-	}
-	if rec := f.get("/files?session="+token+"&path=/missing", nil); rec.Code != 404 {
-		t.Errorf("the same host: %d", rec.Code)
+	// there is no file transfer on a console host at all
+	if rec := f.get("/files?path=/tmp/a", nil); rec.Code != 404 {
+		t.Errorf("/files answered %d", rec.Code)
 	}
 }
 
@@ -470,8 +458,8 @@ func readText(t *testing.T, c *websocket.Conn) browserMsg {
 	return m
 }
 
-// openConsole opens a console and returns the connection and the session token.
-func (f *termFixture) openConsole(device string) (*websocket.Conn, string) {
+// openConsole opens a console and returns the connection.
+func (f *termFixture) openConsole(device string) *websocket.Conn {
 	f.t.Helper()
 	c, _, err := f.dialSocket(device, "http://"+termHostFor("lab1", device))
 	if err != nil {
@@ -484,15 +472,15 @@ func (f *termFixture) openConsole(device string) (*websocket.Conn, string) {
 		f.t.Fatal(err)
 	}
 	m := readText(f.t, c)
-	if m.Type != "ready" || len(m.Session) < 16 {
+	if m.Type != "ready" {
 		f.t.Fatalf("not ready: %+v", m)
 	}
-	return c, m.Session
+	return c
 }
 
 func TestTerminalConsoleRelay(t *testing.T) {
 	f := newTermFixture(t, nil)
-	c, _ := f.openConsole("kali")
+	c := f.openConsole("kali")
 	ctx := context.Background()
 	if err := c.Write(ctx, websocket.MessageBinary, wire.Data([]byte("id\n"))); err != nil {
 		t.Fatal(err)
@@ -583,7 +571,7 @@ func TestTerminalConsolesPerClient(t *testing.T) {
 
 func TestTerminalLiveCheckClosesAConsoleWhenAccessIsLost(t *testing.T) {
 	f := newTermFixture(t, nil)
-	c, _ := f.openConsole("kali")
+	c := f.openConsole("kali")
 	if n := f.h.CheckLive(); n != 0 {
 		t.Fatalf("closed %d while allowed", n)
 	}
@@ -628,7 +616,7 @@ func TestTerminalLiveCheckClosesAConsoleWhenAccessIsLost(t *testing.T) {
 
 func TestTerminalFlowControlHoldsTheShellBack(t *testing.T) {
 	f := newTermFixture(t, nil)
-	c, _ := f.openConsole("kali")
+	c := f.openConsole("kali")
 	ctx := context.Background()
 	chunk := bytes.Repeat([]byte("a"), wire.MaxData)
 	// the fake service answers each data frame with the same size; send more than the window without reading or acknowledging
@@ -655,137 +643,6 @@ func TestTerminalFlowControlHoldsTheShellBack(t *testing.T) {
 	}
 	if got < outputWindow-wire.MaxData {
 		t.Fatalf("only %d bytes, the window was not used", got)
-	}
-}
-
-// ---- files ----
-
-func (f *termFixture) put(token, path string, body []byte, hdr map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("PUT", "http://"+termHost+"/files?session="+token+"&path="+path, bytes.NewReader(body))
-	req.Host = termHost
-	req.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
-	req.Header.Set("Origin", "http://"+termHost)
-	for k, v := range hdr {
-		req.Header.Set(k, v)
-	}
-	rec := httptest.NewRecorder()
-	f.h.ServeHTTP(rec, req)
-	return rec
-}
-
-func TestTerminalUploadAndDownload(t *testing.T) {
-	f := newTermFixture(t, nil)
-	_, token := f.openConsole("kali")
-	content := bytes.Repeat([]byte("0123456789"), 4000)
-	if rec := f.put(token, "/tmp/a.bin", content, nil); rec.Code != 204 {
-		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
-	}
-	f.svc.mu.Lock()
-	got := f.svc.files["/tmp/a.bin"]
-	f.svc.mu.Unlock()
-	if !bytes.Equal(got, content) {
-		t.Fatalf("the service got %d bytes", len(got))
-	}
-	rec := f.get("/files?session="+token+"&path=/tmp/a.bin", map[string]string{"Sec-Fetch-Site": "same-origin"})
-	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), content) {
-		t.Fatalf("download: %d, %d bytes", rec.Code, rec.Body.Len())
-	}
-	h := rec.Header()
-	if h.Get("Content-Type") != "application/octet-stream" || h.Get("X-Content-Type-Options") != "nosniff" ||
-		!strings.HasPrefix(h.Get("Content-Disposition"), "attachment;") || h.Get("Content-Length") != "40000" {
-		t.Fatalf("headers: %v", h)
-	}
-	// the transfers spent the console's budget: 2 x 40000 of 64 MiB
-	sess := f.h.terminal.session(token)
-	if used := f.h.terminal.cfg.MaxSession - sess.budget.Load(); used != 80000 {
-		t.Fatalf("budget used %d", used)
-	}
-}
-
-func TestTerminalFileRefusals(t *testing.T) {
-	f := newTermFixture(t, func(c *TerminalConfig) { c.MaxFile = 1000; c.MaxSession = 1500 })
-	_, token := f.openConsole("kali")
-
-	if rec := f.put("0000", "/tmp/a", []byte("x"), nil); rec.Code != 404 {
-		t.Errorf("unknown token: %d", rec.Code)
-	}
-	if rec := f.put(token, "/tmp/a", []byte("x"), map[string]string{"Origin": "http://evil.example.net"}); rec.Code != 403 {
-		t.Errorf("foreign origin: %d", rec.Code)
-	}
-	if rec := f.put(token, "/tmp/a", []byte("x"), map[string]string{"Origin": ""}); rec.Code != 403 {
-		t.Errorf("no origin: %d", rec.Code)
-	}
-	if rec := f.put(token, "/tmp/a", bytes.Repeat([]byte("x"), 1001), nil); rec.Code != 413 {
-		t.Errorf("over the file limit: %d", rec.Code)
-	}
-	for _, p := range []string{"relative", "/", "/tmp/../etc/passwd", "/tmp//x", "/tmp/a\nb", ""} {
-		if rec := f.put(token, strings.ReplaceAll(p, "\n", "%0A"), []byte("x"), nil); rec.Code != 422 {
-			t.Errorf("path %q: %d", p, rec.Code)
-		}
-	}
-	// 1000 fits, a second 1000 does not (1500 per console); a refused one gives its bytes back
-	if rec := f.put(token, "/tmp/one", bytes.Repeat([]byte("x"), 1000), nil); rec.Code != 204 {
-		t.Fatalf("first: %d", rec.Code)
-	}
-	if rec := f.put(token, "/tmp/two", bytes.Repeat([]byte("x"), 1000), nil); rec.Code != 413 {
-		t.Errorf("over the session limit: %d", rec.Code)
-	}
-	if rec := f.put(token, "/tmp/three", bytes.Repeat([]byte("x"), 500), nil); rec.Code != 204 {
-		t.Errorf("what is left of the budget: %d", rec.Code)
-	}
-	// downloads
-	if rec := f.get("/files?session="+token+"&path=/missing", nil); rec.Code != 404 {
-		t.Errorf("missing file: %d", rec.Code)
-	}
-	if rec := f.get("/files?session="+token+"&path=/tmp/one", map[string]string{"Sec-Fetch-Site": "cross-site"}); rec.Code != 403 {
-		t.Errorf("cross-site download: %d", rec.Code)
-	}
-	// the token is of one client: another session of the group cannot use it
-	f.cookie = cookieFor(t, "p-u2")
-	if rec := f.get("/files?session="+token+"&path=/tmp/one", nil); rec.Code == 200 {
-		t.Errorf("the token worked for another client")
-	}
-}
-
-func TestTerminalFileNeedsAnOpenConsole(t *testing.T) {
-	f := newTermFixture(t, nil)
-	c, token := f.openConsole("kali")
-	_ = c.Write(context.Background(), websocket.MessageBinary, wire.Close(wire.ReasonClient))
-	deadline := time.Now().Add(2 * time.Second)
-	for f.h.terminal.session(token) != nil && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if rec := f.put(token, "/tmp/a", []byte("x"), nil); rec.Code != 404 {
-		t.Fatalf("a closed console's token worked: %d", rec.Code)
-	}
-}
-
-func TestDownloadName(t *testing.T) {
-	for in, want := range map[string]string{
-		"/tmp/report.txt":                  "report.txt",
-		"/tmp/a b;c\"d":                    "a_b_c_d",
-		"/tmp/.hidden":                     "hidden",
-		"/tmp/..":                          "download",
-		"/tmp/x\r\nSet-Cookie: a=":         "x__Set-Cookie__a_",
-		"/tmp/файл.txt":                    "____.txt",
-		"/":                                "download",
-		"/tmp/" + strings.Repeat("a", 300): strings.Repeat("a", 100),
-	} {
-		if got := downloadName(in); got != want {
-			t.Errorf("%q -> %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestSessionBudgetIsNeverNegative(t *testing.T) {
-	var s consoleSession
-	s.budget.Store(100)
-	if !s.reserve(60) || s.reserve(60) || !s.reserve(40) || s.reserve(1) {
-		t.Fatal("reserve")
-	}
-	s.refund(10)
-	if !s.reserve(10) {
-		t.Fatal("refund")
 	}
 }
 
@@ -836,7 +693,7 @@ func TestTerminalBadFirstMessage(t *testing.T) {
 
 func TestTerminalIdleClosesTheConsole(t *testing.T) {
 	f := newTermFixture(t, func(c *TerminalConfig) { c.Idle = 150 * time.Millisecond })
-	c, _ := f.openConsole("kali")
+	c := f.openConsole("kali")
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	for {
@@ -855,19 +712,14 @@ func TestTerminalIdleClosesTheConsole(t *testing.T) {
 	}
 }
 
-// Every open request the proxy sends, console and files, carries a signature the service accepts; without a key the console does not open.
+// Every open request the proxy sends carries a signature the service accepts; without a key the console does not open.
 func TestTerminalSignsEveryOpenRequest(t *testing.T) {
 	f := newTermFixture(t, nil)
-	_, token := f.openConsole("kali")
-	if rec := f.put(token, "/tmp/a", []byte("x"), nil); rec.Code != 204 {
-		t.Fatalf("upload: %d", rec.Code)
-	}
-	if rec := f.get("/files?session="+token+"&path=/tmp/a", nil); rec.Code != 200 {
-		t.Fatalf("download: %d", rec.Code)
-	}
+	f.openConsole("kali")
+	f.openConsole("kali")
 	f.svc.mu.Lock()
 	defer f.svc.mu.Unlock()
-	if len(f.svc.opens) != 3 {
+	if len(f.svc.opens) != 2 {
 		t.Fatalf("%d opens", len(f.svc.opens))
 	}
 	for _, o := range f.svc.opens {
@@ -921,41 +773,5 @@ func TestEndpointDirectory(t *testing.T) {
 		if got != want || ok != (want != "") {
 			t.Errorf("node %q: %q %v, want %q", node, got, ok, want)
 		}
-	}
-}
-
-// File transfer is the author's option, off by default. A console of a device without it refuses put and get at the proxy, with a code the
-// page can show, and the service is never called; the page has no upload or download controls. With it, both work (TestTerminalUploadAndDownload).
-func TestTerminalFilesOffIsRefusedAtTheProxy(t *testing.T) {
-	f := newTermFixture(t, nil)
-	host := termHostFor("lab1", "nofiles")
-	if rec := f.getHost(host, "/", nil); rec.Code != 200 || strings.Contains(rec.Body.String(), `id="upload"`) || strings.Contains(rec.Body.String(), `id="download"`) || strings.Contains(rec.Body.String(), `class="files"`) {
-		t.Fatalf("page of a console without files: %d, controls present", rec.Code)
-	}
-	if rec := f.get("/", nil); !strings.Contains(rec.Body.String(), `id="upload"`) || !strings.Contains(rec.Body.String(), `id="download"`) {
-		t.Fatal("the page of a console with files has no controls")
-	}
-	_, token := f.openConsole("nofiles")
-	f.svc.mu.Lock()
-	opensBefore := len(f.svc.opens)
-	f.svc.mu.Unlock()
-
-	put := httptest.NewRequest("PUT", "http://"+host+"/files?session="+token+"&path=/tmp/a", bytes.NewReader([]byte("x")))
-	put.Host = host
-	put.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
-	put.Header.Set("Origin", "http://"+host)
-	rec := httptest.NewRecorder()
-	f.h.ServeHTTP(rec, put)
-	if rec.Code != 403 || !strings.Contains(rec.Body.String(), wire.CodeFilesOff) || rec.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
-	}
-	rec = f.getHost(host, "/files?session="+token+"&path=/tmp/a", map[string]string{"Sec-Fetch-Site": "same-origin"})
-	if rec.Code != 403 || !strings.Contains(rec.Body.String(), wire.CodeFilesOff) {
-		t.Fatalf("download: %d %s", rec.Code, rec.Body.String())
-	}
-	f.svc.mu.Lock()
-	defer f.svc.mu.Unlock()
-	if len(f.svc.opens) != opensBefore {
-		t.Fatalf("the service was called %d times for refused transfers", len(f.svc.opens)-opensBefore)
 	}
 }
