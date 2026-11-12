@@ -72,7 +72,20 @@ func failedResult(ref *protobuf.ItemRef, err error) *protobuf.ItemResult {
 	if apierrors.IsNotFound(err) {
 		return &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_NOT_FOUND, Error: msg}
 	}
-	return &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_FAILED, Error: msg, Retryable: isRetryable(err), Reason: reasonOf(err)}
+	res := &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_FAILED, Error: msg, Retryable: isRetryable(err), Reason: reasonOf(err)}
+	// A failure that is a wait carries it as a number: the RetryInfo detail of the status becomes ItemResult.retry_after (the text stays for
+	// people), and the item is marked as one worth repeating.
+	if st, ok := status.FromError(err); ok {
+		for _, d := range st.Details() {
+			if ri, ok := d.(*errdetails.RetryInfo); ok && ri.GetRetryDelay() != nil {
+				res.RetryAfter = ri.GetRetryDelay()
+				res.Retryable = true
+				res.Reason = client.ReasonCooldown
+				break
+			}
+		}
+	}
+	return res
 }
 
 // notReadyError is a LabGroup whose namespace the operator has not created yet.

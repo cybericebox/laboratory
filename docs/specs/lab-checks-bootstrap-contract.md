@@ -86,6 +86,8 @@ Order of expectations (for the checker, not enforced here): all parts of a check
 
 `RunChecks` takes `(lab_group, lab, check_ids[])` items and answers acceptance per lab with `BatchResult` (`UPDATED` = recorded). Refused per lab (`FAILED`): the lab has no checks, an id is unknown or not `manualRun`, no check allows a manual run, the lab is retired or terminating. `NOT_FOUND`: no such lab. Refused as a whole (`FAILED_PRECONDITION`): the checks option is off.
 
+Cooldown wait is a number, not only text. A manual run inside the cooldown after the previous one is refused with `RESOURCE_EXHAUSTED` (text for people: "wait N seconds before the next manual run of this lab") and the status carries the standard detail `google.rpc.RetryInfo{retry_delay}`: the least time to wait, rounded up to a whole second, never below the exact wait. Because a batch answer drops status details, the same value is in the per-lab result: `ItemResult.retry_after` (`google.protobuf.Duration`, field 8), with `retryable = true` and the machine reason `COOLDOWN` (`client.ReasonCooldown`). `retry_after` is set only for the cooldown; a caller must not parse the text. Other numbers: the ceiling on the time limit is already a number in `GetFeatures` (`checks.max_time_limit_seconds`) and its refusal is a fixed `INVALID_ARGUMENT`; the per-lab "busy" refusal has no number in it (the caller retries later).
+
 Mechanism: the agent writes the annotation `laboratory.cybericebox.com/run-checks` on the Lab: `{"token":N,"ids":["a","b"]}`.
 
 - `token` grows by one per accepted request: `max(previous token, status.checksRunAck) + 1`, written with an optimistic update (retry on conflict), so concurrent calls never share a token.

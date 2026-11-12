@@ -1,5 +1,7 @@
 syntax = "proto3";
 package labmanager;
+
+import "google/protobuf/duration.proto";
 option go_package = "github.com/cybericebox/laboratory/pkg/agent/protobuf";
 
 service LabManager {
@@ -193,12 +195,16 @@ message ItemResult {
   // LabGroup namespace is not ready yet).
   bool retryable = 4;
   // A machine code for a FAILED item, when the failure has one: RESERVATION_REQUIRED | RESERVATION_NOT_FOUND |
-  // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA. Empty otherwise (error is the text).
+  // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA | COOLDOWN. Empty otherwise (error is the text).
   string reason = 5;
   // Set by CreateLabGroups for an item that was created or exists: the sizes assigned to the group's own pods (from expected_users /
   // expected_labs, the defaults, or the sizes sent), so the caller sees what the counts became.
   PodSize vpn_size = 6;
   PodSize gateway_size = 7;
+  // The least time to wait before the same call can succeed, for a FAILED item whose failure is a wait (reason COOLDOWN: RunChecks inside the
+  // cooldown between manual runs of a lab). The same value is the retry_delay of a google.rpc.RetryInfo detail of the status the call raised
+  // inside the agent, so a caller reads a number and parses no text. Unset otherwise.
+  google.protobuf.Duration retry_after = 8;
 }
 
 message BatchResult {repeated ItemResult results = 1;}
