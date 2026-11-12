@@ -747,6 +747,13 @@ spec:
                   - name
                   type: object
                 type: array
+              deviceNodes:
+                description: |-
+                  DeviceNodes are the nodes the devices of the lab run on now (the sorted, distinct Device.status.nodeName). Written by the operator
+                  only: the admission policy lets the lab checker of a node write the results of a lab only when its own node is listed here.
+                items:
+                  type: string
+                type: array
               devices:
                 items:
                   description: DeviceRef summarises a materialised Device's readiness.

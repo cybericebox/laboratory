@@ -141,13 +141,17 @@ type LabStatus struct {
 	// +optional
 	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`
 	// +optional
-	Resources   *RuntimeAllocation `json:"resources,omitempty"`
-	Phase       Phase              `json:"phase,omitempty"`
-	VPN         LabNetworkStatus   `json:"vpn,omitempty"`
-	Internet    LabNetworkStatus   `json:"internet,omitempty"`
-	Devices     []DeviceRef        `json:"devices,omitempty"`
-	Connections []ConnectionRef    `json:"connections,omitempty"`
-	Access      []AccessEntry      `json:"access,omitempty"`
+	Resources *RuntimeAllocation `json:"resources,omitempty"`
+	Phase     Phase              `json:"phase,omitempty"`
+	VPN       LabNetworkStatus   `json:"vpn,omitempty"`
+	Internet  LabNetworkStatus   `json:"internet,omitempty"`
+	Devices   []DeviceRef        `json:"devices,omitempty"`
+	// DeviceNodes are the nodes the devices of the lab run on now (the sorted, distinct Device.status.nodeName). Written by the operator
+	// only: the admission policy lets the lab checker of a node write the results of a lab only when its own node is listed here.
+	// +optional
+	DeviceNodes []string        `json:"deviceNodes,omitempty"`
+	Connections []ConnectionRef `json:"connections,omitempty"`
+	Access      []AccessEntry   `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
 	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`

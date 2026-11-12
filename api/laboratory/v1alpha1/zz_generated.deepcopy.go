@@ -1841,6 +1841,11 @@ func (in *LabStatus) DeepCopyInto(out *LabStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.DeviceNodes != nil {
+		in, out := &in.DeviceNodes, &out.DeviceNodes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Connections != nil {
 		in, out := &in.Connections, &out.Connections
 		*out = make([]ConnectionRef, len(*in))

@@ -90,3 +90,28 @@ func TestCheckerSecretAccessIsOneRolePerLab(t *testing.T) {
 		t.Fatal("a Role was made with the checker off")
 	}
 }
+
+// Lab.status.deviceNodes is the sorted, distinct set of the nodes of the devices now; a device that has not been placed adds nothing, and a
+// device that moved is its new node only.
+func TestDeviceNodesFollowTheDevices(t *testing.T) {
+	dev := func(node string) laboratoryv1alpha1.Device {
+		d := laboratoryv1alpha1.Device{}
+		d.Status.NodeName = node
+		return d
+	}
+	if got := nodesOfDevices(nil); len(got) != 0 {
+		t.Fatalf("no devices: %v", got)
+	}
+	devices := []laboratoryv1alpha1.Device{dev("b"), dev(""), dev("a"), dev("b")}
+	if got := nodesOfDevices(devices); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("got %v", got)
+	}
+	devices[0] = dev("c") // one device moved from b to c; the other one is still on b
+	if got := nodesOfDevices(devices); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("got %v", got)
+	}
+	devices[3] = dev("c") // the last one left b
+	if got := nodesOfDevices(devices); !reflect.DeepEqual(got, []string{"a", "c"}) {
+		t.Fatalf("got %v", got)
+	}
+}

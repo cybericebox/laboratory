@@ -2,6 +2,8 @@ package laboratory
 
 import (
 	"context"
+	"slices"
+	"sort"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -63,4 +65,19 @@ func (r *LabReconciler) ensureCheckerSecretAccess(ctx context.Context, lab *labo
 		return controllerutil.SetControllerReference(lab, binding, r.Scheme)
 	})
 	return err
+}
+
+// nodesOfDevices is the sorted, distinct set of the nodes the devices run on at this moment (Lab.status.deviceNodes). A device that
+// moves is simply recomputed: its new node is listed as soon as the Device reports it, and the old one is dropped when no other device
+// of the lab is there. The lab checker of a node may write the results of a lab only while its node is in this set; a checker whose
+// node was just added is refused for a moment and writes again (its status write is retried).
+func nodesOfDevices(devices []laboratoryv1alpha1.Device) []string {
+	var out []string
+	for i := range devices {
+		if n := devices[i].Status.NodeName; n != "" {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return slices.Compact(out)
 }

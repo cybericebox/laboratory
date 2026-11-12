@@ -1,7 +1,8 @@
 {{- if and .Values.checks.enabled .Values.operator.admissionPolicy.enabled }}
 {{- /*
-RBAC cannot say "only these fields" or "only the Lease of this node". These policies do, for the checker's ServiceAccount (the node name
-is in the bound token of its pod, as for the node-agent).
+RBAC cannot say "only these fields", "only the Lease of this node" or "only the labs of this node". These policies do, for the checker's
+ServiceAccount (the node name is in the bound token of its pod, as for the node-agent). The labs of a node are the ones whose
+status.deviceNodes, which only the operator writes, lists it; the checker may not change that field (the second validation).
 */ -}}
 {{- $checker := printf "system:serviceaccount:%s:laboratory-checker" .Release.Namespace }}
 apiVersion: admissionregistration.k8s.io/v1
@@ -31,6 +32,9 @@ spec:
   validations:
     - expression: "variables.ownNode != '' && object.spec == oldObject.spec && object.metadata.uid == oldObject.metadata.uid && object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) && object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
       message: "the checker may change only the status of a Lab, from a bound node"
+      reason: Forbidden
+    - expression: "variables.ownNode in variables.oldStatus.?deviceNodes.orValue([])"
+      message: "the checker may write the results of a lab only from a node that runs one of its devices (status.deviceNodes, written by the operator)"
       reason: Forbidden
     - expression: "variables.newStatus.all(k, k in ['checks', 'checksRunAck'] || (k in variables.oldStatus && variables.oldStatus[k] == variables.newStatus[k])) && variables.oldStatus.all(k, k in ['checks', 'checksRunAck'] || k in variables.newStatus)"
       message: "the checker may change only status.checks and status.checksRunAck"

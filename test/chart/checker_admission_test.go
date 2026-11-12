@@ -78,9 +78,18 @@ func TestCheckerAdmissionPolicies(t *testing.T) {
 	if err := admin.Create(ctx, lab); err != nil {
 		t.Fatal(err)
 	}
-	mergeStatus := func(c client.Client, body string) error {
-		return c.Status().Patch(ctx, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "labs"}}, client.RawPatch(types.MergePatchType, []byte(body)))
+	// The operator records where the devices of a lab run (here as the admin: the policy matches the checker only).
+	other := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "labs"}}
+	if err := admin.Create(ctx, other); err != nil {
+		t.Fatal(err)
 	}
+	patchLab := func(c client.Client, name, body string) error {
+		return c.Status().Patch(ctx, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "labs"}}, client.RawPatch(types.MergePatchType, []byte(body)))
+	}
+	if err := patchLab(admin, "lab", `{"status":{"deviceNodes":["node-a","node-c"]}}`); err != nil {
+		t.Fatal(err)
+	}
+	mergeStatus := func(c client.Client, body string) error { return patchLab(c, "lab", body) }
 	// wait until the policy is enforced
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -106,6 +115,10 @@ func TestCheckerAdmissionPolicies(t *testing.T) {
 		{"the conditions", "node-a", `{"status":{"conditions":[{"type":"Ready","status":"True","reason":"x","message":"x","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}`, false},
 		{"a result together with the phase", "node-a", `{"status":{"phase":"Failed","checks":[{"id":"a","state":"error"}]}}`, false},
 		{"no node in the token", "", `{"status":{"checksRunAck":5}}`, false},
+		{"a result from a node of the lab that is not the first", "node-c", `{"status":{"checksRunAck":4}}`, true},
+		{"a result from a node that runs no device of the lab", "node-b", `{"status":{"checks":[{"id":"a","state":"passed","firstPassedMs":1,"changedMs":1}]}}`, false},
+		{"an acknowledgement from a node that runs no device of the lab", "node-b", `{"status":{"checksRunAck":9}}`, false},
+		{"the list of nodes itself", "node-a", `{"status":{"deviceNodes":["node-a","node-b"]}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := mergeStatus(as(tc.node), tc.body)
@@ -116,6 +129,10 @@ func TestCheckerAdmissionPolicies(t *testing.T) {
 				t.Fatalf("must be forbidden: %v", err)
 			}
 		})
+	}
+	// a lab whose nodes are not recorded (yet) accepts nothing from any checker
+	if err := patchLab(as("node-a"), "other", `{"status":{"checksRunAck":1}}`); !apierrors.IsForbidden(err) {
+		t.Fatalf("a lab with no recorded nodes must be forbidden: %v", err)
 	}
 	lease := func(name string) *coordinationv1.Lease {
 		return &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "laboratory-system"}}
