@@ -201,6 +201,14 @@ const (
 	RoleProxyReportsName    = "laboratory-proxy-reports"
 	ProxyReportsBindingName = "laboratory-proxy-reports-binding"
 
+	// RoleCheckerSecretsName is the ClusterRole that lets the lab checker read the Secrets of a lab group namespace (the checks document of a
+	// lab, `<lab>-checks`) and nothing else; CheckerSecretsBindingName is the RoleBinding the operator makes with each namespace. The checker
+	// has no Secret right cluster-wide.
+	RoleCheckerSecretsName    = "laboratory-checker-secrets"
+	CheckerSecretsBindingName = "laboratory-checker-secrets"
+	// CheckerServiceAccount is the ServiceAccount of the lab checker, in SystemNamespace.
+	CheckerServiceAccount = "laboratory-checker"
+
 	// AgentRoleBindingName is the RoleBinding created in each LabGroup namespace
 	// that grants the management-agent ServiceAccount access via RoleAgentName,
 	// gated by LabGroupReconciler.AgentEnabled.

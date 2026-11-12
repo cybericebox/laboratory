@@ -255,6 +255,7 @@ func Run() {
 		LabTolerations:          labTolerations,
 		AgentEnabled:            cfg.AgentEnabled,
 		ProxyEnabled:            cfg.ProxyEnabled,
+		CheckerEnabled:          cfg.ChecksEnabled,
 		AgentSA: types.NamespacedName{
 			Namespace: cfg.AgentServiceNamespace,
 			Name:      cfg.AgentServiceAccount,

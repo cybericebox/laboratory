@@ -112,6 +112,9 @@ type LabGroupReconciler struct {
 	AgentSA      types.NamespacedName
 	// ProxyEnabled gates the RoleBinding of the L7 proxy's traffic reports in each group namespace.
 	ProxyEnabled bool
+	// CheckerEnabled gates the RoleBinding that lets the lab checker read Secrets in each group namespace (the chart's checks.enabled). With it
+	// off the binding is removed, so a checker that is switched off leaves no right behind.
+	CheckerEnabled bool
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
@@ -205,6 +208,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if err := r.ensureProxyReportsBinding(ctx, ns); err != nil {
 		logger.Error(err, "ensure proxy reports role binding")
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureCheckerSecretsBinding(ctx, ns); err != nil {
+		logger.Error(err, "ensure checker secrets role binding")
 		return ctrl.Result{}, err
 	}
 
@@ -1048,6 +1055,36 @@ func (r *LabGroupReconciler) ensureProxyReportsBinding(ctx context.Context, ns s
 		ObjectMeta: metav1.ObjectMeta{Name: names.ProxyReportsBindingName, Namespace: ns},
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleProxyReportsName},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "laboratory-proxy", Namespace: names.ProxyNamespace}},
+	})
+}
+
+// ensureCheckerSecretsBinding lets the lab checker read Secrets in this group namespace (and in no other): the right is a RoleBinding here,
+// made with the namespace and gone with it, not a cluster-wide permission. The namespaces of the groups hold only lab-level Secrets (the
+// checks, the device environment, the VPN keys, the tenant pull secret). With the checker off the binding is removed. It is made for
+// every existing group on the first reconcile after an upgrade, like the other bindings.
+func (r *LabGroupReconciler) ensureCheckerSecretsBinding(ctx context.Context, ns string) error {
+	key := types.NamespacedName{Name: names.CheckerSecretsBindingName, Namespace: ns}
+	var existing rbacv1.RoleBinding
+	err := r.Get(ctx, key, &existing)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	found := err == nil
+	if !r.CheckerEnabled {
+		if found {
+			if err := r.Delete(ctx, &existing); err != nil && !errors.IsNotFound(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	if found {
+		return nil
+	}
+	return r.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: ns},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleCheckerSecretsName},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: names.CheckerServiceAccount, Namespace: names.SystemNamespace}},
 	})
 }
 

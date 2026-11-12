@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"sync"
 )
 
 const (
@@ -74,7 +75,26 @@ func ValidateNewDeviceName(name string) error {
 			return fmt.Errorf("device name %q is reserved by the platform", name)
 		}
 	}
+	reservedHostsMu.RLock()
+	defer reservedHostsMu.RUnlock()
+	if reservedHosts[name] {
+		return fmt.Errorf("device name %q is reserved by the platform", name)
+	}
 	return nil
+}
+
+var (
+	reservedHostsMu sync.RWMutex
+	reservedHosts   = map[string]bool{}
+)
+
+// ReserveHost makes a host label of the platform's own (the console's, terminal.host) a name no new device may have. The web host of a device
+// is <device>-<code>, so a host label with a hyphen and a code-shaped tail is refused by the chart; this covers the one that a device
+// without a code (an old one) or a device named like the whole label could still make.
+func ReserveHost(label string) {
+	reservedHostsMu.Lock()
+	reservedHosts[label] = true
+	reservedHostsMu.Unlock()
 }
 
 // WebHostLabel is the first DNS label of a web-exposed device, both as the name
