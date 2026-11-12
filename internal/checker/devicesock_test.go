@@ -74,13 +74,17 @@ func TestEveryObservationGoesThroughTheSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	for name, part := range map[string]labchecks.Part{
-		"built-in": {KernelParam: &labchecks.KernelParamPart{Name: "net.ipv4.ip_forward", Equals: sp("1")}},
-		"file":     {File: &labchecks.FilePart{Path: "/etc/motd", ContentContains: sp("hello")}},
-		"custom":   {Custom: &labchecks.CustomPart{Command: []string{"/bin/true"}, OutputContains: sp("out")}},
+	// In a fixed order: the first request is the one the assertions below look at.
+	for _, c := range []struct {
+		name string
+		part labchecks.Part
+	}{
+		{"built-in", labchecks.Part{KernelParam: &labchecks.KernelParamPart{Name: "net.ipv4.ip_forward", Equals: sp("1")}}},
+		{"file", labchecks.Part{File: &labchecks.FilePart{Path: "/etc/motd", ContentContains: sp("hello")}}},
+		{"custom", labchecks.Part{Custom: &labchecks.CustomPart{Command: []string{"/bin/true"}, OutputContains: sp("out")}}},
 	} {
-		if r := RunCheck(context.Background(), check(part), obs); r.Outcome != Passed {
-			t.Fatalf("%s: %+v", name, r)
+		if r := RunCheck(context.Background(), check(c.part), obs); r.Outcome != Passed {
+			t.Fatalf("%s: %+v", c.name, r)
 		}
 	}
 	if len(*seen) != 3 {
