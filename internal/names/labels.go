@@ -21,6 +21,10 @@ const (
 	// sees the environment, never the labels).
 	LabelLabUID    = LabelPrefix + "lab-uid"
 	LabelDeviceUID = LabelPrefix + "device-uid"
+	// LabelTerminal is "true" on the pod of a device whose lab asks for a console. The device access service reads it from the sandbox
+	// of the pod in the container runtime and refuses every device without it, so the proxy is not the only place that knows which
+	// devices have a console.
+	LabelTerminal = LabelPrefix + "terminal"
 	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
@@ -174,6 +178,10 @@ var ReservedDeviceNames = pubnames.ReservedDeviceNames
 // NetworkPolicy must admit this exact value (the proxy split renamed it away
 // from the old "proxy").
 const ProxyL7App = "laboratory-proxy-l7"
+
+// DeviceAccessApp is the `app` label value on the pods of the device access service (one per lab node). The network policy of
+// the L7 proxy and the one of the service itself select it.
+const DeviceAccessApp = "laboratory-device-access"
 
 // WGDemuxApp is the `app` label value on the WireGuard demux pods (namespace WGNamespace); the VPN pods admit WireGuard from them.
 const WGDemuxApp = "laboratory-proxy-wg"

@@ -8,6 +8,7 @@ require (
 	github.com/bits-and-blooms/bitset v1.25.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/cilium/ebpf v0.22.0
+	github.com/coder/websocket v1.8.15
 	github.com/containerd/containerd/api v1.12.0
 	github.com/containerd/containerd/v2 v2.4.1
 	github.com/containerd/continuity v0.5.0
@@ -109,6 +110,7 @@ require (
 	github.com/josharian/native v1.2.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mdlayher/genetlink v1.4.0 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/packet v1.2.0 // indirect
