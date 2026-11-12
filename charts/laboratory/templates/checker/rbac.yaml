@@ -29,8 +29,8 @@ rules:
   - apiGroups: [ "" ]
     resources: [ pods ]
     verbs: [ get, list, watch ]
-  # Secrets are NOT readable cluster-wide: the checks document of a lab (Secret <lab>-checks) is read through the ClusterRole
-  # laboratory-checker-secrets below, which the operator binds in each lab group namespace with the namespace (a RoleBinding there).
+  # Secrets are NOT readable cluster-wide, nor namespace-wide: the checks document of a lab (Secret <lab>-checks) is read through a Role
+  # the operator makes for that lab alone (get, that one Secret name; checker_access.go), owned by the Lab. This chart grants nothing here.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -46,20 +46,6 @@ subjects:
   - kind: ServiceAccount
     name: laboratory-checker
     namespace: {{ .Release.Namespace }}
----
-# What the checker may read in a lab group namespace: one GET of the Secret <lab>-checks when the lab has a pod on the node and again when it
-# was rewritten. get only: no list, no watch. The ClusterRole grants nothing by itself: it is bound by RoleBindings the operator makes in the
-# group namespaces, which hold only lab-level Secrets (the checks, the device environment, the VPN keys, the tenant pull secret).
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: laboratory-checker-secrets
-  labels:
-    {{- include "laboratory.labels" . | nindent 4 }}
-rules:
-  - apiGroups: [ "" ]
-    resources: [ secrets ]
-    verbs: [ get ]
 ---
 # The keepalive: one Lease per node in the release namespace. create cannot be limited to a name; the admission policy below does that.
 apiVersion: rbac.authorization.k8s.io/v1

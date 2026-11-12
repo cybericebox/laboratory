@@ -201,10 +201,10 @@ const (
 	RoleProxyReportsName    = "laboratory-proxy-reports"
 	ProxyReportsBindingName = "laboratory-proxy-reports-binding"
 
-	// RoleCheckerSecretsName is the ClusterRole that lets the lab checker read the Secrets of a lab group namespace (the checks document of a
-	// lab, `<lab>-checks`) and nothing else; CheckerSecretsBindingName is the RoleBinding the operator makes with each namespace. The checker
-	// has no Secret right cluster-wide.
-	RoleCheckerSecretsName    = "laboratory-checker-secrets"
+	// The lab checker reads one Secret of a lab, `<lab>-checks`, and nothing else: the operator makes a Role (get, that one name) and a
+	// RoleBinding to the checker's ServiceAccount, both named CheckerLabRoleName(lab), for each lab with checks, owned by the Lab.
+	// CheckerSecretsBindingName is the namespace-wide RoleBinding of the earlier design (a ClusterRole of the same name, now gone);
+	// the operator only removes it.
 	CheckerSecretsBindingName = "laboratory-checker-secrets"
 	// CheckerServiceAccount is the ServiceAccount of the lab checker, in SystemNamespace.
 	CheckerServiceAccount = "laboratory-checker"
@@ -263,3 +263,6 @@ func UserLabels(in map[string]string) map[string]string {
 	}
 	return out
 }
+
+// CheckerLabRoleName is the name of the Role and the RoleBinding that let the lab checker read the checks Secret of one lab.
+func CheckerLabRoleName(lab string) string { return "checker-checks-" + lab }

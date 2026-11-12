@@ -168,40 +168,21 @@ func TestProxyReportsBindingIsMadeInTheGroupNamespace(t *testing.T) {
 	}
 }
 
-// The checker reads Secrets only in the group namespaces, through a RoleBinding the operator makes there (and removes when the checker is off).
-func TestCheckerSecretsBindingIsMadeInTheGroupNamespace(t *testing.T) {
+// The namespace-wide RoleBinding of the earlier design is removed from the group namespace.
+func TestLegacyCheckerSecretsBindingIsRemoved(t *testing.T) {
 	ctx := context.Background()
 	s := systemScheme(t)
 	_ = rbacv1.AddToScheme(s)
-	c := fake.NewClientBuilder().WithScheme(s).Build()
-	key := types.NamespacedName{Name: names.CheckerSecretsBindingName, Namespace: "g"}
-	var rb rbacv1.RoleBinding
-
-	off := &LabGroupReconciler{Client: c}
-	if err := off.ensureCheckerSecretsBinding(ctx, "g"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(ctx, key, &rb); err == nil {
-		t.Fatal("checks off, but there is a binding")
-	}
-	on := &LabGroupReconciler{Client: c, CheckerEnabled: true}
-	for i := 0; i < 2; i++ { // idempotent, and made for an existing namespace on the first reconcile after an upgrade
-		if err := on.ensureCheckerSecretsBinding(ctx, "g"); err != nil {
+	legacy := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: "g"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(legacy).Build()
+	r := &LabGroupReconciler{Client: c}
+	for i := 0; i < 2; i++ { // and nothing to do the second time
+		if err := r.removeLegacyCheckerSecretsBinding(ctx, "g"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := c.Get(ctx, key, &rb); err != nil {
-		t.Fatal(err)
-	}
-	if rb.RoleRef.Name != names.RoleCheckerSecretsName || rb.RoleRef.Kind != "ClusterRole" ||
-		len(rb.Subjects) != 1 || rb.Subjects[0].Name != names.CheckerServiceAccount || rb.Subjects[0].Namespace != names.SystemNamespace {
-		t.Fatalf("%+v", rb)
-	}
-	// the checker is switched off later: the right goes
-	if err := off.ensureCheckerSecretsBinding(ctx, "g"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(ctx, key, &rb); err == nil {
-		t.Fatal("the binding stayed after the checker was switched off")
+	var rb rbacv1.RoleBinding
+	if err := c.Get(ctx, types.NamespacedName{Name: names.CheckerSecretsBindingName, Namespace: "g"}, &rb); err == nil {
+		t.Fatal("the namespace-wide binding stayed")
 	}
 }
