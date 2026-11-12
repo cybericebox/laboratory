@@ -85,7 +85,8 @@ func processMatches(p *labchecks.ProcessPart, q probe.Process) bool {
 	if p.Name != nil {
 		name := *p.Name
 		// The kernel keeps 15 characters of the name.
-		if q.Comm != name && q.Arg0 != name && !(len(name) > 15 && q.Comm == name[:15]) {
+		cut := len(name) > 15 && q.Comm == name[:15]
+		if q.Comm != name && q.Arg0 != name && !cut {
 			return false
 		}
 	}
