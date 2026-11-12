@@ -41,7 +41,9 @@ func TestNetnsStoppedIntentRevokesEstablishedBothDirectionsAndPreservesSibling(t
 	scheme := runtime.NewScheme()
 	_ = lab.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
-	a := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "lab-a", Generation: 1}, Spec: lab.LabSpec{VPN: lab.LabNetworkSpec{Enabled: true}}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
+	// The labs may start connections towards the participant (the persistent dialogs below do): since de457a5a that is off unless
+	// spec.vpn.reverseConnections says so.
+	a := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "lab-a", Generation: 1}, Spec: lab.LabSpec{VPN: lab.LabNetworkSpec{Enabled: true, ReverseConnections: true}}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
 	b := a.DeepCopy()
 	b.Name = "b"
 	b.UID = "lab-b"
