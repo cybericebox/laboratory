@@ -20,6 +20,12 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroupclients" ]
     verbs: [ "get", "list", "watch" ]
+{{- if .Values.terminal.enabled }}
+  # The console reads which node a device runs on and its terminal settings.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "devices" ]
+    verbs: [ "get", "list", "watch" ]
+{{- end }}
   # Its request counters (LabTrafficReports) are written through a RoleBinding the operator makes in each group namespace
   # (ClusterRole laboratory-proxy-reports): the proxy has no such right cluster-wide.
 {{- end }}

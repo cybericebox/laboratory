@@ -22,8 +22,16 @@ Ingress:
     for hostNetwork proxy sources on non-Cilium clusters (e.g. Kind).
 
 Egress: kube-dns (vanilla NetworkPolicy — unrelated to Cilium identities)
-plus, via the CiliumNetworkPolicy, kube-apiserver (operator watch/leases)
-and endpoints in LabGroup namespaces only: l7 dials per-device Services in
+plus, via the CiliumNetworkPolicy, kube-apiserver (operator watch/leases),
+the DEVICE pods of LabGroup namespaces (selected by the namespace's group
+label AND the pod's device label, not every pod of the namespace: the VPN
+and gateway pods of a group and anything else there are not reachable) and,
+with the console on, the device access service pods on their one port.
+What the proxy dials in those namespaces, checked in the code: the pod
+behind the Service of an exposed device (internal/proxy/l7/access.go
+Route, the web port of the device); its traffic reports and the report
+preparation go through the API server. Nothing else.
+l7 dials per-device Services in
 namespaces the operator creates dynamically per LabGroup/Lab (see
 internal/proxy/l7/handler.go's ServiceResolver). Those namespaces can't be
 enumerated at chart-authoring time, but the operator stamps each one with
@@ -103,4 +111,17 @@ spec:
         - matchExpressions:
             - key: k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group
               operator: Exists
+            - key: k8s:laboratory.cybericebox.com/device
+              operator: Exists
+{{- if .Values.terminal.enabled }}
+    # The device access service, on its stream port only.
+    - toEndpoints:
+        - matchLabels:
+            app: laboratory-device-access
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.terminal.port | quote }}
+              protocol: TCP
+{{- end }}
 {{- end }}

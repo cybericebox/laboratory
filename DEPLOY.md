@@ -900,6 +900,82 @@ check of the node: a missing state directory is `STATE_DIR_MISSING`) and `.../ch
 Check it: `kubectl -n laboratory-system get ds laboratory-checker`, `kubectl -n laboratory-system get lease -l laboratory.cybericebox.com/checker=true -o yaml`.
 A node where the files of containers cannot be read still runs custom checks and micro-VM devices; its Lease says why.
 
+## Device console (the device access service)
+
+`terminal.enabled: true` (default `false`) switches on the browser console of devices. The management agent reports it in the features
+(`features.terminal.enabled`), so the backend can refuse or hide a console of a lab, and the chart renders the **device access service**: a
+DaemonSet of its own, `laboratory-device-access`, on the lab nodes. With the option off nothing of it is rendered and the proxy has no console
+setting and no extra right. The decisions are in `docs/specs/2026-11-12-device-access-and-checks.md` (sections 1, 3 and 5) in the platform repository.
+
+Path of a console: participant, L7 proxy (authorization), the service on the node of the device, a shell in the device. The browser opens
+`https://<terminal.host>.<operator.baseDomain>/?lab=<lab>&device=<device>` (default host `terminal`; the platform issues the handoff link for
+that host like for any device host). The proxy authorizes exactly as for a web request (the session cookie, the group, the access policy that allows
+the lab, the lab running) and adds that the device has a console. The WebSocket accepts only the page's own `Origin`; the live re-check
+(`proxy.l7.liveCheckInterval`) closes a console whose client lost access. The proxy serves the terminal page itself (xterm.js 6 is embedded in
+the binary, no CDN; no clipboard write, links only `http(s)` on a click, the title is ignored).
+
+| Setting | Meaning |
+|---|---|
+| `terminal.enabled` | the option; renders the DaemonSet, its ServiceAccount, the Cilium policy; gives the proxy the console settings and its two read rights |
+| `terminal.host` (`terminal`) | first label of the console host, reserved: it is never looked up as the Service of a device |
+| `terminal.port` (8080), `terminal.metricsPort` (9102) | stream and metrics ports of the service pod (plain HTTP on the pod network) |
+| `terminal.containerdSocket` (empty = `nodeAgent.criSocket`), `terminal.containerdNamespace` (`k8s.io`) | the runtime socket of the node and the kubelet's containerd namespace |
+| `terminal.fifoDir` (`/run/containerd/fifo`) | host directory for the FIFOs of the execs, mounted at the **same path**; create it on every lab node first. The service owns the subdirectory `cib-device-access` |
+| `terminal.limits.*` | consoles per participant (3), per lab (10), per node (200); file transfers per node (16) and per participant (2); idle timeout (30m); lifetime (8h); largest file (16 MiB); most per console (64 MiB) |
+| `terminal.networkPolicy.enabled` (true) | the Cilium policy of the service. **The chart refuses to render with the console on and this off**; so it does with `proxy.networkPolicy.enabled=false` |
+| `terminal.networkPolicy.metricsFrom` | extra ingress peers for the metrics port; empty means nothing scrapes it |
+| `terminal.securityContext` | `runAsUser`/`runAsGroup` (default 0) and `supplementalGroups` for a non-root run |
+
+**How the service knows a container is a lab device (no Kubernetes API).** The kubelet gives the pod labels to the runtime as the labels of the
+pod's *sandbox* container (not of the app containers). The operator stamps the UIDs of the Lab and of the Device (`laboratory.cybericebox.com/lab-uid`,
+`/device-uid`) and, for a device with a console, `laboratory.cybericebox.com/terminal=true`. The service accepts a request `(namespace, lab, device)`
+only when a sandbox with that namespace, lab and device name, both UIDs, no `laboratory.cybericebox.com/component` label (the VPN and gateway) and
+the console label exists, and then takes the single *running* container of the same pod UID whose name is the device name. Labels are never read from
+an app container: the CRI copies the labels of the image onto it, and the image of a device is written by a participant. It accepts no container id,
+pod name or program path from a caller. The terminal command and user come from the lab (the proxy passes what the Device says, the service validates
+them); they are not secret and not a free choice of the participant.
+
+**The exec.** The process of a console is a copy of the process block of the device container (user, capabilities, `no_new_privs`, environment base,
+working directory, rlimits; seccomp and AppArmor are the container's, applied by the runtime), as the CRI plugin does for `kubectl exec`; only the
+arguments, `TERM`, the terminal and the user are set. The runtime does not clamp capabilities for an exec, so the capabilities are never built from
+scratch (a unit test proves they are never wider than the container's). A named user is looked up *inside* the device by the probe (`probe resolve-user`),
+because the service cannot see the device's file system; the runtime gets numbers only. When a stream ends for any reason (the participant left, the shell
+exited, idle, lifetime, an error, the service stopping) the service kills and deletes the exec and removes its FIFOs; a journal in the FIFO directory lets the
+next start remove execs and FIFOs a crash left behind (containerd does not kill an exec when its client goes away).
+
+**Files.** The console page can upload to and download from the device. The file is read or written by the probe inside the device
+(`probe put`/`probe get`), run through the same exec as the user of the console, so the participant reaches what the shell reaches, never the node. Only
+regular files (a link in the last component, a device node, a FIFO and a directory are refused), streaming with backpressure, at most `maxFileBytes`
+per file and `maxSessionBytes` per console. A download is served as `Content-Type: application/octet-stream`, `Content-Disposition: attachment` with a
+sanitized name, `X-Content-Type-Options: nosniff`, a `sandbox` CSP. A transfer needs the token only the page of an open console receives.
+
+**What it needs on the node, and why.**
+
+| Privilege | Why |
+|---|---|
+| hostPath socket (`nodeAgent.criSocket`) | the native containerd client. **This is the widest right of the pod**: the socket is the full containerd API, root on the node. The service is the only component that holds it; its listener is reachable only from the L7 proxy pods (Cilium) |
+| hostPath `terminal.fifoDir` (a `Directory`) | the client makes the FIFOs and the shim, on the host, opens them by the same path; no mount propagation is needed (the files appear in the same bind mount) |
+| runs as uid 0, **all capabilities dropped**, no privilege escalation, read-only root file system, seccomp `RuntimeDefault` | the socket is root:root 0660 on k0s; root without capabilities needs no DAC override for a file it owns. A non-root run needs the socket's group in `supplementalGroups` and a writable FIFO directory; it is a value, not the default, because the group differs per installation. Pod Security `baseline`/`restricted` refuse hostPath, and SELinux/AppArmor may refuse the socket to a confined container; the release namespace has no such label by default |
+| no host network, PID or IPC; no ServiceAccount token | the proxy dials the pod; the service needs no Kubernetes API |
+| L7 proxy: ClusterRole `devices` get/list/watch | the node a device runs on and its terminal settings (a trimmed cache of the Devices) |
+| L7 proxy: Role in the release namespace, `pods` get/list/watch | the address of the service pod on that node; the cache is limited to that namespace and the label `app=laboratory-device-access` |
+
+**Network.** The Cilium policy of the service admits ingress only from the pods `app=laboratory-proxy-l7` of the proxy namespace on `terminal.port`, and has no
+egress. The egress of the L7 proxy is narrowed to: DNS, the API server, the **device pods** of lab group namespaces (the namespace's group label *and* the pod's
+`laboratory.cybericebox.com/device` label, no longer every pod of the namespace) and, with the console on, the service pods on their one port. What the proxy
+dials in those namespaces is the web port of the pod behind the Service of an exposed device and nothing else (its traffic reports and the report preparation go
+through the API server).
+
+**Logs and metrics.** One log line at the start and one at the end of a stream with metadata only: kind, namespace, lab, device, client and group as the proxy
+knows them (a pseudonym, no address), reason, duration, bytes in and out. No content. Metrics on `terminal.metricsPort`: `device_access_streams_active`,
+`device_access_streams_total{kind,reason}`, `device_access_bytes_total{kind,direction}`, `device_access_refused_total{code}`. Every byte of a stream passes
+one function (`stream.pass`); recording a console could be attached there later and is not built.
+
+**Not run yet.** Everything above was verified by unit tests with a fake runtime, by `helm template`, and by compiling for linux. Nothing was run on a live node:
+first run needs one runc node and one Kata node (`hack/device-access-check.sh`).
+
+Check it: `kubectl -n laboratory-system get ds laboratory-device-access`, then open a console of a lab with `terminal.enabled` in its device template.
+
 ## 6. Uninstall
 
 ```bash

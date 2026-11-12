@@ -25,31 +25,31 @@ import (
 func errorFor(code uint32) string {
 	switch code {
 	case probe.ExitNotFound:
-		return "not-found"
+		return wire.CodeNotFound
 	case probe.ExitNotRegular:
-		return "not-regular"
+		return wire.CodeNotRegular
 	case probe.ExitDenied:
-		return "denied"
+		return wire.CodeDenied
 	}
-	return "io"
+	return wire.CodeIO
 }
 
 func (s *Service) serveFile(ctx context.Context, conn Conn, req wire.OpenRequest) {
 	clean := path.Clean(req.Path)
 	if req.Path == "" || !strings.HasPrefix(req.Path, "/") || strings.ContainsRune(req.Path, 0) || clean != req.Path && clean+"/" != req.Path {
-		s.refuse(ctx, conn, req, "bad-request", errors.New("the path must be absolute and clean"))
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, errors.New("the path must be absolute and clean"))
 		return
 	}
 	if req.Kind == wire.KindPut && (req.Size < 0 || req.Size > s.lim.MaxFile) {
-		s.refuse(ctx, conn, req, "too-big", errors.New("the upload is larger than the limit"))
+		s.refuse(ctx, conn, req, wire.CodeTooBig, errors.New("the upload is larger than the limit"))
 		return
 	}
 	if _, err := CheckSettings(nil, req.User); err != nil {
-		s.refuse(ctx, conn, req, "bad-request", err)
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, err)
 		return
 	}
 	if !s.counter.acquireTransfer(s.lim, clientKey(req)) {
-		s.refuse(ctx, conn, req, "limit", errors.New("too many file transfers"))
+		s.refuse(ctx, conn, req, wire.CodeLimit, errors.New("too many file transfers"))
 		return
 	}
 	defer s.counter.releaseTransfer(clientKey(req))
@@ -61,12 +61,12 @@ func (s *Service) serveFile(ctx context.Context, conn Conn, req wire.OpenRequest
 	}
 	spec, err := s.rt.Spec(ctx, dev.ContainerID)
 	if err != nil || spec.Process == nil {
-		s.refuse(ctx, conn, req, "unavailable", errors.Join(err, errors.New("no container spec")))
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.Join(err, errors.New("no container spec")))
 		return
 	}
 	user, err := s.lookupUser(ctx, dev, spec.Process, req.User)
 	if err != nil {
-		s.refuse(ctx, conn, req, "bad-request", err)
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, err)
 		return
 	}
 	cmd := probe.CommandGet
@@ -75,12 +75,12 @@ func (s *Service) serveFile(ctx context.Context, conn Conn, req wire.OpenRequest
 	}
 	proc, err := ProcessFor(spec.Process, ExecArgs{Args: []string{names.ProbeBinary, cmd, req.Path}, User: user})
 	if err != nil {
-		s.refuse(ctx, conn, req, "unavailable", err)
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, err)
 		return
 	}
 	st := s.newStream(req, s.lim.TransferTimeout)
 	if !s.track(st) {
-		s.refuse(ctx, conn, req, "unavailable", errors.New("shutting down"))
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.New("shutting down"))
 		return
 	}
 	defer s.untrack(st)
@@ -114,7 +114,7 @@ func (s *Service) put(ctx context.Context, conn Conn, st *stream, dev Device, pr
 	stdin, stdinW := newPipe(s.lim.WriteTimeout)
 	ex, err := s.rt.Start(ctx, dev.ContainerID, proc, IO{Stdin: stdin, Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil {
-		s.refuse(ctx, conn, st.req, "unavailable", err)
+		s.refuse(ctx, conn, st.req, wire.CodeUnavailable, err)
 		return
 	}
 	defer s.cleanup(ex, st.req)
@@ -134,7 +134,7 @@ recv:
 		text, msg, err := conn.Read(rctx)
 		cancel()
 		if err != nil {
-			reason, code = wire.ReasonClient, "io"
+			reason, code = wire.ReasonClient, wire.CodeIO
 			if ctx.Err() != nil {
 				reason = wire.ReasonLifetime
 			}
@@ -142,30 +142,30 @@ recv:
 		}
 		typ, payload, perr := wire.Parse(msg)
 		if text || perr != nil {
-			reason, code = wire.ReasonError, "bad-request"
+			reason, code = wire.ReasonError, wire.CodeBadRequest
 			break
 		}
 		switch typ {
 		case wire.TypeData:
 			got += int64(len(payload))
 			if got > st.req.Size {
-				reason, code = wire.ReasonTooBig, "too-big"
+				reason, code = wire.ReasonTooBig, wire.CodeTooBig
 				break recv
 			}
 			st.pass(ToDevice, payload)
 			if err := stdinW.Write(payload); err != nil {
-				reason, code = wire.ReasonStalled, "io"
+				reason, code = wire.ReasonStalled, wire.CodeIO
 				break recv
 			}
 		case wire.TypeClose:
 			break recv
 		default:
-			reason, code = wire.ReasonError, "bad-request"
+			reason, code = wire.ReasonError, wire.CodeBadRequest
 			break recv
 		}
 	}
 	if code == "" && got != st.req.Size {
-		reason, code = wire.ReasonError, "incomplete"
+		reason, code = wire.ReasonError, wire.CodeIncomplete
 	}
 	if code != "" {
 		stdinW.Abort()
@@ -181,9 +181,9 @@ recv:
 			code = errorFor(es.Code)
 		}
 	case <-time.After(s.lim.WriteTimeout):
-		reason, code = wire.ReasonStalled, "io"
+		reason, code = wire.ReasonStalled, wire.CodeIO
 	case <-ctx.Done():
-		reason, code = wire.ReasonLifetime, "io"
+		reason, code = wire.ReasonLifetime, wire.CodeIO
 	}
 	_ = s.reply(conn, wire.OpenReply{OK: code == "", Error: code})
 	st.end(reason)
@@ -263,7 +263,7 @@ func (s *Service) get(ctx context.Context, conn Conn, st *stream, dev Device, pr
 	w := &getWriter{st: st, conn: conn, max: s.lim.MaxFile, header: make(chan int64, 1), gate: make(chan struct{}), ctx: gctx}
 	ex, err := s.rt.Start(gctx, dev.ContainerID, proc, IO{Stdout: w, Stderr: io.Discard})
 	if err != nil {
-		s.refuse(ctx, conn, st.req, "unavailable", err)
+		s.refuse(ctx, conn, st.req, wire.CodeUnavailable, err)
 		return
 	}
 	defer s.cleanup(ex, st.req)
@@ -283,13 +283,13 @@ func (s *Service) get(ctx context.Context, conn Conn, st *stream, dev Device, pr
 			return
 		}
 	case <-ctx.Done():
-		_ = s.reply(conn, wire.OpenReply{Error: "io"})
+		_ = s.reply(conn, wire.OpenReply{Error: wire.CodeIO})
 		st.end(wire.ReasonLifetime)
 		return
 	}
 	if w.bad {
 		close(w.gate)
-		_ = s.reply(conn, wire.OpenReply{Error: "too-big"})
+		_ = s.reply(conn, wire.OpenReply{Error: wire.CodeTooBig})
 		st.end(wire.ReasonTooBig)
 		return
 	}

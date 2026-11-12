@@ -181,7 +181,7 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, claims j
 		if !ok {
 			return
 		}
-		h.terminalSocket(w, r, tg, group)
+		h.terminalSocket(w, r, tg)
 	case r.URL.Path == "/files":
 		h.terminalFile(w, r, claims, client, group)
 	default:

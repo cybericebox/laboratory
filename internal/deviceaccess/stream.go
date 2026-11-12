@@ -185,7 +185,7 @@ func (p *pipeWriter) Abort() {
 func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequest) {
 	command, err := CheckSettings(req.Command, req.User)
 	if err != nil {
-		s.refuse(ctx, conn, req, "bad-request", err)
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, err)
 		return
 	}
 	cols, rows := req.Cols, req.Rows
@@ -193,11 +193,11 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 		cols, rows = 80, 24
 	}
 	if cols < wire.MinSize || cols > wire.MaxSize || rows < wire.MinSize || rows > wire.MaxSize {
-		s.refuse(ctx, conn, req, "bad-request", errors.New("terminal size out of range"))
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, errors.New("terminal size out of range"))
 		return
 	}
 	if !s.counter.acquireConsole(s.lim, clientKey(req), labKey(req)) {
-		s.refuse(ctx, conn, req, "limit", errors.New("too many consoles"))
+		s.refuse(ctx, conn, req, wire.CodeLimit, errors.New("too many consoles"))
 		return
 	}
 	defer s.counter.releaseConsole(clientKey(req), labKey(req))
@@ -209,30 +209,30 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 	}
 	spec, err := s.rt.Spec(ctx, dev.ContainerID)
 	if err != nil || spec.Process == nil {
-		s.refuse(ctx, conn, req, "unavailable", errors.Join(err, errors.New("no container spec")))
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.Join(err, errors.New("no container spec")))
 		return
 	}
 	user, err := s.lookupUser(ctx, dev, spec.Process, req.User)
 	if err != nil {
-		s.refuse(ctx, conn, req, "bad-request", err)
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, err)
 		return
 	}
 	proc, err := ProcessFor(spec.Process, ExecArgs{Args: command, Terminal: true, Cols: cols, Rows: rows, User: user})
 	if err != nil {
-		s.refuse(ctx, conn, req, "unavailable", err)
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, err)
 		return
 	}
 
 	st := s.newStream(req, s.lim.Idle)
 	if !s.track(st) {
-		s.refuse(ctx, conn, req, "unavailable", errors.New("shutting down"))
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.New("shutting down"))
 		return
 	}
 	defer s.untrack(st)
 	stdin, stdinW := newPipe(s.lim.WriteTimeout)
 	ex, err := s.rt.Start(ctx, dev.ContainerID, proc, IO{Stdin: stdin, Stdout: &outWriter{st: st, conn: conn}, Terminal: true})
 	if err != nil {
-		s.refuse(ctx, conn, req, "unavailable", err)
+		s.refuse(ctx, conn, req, wire.CodeUnavailable, err)
 		return
 	}
 	// Whatever happens from here on, the exec is killed and deleted and its FIFOs removed.

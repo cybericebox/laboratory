@@ -31,15 +31,15 @@ type fileError struct {
 func fileFailure(w http.ResponseWriter, code string) {
 	status := http.StatusBadGateway
 	switch code {
-	case "not-found":
+	case wire.CodeNotFound:
 		status = http.StatusNotFound
-	case "denied":
+	case wire.CodeDenied:
 		status = http.StatusForbidden
-	case "not-regular", "bad-request":
+	case wire.CodeNotRegular, wire.CodeBadRequest:
 		status = http.StatusUnprocessableEntity
-	case "too-big":
+	case wire.CodeTooBig:
 		status = http.StatusRequestEntityTooLarge
-	case "limit", "busy":
+	case wire.CodeLimit, wire.CodeBusy:
 		status = http.StatusTooManyRequests
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -75,7 +75,7 @@ func (h *Handler) terminalFile(w http.ResponseWriter, r *http.Request, claims jw
 	}
 	filePath := q.Get("path")
 	if !validDevicePath(filePath) {
-		fileFailure(w, "bad-request")
+		fileFailure(w, wire.CodeBadRequest)
 		return
 	}
 	// Access is checked again: a lock that closed the console must also stop a transfer that was about to start.
@@ -87,7 +87,7 @@ func (h *Handler) terminalFile(w http.ResponseWriter, r *http.Request, claims jw
 		return
 	}
 	if !sess.transferring.CompareAndSwap(false, true) {
-		fileFailure(w, "busy")
+		fileFailure(w, wire.CodeBusy)
 		return
 	}
 	defer sess.transferring.Store(false)
@@ -96,7 +96,7 @@ func (h *Handler) terminalFile(w http.ResponseWriter, r *http.Request, claims jw
 	defer tcancel()
 	entry := &liveEntry{group: sess.group, client: sess.client, lab: sess.lab, tenant: sess.tenant, deadline: h.liveDeadline(claims.Abs), cancel: tcancel}
 	if !h.live.tryAdd(entry, LiveCaps{}) {
-		fileFailure(w, "busy")
+		fileFailure(w, wire.CodeBusy)
 		return
 	}
 	defer h.live.remove(entry)
@@ -178,11 +178,11 @@ func (h *Handler) uploadFile(ctx context.Context, w http.ResponseWriter, r *http
 	t := h.terminal
 	size := r.ContentLength
 	if size < 0 || size > t.cfg.MaxFile {
-		fileFailure(w, "too-big")
+		fileFailure(w, wire.CodeTooBig)
 		return
 	}
 	if !sess.reserve(size) {
-		fileFailure(w, "too-big")
+		fileFailure(w, wire.CodeTooBig)
 		return
 	}
 	ok := false
@@ -193,7 +193,7 @@ func (h *Handler) uploadFile(ctx context.Context, w http.ResponseWriter, r *http
 	}()
 	svc, reply, err := h.openTransfer(ctx, sess, wire.KindPut, filePath, size)
 	if err != nil {
-		fileFailure(w, "unavailable")
+		fileFailure(w, wire.CodeUnavailable)
 		return
 	}
 	defer func() { _ = svc.CloseNow() }()
@@ -212,7 +212,7 @@ func (h *Handler) uploadFile(ctx context.Context, w http.ResponseWriter, r *http
 			werr := svc.Write(wctx, websocket.MessageBinary, wire.Data(buf[:n]))
 			cancel()
 			if werr != nil {
-				fileFailure(w, "unavailable")
+				fileFailure(w, wire.CodeUnavailable)
 				return
 			}
 			sent += int64(n)
@@ -224,19 +224,19 @@ func (h *Handler) uploadFile(ctx context.Context, w http.ResponseWriter, r *http
 	}
 	if sent != size {
 		_ = svc.Write(ctx, websocket.MessageBinary, wire.Close(wire.ReasonError))
-		fileFailure(w, "incomplete")
+		fileFailure(w, wire.CodeIncomplete)
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, terminalWrite)
 	werr := svc.Write(cctx, websocket.MessageBinary, wire.Close(wire.ReasonExit))
 	cancel()
 	if werr != nil {
-		fileFailure(w, "unavailable")
+		fileFailure(w, wire.CodeUnavailable)
 		return
 	}
 	final, err := readReply(ctx, svc, 60*time.Second)
 	if err != nil {
-		fileFailure(w, "unavailable")
+		fileFailure(w, wire.CodeUnavailable)
 		return
 	}
 	if !final.OK {
@@ -253,7 +253,7 @@ func (h *Handler) downloadFile(ctx context.Context, w http.ResponseWriter, r *ht
 	t := h.terminal
 	svc, reply, err := h.openTransfer(ctx, sess, wire.KindGet, filePath, 0)
 	if err != nil {
-		fileFailure(w, "unavailable")
+		fileFailure(w, wire.CodeUnavailable)
 		return
 	}
 	defer func() { _ = svc.CloseNow() }()
@@ -263,7 +263,7 @@ func (h *Handler) downloadFile(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 	if reply.Size < 0 || reply.Size > t.cfg.MaxFile || !sess.reserve(reply.Size) {
 		_ = svc.Write(ctx, websocket.MessageBinary, wire.Close(wire.ReasonTooBig))
-		fileFailure(w, "too-big")
+		fileFailure(w, wire.CodeTooBig)
 		return
 	}
 	hd := w.Header()

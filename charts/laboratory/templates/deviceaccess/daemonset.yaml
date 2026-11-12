@@ -1,0 +1,155 @@
+{{- if .Values.terminal.enabled }}
+{{- /*
+The device access service (docs/specs/2026-11-12-device-access-and-checks.md, section 3; DEPLOY.md, "Device console"): a DaemonSet on the lab
+nodes, one container, the only component that holds the container runtime socket. It opens a shell or moves a file in a lab device for the L7
+proxy, which is the only caller its network policy admits. Made only while terminal.enabled is true.
+*/ -}}
+{{- $socket := include "laboratory.deviceAccess.socket" . }}
+{{- $lim := .Values.terminal.limits }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-device-access
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 4 }}
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 8 }}
+        {{- include "laboratory.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: laboratory-device-access
+      automountServiceAccountToken: false
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      # The pod network, not the host's: the proxy dials the pod, and nothing of the node is opened. No host PID, no host IPC.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      enableServiceLinks: false
+      # The service ends its streams and removes their execs on SIGTERM; the grace period leaves it the time.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        {{- with .Values.terminal.securityContext.supplementalGroups }}
+        supplementalGroups:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      # Where the node-agent runs: the lab nodes (labWorkloads), with the same tolerations for the startup taints.
+      {{- with .Values.labWorkloads.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - key: node.cilium.io/agent-not-ready
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.labWorkloads.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: device-access
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
+          command: [ "/node", "device-access" ]
+          env:
+            - name: LISTEN
+              value: {{ printf ":%d" (int .Values.terminal.port) | quote }}
+            - name: METRICS_LISTEN
+              value: {{ printf ":%d" (int .Values.terminal.metricsPort) | quote }}
+            - name: CONTAINERD_SOCK
+              value: {{ $socket | quote }}
+            - name: CONTAINERD_NAMESPACE
+              value: {{ .Values.terminal.containerdNamespace | quote }}
+            - name: FIFO_DIR
+              value: {{ .Values.terminal.fifoDir | quote }}
+            - name: LIMIT_PER_CLIENT
+              value: {{ $lim.perClient | quote }}
+            - name: LIMIT_PER_LAB
+              value: {{ $lim.perLab | quote }}
+            - name: LIMIT_PER_NODE
+              value: {{ $lim.perNode | quote }}
+            - name: LIMIT_TRANSFERS
+              value: {{ $lim.transfers | quote }}
+            - name: LIMIT_TRANSFERS_PER_CLIENT
+              value: {{ $lim.transfersPerClient | quote }}
+            - name: IDLE_TIMEOUT
+              value: {{ $lim.idleTimeout | quote }}
+            - name: MAX_LIFETIME
+              value: {{ $lim.maxLifetime | quote }}
+            - name: MAX_FILE_BYTES
+              value: {{ $lim.maxFileBytes | int64 | quote }}
+          ports:
+            - name: stream
+              containerPort: {{ .Values.terminal.port }}
+            - name: metrics
+              containerPort: {{ .Values.terminal.metricsPort }}
+          securityContext:
+            # No privilege and no capability: the rights are those of the socket (root:root 0660 on k0s), which a root user without
+            # capabilities may use. Nothing is writable except the two host directories below.
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: {{ ne (int .Values.terminal.securityContext.runAsUser) 0 }}
+            runAsUser: {{ .Values.terminal.securityContext.runAsUser }}
+            runAsGroup: {{ .Values.terminal.securityContext.runAsGroup }}
+            capabilities:
+              drop: [ ALL ]
+          # No inbound probe from outside: the kubelet runs a command that asks the local listener.
+          startupProbe:
+            exec:
+              command: [ "/node", "device-access-health" ]
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [ "/node", "device-access-health" ]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [ "/node", "device-access-health" ]
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          volumeMounts:
+            # The runtime socket and the FIFO directory at the same path as on the host (the shim opens the FIFOs by the path in the request).
+            - name: runtime-sock
+              mountPath: {{ $socket | quote }}
+            - name: fifo
+              mountPath: {{ .Values.terminal.fifoDir | quote }}
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.terminal.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: runtime-sock
+          hostPath:
+            path: {{ $socket | quote }}
+            type: Socket
+        - name: fifo
+          hostPath:
+            path: {{ .Values.terminal.fifoDir | quote }}
+            # Made on the host beforehand (DEPLOY.md): a missing directory keeps the pod from starting, which says so, instead of a
+            # directory the kubelet would make with the wrong owner.
+            type: Directory
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi
+{{- end }}

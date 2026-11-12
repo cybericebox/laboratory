@@ -1,0 +1,33 @@
+{{- if and .Values.terminal.enabled .Values.proxy.enabled }}
+{{- /*
+The L7 proxy finds the device access service pod on the node of a device. Pods are read in the release namespace only (a Role here, not
+a ClusterRole), and the proxy's cache is limited to the label of the service, so it never lists a pod of a lab.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-proxy-device-access
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ pods ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-proxy-device-access
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-proxy-device-access
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy
+    namespace: {{ .Values.proxy.namespace }}
+{{- end }}
