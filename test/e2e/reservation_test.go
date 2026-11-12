@@ -238,8 +238,13 @@ var _ = Describe(
 						Eventually(labPhase(ns, "gang-hold")).Should(Equal("Ready"))
 
 						By("making a deploy group of two labs that fit the empty nodes only together")
-						apply(labManifest(ns, "gang-a", "", deployGroup, "dev-a", labCPU, memory))
-						apply(labManifest(ns, "gang-b", "", deployGroup, "dev-b", labCPU, memory))
+						// One apply for both: the group is the labs the scheduler sees together. Two kubectl calls left a gap of a few hundred
+						// milliseconds in which the scheduler saw gang-a alone, found it fitting on the empty node and started it (the failure of run
+						// 43292701248: gang-a Ready one second after it was created, gang-b queued).
+						apply(
+							labManifest(ns, "gang-a", "", deployGroup, "dev-a", labCPU, memory) + "---\n" +
+								labManifest(ns, "gang-b", "", deployGroup, "dev-b", labCPU, memory),
+						)
 
 						By("checking that neither lab starts while the room is taken")
 						for _, lab := range []string{"gang-a", "gang-b"} {
