@@ -501,6 +501,10 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 	// node-agent, which reads them to attribute the containers.
 	labels[names.LabelLabUID] = parentUID
 	labels[names.LabelDeviceUID] = string(device.UID)
+	// The device access service reads this label from the runtime and refuses a console to a device without it.
+	if enabled, _, _ := device.TerminalSettings(); enabled {
+		labels[names.LabelTerminal] = "true"
+	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
 	// need no capabilities of their own. addr.type=dhcp interfaces are handled by

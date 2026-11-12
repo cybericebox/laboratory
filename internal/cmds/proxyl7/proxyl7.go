@@ -17,6 +17,7 @@ import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -61,7 +62,7 @@ func Run() {
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: cfg.HealthAddr,
 			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
-			Cache: proxyCacheOptions(),
+			Cache: proxyCacheOptions(cfg),
 		},
 	)
 	if err != nil {
@@ -82,9 +83,17 @@ func Run() {
 		WithAccounting(meter, nil).WithAccessReader(access).WithLiveMaxLifetime(cfg.LiveMaxLifetime).
 		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst).
 		WithAccessLog(log.WithName("access"), cfg.SlowRequest)
+	if cfg.TerminalEnabled {
+		tc := l7.DefaultTerminalConfig()
+		tc.Host, tc.Log = cfg.TerminalHost, log.WithName("console")
+		tc.PerClient, tc.Idle, tc.Lifetime, tc.MaxFile, tc.MaxSession = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime, cfg.TerminalMaxFile, cfg.TerminalMaxSession
+		tc.Devices = access.Device
+		tc.Services = l7.PodServiceDirectory(mgr.GetClient(), cfg.TerminalNamespace, cfg.TerminalPort)
+		handler.WithTerminal(tc)
+	}
 	// Register all required informers before the manager starts: readiness must
 	// wait for each cache used by authorization, rather than an empty cache set.
-	if err := warmProxyCache(context.Background(), mgr.GetCache()); err != nil {
+	if err := warmProxyCache(context.Background(), mgr.GetCache(), cfg); err != nil {
 		log.Error(err, "register proxy cache")
 		os.Exit(1)
 	}
@@ -181,18 +190,32 @@ func Run() {
 	}
 }
 
-func proxyCacheOptions() cache.Options {
-	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: map[client.Object]cache.ByObject{
+func proxyCacheOptions(cfg *proxy.L7Config) cache.Options {
+	by := map[client.Object]cache.ByObject{
 		&corev1.Secret{}:                           {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}, Transform: l7.CompactCacheObject},
 		&corev1.Service{}:                          {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.Lab{}:                  {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroup{}:             {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroupClient{}:       {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
-	}}
+	}
+	if cfg.TerminalEnabled {
+		// The console reads the devices (their terminal settings and node) and the pods of the device access service, and nothing else:
+		// the pods are limited to one namespace and one label, so the proxy never caches a pod of a lab.
+		by[&laboratoryv1alpha1.Device{}] = cache.ByObject{Transform: l7.CompactCacheObject}
+		by[&corev1.Pod{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{cfg.TerminalNamespace: {LabelSelector: labels.SelectorFromSet(labels.Set{"app": names.DeviceAccessApp})}},
+			Transform:  l7.CompactCacheObject,
+		}
+	}
+	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: by}
 }
-func warmProxyCache(ctx context.Context, c cache.Cache) error {
-	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
+func warmProxyCache(ctx context.Context, c cache.Cache, cfg *proxy.L7Config) error {
+	objects := []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}}
+	if cfg.TerminalEnabled {
+		objects = append(objects, &laboratoryv1alpha1.Device{}, &corev1.Pod{})
+	}
+	for _, object := range objects {
 		if _, err := c.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {
 			return err
 		}

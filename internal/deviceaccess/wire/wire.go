@@ -37,6 +37,9 @@ const (
 	MinSize, MaxSize = 1, 500
 )
 
+// StreamPath is the path on which the service accepts a stream (a WebSocket on the pod network).
+const StreamPath = "/v1/stream"
+
 // Kinds of a stream the service serves.
 const (
 	KindConsole = "console"

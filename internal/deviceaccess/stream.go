@@ -255,22 +255,23 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 
 	reason := st.runConsole(ctx, conn, ex, stdinW)
 	stdinW.Abort()
-	st.closeFrame(conn, reason)
 	st.end(reason)
 }
 
 // runConsole is the loop of a console. It returns the reason the stream ended.
 func (st *stream) runConsole(ctx context.Context, conn Conn, ex Exec, stdin *pipeWriter) string {
-	life := ctx
-	if l := st.svc.lim.Lifetime; l > 0 {
-		var cancel context.CancelFunc
-		life, cancel = context.WithTimeout(ctx, l)
-		defer cancel()
-	}
-	rctx, stopReader := context.WithCancel(life)
+	// The reader has its own context, not the one of the lifetime: cancelling the context of a read closes the WebSocket, and the close
+	// frame must still be able to go out when the lifetime ends.
+	rctx, stopReader := context.WithCancel(ctx)
 	defer stopReader()
 	readerDone := make(chan string, 1)
 	go func() { readerDone <- st.readClient(rctx, conn, ex, stdin) }()
+	var life <-chan time.Time
+	if l := st.svc.lim.Lifetime; l > 0 {
+		timer := time.NewTimer(l)
+		defer timer.Stop()
+		life = timer.C
+	}
 
 	var reason string
 	select {
@@ -280,14 +281,13 @@ func (st *stream) runConsole(ctx context.Context, conn Conn, ex Exec, stdin *pip
 		reason = wire.ReasonExit
 	case <-st.idleC():
 		reason = wire.ReasonIdle
-	case <-life.Done():
+	case <-life:
+		reason = wire.ReasonLifetime
+	case <-ctx.Done():
 		reason = wire.ReasonShutdown
-		if errors.Is(life.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			reason = wire.ReasonLifetime
-		} else if ctx.Err() != nil {
-			reason = wire.ReasonClient
-		}
 	}
+	// The close frame goes out before the reader is stopped: cancelling the context of a WebSocket read closes the connection.
+	st.closeFrame(conn, reason)
 	stopReader()
 	return reason
 }

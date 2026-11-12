@@ -71,6 +71,19 @@ type L7Config struct {
 	// connection keeps the peer address. Empty: no secret required. They are credentials: never logged.
 	ProxyProtocolSecrets []string `env:"L7_PROXY_PROTOCOL_SECRETS" envSeparator:","`
 	ProxyProtocolTLVType uint8    `env:"L7_PROXY_PROTOCOL_TLV_TYPE" envDefault:"224"`
+
+	// The console (docs/specs/2026-11-12-device-access-and-checks.md): TerminalEnabled serves it on the reserved host TerminalHost under
+	// BaseDomain, relayed to the device access service pods of TerminalNamespace on TerminalPort. The limits mirror the chart values of the
+	// service (terminal.limits.*) and are enforced at the proxy as well.
+	TerminalEnabled    bool          `env:"TERMINAL_ENABLED" envDefault:"false"`
+	TerminalHost       string        `env:"TERMINAL_HOST" envDefault:"terminal"`
+	TerminalNamespace  string        `env:"TERMINAL_SERVICE_NAMESPACE"`
+	TerminalPort       int           `env:"TERMINAL_SERVICE_PORT" envDefault:"8080"`
+	TerminalPerClient  int           `env:"TERMINAL_PER_CLIENT" envDefault:"3"`
+	TerminalIdle       time.Duration `env:"TERMINAL_IDLE_TIMEOUT" envDefault:"30m"`
+	TerminalLifetime   time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
+	TerminalMaxFile    int64         `env:"TERMINAL_MAX_FILE_BYTES" envDefault:"16777216"`
+	TerminalMaxSession int64         `env:"TERMINAL_MAX_SESSION_BYTES" envDefault:"67108864"`
 }
 
 type WGConfig struct {
@@ -127,6 +140,12 @@ func LoadL7Config() (*L7Config, error) {
 	}
 	if cfg.SessionIdleTTL <= 0 || cfg.SessionMaxTTL <= 0 || cfg.SessionRenewBefore < 0 || cfg.SessionRenewBefore >= cfg.SessionIdleTTL {
 		return cfg, fmt.Errorf("SESSION_IDLE_TTL and SESSION_MAX_TTL must be positive and SESSION_RENEW_BEFORE must be shorter than SESSION_IDLE_TTL")
+	}
+	if cfg.TerminalEnabled {
+		if cfg.TerminalNamespace == "" || cfg.TerminalPort < 1 || cfg.TerminalPort > 65535 || cfg.TerminalHost == "" || cfg.TerminalPerClient < 0 ||
+			cfg.TerminalMaxFile <= 0 || cfg.TerminalMaxSession < cfg.TerminalMaxFile {
+			return cfg, fmt.Errorf("TERMINAL_SERVICE_NAMESPACE, TERMINAL_SERVICE_PORT and TERMINAL_HOST are required with the console, TERMINAL_MAX_SESSION_BYTES must not be below TERMINAL_MAX_FILE_BYTES")
+		}
 	}
 	return cfg, nil
 }
