@@ -286,6 +286,9 @@ func TestTerminalNoClipboardOrTitleCode(t *testing.T) {
 			t.Errorf("terminal.js uses %s", bad)
 		}
 	}
+	if !strings.Contains(string(js), "linkHandler: { activate: openLink }") || strings.Count(string(js), "window.open(") != 1 {
+		t.Error("links declared by a program (OSC 8) must go through the same http(s)-only handler")
+	}
 	if !strings.Contains(string(js), "noopener,noreferrer") || !strings.Contains(string(js), `/^https?:\/\//i`) {
 		t.Error("links are not restricted to http(s) with noopener")
 	}
