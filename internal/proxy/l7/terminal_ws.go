@@ -65,7 +65,7 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	}
 	defer h.live.remove(entry)
 
-	sess := &consoleSession{token: token, group: tg.claims.GroupID, client: tg.client, tenant: tg.claims.Tenant, namespace: tg.namespace, lab: tg.lab, dev: tg.device,
+	sess := &consoleSession{token: token, group: tg.claims.GroupID, client: tg.client, tenant: tg.claims.Tenant, namespace: tg.namespace, lab: tg.lab, dev: tg.device, host: tg.host,
 		base: tg.base, command: tg.info.Command, user: tg.info.User, entry: entry, ackCh: make(chan struct{}, 1), started: time.Now()}
 	sess.budget.Store(t.cfg.MaxSession)
 	if !t.add(sess) {

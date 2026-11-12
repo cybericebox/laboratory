@@ -1010,20 +1010,31 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 // buildAccessEntries returns the externally-visible URL for each web-exposed
 // device in the lab (none if BaseDomain is unset), then one entry with protocol
 // "terminal" for each device that enables the browser terminal. A terminal entry
-// has no port and no URL: the platform issues the link later.
-// The host is the name of the device's existing web Service, never recomputed;
-// a device whose Service does not exist yet is skipped.
+// has no port; its URL is the console host of the device (names.AccessHostLabel, the
+// same <device>-<code> as the web host plus the mark of the kind), empty until the
+// device has its code.
+// The host of a web port is the name of the device's existing web Service, never
+// recomputed; a device whose Service does not exist yet is skipped.
 func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
-	return append(r.buildWebAccessEntries(ctx, lab, snapshots...), terminalAccessEntries(lab)...)
+	return append(r.buildWebAccessEntries(ctx, lab, snapshots...), r.terminalAccessEntries(ctx, lab)...)
 }
 
 // terminalAccessEntries is one entry per device with a terminal access.
-func terminalAccessEntries(lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+func (r *LabReconciler) terminalAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
 	var out []laboratoryv1alpha1.AccessEntry
 	for _, d := range lab.Spec.Devices {
-		if laboratoryv1alpha1.AccessOf(d.Access, laboratoryv1alpha1.AccessTerminal) != nil {
-			out = append(out, laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"})
+		if laboratoryv1alpha1.AccessOf(d.Access, laboratoryv1alpha1.AccessTerminal) == nil {
+			continue
 		}
+		entry := laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"}
+		if r.BaseDomain != "" {
+			if dev, err := devices.Get(ctx, r.reader(), lab.Namespace, lab.Name, d.Name); err == nil && dev.Spec.Code != "" {
+				if label, ok := names.AccessHostLabel(d.Name, dev.Spec.Code, names.AccessKindTerminal); ok {
+					entry.URL = fmt.Sprintf("https://%s.%s", label, r.BaseDomain)
+				}
+			}
+		}
+		out = append(out, entry)
 	}
 	return out
 }

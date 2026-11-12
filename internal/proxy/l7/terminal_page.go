@@ -155,7 +155,7 @@ var terminalTmpl = template.Must(template.New("terminal").Parse(`<!doctype html>
 <link rel="stylesheet" href="/assets/terminal.css">
 </head>
 <body>
-<div id="app" data-lab="{{.Lab}}" data-device="{{.Device}}">
+<div id="app">
   <header>
     <h1>{{.T.Title}}</h1>
     <span id="target">{{.Lab}} / {{.Device}}</span>

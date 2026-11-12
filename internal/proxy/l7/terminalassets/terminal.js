@@ -5,8 +5,6 @@
   'use strict';
   const app = document.getElementById('app');
   const T = JSON.parse(document.getElementById('i18n').textContent);
-  const lab = app.dataset.lab;
-  const device = app.dataset.device;
   const TYPE = { DATA: 1, RESIZE: 2, CLOSE: 3, ACK: 4 };
   const MAX_FRAME = 32 * 1024;
   const $ = (id) => document.getElementById(id);
@@ -107,7 +105,7 @@
   function connect() {
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     setStatus(T.connecting, '');
-    ws = new WebSocket(scheme + '//' + location.host + '/ws?lab=' + encodeURIComponent(lab) + '&device=' + encodeURIComponent(device));
+    ws = new WebSocket(scheme + '//' + location.host + '/ws');
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => ws.send(JSON.stringify({ cols: term.cols, rows: term.rows }));
     ws.onmessage = (ev) => {

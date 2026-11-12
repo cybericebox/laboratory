@@ -32,9 +32,21 @@ import (
 var termKey = bytes.Repeat([]byte("t"), 32)
 
 const (
-	termHost = "terminal.challenges.example.com"
-	termNS   = "legacy"
+	termNS      = "legacy"
+	termBaseDom = "challenges.example.com"
 )
+
+// termCodes are the codes of the test devices, one per (lab, device): the console host of a device is <device>-<code>--term.
+var termCodes = map[string]string{"lab1/kali": "k1a", "lab1/plain": "p1a", "lab1/unplaced": "u1a", "stopped/kali": "k2a", "lab3/kali": "k3a", "lab2/kali": "k4a"}
+
+// termHostFor is the console host of a device of the test cluster.
+func termHostFor(labName, device string) string {
+	label, _ := names.AccessHostLabel(device, termCodes[labName+"/"+device], names.AccessKindTerminal)
+	return label + "." + termBaseDom
+}
+
+// termHost is the console host of lab1/kali, the device most tests open.
+var termHost = termHostFor("lab1", "kali")
 
 // fakeService is a device access service that answers consoles with upper-cased echo and keeps uploaded files.
 type fakeService struct {
@@ -154,7 +166,7 @@ type termFixture struct {
 
 func termDevice(labName, name string, enabled bool, node string) *lab.Device {
 	d := &lab.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name(labName, name), Namespace: termNS}}
-	d.Spec.Name, d.Spec.LabRef = name, labName
+	d.Spec.Name, d.Spec.LabRef, d.Spec.Code = name, labName, termCodes[labName+"/"+name]
 	if enabled {
 		d.Spec.Access = []lab.DeviceAccess{{Kind: lab.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali"}}
 	}
@@ -214,8 +226,12 @@ func cookieFor(t *testing.T, clientName string) string {
 }
 
 func (f *termFixture) get(path string, hdr map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("GET", "http://"+termHost+path, nil)
-	req.Host = termHost
+	return f.getHost(termHost, path, hdr)
+}
+
+func (f *termFixture) getHost(host, path string, hdr map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", "http://"+host+path, nil)
+	req.Host = host
 	if f.cookie != "" {
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
 	}
@@ -228,18 +244,22 @@ func (f *termFixture) get(path string, hdr map[string]string) *httptest.Response
 }
 
 func (f *termFixture) dialSocket(device string, origin string) (*websocket.Conn, *http.Response, error) {
+	return f.dialSocketHost(termHostFor("lab1", device), origin)
+}
+
+func (f *termFixture) dialSocketHost(host string, origin string) (*websocket.Conn, *http.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	hdr := http.Header{"Cookie": {"challenge=" + f.cookie}}
 	if origin != "" {
 		hdr.Set("Origin", origin)
 	}
-	return websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.srv.URL, "http")+"/ws?lab=lab1&device="+device, &websocket.DialOptions{Host: termHost, HTTPHeader: hdr})
+	return websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.srv.URL, "http")+"/ws", &websocket.DialOptions{Host: host, HTTPHeader: hdr})
 }
 
 func TestTerminalPageAndHeaders(t *testing.T) {
 	f := newTermFixture(t, nil)
-	rec := f.get("/?lab=lab1&device=kali", nil)
+	rec := f.get("/", nil)
 	if rec.Code != 200 {
 		t.Fatalf("page: %d %s", rec.Code, rec.Body.String())
 	}
@@ -267,7 +287,7 @@ func TestTerminalPageAndHeaders(t *testing.T) {
 			t.Errorf("the page refers to %q", bad)
 		}
 	}
-	en := f.get("/?lab=lab1&device=kali", map[string]string{"Accept-Language": "en-US,en;q=0.9"})
+	en := f.get("/", map[string]string{"Accept-Language": "en-US,en;q=0.9"})
 	if !strings.Contains(en.Body.String(), `lang="en"`) || !strings.Contains(en.Body.String(), "Upload to the device") {
 		t.Errorf("not English: %s", en.Body.String())
 	}
@@ -305,47 +325,116 @@ func TestTerminalNoClipboardOrTitleCode(t *testing.T) {
 
 func TestTerminalAuthorizationMatrix(t *testing.T) {
 	f := newTermFixture(t, nil)
-	deny := func(name, path string, cookie string) {
+	deny := func(name, host string, cookie string) {
 		t.Helper()
 		f.cookie = cookie
-		if rec := f.get(path, nil); rec.Code == 200 {
+		if rec := f.getHost(host, "/", nil); rec.Code == 200 {
 			t.Errorf("%s: served the page", name)
 		} else if rec.Code != 404 && rec.Code != 401 && rec.Code != 503 {
 			t.Errorf("%s: %d", name, rec.Code)
 		}
 	}
 	good := cookieFor(t, "p-u1")
-	deny("no session", "/?lab=lab1&device=kali", "")
-	deny("other client of the group (policy has no rule for it)", "/?lab=lab1&device=kali", cookieFor(t, "p-u2"))
-	deny("unknown client", "/?lab=lab1&device=kali", cookieFor(t, "ghost"))
-	deny("lab the policy does not allow", "/?lab=lab3&device=kali", good)
-	deny("lab stopped", "/?lab=stopped&device=kali", good)
-	deny("lab that does not exist", "/?lab=nope&device=kali", good)
-	deny("device without a console", "/?lab=lab1&device=plain", good)
-	deny("device that does not exist", "/?lab=lab1&device=nope", good)
-	deny("no lab", "/?device=kali", good)
-	deny("path-like names", "/?lab=../x&device=kali", good)
-	deny("device not placed on a node yet", "/?lab=lab1&device=unplaced", good)
+	kali := termHostFor("lab1", "kali")
+	deny("no session", kali, "")
+	deny("other client of the group (policy has no rule for it)", kali, cookieFor(t, "p-u2"))
+	deny("unknown client", kali, cookieFor(t, "ghost"))
+	deny("lab the policy does not allow", termHostFor("lab3", "kali"), good)
+	deny("lab stopped", termHostFor("stopped", "kali"), good)
+	deny("device without a console", termHostFor("lab1", "plain"), good)
+	deny("device that does not exist", "nope-abc--term."+termBaseDom, good)
+	deny("right device, wrong code", "kali-zzz--term."+termBaseDom, good)
+	deny("the device name alone, no code", "kali--term."+termBaseDom, good)
+	deny("device not placed on a node yet", termHostFor("lab1", "unplaced"), good)
 	// a session of another group (the group does not exist in the cluster)
 	other := signCookie(t, jwtClaims{GroupID: "g-other", Client: "p-u1", Tenant: "acme", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
-	deny("another group", "/?lab=lab1&device=kali", other)
+	deny("another group", kali, other)
 	// a node without the service
 	f.cookie = good
 	if err := f.cluster.Create(context.Background(), termDevice("lab2", "kali", true, "n2")); err != nil {
 		t.Fatal(err)
 	}
-	deny("node without a service pod", "/?lab=lab2&device=kali", good)
+	deny("node without a service pod", termHostFor("lab2", "kali"), good)
 	f.cookie = good
-	if rec := f.get("/?lab=lab1&device=kali", nil); rec.Code != 200 {
+	if rec := f.get("/", nil); rec.Code != 200 {
 		t.Fatalf("control: %d", rec.Code)
+	}
+	// The device is named by the host alone: a query or a path cannot name another one.
+	if rec := f.get("/?lab=lab3&device=kali", nil); rec.Code != 200 || !strings.Contains(rec.Body.String(), "lab1 / kali") {
+		t.Errorf("a query chose the device: %d", rec.Code)
 	}
 }
 
-func TestTerminalHostIsReservedAndDisabledByDefault(t *testing.T) {
-	// A handler without WithTerminal treats the host as any other task host: no console.
+// The console host of a device of lab A, with the session of a client who may not use lab A (it is allowed lab B only, in the same
+// group, and a client of another group), is refused as a host that does not exist: the same card for every refusal.
+func TestConsoleHostOfAnotherLabOrGroupIsRefused(t *testing.T) {
+	f := newTermFixture(t, func(*TerminalConfig) {})
+	ctx := context.Background()
+	// the policy of the group lets p-u1 reach lab1 and lab2 only; lab3 has a console device and is not in the rules
+	for _, c := range []struct{ name, host string }{{"lab3 (not in the policy)", termHostFor("lab3", "kali")}} {
+		f.cookie = cookieFor(t, "p-u1")
+		rec := f.getHost(c.host, "/", nil)
+		if rec.Code != 404 {
+			t.Errorf("%s: %d", c.name, rec.Code)
+		}
+		if conn, resp, err := f.dialSocketHost(c.host, "http://"+c.host); err == nil {
+			_ = conn.CloseNow()
+			t.Errorf("%s: the socket opened (%v)", c.name, resp)
+		}
+	}
+	// a second group with its own namespace: the console host of group g1 is no device in g2
+	g2 := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "g2", Labels: map[string]string{names.LabelTenant: "acme"}}, Status: lab.LabGroupStatus{Namespace: "other-ns"}}
+	if err := f.cluster.Create(ctx, g2); err != nil {
+		t.Fatal(err)
+	}
+	f.cookie = signCookie(t, jwtClaims{GroupID: "g2", Client: "p-u1", Tenant: "acme", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+	if rec := f.get("/", nil); rec.Code != 404 {
+		t.Errorf("the console host of group g1 with a session of g2: %d", rec.Code)
+	}
+	if conn, _, err := f.dialSocketHost(termHost, "http://"+termHost); err == nil {
+		_ = conn.CloseNow()
+		t.Error("the socket of group g1 opened for a session of g2")
+	}
+}
+
+func TestConsoleHostRouting(t *testing.T) {
+	f := newTermFixture(t, nil)
+	// the other kinds are reserved and answer like a host that does not exist
+	for _, host := range []string{"kali-k1a--vnc." + termBaseDom, "kali-k1a--rdp." + termBaseDom} {
+		if rec := f.getHost(host, "/", nil); rec.Code != 404 {
+			t.Errorf("%s: %d", host, rec.Code)
+		}
+	}
+	// a web host is never a console: the label without the mark is looked up as a Service, and there is none
+	if rec := f.getHost("kali-k1a."+termBaseDom, "/", nil); rec.Code != 404 {
+		t.Errorf("the web host of a console device served: %d", rec.Code)
+	}
+	// the old reserved host is gone
+	if rec := f.getHost("terminal."+termBaseDom, "/?lab=lab1&device=kali", nil); rec.Code != 404 {
+		t.Errorf("the old reserved host served: %d", rec.Code)
+	}
+	// the socket and the files are on the host of the device, and the token of one console is no use on another host
+	c, token := f.openConsole("kali")
+	_ = c
+	other := termHostFor("lab1", "plain")
+	// Origin must be the host's own origin: the console host of another device of the same lab is another origin
+	if conn, _, err := f.dialSocketHost(termHost, "http://"+other); err == nil {
+		_ = conn.CloseNow()
+		t.Error("the socket opened for the origin of another device's console host")
+	}
+	if rec := f.getHost(other, "/files?session="+token+"&path=/tmp/a", nil); rec.Code == 200 {
+		t.Error("the token of a console worked on the host of another device")
+	}
+	if rec := f.get("/files?session="+token+"&path=/missing", nil); rec.Code != 404 {
+		t.Errorf("the same host: %d", rec.Code)
+	}
+}
+
+func TestTerminalHostIsDisabledByDefault(t *testing.T) {
+	// A handler without WithTerminal serves no console on a console host.
 	f := newTermFixture(t, nil)
 	f.h.terminal = nil
-	if rec := f.get("/?lab=lab1&device=kali", nil); rec.Code != 404 {
+	if rec := f.get("/", nil); rec.Code != 404 {
 		t.Fatalf("console served while off: %d", rec.Code)
 	}
 }
@@ -381,7 +470,7 @@ func readText(t *testing.T, c *websocket.Conn) browserMsg {
 // openConsole opens a console and returns the connection and the session token.
 func (f *termFixture) openConsole(device string) (*websocket.Conn, string) {
 	f.t.Helper()
-	c, _, err := f.dialSocket(device, "http://"+termHost)
+	c, _, err := f.dialSocket(device, "http://"+termHostFor("lab1", device))
 	if err != nil {
 		f.t.Fatalf("dial: %v", err)
 	}
@@ -465,7 +554,7 @@ func TestTerminalOriginMustBeThePagesOwn(t *testing.T) {
 func TestTerminalSocketAuthorization(t *testing.T) {
 	f := newTermFixture(t, nil)
 	for _, device := range []string{"plain", "nope", "unplaced"} {
-		c, resp, err := f.dialSocket(device, "http://"+termHost)
+		c, resp, err := f.dialSocket(device, "http://"+termHostFor("lab1", device))
 		if err == nil {
 			_ = c.CloseNow()
 			t.Errorf("%s: socket opened", device)

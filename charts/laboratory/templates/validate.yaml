@@ -98,14 +98,6 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 
-{{- /* The host of the console is the platform's: a device host is <device>-<code>, so the host must not look like one, and must not be the name of
-       an endpoint the platform provides in every lab. */ -}}
-{{- if or .Values.terminal.enabled .Values.checks.enabled }}
-{{- if or (has .Values.terminal.host (list "vpn" "gateway" "internet")) (regexMatch "-[a-z0-9]{3,4}$" .Values.terminal.host) }}
-{{- fail (printf "terminal.host %q collides with a reserved host: it must not be vpn, gateway or internet, nor end in a hyphen and three or four letters or digits (the shape of the host <device>-<code> of a device)" .Values.terminal.host) }}
-{{- end }}
-{{- end }}
-
 {{- /* The console: the device access service trusts its caller and its listener is plain HTTP, so the network policies are not optional. */ -}}
 {{- if .Values.terminal.enabled }}
 {{- if not (and .Values.proxy.enabled .Values.proxy.l7.enabled) }}
@@ -119,9 +111,6 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- if or (lt (int .Values.terminal.port) 1) (gt (int .Values.terminal.port) 65535) (lt (int .Values.terminal.metricsPort) 1) (gt (int .Values.terminal.metricsPort) 65535) (eq (int .Values.terminal.port) (int .Values.terminal.metricsPort)) }}
 {{- fail "terminal.port and terminal.metricsPort must be two different ports (1-65535)" }}
-{{- end }}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .Values.terminal.host) }}
-{{- fail (printf "terminal.host %q is not a DNS label: it is the first label of the console's host under operator.baseDomain" .Values.terminal.host) }}
 {{- end }}
 {{- if or (not (hasPrefix "/" (include "laboratory.deviceAccess.socket" .))) (not (hasPrefix "/" .Values.terminal.fifoDir)) }}
 {{- fail "terminal.containerdSocket (or nodeAgent.criSocket) and terminal.fifoDir must be absolute paths" }}

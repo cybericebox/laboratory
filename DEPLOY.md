@@ -919,8 +919,8 @@ The same service also carries the lab checker's way to the devices (see "Lab che
 network ingress at all (the checker uses a unix socket), no proxy secret and no proxy Role.
 
 Path of a console: participant, L7 proxy (authorization), the service on the node of the device, a shell in the device. The browser opens
-`https://<terminal.host>.<operator.baseDomain>/?lab=<lab>&device=<device>` (default host `terminal`; the platform issues the handoff link for
-that host like for any device host). The proxy authorizes exactly as for a web request (the session cookie, the group, the access policy that allows
+`https://<device>-<code>--term.<operator.baseDomain>` (a host of its own per device, built like the web host of the device with the mark `--term`;
+the platform issues the handoff link for that host like for any device host). Nothing about the device is in a path or a query. The proxy authorizes exactly as for a web request (the session cookie, the group, the access policy that allows
 the lab, the lab running) and adds that the device has a console. The WebSocket accepts only the page's own `Origin`; the live re-check
 (`proxy.l7.liveCheckInterval`) closes a console whose client lost access. The proxy serves the terminal page itself (xterm.js 6 is embedded in
 the binary, no CDN; no clipboard write, links only `http(s)` on a click, the title is ignored).
@@ -931,7 +931,6 @@ the binary, no CDN; no clipboard write, links only `http(s)` on a click, the tit
 | `terminal.namespace` (`laboratory-device-access`) | the namespace of the service: its own (privileged Pod Security level for the hostPath; the proxy's one Role covers only it). Create the `imagePullSecrets` there too, as for the proxy. It must not be the release or the proxy namespace |
 | `terminal.sharedSecret.value`, `.accept` | the secret shared by the proxy and the service (see "Shared secret and rotation"); empty `value` = made by the chart and kept in the cluster |
 | `terminal.embedding.allow`, `.deny` | the sites that may show the console page in a frame (see "Embedding"); empty = none |
-| `terminal.host` (`terminal`) | first label of the console host, reserved: it is never looked up as the Service of a device, no new device may be named like it (the agent refuses the name, `terminal` is in the reserved names of `pkg/names`), and the chart refuses a host that is `vpn`, `gateway` or `internet` or that ends in a hyphen and three or four letters or digits (the shape of the host `<device>-<code>` of a device) |
 | `terminal.port` (8080), `terminal.metricsPort` (9102) | stream and metrics ports of the service pod (plain HTTP on the pod network) |
 | `terminal.containerdSocket` (empty = `nodeAgent.criSocket`), `terminal.containerdNamespace` (`k8s.io`) | the runtime socket of the node and the kubelet's containerd namespace |
 | `terminal.fifoDir` (`/run/containerd/fifo`) | host directory for the FIFOs of the execs, mounted at the **same path**; create it on every lab node first. The service owns the subdirectory `cib-device-access` |
@@ -1020,9 +1019,15 @@ embed: the landing, the controller, the VPN host and the labs base domain (nothi
 in a cross-site frame only when the embedding site shares the registrable domain with the labs' domain. On a custom event domain the console opens in a tab. The WebSocket
 keeps its check: `Origin` must equal the console page's own origin, which is the same in a frame.
 
-**Console link.** The link to a device's terminal is deterministic and needs no status field:
-`https://<terminal.host>.<operator.baseDomain>/?lab=<lab name>&device=<device name>`, opened through the handoff of the platform like a device link
-(`/_auth?t=<handoff token for host "<terminal.host>">&next=/?lab=<lab>&device=<device>`; the `host` claim of the token is the host label, `terminal` by default).
+**Console link.** Every access to a device through the proxy is addressed by a host name alone. The console of a device has the host
+`<device>-<code>--term.<operator.baseDomain>`: the web host label of the device (`<device>-<code>`, the code is the device's own and unique in its group
+namespace) plus the fixed mark `--term` (`vnc` and `rdp` will be `--vnc` and `--rdp`). The mark cannot be taken for a web host: a web host ends in a hyphen and
+three or four letters or digits, a kind host in `--<mark>`, and no new device name may end in a mark (the agent refuses it). A site tells a console host from a
+device web host by that suffix alone, and may frame only the first. The management agent puts the link in the `terminal` entry of the lab's access list
+(`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing. The link is opened through the handoff
+of the platform like a device link (`/_auth?t=<handoff token for the host label>`). The proxy looks the host up among the devices of the session's own group only:
+the console host of another group, or of a lab the client may not use, is the same "not found" page. The page, the WebSocket (`/ws`) and the file requests
+(`/files`) are all on that host, with `Origin` equal to it.
 
 **Logs and metrics.** One log line at the start and one at the end of a stream with metadata only: kind, namespace, lab, device, client and group as the proxy
 knows them (a pseudonym, no address), the console user and a short hash of the console command (so a wrong value stays visible afterwards), reason, duration,

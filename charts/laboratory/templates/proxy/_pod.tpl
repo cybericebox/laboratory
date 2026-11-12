@@ -110,11 +110,9 @@ spec:
         fieldRef:
           fieldPath: metadata.name
     {{- if .Values.terminal.enabled }}
-    # The console: the reserved host, the device access service pods (their namespace and port) and the limits the proxy applies itself.
+    # The console: the device access service pods (their namespace and port) and the limits the proxy applies itself.
     - name: TERMINAL_ENABLED
       value: "true"
-    - name: TERMINAL_HOST
-      value: {{ .Values.terminal.host | quote }}
     - name: TERMINAL_SERVICE_NAMESPACE
       value: {{ include "laboratory.deviceAccess.namespace" . | quote }}
     - name: TERMINAL_KEY_FILE

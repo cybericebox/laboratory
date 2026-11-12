@@ -6,7 +6,6 @@ import (
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -67,16 +66,28 @@ func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName s
 
 // Device finds the device of a lab that has a console. A device without one, a missing device and a deleting one are the same
 // answer. Node is empty while the device has no pod placed yet.
-func (a *AccessReader) Device(ctx context.Context, namespace, labName, device string) (DeviceInfo, error) {
-	d, err := devices.Get(ctx, a.Reader, namespace, labName, device)
-	if err != nil || !d.DeletionTimestamp.IsZero() {
+func (a *AccessReader) Device(ctx context.Context, namespace, base string) (DeviceInfo, error) {
+	var list lab.DeviceList
+	if err := a.Reader.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return DeviceInfo{}, ErrNoConsole
 	}
-	enabled, command, user := d.TerminalSettings()
-	if !enabled {
-		return DeviceInfo{}, ErrNoConsole
+	for i := range list.Items {
+		d := &list.Items[i]
+		// The code is what makes the host: a device without one (it predates codes) has no console host. The label is unique in
+		// the namespace, and the first match is the only one.
+		if d.Spec.Code == "" || names.WebHostLabel(d.Spec.Name, d.Spec.Code) != base {
+			continue
+		}
+		if !d.DeletionTimestamp.IsZero() {
+			break
+		}
+		enabled, command, user := d.TerminalSettings()
+		if !enabled {
+			break
+		}
+		return DeviceInfo{Lab: d.Spec.LabRef, Device: d.Spec.Name, Node: d.Status.NodeName, Command: command, User: user}, nil
 	}
-	return DeviceInfo{Node: d.Status.NodeName, Command: command, User: user}, nil
+	return DeviceInfo{}, ErrNoConsole
 }
 
 func (a *AccessReader) Tenant(id string) (string, bool) {

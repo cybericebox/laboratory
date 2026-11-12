@@ -192,7 +192,6 @@ func TestConsoleIsRefusedWithoutItsPolicies(t *testing.T) {
 		{[]string{"--set", "proxy.networkPolicy.enabled=false"}, "proxy.networkPolicy.enabled=false"},
 		{[]string{"--set", "proxy.l7.enabled=false"}, "needs the L7 proxy"},
 		{[]string{"--set", "terminal.port=9102"}, "two different ports"},
-		{[]string{"--set", "terminal.host=Not_A_Label"}, "not a DNS label"},
 		{[]string{"--set", "terminal.fifoDir=relative/dir"}, "absolute paths"},
 		{[]string{"--set", "terminal.limits.maxSessionBytes=1"}, "maxSessionBytes"},
 	} {
@@ -445,12 +444,12 @@ func TestEmbeddingListsAreValidatedAndReachTheProxy(t *testing.T) {
 
 func TestProxyGetsTheConsoleSettings(t *testing.T) {
 	var dep appsv1.Deployment
-	render(t, "templates/proxy/deployment.yaml", &dep, append(append([]string{}, consoleOn...), "--set", "terminal.limits.perClient=5", "--set", "terminal.host=shell")...)
+	render(t, "templates/proxy/deployment.yaml", &dep, append(append([]string{}, consoleOn...), "--set", "terminal.limits.perClient=5")...)
 	env := map[string]string{}
 	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
 		env[e.Name] = e.Value
 	}
-	for k, want := range map[string]string{"TERMINAL_ENABLED": "true", "TERMINAL_HOST": "shell", "TERMINAL_SERVICE_NAMESPACE": "laboratory-device-access", "TERMINAL_SERVICE_PORT": "8080",
+	for k, want := range map[string]string{"TERMINAL_ENABLED": "true", "TERMINAL_SERVICE_NAMESPACE": "laboratory-device-access", "TERMINAL_SERVICE_PORT": "8080",
 		"TERMINAL_PER_CLIENT": "5", "TERMINAL_MAX_FILE_BYTES": "16777216", "TERMINAL_MAX_SESSION_BYTES": "67108864"} {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q", k, env[k], want)
@@ -503,8 +502,8 @@ func TestDeviceAccessServesTheCheckerWithoutTheConsole(t *testing.T) {
 	}
 }
 
-// The checker is refused without its policies, and the console host cannot be the shape of a device host.
-func TestCheckerRefusalsAndTheReservedConsoleHost(t *testing.T) {
+// The checker is refused without its policies. No setting names a console host any more (the host is per device).
+func TestCheckerRefusals(t *testing.T) {
 	on := append(append([]string{}, agentSet...), "--set", "checks.enabled=true")
 	for _, tc := range []struct{ set, want string }{
 		{"checks.networkPolicy.enabled=false", "checks.networkPolicy.enabled=false"},
@@ -515,20 +514,15 @@ func TestCheckerRefusalsAndTheReservedConsoleHost(t *testing.T) {
 		{"checks.socketUid=0", "not root"},
 		{"checks.socketGid=0", "not root"},
 		{"checks.socketDir=run/x", "absolute"},
-		{"terminal.host=vpn", "collides with a reserved host"},
-		{"terminal.host=gateway", "collides with a reserved host"},
-		{"terminal.host=my-abc", "collides with a reserved host"},
-		{"terminal.host=shell-9z9z", "collides with a reserved host"},
 	} {
 		out, err := helmTemplate(t, append(append([]string{}, on...), "--set", tc.set)...)
 		if err == nil || !strings.Contains(out+err.Error(), tc.want) {
 			t.Errorf("%s must be refused (%q): %v\n%s", tc.set, tc.want, err, out)
 		}
 	}
-	for _, ok := range []string{"terminal.host=terminal", "terminal.host=shell", "terminal.host=console", "terminal.host=my-terminal"} {
-		if out, err := helmTemplate(t, append(append([]string{}, on...), "--set", ok)...); err != nil {
-			t.Errorf("%s refused: %v\n%s", ok, err, out)
-		}
+	// terminal.host is gone: the console host is made per device, and a value for it is a key the chart does not read
+	if out, err := helmTemplate(t, append(append([]string{}, on...), "--set", "terminal.host=shell")...); err != nil || strings.Contains(out, "TERMINAL_HOST") {
+		t.Errorf("a removed value changed the render: %v", err)
 	}
 	// the policies may be off while the checker is off
 	if out, err := helmTemplate(t, append(append([]string{}, agentSet...), "--set", "checks.networkPolicy.enabled=false")...); err != nil {

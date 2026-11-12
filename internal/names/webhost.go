@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
-	"sync"
+	"strings"
 )
 
 const (
@@ -75,26 +75,12 @@ func ValidateNewDeviceName(name string) error {
 			return fmt.Errorf("device name %q is reserved by the platform", name)
 		}
 	}
-	reservedHostsMu.RLock()
-	defer reservedHostsMu.RUnlock()
-	if reservedHosts[name] {
-		return fmt.Errorf("device name %q is reserved by the platform", name)
+	for _, m := range kindMarkers {
+		if strings.HasSuffix(name, "--"+m) {
+			return fmt.Errorf("device name %q may not end in %q, the mark of an access host", name, "--"+m)
+		}
 	}
 	return nil
-}
-
-var (
-	reservedHostsMu sync.RWMutex
-	reservedHosts   = map[string]bool{}
-)
-
-// ReserveHost makes a host label of the platform's own (the console's, terminal.host) a name no new device may have. The web host of a device
-// is <device>-<code>, so a host label with a hyphen and a code-shaped tail is refused by the chart; this covers the one that a device
-// without a code (an old one) or a device named like the whole label could still make.
-func ReserveHost(label string) {
-	reservedHostsMu.Lock()
-	reservedHosts[label] = true
-	reservedHostsMu.Unlock()
 }
 
 // WebHostLabel is the first DNS label of a web-exposed device, both as the name
@@ -116,4 +102,44 @@ func WorkloadName(device, code, legacy string) string {
 		return legacy
 	}
 	return WebHostLabel(device, code)
+}
+
+// Access kinds of a device, as the host of the L7 proxy addresses them. Every access to a device through the proxy is addressed by a
+// host name alone, never by a path or a query.
+const (
+	AccessKindHTTP     = "http"
+	AccessKindTerminal = "terminal"
+	AccessKindVNC      = "vnc"
+	AccessKindRDP      = "rdp"
+)
+
+// kindMarkers are the fixed suffixes of the host labels of the kinds other than http. The web host <device>-<code> ends in a hyphen
+// and a code of 3 to 4 letters or digits, so it never has "--" in its last 6 characters (a device name does not end in a hyphen
+// either); a kind host ends in "--<marker>". Neither can be the other, whatever the names of the devices are.
+var kindMarkers = map[string]string{AccessKindTerminal: "term", AccessKindVNC: "vnc", AccessKindRDP: "rdp"}
+
+// AccessHostLabel is the first DNS label of the host that serves a kind of access to a device: the web host for http, and
+// <device>-<code>--<marker> for the others. ok is false for an unknown kind. The code is the device's own (Device.Spec.Code); a device
+// without one has no access host except the one its web Service already has.
+func AccessHostLabel(device, code, kind string) (label string, ok bool) {
+	if kind == AccessKindHTTP {
+		return WebHostLabel(device, code), true
+	}
+	m, found := kindMarkers[kind]
+	if !found {
+		return "", false
+	}
+	return WebHostLabel(device, code) + "--" + m, true
+}
+
+// ParseAccessHost splits the first label of a host into the web host label of the device (<device>-<code>) and the kind. A label
+// without a kind marker is a plain web host: kind is http and base is the label itself. A label that carries a marker of a kind is
+// that kind. Nothing else decides which kind a host is, so a site that frames a console host (kind terminal) decides by this alone.
+func ParseAccessHost(label string) (base, kind string) {
+	for k, m := range kindMarkers {
+		if b, ok := strings.CutSuffix(label, "--"+m); ok {
+			return b, k
+		}
+	}
+	return label, AccessKindHTTP
 }

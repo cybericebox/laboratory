@@ -18,8 +18,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 )
 
-// The console. A device whose lab asks for a terminal can be opened in the browser on a reserved host of the labs' base domain,
-// terminal.<base>: the page, a WebSocket for the shell and two requests for files all live there. The proxy authorizes exactly as it
+// The console. A device whose lab asks for a terminal can be opened in the browser on a host of its own under the labs' base domain,
+// <device>-<code>--term.<base> (names.AccessHostLabel): the page, a WebSocket for the shell and two requests for files all live there.
+// Nothing about the device is in a path or a query; the host is the address, and the group of the session is the only namespace it is
+// looked for in. The proxy authorizes exactly as it
 // does for a web request (the session cookie, the group, the access policy that allows the lab, the lab running) and adds that the
 // device has a console. It then relays the stream to the device access service on the node of the device, which opens the shell.
 // The proxy never learns the container; it names a device (namespace, lab, device) and the service finds the container itself.
@@ -31,26 +33,25 @@ import (
 // ErrNoConsole is returned by a DeviceLookup for a device that has no console (or does not exist; the answer is the same).
 var ErrNoConsole = errors.New("the device has no console")
 
-// DeviceInfo is what the proxy needs to open a console: the node the device runs on and the terminal settings the lab author gave.
+// DeviceInfo is what the proxy needs to open a console: the lab and device the host names, the node the device runs on and the
+// terminal settings the lab author gave.
 type DeviceInfo struct {
+	Lab     string
+	Device  string
 	Node    string
 	Command []string
 	User    string
 }
 
-// DeviceLookup finds a device with a console in a group namespace.
-type DeviceLookup func(ctx context.Context, namespace, lab, device string) (DeviceInfo, error)
+// DeviceLookup finds the device with a console that a host names, in a group namespace: base is the first label of the host without
+// its kind mark (<device>-<code>, names.ParseAccessHost).
+type DeviceLookup func(ctx context.Context, namespace, base string) (DeviceInfo, error)
 
 // ServiceDirectory maps a node to the base URL of the device access service pod on it, e.g. "http://10.0.3.7:8080".
 type ServiceDirectory func(node string) (baseURL string, ok bool)
 
-// DefaultTerminalHost is the reserved first label of the console's host.
-const DefaultTerminalHost = "terminal"
-
 // TerminalConfig switches the console on in a Handler.
 type TerminalConfig struct {
-	// Host is the first label of the host of the console (default "terminal").
-	Host     string
 	Devices  DeviceLookup
 	Services ServiceDirectory
 	Log      logr.Logger
@@ -73,7 +74,7 @@ type TerminalConfig struct {
 
 // DefaultTerminalConfig carries the chart defaults for the limits.
 func DefaultTerminalConfig() TerminalConfig {
-	return TerminalConfig{Host: DefaultTerminalHost, PerClient: 3, Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
+	return TerminalConfig{PerClient: 3, Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
 		MaxFile: 16 << 20, MaxSession: 64 << 20, OriginScheme: "https"}
 }
 
@@ -91,6 +92,7 @@ type consoleSession struct {
 	group, client       string
 	tenant              string
 	namespace, lab, dev string
+	host                string // the console host without its mark; a file request must come on the same one
 	base                string
 	command             []string
 	user                string
@@ -108,9 +110,6 @@ type consoleSession struct {
 
 // WithTerminal switches the console on. It needs the access reader: without it the proxy has no groups to authorize a console by.
 func (h *Handler) WithTerminal(c TerminalConfig) *Handler {
-	if c.Host == "" {
-		c.Host = DefaultTerminalHost
-	}
 	if c.OriginScheme == "" {
 		c.OriginScheme = "https"
 	}
@@ -164,10 +163,11 @@ type terminalTarget struct {
 	client                 string
 	info                   DeviceInfo
 	base                   string
+	host                   string // the first label of the console host without its mark, <device>-<code>
 }
 
 // serveTerminal answers a request for the console host. The session was validated by the caller (cookie, group, tenant).
-func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, claims jwtClaims, client string, group AccessGroup) {
+func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, base string, claims jwtClaims, client string, group AccessGroup) {
 	t := h.terminal
 	ancestor := ancestorNone
 	if r.URL.Path == "/" {
@@ -184,19 +184,19 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, claims j
 			fail(w, r, http.StatusMethodNotAllowed, pageGone, "method not allowed")
 			return
 		}
-		tg, ok := h.authorizeTerminal(w, r, claims, client, group)
+		tg, ok := h.authorizeTerminal(w, r, base, claims, client, group)
 		if !ok {
 			return
 		}
 		serveTerminalPage(w, r, tg)
 	case r.URL.Path == "/ws":
-		tg, ok := h.authorizeTerminal(w, r, claims, client, group)
+		tg, ok := h.authorizeTerminal(w, r, base, claims, client, group)
 		if !ok {
 			return
 		}
 		h.terminalSocket(w, r, tg)
 	case r.URL.Path == "/files":
-		h.terminalFile(w, r, claims, client, group)
+		h.terminalFile(w, r, base, claims, client, group)
 	default:
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 	}
@@ -205,31 +205,28 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, claims j
 // authorizeTerminal is the authorization of a console request: the client may reach the lab (the same Allowed check as for a web
 // request: the client exists, the policy allows the lab, the lab is not stopped) and the device has a console. Every refusal is the
 // same card, so the answer does not tell a lab that does not exist from one the client may not use.
-func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, claims jwtClaims, client string, group AccessGroup) (terminalTarget, bool) {
+func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, base string, claims jwtClaims, client string, group AccessGroup) (terminalTarget, bool) {
 	t := h.terminal
-	lab, device := r.URL.Query().Get("lab"), r.URL.Query().Get("device")
-	if !plainName(lab) || !plainName(device) || t.cfg.Devices == nil || t.cfg.Services == nil {
+	if t.cfg.Devices == nil || t.cfg.Services == nil {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 		return terminalTarget{}, false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if !h.access.Allowed(ctx, group.Namespace, client, lab) {
+	// The host is looked up in the namespace of the session's own group only: a console host of another group is no device here.
+	info, err := t.cfg.Devices(ctx, group.Namespace, base)
+	if err != nil || !plainName(info.Lab) || !plainName(info.Device) || !h.access.Allowed(ctx, group.Namespace, client, info.Lab) {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 		return terminalTarget{}, false
 	}
-	info, err := t.cfg.Devices(ctx, group.Namespace, lab, device)
-	if err != nil {
-		fail(w, r, http.StatusNotFound, pageGone, "not found")
-		return terminalTarget{}, false
-	}
-	base, ok := t.cfg.Services(info.Node)
+	lab, device := info.Lab, info.Device
+	svc, ok := t.cfg.Services(info.Node)
 	if !ok {
 		// The device is not placed yet, or its node has no service: not an error of the client.
 		fail(w, r, http.StatusServiceUnavailable, pageStarting, "the console is not ready")
 		return terminalTarget{}, false
 	}
-	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: base}, true
+	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc, host: base}, true
 }
 
 // plainName accepts a name that can be a lab or device: bounded, printable, no separator or control character.

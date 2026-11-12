@@ -5916,8 +5916,10 @@ func (x *LabConnectionStatus) GetReady() bool {
 	return false
 }
 
-// protocol is http or https for a web port. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0 and
-// no url, the platform issues the link later.
+// protocol is http or https for a web port. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0, and url is
+// the host of its console, https://<device>-<code>--term.<endpoints.labs_domain> (the web host of the device, <device>-<code>, plus the
+// mark "--term"; vnc and rdp will be "--vnc" and "--rdp"). url is empty until the device has its code; no link is built by the caller.
+// A site that frames a console may do it only for a url whose first label ends in "--term", and never for a device web host.
 type LabAccessEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Device        string                 `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
@@ -8023,15 +8025,14 @@ func (x *ChecksFeature) GetObservations() []string {
 
 // AccessFeature: http is always served (the L7 proxy). terminal is true only when its option is on AND the component that serves
 // it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
-// terminal_host is the first label of the console's host under endpoints.labs_domain (the chart's terminal.host): the console of a device is at
-// https://<terminal_host>.<endpoints.labs_domain>/?lab=<lab>&device=<device>. Set only when terminal is true; empty otherwise, and then no link is built.
+// The address of a kind of access to a device is a host name alone, never a path or a query: the link is LabAccessEntry.url of the entry
+// of that kind, and the daemon takes it from there, as it does for http.
 type AccessFeature struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Http          bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
 	Terminal      bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
 	Vnc           bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
 	Rdp           bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
-	TerminalHost  string                 `protobuf:"bytes,5,opt,name=terminal_host,json=terminalHost,proto3" json:"terminal_host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8092,13 +8093,6 @@ func (x *AccessFeature) GetRdp() bool {
 		return x.Rdp
 	}
 	return false
-}
-
-func (x *AccessFeature) GetTerminalHost() string {
-	if x != nil {
-		return x.TerminalHost
-	}
-	return ""
 }
 
 // The limits of a device bootstrap; bootstrap itself is always available.
@@ -13263,13 +13257,12 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x16max_time_limit_seconds\x18\x04 \x01(\x05R\x13maxTimeLimitSeconds\x120\n" +
 	"\x14max_schedule_seconds\x18\x05 \x01(\x05R\x12maxScheduleSeconds\x12(\n" +
 	"\x10max_detail_bytes\x18\x06 \x01(\x05R\x0emaxDetailBytes\x12\"\n" +
-	"\fobservations\x18\a \x03(\tR\fobservations\"\x88\x01\n" +
+	"\fobservations\x18\a \x03(\tR\fobservations\"x\n" +
 	"\rAccessFeature\x12\x12\n" +
 	"\x04http\x18\x01 \x01(\bR\x04http\x12\x1a\n" +
 	"\bterminal\x18\x02 \x01(\bR\bterminal\x12\x10\n" +
 	"\x03vnc\x18\x03 \x01(\bR\x03vnc\x12\x10\n" +
-	"\x03rdp\x18\x04 \x01(\bR\x03rdp\x12#\n" +
-	"\rterminal_host\x18\x05 \x01(\tR\fterminalHost\"\xff\x01\n" +
+	"\x03rdp\x18\x04 \x01(\bR\x03rdpJ\x04\b\x05\x10\x06R\rterminal_host\"\xff\x01\n" +
 	"\x10BootstrapFeature\x12(\n" +
 	"\x10max_script_bytes\x18\x01 \x01(\x05R\x0emaxScriptBytes\x12\x1b\n" +
 	"\tmax_files\x18\x02 \x01(\x05R\bmaxFiles\x12$\n" +
