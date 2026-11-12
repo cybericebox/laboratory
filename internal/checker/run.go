@@ -56,10 +56,6 @@ func reasonOf(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), ctx.Err() != nil:
 		return "the check ran over its time limit"
-	case errors.Is(err, ErrPseudoPath):
-		return ErrPseudoPath.Error()
-	case errors.Is(err, ErrTooManyLinks):
-		return "too many symbolic links"
 	case errors.As(err, &oe):
 		return oe.Reason
 	}

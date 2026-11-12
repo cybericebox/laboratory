@@ -72,8 +72,12 @@ type Writer interface {
 type Config struct {
 	Backend Backend
 	Writer  Writer
-	// MaxConcurrent is the most runs at once on this node.
+	// MaxConcurrent is the most runs at once on this node. At most one run of a lab is going at any time on a node whatever this is: a lab
+	// cannot take the room of the others, and the device access service holds the same rule.
 	MaxConcurrent int
+	// MaxTimeLimit is the ceiling of the time limit of one run (0: no ceiling beyond the one of the contract). A check that asks for more is
+	// run with this limit.
+	MaxTimeLimit time.Duration
 	// FirstRunWindow spreads the first run of the checks of a device that has just become ready (default 10 s).
 	FirstRunWindow time.Duration
 	Now            func() time.Time
@@ -89,7 +93,9 @@ type Engine struct {
 	labs     map[LabKey]*labRuntime
 	pods     map[LabKey]map[string]PodInfo
 	inflight int
-	wg       sync.WaitGroup
+	// labRunning holds the labs that have a run going now.
+	labRunning map[LabKey]bool
+	wg         sync.WaitGroup
 }
 
 type entry struct {
@@ -132,7 +138,7 @@ func NewEngine(cfg Config) *Engine {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Engine{cfg: cfg, labs: map[LabKey]*labRuntime{}, pods: map[LabKey]map[string]PodInfo{}}
+	return &Engine{cfg: cfg, labs: map[LabKey]*labRuntime{}, pods: map[LabKey]map[string]PodInfo{}, labRunning: map[LabKey]bool{}}
 }
 
 // SetLab takes the current state of a Lab object (a new one, or a change).
@@ -394,8 +400,13 @@ func (e *Engine) Tick(now time.Time) []Job {
 		if room <= 0 {
 			break
 		}
+		if e.labRunning[c.job.Lab] {
+			// one run of a lab at a time on this node: the check waits for the next tick
+			continue
+		}
 		room--
 		e.inflight++
+		e.labRunning[c.job.Lab] = true
 		c.ent.running, c.ent.manual = true, false
 		c.ent.runCount++
 		if schedule := time.Duration(c.job.Check.ScheduleSeconds) * time.Second; schedule > 0 {
@@ -411,8 +422,12 @@ func (e *Engine) Execute(ctx context.Context, job Job) {
 	defer func() {
 		e.mu.Lock()
 		e.inflight--
+		delete(e.labRunning, job.Lab)
 		e.mu.Unlock()
 	}()
+	if ceiling := int32(e.cfg.MaxTimeLimit / time.Second); ceiling > 0 && job.Check.TimeLimitSeconds > ceiling {
+		job.Check.TimeLimitSeconds = ceiling
+	}
 	limit := time.Duration(job.Check.TimeLimitSeconds) * time.Second
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
