@@ -997,12 +997,12 @@ func (r *LabGroupReconciler) ensureRoleBinding(ctx context.Context, ns, saName, 
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: ns},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: rbacv1.GroupName,
+			Kind:     kindClusterRole,
 			Name:     clusterRoleName,
 		},
 		Subjects: []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
+			Kind:      rbacv1.ServiceAccountKind,
 			Name:      saName,
 			Namespace: ns,
 		}},
@@ -1026,12 +1026,12 @@ func (r *LabGroupReconciler) ensureAgentRoleBinding(ctx context.Context, ns stri
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: names.AgentRoleBindingName, Namespace: ns},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: rbacv1.GroupName,
+			Kind:     kindClusterRole,
 			Name:     names.RoleAgentName,
 		},
 		Subjects: []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
+			Kind:      rbacv1.ServiceAccountKind,
 			Name:      r.AgentSA.Name,
 			Namespace: r.AgentSA.Namespace,
 		}},
@@ -1053,8 +1053,8 @@ func (r *LabGroupReconciler) ensureProxyReportsBinding(ctx context.Context, ns s
 	}
 	return r.Create(ctx, &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: names.ProxyReportsBindingName, Namespace: ns},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleProxyReportsName},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "laboratory-proxy", Namespace: names.ProxyNamespace}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kindClusterRole, Name: names.RoleProxyReportsName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "laboratory-proxy", Namespace: names.ProxyNamespace}},
 	})
 }
 
@@ -1083,8 +1083,8 @@ func (r *LabGroupReconciler) ensureCheckerSecretsBinding(ctx context.Context, ns
 	}
 	return r.Create(ctx, &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: ns},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleCheckerSecretsName},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: names.CheckerServiceAccount, Namespace: names.SystemNamespace}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kindClusterRole, Name: names.RoleCheckerSecretsName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: names.CheckerServiceAccount, Namespace: names.SystemNamespace}},
 	})
 }
 
@@ -1519,8 +1519,8 @@ func (r *LabGroupReconciler) ensureOperatorBinding(ctx context.Context, ns strin
 	if r.OperatorSA.Name == "" {
 		return nil
 	}
-	want := rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleOperatorNamespacedName}
-	subject := rbacv1.Subject{Kind: "ServiceAccount", Name: r.OperatorSA.Name, Namespace: r.OperatorSA.Namespace}
+	want := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kindClusterRole, Name: names.RoleOperatorNamespacedName}
+	subject := rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: r.OperatorSA.Name, Namespace: r.OperatorSA.Namespace}
 	var existing rbacv1.RoleBinding
 	err := r.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: ns}, &existing)
 	if err == nil {

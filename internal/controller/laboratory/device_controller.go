@@ -503,7 +503,7 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 	labels[names.LabelDeviceUID] = string(device.UID)
 	// The device access service reads this label from the runtime and refuses a console to a device without it.
 	if enabled, _, _ := device.TerminalSettings(); enabled {
-		labels[names.LabelTerminal] = "true"
+		labels[names.LabelTerminal] = valueTrue
 	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods

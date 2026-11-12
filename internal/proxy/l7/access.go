@@ -13,6 +13,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// schemeHTTPS is the name of the https scheme and of the https protocol of a web port.
+const schemeHTTPS = "https"
+
 type AccessGroup struct{ Namespace, Tenant string }
 type AccessRoute struct{ URL, Lab string }
 
@@ -43,7 +46,7 @@ func (a *AccessReader) Route(ctx context.Context, task, namespace string) (Acces
 	if protocol == "" {
 		protocol = "http"
 	}
-	if protocol != "http" && protocol != "https" || declared.Port < 1 || declared.Port > 65535 || declared.Protocol != "" && declared.Protocol != corev1.ProtocolTCP {
+	if protocol != "http" && protocol != schemeHTTPS || declared.Port < 1 || declared.Port > 65535 || declared.Protocol != "" && declared.Protocol != corev1.ProtocolTCP {
 		return AccessRoute{}, fmt.Errorf("service has an invalid web port")
 	}
 	return AccessRoute{fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, declared.Port), svc.Labels[names.LabelLab]}, nil

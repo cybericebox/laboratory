@@ -18,7 +18,8 @@ const (
 	ReasonReservationMismatch = "RESERVATION_MISMATCH"
 	// ReasonOverQuota: the tenant's overlapping reservations would peak above its quota.
 	ReasonOverQuota = "OVER_QUOTA"
-	// ReasonCooldown: RunChecks came inside the cooldown between manual runs of a lab; ItemResult.retry_after says how long to wait.
+	// ReasonCooldown: RunChecks came inside the cooldown between manual runs of a lab; ItemResult.retry_after says how
+	// long to wait.
 	ReasonCooldown = "COOLDOWN"
 )
 

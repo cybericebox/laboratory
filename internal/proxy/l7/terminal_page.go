@@ -74,7 +74,7 @@ var terminalUK = terminalText{
 		wire.CodeUnavailable: "Термінал тимчасово недоступний. Спробуйте за хвилину.",
 		"stalled":            "Сеанс закрито: сторінка не встигає за виводом.",
 		"shutdown":           "Сервіс перезапускається.",
-		"error":              "Сталася помилка зʼєднання.",
+		wire.ReasonError:     "Сталася помилка зʼєднання.",
 		wire.CodeBadRequest:  "Сталася помилка зʼєднання.",
 	},
 }
@@ -95,7 +95,7 @@ var terminalEN = terminalText{
 		wire.CodeUnavailable: "The terminal is temporarily unavailable. Try again in a minute.",
 		"stalled":            "The session was closed: the page cannot keep up with the output.",
 		"shutdown":           "The service is restarting.",
-		"error":              "A connection error occurred.",
+		wire.ReasonError:     "A connection error occurred.",
 		wire.CodeBadRequest:  "A connection error occurred.",
 	},
 }
