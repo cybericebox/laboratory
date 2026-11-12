@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 )
 
 // ExecUser is a user of the device, resolved inside it (see the probe's resolve-user): the runtime is given numbers only.
@@ -55,8 +58,10 @@ func CheckSettings(command []string, user string) ([]string, error) {
 			return nil, fmt.Errorf("%w: bad command item", ErrBadSettings)
 		}
 	}
-	if command[0] == "" {
-		return nil, fmt.Errorf("%w: empty command", ErrBadSettings)
+	// The program must be an absolute path outside /proc and /sys: a path under them is a way to run something that is not a program
+	// of the device, and a relative name would depend on the PATH of the container.
+	if prog := command[0]; !strings.HasPrefix(prog, "/") || underVirtualFS(path.Clean(prog)) {
+		return nil, fmt.Errorf("%w: the command must be an absolute path outside /proc and /sys", ErrBadSettings)
 	}
 	if user != "" && !userRE.MatchString(user) {
 		return nil, fmt.Errorf("%w: bad user", ErrBadSettings)
@@ -68,7 +73,8 @@ func CheckSettings(command []string, user string) ([]string, error) {
 // container (user, capabilities, no_new_privs, seccomp and the rest of the container's restrictions, the environment base, working
 // directory, rlimits), then only the arguments, the terminal, TERM and, when asked, the user are set. The capabilities are never
 // built from scratch, because the runtime does not clamp them to the container's: a set written here would be exactly what the
-// process gets.
+// process gets. Everything else of the container's process block (no_new_privs, the AppArmor profile, the SELinux label, rlimits, the
+// OOM score adjustment) is carried over by the copy.
 func ProcessFor(c *specs.Process, a ExecArgs) (*specs.Process, error) {
 	if c == nil {
 		return nil, errors.New("the container has no process spec")
@@ -103,9 +109,28 @@ func ProcessFor(c *specs.Process, a ExecArgs) (*specs.Process, error) {
 		if u.Home != "" {
 			p.Env = setVar(p.Env, "HOME", u.Home)
 		}
+		// What runc, the CRI plugin and Docker do for a user that is not root: the container's capability sets are root's, and an
+		// ordinary user keeps none of them (only the bounding set stays, as the limit of what a setuid program could regain). Without
+		// this a console opened as an ordinary user would be a shell with root's effective capabilities. A root exec keeps the sets of
+		// the container, and the kernel never gives it more than the bounding set.
+		if u.UID != 0 && p.Capabilities != nil {
+			p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Ambient, p.Capabilities.Inheritable = nil, nil, nil, nil
+		}
 	}
 	return &p, nil
 }
+
+func underVirtualFS(clean string) bool {
+	for _, d := range []string{"/proc", "/sys"} {
+		if clean == d || strings.HasPrefix(clean, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// CommandHash is a short fingerprint of a command line for the session log (see wire.CommandHash).
+func CommandHash(command []string) string { return wire.CommandHash(command) }
 
 func setVar(vars []string, key, value string) []string {
 	prefix := key + "="

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -282,7 +283,6 @@ func TestServeRefusesBadOpenMessages(t *testing.T) {
 		"binary first":  {false, []byte{1}},
 		"not json":      {true, []byte("hello")},
 		"unknown field": {true, []byte(`{"kind":"console","namespace":"a","lab":"b","device":"c","containerId":"c1"}`)},
-		"no device":     {true, []byte(`{"kind":"console","namespace":"a","lab":"b"}`)},
 		"huge":          {true, append([]byte(`{"kind":"console","namespace":"`), bytes.Repeat([]byte("a"), wire.MaxOpen)...)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -593,4 +593,36 @@ func TestTransferLimit(t *testing.T) {
 	if !l.acquireTransfer(lim, "c") {
 		t.Fatal("not freed")
 	}
+}
+
+func TestUnsignedOpenIsRefusedBeforeAnythingElse(t *testing.T) {
+	rt := labRuntime()
+	svc := testService(rt)
+	for name, msg := range map[string][]byte{
+		"valid json, no signature": []byte(`{"kind":"console","namespace":"` + testNS + `","lab":"` + testLab + `","device":"` + testDev + `"}`),
+		"no device":                []byte(`{"kind":"console","namespace":"a","lab":"b"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, done := run(svc, context.Background())
+			c.in <- message{true, msg}
+			if r := c.reply(t); r.OK || r.Error != wire.CodeUnauthorized {
+				t.Fatalf("reply %+v", r)
+			}
+			waitDone(t, done)
+		})
+	}
+	if len(rt.started()) != 0 {
+		t.Fatal("a request without a signature reached the runtime")
+	}
+}
+
+func TestServiceWithoutAuthRefusesEverything(t *testing.T) {
+	rt := labRuntime()
+	svc := New(Config{Runtime: rt, Limits: DefaultLimits(), Log: logr.Discard()})
+	c, done := run(svc, context.Background())
+	c.sendOpen(t, openReq())
+	if r := c.reply(t); r.OK || r.Error != wire.CodeUnauthorized {
+		t.Fatalf("%+v", r)
+	}
+	waitDone(t, done)
 }

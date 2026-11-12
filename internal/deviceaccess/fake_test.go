@@ -1,10 +1,12 @@
 package deviceaccess
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -215,6 +217,9 @@ func (c *pipeConn) hangUp() { c.one.Do(func() { close(c.cl) }) }
 // proxy side helpers
 func (c *pipeConn) sendOpen(t *testing.T, r wire.OpenRequest) {
 	t.Helper()
+	if err := wire.Sign(testKey, &r, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	b, _ := json.Marshal(r)
 	c.in <- message{true, b}
 }
@@ -289,13 +294,17 @@ func labRuntime() *fakeRuntime {
 	return rt
 }
 
+var testKey = bytes.Repeat([]byte("k"), 32)
+
 func testService(rt Runtime) *Service {
 	lim := DefaultLimits()
 	lim.WriteTimeout = time.Second
 	lim.Cleanup = time.Second
-	return New(Config{Runtime: rt, Limits: lim, Log: logr.Discard()})
+	return New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), Auth: NewAuth(func() [][]byte { return [][]byte{testKey} })})
 }
 
 func openReq() wire.OpenRequest {
 	return wire.OpenRequest{Kind: wire.KindConsole, Namespace: testNS, Lab: testLab, Device: testDev, Client: "c-1", Group: "g-1", Cols: 100, Rows: 30}
 }
+
+func writeFile(p, v string) error { return os.WriteFile(p, []byte(v), 0o600) }

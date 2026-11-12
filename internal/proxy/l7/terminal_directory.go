@@ -6,41 +6,46 @@ import (
 	"strconv"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// PodServiceDirectory finds the device access service on a node from the proxy's cache of its pods: the one pod of the service
-// DaemonSet that runs on that node, is Ready and has an address. The cache holds only those pods (one namespace, one label).
-func PodServiceDirectory(r client.Reader, namespace string, port int) ServiceDirectory {
+// ServiceNameLabel is the label that ties an EndpointSlice to its Service.
+const ServiceNameLabel = "kubernetes.io/service-name"
+
+// EndpointDirectory finds the device access service on a node from the EndpointSlices of its headless Service: the ready endpoint whose
+// nodeName is that node. The proxy reads EndpointSlices of the one namespace of the service (an address and a node name, nothing else of a
+// pod), and no pod.
+func EndpointDirectory(r client.Reader, namespace, service string, port int) ServiceDirectory {
 	return func(node string) (string, bool) {
 		if node == "" {
 			return "", false
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{"app": names.DeviceAccessApp}); err != nil {
+		var slices discoveryv1.EndpointSliceList
+		if err := r.List(ctx, &slices, client.InNamespace(namespace), client.MatchingLabels{ServiceNameLabel: service}); err != nil {
 			return "", false
 		}
-		for i := range pods.Items {
-			p := &pods.Items[i]
-			if p.Spec.NodeName != node || !p.DeletionTimestamp.IsZero() || p.Status.PodIP == "" || p.Status.Phase != corev1.PodRunning || !podReady(p) {
+		for i := range slices.Items {
+			s := &slices.Items[i]
+			if s.AddressType != discoveryv1.AddressTypeIPv4 && s.AddressType != discoveryv1.AddressTypeIPv6 {
 				continue
 			}
-			return "http://" + net.JoinHostPort(p.Status.PodIP, strconv.Itoa(port)), true
+			for _, e := range s.Endpoints {
+				if e.NodeName == nil || *e.NodeName != node || len(e.Addresses) == 0 {
+					continue
+				}
+				// a missing ready condition means ready, as for any consumer of the API
+				if e.Conditions.Ready != nil && !*e.Conditions.Ready {
+					continue
+				}
+				if e.Conditions.Terminating != nil && *e.Conditions.Terminating {
+					continue
+				}
+				return "http://" + net.JoinHostPort(e.Addresses[0], strconv.Itoa(port)), true
+			}
 		}
 		return "", false
 	}
-}
-
-func podReady(p *corev1.Pod) bool {
-	for _, c := range p.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
 }

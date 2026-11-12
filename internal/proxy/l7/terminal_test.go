@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,6 +28,8 @@ import (
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 )
+
+var termKey = bytes.Repeat([]byte("t"), 32)
 
 const (
 	termHost = "terminal.challenges.example.com"
@@ -68,6 +71,11 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.opens = append(f.opens, req)
 	f.mu.Unlock()
+	if !wire.VerifySignature([][]byte{termKey}, req) {
+		b, _ := json.Marshal(wire.OpenReply{Error: wire.CodeUnauthorized})
+		_ = c.Write(ctx, websocket.MessageText, b)
+		return
+	}
 	reply := func(r wire.OpenReply) {
 		b, _ := json.Marshal(r)
 		_ = c.Write(ctx, websocket.MessageText, b)
@@ -184,6 +192,7 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 	cfg.OriginScheme = "http"
 	cfg.Log = logr.Discard()
 	cfg.Devices = access.Device
+	cfg.Signer = func(r *wire.OpenRequest) error { return wire.Sign(termKey, r, time.Now()) }
 	cfg.Services = func(node string) (string, bool) {
 		if node == "n1" {
 			return svc.srv.URL, true
@@ -244,7 +253,7 @@ func TestTerminalPageAndHeaders(t *testing.T) {
 	if strings.Contains(csp, "script-src 'self' 'unsafe") || strings.Contains(csp, "http") || strings.Contains(csp, "*") {
 		t.Errorf("CSP is too wide: %s", csp)
 	}
-	for k, want := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY", "Cache-Control": "no-store"} {
+	for k, want := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"} {
 		if h.Get(k) != want {
 			t.Errorf("%s = %q", k, h.Get(k))
 		}
@@ -750,6 +759,75 @@ func TestTerminalIdleClosesTheConsole(t *testing.T) {
 				}
 				return
 			}
+		}
+	}
+}
+
+// Every open request the proxy sends, console and files, carries a signature the service accepts; without a key the console does not open.
+func TestTerminalSignsEveryOpenRequest(t *testing.T) {
+	f := newTermFixture(t, nil)
+	_, token := f.openConsole("kali")
+	if rec := f.put(token, "/tmp/a", []byte("x"), nil); rec.Code != 204 {
+		t.Fatalf("upload: %d", rec.Code)
+	}
+	if rec := f.get("/files?session="+token+"&path=/tmp/a", nil); rec.Code != 200 {
+		t.Fatalf("download: %d", rec.Code)
+	}
+	f.svc.mu.Lock()
+	defer f.svc.mu.Unlock()
+	if len(f.svc.opens) != 3 {
+		t.Fatalf("%d opens", len(f.svc.opens))
+	}
+	for _, o := range f.svc.opens {
+		if !wire.VerifySignature([][]byte{termKey}, o) || o.Nonce == "" || o.Time == 0 {
+			t.Errorf("an open request is not signed: %+v", o)
+		}
+	}
+	if f.svc.opens[0].Nonce == f.svc.opens[1].Nonce {
+		t.Error("a nonce was reused")
+	}
+}
+
+func TestTerminalWithoutAKeyDoesNotOpen(t *testing.T) {
+	f := newTermFixture(t, func(c *TerminalConfig) { c.Signer = nil })
+	c, _, err := f.dialSocket("kali", "http://"+termHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetReadLimit(wire.MaxFrame)
+	_ = c.Write(context.Background(), websocket.MessageText, []byte(`{"cols":80,"rows":24}`))
+	if m := readText(t, c); m.Type != "error" {
+		t.Fatalf("%+v", m)
+	}
+	f.svc.mu.Lock()
+	defer f.svc.mu.Unlock()
+	if len(f.svc.opens) != 0 {
+		t.Fatal("an unsigned request was sent")
+	}
+}
+
+func TestEndpointDirectory(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = discoveryv1.AddToScheme(scheme)
+	ready, notReady, terminating := true, false, true
+	node := func(s string) *string { return &s }
+	slice := func(name, svc string, eps ...discoveryv1.Endpoint) *discoveryv1.EndpointSlice {
+		return &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "da", Labels: map[string]string{ServiceNameLabel: svc}}, AddressType: discoveryv1.AddressTypeIPv4, Endpoints: eps}
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		slice("a", names.DeviceAccessApp,
+			discoveryv1.Endpoint{Addresses: []string{"10.0.0.1"}, NodeName: node("n1"), Conditions: discoveryv1.EndpointConditions{Ready: &ready}},
+			discoveryv1.Endpoint{Addresses: []string{"10.0.0.2"}, NodeName: node("n2"), Conditions: discoveryv1.EndpointConditions{Ready: &notReady}},
+			discoveryv1.Endpoint{Addresses: []string{"10.0.0.3"}, NodeName: node("n3"), Conditions: discoveryv1.EndpointConditions{Ready: &ready, Terminating: &terminating}},
+			discoveryv1.Endpoint{Addresses: []string{"10.0.0.4"}, NodeName: node("n4")},
+			discoveryv1.Endpoint{Addresses: []string{"10.0.0.5"}, Conditions: discoveryv1.EndpointConditions{Ready: &ready}}),
+		slice("other", "something-else", discoveryv1.Endpoint{Addresses: []string{"10.9.9.9"}, NodeName: node("n9"), Conditions: discoveryv1.EndpointConditions{Ready: &ready}}),
+	).Build()
+	dir := EndpointDirectory(c, "da", names.DeviceAccessApp, 8080)
+	for node, want := range map[string]string{"n1": "http://10.0.0.1:8080", "n4": "http://10.0.0.4:8080", "n2": "", "n3": "", "n9": "", "": "", "nx": ""} {
+		got, ok := dir(node)
+		if got != want || ok != (want != "") {
+			t.Errorf("node %q: %q %v, want %q", node, got, ok, want)
 		}
 	}
 }

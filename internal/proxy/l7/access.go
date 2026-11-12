@@ -9,6 +9,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -129,12 +130,13 @@ func CompactCacheObject(in any) (any, error) {
 		d.Spec = lab.DeviceSpec{Name: x.Spec.Name, LabRef: x.Spec.LabRef, Code: x.Spec.Code, Terminal: x.Spec.Terminal}
 		d.Status = lab.DeviceStatus{NodeName: x.Status.NodeName}
 		out = d
-	case *corev1.Pod:
-		// The pods of the device access service: where they run and their address.
-		p := &corev1.Pod{ObjectMeta: x.ObjectMeta}
-		p.Spec.NodeName = x.Spec.NodeName
-		p.Status = corev1.PodStatus{PodIP: x.Status.PodIP, Phase: x.Status.Phase, Conditions: x.Status.Conditions}
-		out = p
+	case *discoveryv1.EndpointSlice:
+		// The addresses and node names of the device access service, and nothing else.
+		e := &discoveryv1.EndpointSlice{ObjectMeta: x.ObjectMeta, AddressType: x.AddressType}
+		for _, ep := range x.Endpoints {
+			e.Endpoints = append(e.Endpoints, discoveryv1.Endpoint{Addresses: ep.Addresses, Conditions: ep.Conditions, NodeName: ep.NodeName})
+		}
+		out = e
 	case *corev1.Secret:
 		out = x.DeepCopy()
 	default:

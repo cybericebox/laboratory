@@ -17,6 +17,7 @@ import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -32,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/proxy"
@@ -87,8 +89,18 @@ func Run() {
 		tc := l7.DefaultTerminalConfig()
 		tc.Host, tc.Log = cfg.TerminalHost, log.WithName("console")
 		tc.PerClient, tc.Idle, tc.Lifetime, tc.MaxFile, tc.MaxSession = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime, cfg.TerminalMaxFile, cfg.TerminalMaxSession
+		keys, err := wire.NewKeyFiles(10*time.Second, cfg.TerminalKeyFile)
+		if err != nil {
+			log.Error(err, "the key shared with the device access service")
+			os.Exit(1)
+		}
+		if tc.Embed, err = l7.NewEmbedMatcher(cfg.TerminalEmbedAllow, cfg.TerminalEmbedDeny); err != nil {
+			log.Error(err, "the embedding lists of the console")
+			os.Exit(1)
+		}
+		tc.Signer = func(r *wire.OpenRequest) error { return wire.Sign(keys.Signing(), r, time.Now()) }
 		tc.Devices = access.Device
-		tc.Services = l7.PodServiceDirectory(mgr.GetClient(), cfg.TerminalNamespace, cfg.TerminalPort)
+		tc.Services = l7.EndpointDirectory(mgr.GetClient(), cfg.TerminalNamespace, names.DeviceAccessApp, cfg.TerminalPort)
 		handler.WithTerminal(tc)
 	}
 	// Register all required informers before the manager starts: readiness must
@@ -200,11 +212,11 @@ func proxyCacheOptions(cfg *proxy.L7Config) cache.Options {
 		&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
 	}
 	if cfg.TerminalEnabled {
-		// The console reads the devices (their terminal settings and node) and the pods of the device access service, and nothing else:
-		// the pods are limited to one namespace and one label, so the proxy never caches a pod of a lab.
+		// The console reads the devices (their terminal settings and node) and the EndpointSlices of the device access service, and nothing
+		// else: the slices are limited to the one namespace of the service and to its Service, and no pod is read at all.
 		by[&laboratoryv1alpha1.Device{}] = cache.ByObject{Transform: l7.CompactCacheObject}
-		by[&corev1.Pod{}] = cache.ByObject{
-			Namespaces: map[string]cache.Config{cfg.TerminalNamespace: {LabelSelector: labels.SelectorFromSet(labels.Set{"app": names.DeviceAccessApp})}},
+		by[&discoveryv1.EndpointSlice{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{cfg.TerminalNamespace: {LabelSelector: labels.SelectorFromSet(labels.Set{l7.ServiceNameLabel: names.DeviceAccessApp})}},
 			Transform:  l7.CompactCacheObject,
 		}
 	}
@@ -213,7 +225,7 @@ func proxyCacheOptions(cfg *proxy.L7Config) cache.Options {
 func warmProxyCache(ctx context.Context, c cache.Cache, cfg *proxy.L7Config) error {
 	objects := []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}}
 	if cfg.TerminalEnabled {
-		objects = append(objects, &laboratoryv1alpha1.Device{}, &corev1.Pod{})
+		objects = append(objects, &laboratoryv1alpha1.Device{}, &discoveryv1.EndpointSlice{})
 	}
 	for _, object := range objects {
 		if _, err := c.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {

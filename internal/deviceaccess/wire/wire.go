@@ -7,7 +7,9 @@
 package wire
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -61,6 +63,8 @@ const (
 	CodeIO          = "io"
 	CodeIncomplete  = "incomplete"
 	CodeBusy        = "busy"
+	// CodeUnauthorized: the open request was not signed with a key the service accepts, or was stale or repeated. Nothing says which.
+	CodeUnauthorized = "unauthorized"
 )
 
 // Close reasons. They are for the log and the metric label, never for the participant's eyes beyond a short word.
@@ -99,6 +103,10 @@ type OpenRequest struct {
 	// counts consoles per client; it does not interpret them.
 	Client string `json:"client,omitempty"`
 	Group  string `json:"group,omitempty"`
+	// Time, Nonce and Sig authenticate the request (see auth.go): the proxy's HMAC over every other field.
+	Time  int64  `json:"ts,omitempty"`
+	Nonce string `json:"nonce,omitempty"`
+	Sig   string `json:"sig,omitempty"`
 }
 
 // OpenReply answers an open request.
@@ -180,3 +188,14 @@ func Size(payload []byte) (cols, rows uint16, err error) {
 
 // AckValue reads an acknowledgement payload.
 func AckValue(payload []byte) uint32 { return binary.BigEndian.Uint32(payload) }
+
+// CommandHash is a short fingerprint of a command line for the session log: a wrong value stays visible after the fact without the log
+// holding the command itself.
+func CommandHash(command []string) string {
+	h := sha256.New()
+	for _, c := range command {
+		_, _ = h.Write([]byte(c))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:6])
+}
