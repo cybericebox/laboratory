@@ -65,6 +65,8 @@ func TestBuiltinObservationsReachTheSecretWithDefaults(t *testing.T) {
 }
 
 func TestBuiltinObservationsAreValidatedAtTheAgent(t *testing.T) {
+	// One handler (one envtest start) for all the cases: every one is refused, so nothing is written that the next one could meet.
+	h, _ := contractHandler(t, Features{ChecksEnabled: true})
 	for name, bad := range map[string]*protobuf.CheckPart{
 		"port zero":       {Observation: &protobuf.CheckPart_Port{Port: &protobuf.PortObservation{Port: 0}}},
 		"sysctl path":     {Observation: &protobuf.CheckPart_KernelParam{KernelParam: &protobuf.KernelParamObservation{Name: "../etc/passwd", Equals: strp("x")}}},
@@ -74,7 +76,6 @@ func TestBuiltinObservationsAreValidatedAtTheAgent(t *testing.T) {
 		"directory slash": {Observation: &protobuf.CheckPart_Directory{Directory: &protobuf.DirectoryObservation{Path: "/x", HasEntries: []string{"a/b"}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h, _ := contractHandler(t, Features{ChecksEnabled: true})
 			c := &protobuf.Check{Id: "x", Device: "web", Mode: protobuf.CheckMode_CHECK_MODE_ONCE, Parts: []*protobuf.CheckPart{bad}}
 			res, err := h.CreateLabs(context.Background(), &protobuf.CreateLabsRequest{
 				Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: contractSpecJSON(t, nil, "web")}},
