@@ -139,6 +139,19 @@ func evalFile(p *labchecks.FilePart, f FileFacts) partVerdict {
 			}
 		}
 	}
+	fails = append(fails, fileOwnership(p, f)...)
+	switch {
+	case len(fails) == 0:
+		return partVerdict{outcome: Passed}
+	case undecided && onlyContentFails(fails):
+		return partVerdict{Failed, []string{"content: the file is larger than the part that is read"}}
+	}
+	return partVerdict{NotPassed, fails}
+}
+
+// fileOwnership compares mode, owner and group.
+func fileOwnership(p *labchecks.FilePart, f FileFacts) []string {
+	var fails []string
 	if p.Mode != nil && f.Mode != *p.Mode {
 		fails = append(fails, fmt.Sprintf("mode: is %04o", f.Mode))
 	}
@@ -148,13 +161,7 @@ func evalFile(p *labchecks.FilePart, f FileFacts) partVerdict {
 	if p.Group != nil && !ownerMatches(*p.Group, f.GID, f.Group, f.Unmapped) {
 		fails = append(fails, "group: differs"+unmappedNote(f.Unmapped))
 	}
-	switch {
-	case len(fails) == 0:
-		return partVerdict{outcome: Passed}
-	case undecided && onlyContentFails(fails):
-		return partVerdict{Failed, []string{"content: the file is larger than the part that is read"}}
-	}
-	return partVerdict{NotPassed, fails}
+	return fails
 }
 
 func unmappedNote(unmapped bool) string {
