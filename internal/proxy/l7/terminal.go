@@ -42,6 +42,8 @@ type DeviceInfo struct {
 	Node    string
 	Command []string
 	User    string
+	// Files is true when the author switched file transfer on for the console of this device.
+	Files bool
 }
 
 // DeviceLookup finds the device with a console that a host names, in a group namespace: the device name and base code that
@@ -97,6 +99,7 @@ type consoleSession struct {
 	base                string
 	command             []string
 	user                string
+	files               bool // the author switched file transfer on for this device
 	entry               *liveEntry
 	// budget is what the console may still move as files; transferring is set while a transfer runs (one at a time).
 	budget       atomic.Int64

@@ -18,7 +18,7 @@ func TestTerminalAccessEntries(t *testing.T) {
 	s := pruneScheme(t)
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab1", Namespace: "team-alpha"}, Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
 		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}},
-		{Name: "new", Type: laboratoryv1alpha1.DeviceTypeContainer, Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}},
+		{Name: "new", Type: laboratoryv1alpha1.DeviceTypeContainer, Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal, Files: true}}},
 		{Name: "off", Type: laboratoryv1alpha1.DeviceTypeContainer},
 		{Name: "db", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}}}
@@ -28,7 +28,7 @@ func TestTerminalAccessEntries(t *testing.T) {
 	for _, c2 := range []struct{ domain, url string }{{"", ""}, {"labs.example.com", "https://web-k7xt.labs.example.com"}} {
 		r := &LabReconciler{Client: c, Scheme: s, BaseDomain: c2.domain}
 		got := r.buildAccessEntries(context.Background(), lab)
-		want := []laboratoryv1alpha1.AccessEntry{{Device: "web", Protocol: "terminal", URL: c2.url}, {Device: "new", Protocol: "terminal"}}
+		want := []laboratoryv1alpha1.AccessEntry{{Device: "web", Protocol: "terminal", URL: c2.url}, {Device: "new", Protocol: "terminal", Files: true}}
 		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 			t.Fatalf("domain %q: %+v", c2.domain, got)
 		}

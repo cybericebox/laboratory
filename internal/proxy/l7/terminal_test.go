@@ -37,7 +37,7 @@ const (
 )
 
 // termCodes are the codes of the test devices, one per (lab, device): the console host of a device is <device>-<code>t (names.AccessHostLabel).
-var termCodes = map[string]string{"lab1/kali": "k10", "lab1/plain": "p10", "lab1/unplaced": "u10", "stopped/kali": "k20", "lab3/kali": "k30", "lab2/kali": "k40"}
+var termCodes = map[string]string{"lab1/kali": "k10", "lab1/plain": "p10", "lab1/unplaced": "u10", "lab1/nofiles": "n10", "stopped/kali": "k20", "lab3/kali": "k30", "lab2/kali": "k40"}
 
 // termHostFor is the console host of a device of the test cluster.
 func termHostFor(labName, device string) string {
@@ -168,7 +168,8 @@ func termDevice(labName, name string, enabled bool, node string) *lab.Device {
 	d := &lab.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name(labName, name), Namespace: termNS}}
 	d.Spec.Name, d.Spec.LabRef, d.Spec.Code = name, labName, termCodes[labName+"/"+name]
 	if enabled {
-		d.Spec.Access = []lab.DeviceAccess{{Kind: lab.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali"}}
+		// file transfer is the author's option, off by default: only the device named "nofiles" has it off here
+		d.Spec.Access = []lab.DeviceAccess{{Kind: lab.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali", Files: name != "nofiles"}}
 	}
 	d.Status.NodeName = node
 	return d
@@ -192,6 +193,7 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 		termDevice("lab1", "kali", true, "n1"),
 		termDevice("lab1", "plain", false, "n1"),
 		termDevice("lab1", "unplaced", true, ""),
+		termDevice("lab1", "nofiles", true, "n1"),
 		termDevice("stopped", "kali", true, "n1"),
 		termDevice("lab3", "kali", true, "n1"),
 	}
@@ -919,5 +921,41 @@ func TestEndpointDirectory(t *testing.T) {
 		if got != want || ok != (want != "") {
 			t.Errorf("node %q: %q %v, want %q", node, got, ok, want)
 		}
+	}
+}
+
+// File transfer is the author's option, off by default. A console of a device without it refuses put and get at the proxy, with a code the
+// page can show, and the service is never called; the page has no upload or download controls. With it, both work (TestTerminalUploadAndDownload).
+func TestTerminalFilesOffIsRefusedAtTheProxy(t *testing.T) {
+	f := newTermFixture(t, nil)
+	host := termHostFor("lab1", "nofiles")
+	if rec := f.getHost(host, "/", nil); rec.Code != 200 || strings.Contains(rec.Body.String(), `id="upload"`) || strings.Contains(rec.Body.String(), `id="download"`) || strings.Contains(rec.Body.String(), `class="files"`) {
+		t.Fatalf("page of a console without files: %d, controls present", rec.Code)
+	}
+	if rec := f.get("/", nil); !strings.Contains(rec.Body.String(), `id="upload"`) || !strings.Contains(rec.Body.String(), `id="download"`) {
+		t.Fatal("the page of a console with files has no controls")
+	}
+	_, token := f.openConsole("nofiles")
+	f.svc.mu.Lock()
+	opensBefore := len(f.svc.opens)
+	f.svc.mu.Unlock()
+
+	put := httptest.NewRequest("PUT", "http://"+host+"/files?session="+token+"&path=/tmp/a", bytes.NewReader([]byte("x")))
+	put.Host = host
+	put.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
+	put.Header.Set("Origin", "http://"+host)
+	rec := httptest.NewRecorder()
+	f.h.ServeHTTP(rec, put)
+	if rec.Code != 403 || !strings.Contains(rec.Body.String(), wire.CodeFilesOff) || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = f.getHost(host, "/files?session="+token+"&path=/tmp/a", map[string]string{"Sec-Fetch-Site": "same-origin"})
+	if rec.Code != 403 || !strings.Contains(rec.Body.String(), wire.CodeFilesOff) {
+		t.Fatalf("download: %d %s", rec.Code, rec.Body.String())
+	}
+	f.svc.mu.Lock()
+	defer f.svc.mu.Unlock()
+	if len(f.svc.opens) != opensBefore {
+		t.Fatalf("the service was called %d times for refused transfers", len(f.svc.opens)-opensBefore)
 	}
 }

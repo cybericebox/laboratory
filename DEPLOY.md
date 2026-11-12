@@ -967,7 +967,7 @@ because the service cannot see the device's file system; the runtime gets number
 exited, idle, lifetime, an error, the service stopping) the service kills and deletes the exec and removes its FIFOs; a journal in the FIFO directory lets the
 next start remove execs and FIFOs a crash left behind (containerd does not kill an exec when its client goes away).
 
-**Files.** The console page can upload to and download from the device. The file is read or written by the probe inside the device
+**Files.** File transfer is an option of the author, **off by default**, on the terminal entry of the device (`access: [{kind: terminal, files: true}]`; the lab reports it in `LabAccessEntry.files` of the `terminal` entry, and `features.access.terminal_files` says the laboratory can do it at all). Without it the proxy refuses `/files` (put and get) with `403 {"error":"files-off"}` before it calls the device access service, and the console page is rendered without the upload and download controls; the service's own white list is unchanged. `files: true` is refused for a `vm` profile and on any access that is not a terminal. With it, the console page can upload to and download from the device. The file is read or written by the probe inside the device
 (`probe put`/`probe get`), run through the same exec as the user of the console, so the participant reaches what the shell reaches, never the node. Only
 regular files (a link in the last component, a device node, a FIFO and a directory are refused), streaming with backpressure, at most `maxFileBytes`
 per file and `maxSessionBytes` per console. A download is served as `Content-Type: application/octet-stream`, `Content-Disposition: attachment` with a

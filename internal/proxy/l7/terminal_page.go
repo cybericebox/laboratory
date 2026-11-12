@@ -96,6 +96,7 @@ var terminalUK = terminalText{
 		wire.CodeBadRequest:  "Некоректний шлях.",
 		wire.CodeIncomplete:  "Передачу перервано.",
 		wire.CodeUnavailable: "Передача файлів зараз недоступна.",
+		wire.CodeFilesOff:    "Передачу файлів для цього пристрою не ввімкнено.",
 	},
 }
 
@@ -132,6 +133,7 @@ var terminalEN = terminalText{
 		wire.CodeBadRequest:  "Invalid path.",
 		wire.CodeIncomplete:  "The transfer was interrupted.",
 		wire.CodeUnavailable: "File transfer is not available right now.",
+		wire.CodeFilesOff:    "File transfer is not switched on for this device.",
 	},
 }
 
@@ -159,13 +161,13 @@ var terminalTmpl = template.Must(template.New("terminal").Parse(`<!doctype html>
   <header>
     <h1>{{.T.Title}}</h1>
     <span id="target">{{.Lab}} / {{.Device}}</span>
-    <div class="files">
+    {{if .Files}}<div class="files">
       <input id="updir" type="text" value="/tmp" aria-label="{{.T.UploadDir}}" title="{{.T.UploadDir}}" maxlength="1024" spellcheck="false" autocomplete="off">
       <button id="upload" type="button" disabled>{{.T.Upload}}</button>
       <input id="upfile" type="file">
       <input id="downpath" type="text" placeholder="/path/file" aria-label="{{.T.DownPath}}" title="{{.T.DownPath}}" maxlength="1024" spellcheck="false" autocomplete="off">
       <button id="download" type="button" disabled>{{.T.Download}}</button>
-    </div>
+    </div>{{end}}
     <span id="status"></span>
   </header>
   <div id="note" role="status"></div>
@@ -189,6 +191,7 @@ func serveTerminalPage(w http.ResponseWriter, r *http.Request, tg terminalTarget
 		T      terminalText
 		Lab    string
 		Device string
+		Files  bool
 		I18N   template.JS
-	}{t, tg.lab, tg.device, template.JS(raw)})
+	}{t, tg.lab, tg.device, tg.info.Files, template.JS(raw)})
 }

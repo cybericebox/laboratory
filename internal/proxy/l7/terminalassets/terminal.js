@@ -151,8 +151,10 @@
   const upBtn = $('upload');
   const upInput = $('upfile');
   const downBtn = $('download');
+  // The controls are rendered only when the author switched file transfer on for this device; without them there is nothing to wire.
+  const hasFiles = !!(upBtn && upInput && downBtn);
   function setFiles(on) {
-    upBtn.disabled = downBtn.disabled = !on;
+    if (hasFiles) upBtn.disabled = downBtn.disabled = !on;
   }
   function note(text) {
     noteEl.textContent = text || '';
@@ -163,59 +165,61 @@
   function filesURL(path) {
     return '/files?session=' + encodeURIComponent(session) + '&path=' + encodeURIComponent(path);
   }
-  upBtn.addEventListener('click', () => upInput.click());
-  upInput.addEventListener('change', () => {
-    const file = upInput.files[0];
-    upInput.value = '';
-    if (!file || !session) {
-      return;
-    }
-    const dir = $('updir').value.replace(/\/+$/, '') || '';
-    const path = dir + '/' + file.name;
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', filesURL(path));
-    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.upload.onprogress = (e) => note(T.files.uploading + ' ' + (e.lengthComputable ? Math.floor(e.loaded * 100 / e.total) + '%' : ''));
-    xhr.onload = () => {
-      if (xhr.status === 204) {
-        note(T.files.uploaded + ' ' + path);
+  if (hasFiles) {
+    upBtn.addEventListener('click', () => upInput.click());
+    upInput.addEventListener('change', () => {
+      const file = upInput.files[0];
+      upInput.value = '';
+      if (!file || !session) {
         return;
       }
-      let code = 'unavailable';
-      try { code = JSON.parse(xhr.responseText).error; } catch (e) { /* keep the default */ }
-      note(failText(code));
-    };
-    xhr.onerror = () => note(failText('unavailable'));
-    note(T.files.uploading);
-    xhr.send(file);
-  });
-  downBtn.addEventListener('click', async () => {
-    const path = $('downpath').value.trim();
-    if (!path || !session) {
-      return;
-    }
-    note(T.files.downloading);
-    try {
-      const resp = await fetch(filesURL(path), { credentials: 'same-origin' });
-      if (!resp.ok) {
+      const dir = $('updir').value.replace(/\/+$/, '') || '';
+      const path = dir + '/' + file.name;
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', filesURL(path));
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => note(T.files.uploading + ' ' + (e.lengthComputable ? Math.floor(e.loaded * 100 / e.total) + '%' : ''));
+      xhr.onload = () => {
+        if (xhr.status === 204) {
+          note(T.files.uploaded + ' ' + path);
+          return;
+        }
         let code = 'unavailable';
-        try { code = (await resp.json()).error; } catch (e) { /* keep the default */ }
+        try { code = JSON.parse(xhr.responseText).error; } catch (e) { /* keep the default */ }
         note(failText(code));
+      };
+      xhr.onerror = () => note(failText('unavailable'));
+      note(T.files.uploading);
+      xhr.send(file);
+    });
+    downBtn.addEventListener('click', async () => {
+      const path = $('downpath').value.trim();
+      if (!path || !session) {
         return;
       }
-      const blob = await resp.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = path.split('/').pop() || 'download';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-      note(T.files.downloaded);
-    } catch (e) {
-      note(failText('incomplete'));
-    }
-  });
+      note(T.files.downloading);
+      try {
+        const resp = await fetch(filesURL(path), { credentials: 'same-origin' });
+        if (!resp.ok) {
+          let code = 'unavailable';
+          try { code = (await resp.json()).error; } catch (e) { /* keep the default */ }
+          note(failText(code));
+          return;
+        }
+        const blob = await resp.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = path.split('/').pop() || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        note(T.files.downloaded);
+      } catch (e) {
+        note(failText('incomplete'));
+      }
+    });
+  }
   setFiles(false);
   connect();
 })();

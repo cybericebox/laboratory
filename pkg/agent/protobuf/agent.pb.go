@@ -5921,11 +5921,14 @@ func (x *LabConnectionStatus) GetReady() bool {
 // last character is the kind of access (w web, t console, v vnc, r rdp), which is the lab's private encoding: a caller never parses the host, it
 // takes the link and its kind from this entry (protocol + url). url is empty until the device has its code; no link is built by the caller.
 type LabAccessEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Device        string                 `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
-	Port          int32                  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
-	Protocol      string                 `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	Url           string                 `protobuf:"bytes,4,opt,name=url,proto3" json:"url,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Device   string                 `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
+	Port     int32                  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	Protocol string                 `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Url      string                 `protobuf:"bytes,4,opt,name=url,proto3" json:"url,omitempty"`
+	// files: on a terminal entry, the author switched file transfer on for the console of this device (off by default). Only meaningful
+	// when AccessFeature.terminal_files is true; the console refuses file requests and shows no upload or download without it.
+	Files         bool `protobuf:"varint,5,opt,name=files,proto3" json:"files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5986,6 +5989,13 @@ func (x *LabAccessEntry) GetUrl() string {
 		return x.Url
 	}
 	return ""
+}
+
+func (x *LabAccessEntry) GetFiles() bool {
+	if x != nil {
+		return x.Files
+	}
+	return false
 }
 
 type LabList struct {
@@ -8028,11 +8038,14 @@ func (x *ChecksFeature) GetObservations() []string {
 // The address of a kind of access to a device is a host name alone, never a path or a query: the link is LabAccessEntry.url of the entry
 // of that kind, and the daemon takes it from there, as it does for http.
 type AccessFeature struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Http          bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
-	Terminal      bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
-	Vnc           bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
-	Rdp           bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Http     bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
+	Terminal bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
+	Vnc      bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
+	Rdp      bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
+	// terminal_files: file transfer through the console is possible in this laboratory (true with terminal: the probe runs inside every
+	// device that can have a terminal). Whether a device offers it is the author's choice, on its terminal entry: LabAccessEntry.files.
+	TerminalFiles bool `protobuf:"varint,6,opt,name=terminal_files,json=terminalFiles,proto3" json:"terminal_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8091,6 +8104,13 @@ func (x *AccessFeature) GetVnc() bool {
 func (x *AccessFeature) GetRdp() bool {
 	if x != nil {
 		return x.Rdp
+	}
+	return false
+}
+
+func (x *AccessFeature) GetTerminalFiles() bool {
+	if x != nil {
+		return x.TerminalFiles
 	}
 	return false
 }
@@ -13046,12 +13066,13 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x06rescue\x18\x05 \x01(\bR\x06rescue\"?\n" +
 	"\x13LabConnectionStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05ready\x18\x02 \x01(\bR\x05ready\"j\n" +
+	"\x05ready\x18\x02 \x01(\bR\x05ready\"\x80\x01\n" +
 	"\x0eLabAccessEntry\x12\x16\n" +
 	"\x06device\x18\x01 \x01(\tR\x06device\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
 	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x10\n" +
-	"\x03url\x18\x04 \x01(\tR\x03url\"0\n" +
+	"\x03url\x18\x04 \x01(\tR\x03url\x12\x14\n" +
+	"\x05files\x18\x05 \x01(\bR\x05files\"0\n" +
 	"\aLabList\x12%\n" +
 	"\x05items\x18\x01 \x03(\v2\x0f.labmanager.LabR\x05items\"\xbc\x02\n" +
 	"\x0eLabGroupClient\x12\x1c\n" +
@@ -13257,12 +13278,13 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x16max_time_limit_seconds\x18\x04 \x01(\x05R\x13maxTimeLimitSeconds\x120\n" +
 	"\x14max_schedule_seconds\x18\x05 \x01(\x05R\x12maxScheduleSeconds\x12(\n" +
 	"\x10max_detail_bytes\x18\x06 \x01(\x05R\x0emaxDetailBytes\x12\"\n" +
-	"\fobservations\x18\a \x03(\tR\fobservations\"x\n" +
+	"\fobservations\x18\a \x03(\tR\fobservations\"\x9f\x01\n" +
 	"\rAccessFeature\x12\x12\n" +
 	"\x04http\x18\x01 \x01(\bR\x04http\x12\x1a\n" +
 	"\bterminal\x18\x02 \x01(\bR\bterminal\x12\x10\n" +
 	"\x03vnc\x18\x03 \x01(\bR\x03vnc\x12\x10\n" +
-	"\x03rdp\x18\x04 \x01(\bR\x03rdpJ\x04\b\x05\x10\x06R\rterminal_host\"\xff\x01\n" +
+	"\x03rdp\x18\x04 \x01(\bR\x03rdp\x12%\n" +
+	"\x0eterminal_files\x18\x06 \x01(\bR\rterminalFilesJ\x04\b\x05\x10\x06R\rterminal_host\"\xff\x01\n" +
 	"\x10BootstrapFeature\x12(\n" +
 	"\x10max_script_bytes\x18\x01 \x01(\x05R\x0emaxScriptBytes\x12\x1b\n" +
 	"\tmax_files\x18\x02 \x01(\x05R\bmaxFiles\x12$\n" +

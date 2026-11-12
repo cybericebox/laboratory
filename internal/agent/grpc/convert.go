@@ -108,7 +108,7 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	}
 	for i := range st.Access {
 		a := &st.Access[i]
-		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
+		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL, Files: a.Files})
 		if a.URL != "" {
 			// a terminal entry has no link yet: the platform issues it
 			status.AccessUrls = append(status.AccessUrls, a.URL)

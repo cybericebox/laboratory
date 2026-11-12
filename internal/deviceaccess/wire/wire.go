@@ -63,6 +63,8 @@ const (
 	CodeIO          = "io"
 	CodeIncomplete  = "incomplete"
 	CodeBusy        = "busy"
+	// CodeFilesOff is answered by the proxy alone: the author did not switch file transfer on for this device. The service never sees the request.
+	CodeFilesOff = "files-off"
 	// CodeUnauthorized: the open request was not signed with a key the service accepts, or was stale or repeated. Nothing says which.
 	CodeUnauthorized = "unauthorized"
 )

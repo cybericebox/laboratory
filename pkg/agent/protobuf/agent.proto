@@ -877,6 +877,9 @@ message LabAccessEntry {
   int32 port = 2;
   string protocol = 3;
   string url = 4;
+  // files: on a terminal entry, the author switched file transfer on for the console of this device (off by default). Only meaningful
+  // when AccessFeature.terminal_files is true; the console refuses file requests and shows no upload or download without it.
+  bool files = 5;
 }
 message LabList {repeated Lab items = 1;}
 
@@ -1184,6 +1187,9 @@ message AccessFeature {
   bool terminal = 2;
   bool vnc = 3;
   bool rdp = 4;
+  // terminal_files: file transfer through the console is possible in this laboratory (true with terminal: the probe runs inside every
+  // device that can have a terminal). Whether a device offers it is the author's choice, on its terminal entry: LabAccessEntry.files.
+  bool terminal_files = 6;
 }
 // The limits of a device bootstrap; bootstrap itself is always available.
 message BootstrapFeature {

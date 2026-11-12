@@ -574,6 +574,10 @@ func TestFeaturesReportChecksAndAccess(t *testing.T) {
 		if got.GetChecks().GetEnabled() != c.checks || acc.GetTerminal() != (c.terminal && c.served) || !acc.GetHttp() || acc.GetVnc() || acc.GetRdp() {
 			t.Errorf("%+v: reported checks %v, access %+v (only http is always served, terminal needs the option and the component, vnc and rdp never)", c, got.GetChecks().GetEnabled(), acc)
 		}
+		// file transfer is possible exactly where the console is served
+		if acc.GetTerminalFiles() != (c.terminal && c.served) {
+			t.Errorf("%+v: terminal_files %v", c, acc.GetTerminalFiles())
+		}
 		if ch := got.GetChecks(); ch.GetMaxChecksPerLab() != labchecks.MaxChecksPerLab || ch.GetMaxTimeLimitSeconds() != labchecks.MaxCheckTimeLimit || ch.GetMaxDetailBytes() != labchecks.MaxResultDetailBytes {
 			t.Errorf("checks limits: %+v", ch)
 		}
