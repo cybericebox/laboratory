@@ -5,89 +5,130 @@ import (
 	"testing"
 )
 
+func TestNewWebCodeIsABaseCode(t *testing.T) {
+	seen := map[byte]bool{}
+	for i := 0; i < 2000; i++ {
+		for _, n := range []int{WebCodeLen, WebCodeMaxLen} {
+			c, err := NewWebCode(n)
+			if err != nil || len(c) != n || !IsBaseCode(c) {
+				t.Fatalf("%q %v", c, err)
+			}
+			seen[c[len(c)-1]] = true
+		}
+	}
+	// the six last characters, and nothing else, are drawn
+	if len(seen) != KindSlots {
+		t.Fatalf("last characters %v, want the six of index 0 mod 6", seen)
+	}
+	for _, c := range "06ciou" {
+		if !seen[byte(c)] {
+			t.Errorf("%q never drawn", c)
+		}
+	}
+}
+
 func TestAccessHostLabels(t *testing.T) {
-	if l, ok := AccessHostLabel("kali", "x7k", AccessKindHTTP); !ok || l != "kali-x7k" || l != WebHostLabel("kali", "x7k") {
-		t.Fatalf("http label %q", l)
+	for _, c := range []struct{ code, kind, want string }{
+		{"ab0", AccessKindHTTP, "kali-ab0"},
+		{"ab0", AccessKindTerminal, "kali-ab1"},
+		{"ab0", AccessKindVNC, "kali-ab2"},
+		{"ab0", AccessKindRDP, "kali-ab3"},
+		{"abu", AccessKindTerminal, "kali-abv"},
+		{"abc", AccessKindRDP, "kali-abf"},
+		{"ab6", AccessKindHTTP, "kali-ab6"},
+	} {
+		got, ok := AccessHostLabel("kali", c.code, c.kind)
+		if !ok || got != c.want {
+			t.Errorf("%s %s: %q %v, want %q", c.code, c.kind, got, ok, c.want)
+		}
 	}
-	if l, ok := AccessHostLabel("kali", "x7k", AccessKindTerminal); !ok || l != "kali-x7k--term" {
-		t.Fatalf("terminal label %q", l)
+	if l, _ := AccessHostLabel("kali", "x7c", AccessKindHTTP); l != WebHostLabel("kali", "x7c") {
+		t.Errorf("http label %q differs from the web host label", l)
 	}
-	if _, ok := AccessHostLabel("kali", "x7k", "ssh"); ok {
-		t.Fatal("an unknown kind has a label")
+	if _, ok := AccessHostLabel("kali", "x7k", AccessKindTerminal); ok {
+		t.Error("a code that is not a base code has an access host")
+	}
+	if _, ok := AccessHostLabel("kali", "x7c", "ssh"); ok {
+		t.Error("an unknown kind has a label")
 	}
 	long := strings.Repeat("a", MaxDeviceNameLen)
 	for _, kind := range []string{AccessKindHTTP, AccessKindTerminal, AccessKindVNC, AccessKindRDP} {
-		if l, _ := AccessHostLabel(long, "abcd", kind); len(l) > 63 {
+		if l, _ := AccessHostLabel(long, "abc0", kind); len(l) > 63 {
 			t.Fatalf("%s label is %d characters", kind, len(l))
 		}
 	}
 }
 
-func TestAccessHostParse(t *testing.T) {
-	for _, c := range []struct{ label, base, kind string }{
-		{"kali-x7k", "kali-x7k", AccessKindHTTP},
-		{"kali-x7k--term", "kali-x7k", AccessKindTerminal},
-		{"kali-x7k--vnc", "kali-x7k", AccessKindVNC},
-		{"kali-x7k--rdp", "kali-x7k", AccessKindRDP},
-		{"a--b-x7k", "a--b-x7k", AccessKindHTTP},
-		{"term-x7k", "term-x7k", AccessKindHTTP},
-		{"web--term-x7k", "web--term-x7k", AccessKindHTTP},
-	} {
-		if base, kind := ParseAccessHost(c.label); base != c.base || kind != c.kind {
-			t.Errorf("%q: %q %q", c.label, base, kind)
-		}
-	}
-}
-
-// No pair (device, code) gives a web host that reads as a kind host, and no kind host reads as a web host: the web host ends in
-// "-<code>" (3 or 4 letters or digits), the kind host in "--<marker>".
-func TestAccessHostsNeverCollide(t *testing.T) {
-	alphabet := "ab0-"
-	var devices []string
-	var gen func(prefix string, n int)
-	gen = func(prefix string, n int) {
-		if prefix != "" && ValidateDeviceName(prefix) == nil {
-			devices = append(devices, prefix)
-		}
-		if n == 0 {
-			return
-		}
-		for _, c := range alphabet {
-			gen(prefix+string(c), n-1)
-		}
-	}
-	gen("", 6)
-	codes := []string{"abc", "a0b", "0ab", "b00", "abcd", "0000", "ab0b"}
+// Over every code of length 3 and every kind: the label parses back to the device, the base code and the kind; no two (base code,
+// kind) give the same label; the http label is the web host label.
+func TestAccessHostsExhaustive(t *testing.T) {
+	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+	kinds := []string{AccessKindHTTP, AccessKindTerminal, AccessKindVNC, AccessKindRDP}
 	seen := map[string]string{}
-	for _, d := range devices {
-		for _, code := range codes {
-			for _, kind := range []string{AccessKindHTTP, AccessKindTerminal, AccessKindVNC, AccessKindRDP} {
-				l, _ := AccessHostLabel(d, code, kind)
-				base, got := ParseAccessHost(l)
-				if got != kind || base != WebHostLabel(d, code) {
-					t.Fatalf("%s %s %s -> %q parses as %q %q", d, code, kind, l, base, got)
-				}
-				who := d + "/" + code + "/" + kind
-				if other, dup := seen[l]; dup {
-					// the same label for two different (device, code) of the same kind is a plain web collision the operator already prevents
-					if other != who && strings.HasSuffix(other, "/"+kind) {
-						continue
+	bases := 0
+	for i := 0; i < len(alphabet); i++ {
+		for j := 0; j < len(alphabet); j++ {
+			for k := 0; k < len(alphabet); k++ {
+				code := string([]byte{alphabet[i], alphabet[j], alphabet[k]})
+				if !IsBaseCode(code) {
+					if _, ok := AccessHostLabel("box", code, AccessKindHTTP); ok {
+						t.Fatalf("%q is not a base code", code)
 					}
-					t.Fatalf("%q is both %s and %s", l, other, who)
+					continue
 				}
-				seen[l] = who
+				bases++
+				for _, kind := range kinds {
+					label, ok := AccessHostLabel("box", code, kind)
+					if !ok {
+						t.Fatalf("%s %s", code, kind)
+					}
+					dev, base, got := ParseAccessHost(label)
+					if dev != "box" || base != code || got != kind {
+						t.Fatalf("%s %s -> %q parses as %q %q %q", code, kind, label, dev, base, got)
+					}
+					if kind == AccessKindHTTP && label != WebHostLabel("box", code) {
+						t.Fatalf("http label %q", label)
+					}
+					who := code + "/" + kind
+					if other, dup := seen[label]; dup {
+						t.Fatalf("%q is both %s and %s", label, other, who)
+					}
+					seen[label] = who
+				}
 			}
 		}
 	}
+	if want := 36 * 36 * 6; bases != want {
+		t.Fatalf("%d base codes of length 3, want %d", bases, want)
+	}
 }
 
-func TestDeviceNameMayNotLookLikeAnAccessHost(t *testing.T) {
-	for _, n := range []string{"box--term", "box--vnc", "x--rdp"} {
-		if ValidateNewDeviceName(n) == nil {
-			t.Errorf("%q accepted", n)
+func TestParseAccessHostEdges(t *testing.T) {
+	if d, c, kind := ParseAccessHost("a--b-ab2"); d != "a--b" || c != "ab0" || kind != AccessKindVNC {
+		t.Errorf("%q %q %q", d, c, kind)
+	}
+	// slots 4 and 5 are reserved
+	for _, last := range []string{"4", "5", "a", "b", "g", "h", "m", "n", "s", "t", "y", "z"} {
+		if _, _, kind := ParseAccessHost("kali-ab" + last); kind != AccessKindUnknown {
+			t.Errorf("last %q: kind %q, want the reserved slot", last, kind)
 		}
 	}
-	if err := ValidateNewDeviceName("terminal"); err != nil {
-		t.Errorf("an ordinary name is refused: %v", err)
+	// not an access host: no hyphen, a code of the wrong length or alphabet, a bad device name
+	for _, label := range []string{"kali", "-abc", "kali-ab", "kali-abcde", "kali-AB0", "kali-a_0", "Kali-ab0", "kali--ab0", "-kali-ab0"} {
+		if d, c, kind := ParseAccessHost(label); kind != "" {
+			t.Errorf("%q parsed as %q %q %q", label, d, c, kind)
+		}
+	}
+	// a device name with hyphens keeps them
+	if d, c, kind := ParseAccessHost("my-box-ab1"); d != "my-box" || c != "ab0" || kind != AccessKindTerminal {
+		t.Errorf("%q %q %q", d, c, kind)
+	}
+	// the published rule for a client: a console host's last character has an index mod 6 of 1
+	for _, last := range "0123456789abcdefghijklmnopqrstuvwxyz" {
+		_, _, kind := ParseAccessHost("kali-ab" + string(last))
+		idx := strings.IndexRune("0123456789abcdefghijklmnopqrstuvwxyz", last)
+		if (kind == AccessKindTerminal) != (idx%6 == 1) {
+			t.Errorf("last %q: kind %q", last, kind)
+		}
 	}
 }

@@ -174,11 +174,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.renewSession(w, claims)
 	var backendURL, lab string
 	if h.access != nil {
-		if base, kind := names.ParseAccessHost(task); kind != names.AccessKindHTTP {
-			// A host with the mark of a kind is the access of that kind to a device, never the Service of a device. Only the console
-			// is served; vnc and rdp are reserved and answer like a host that does not exist.
+		if device, code, kind := names.ParseAccessHost(task); kind != "" && kind != names.AccessKindHTTP {
+			// The last character of the code says which access the host is: a host of another kind is never the Service of a device.
+			// Only the console is served; vnc, rdp and the reserved slots answer like a host that does not exist.
 			if kind == names.AccessKindTerminal && h.terminal != nil {
-				h.serveTerminal(w, r, base, claims, client, group)
+				h.serveTerminal(w, r, device, code, claims, client, group)
 			} else {
 				fail(w, r, http.StatusNotFound, pageGone, "not found")
 			}

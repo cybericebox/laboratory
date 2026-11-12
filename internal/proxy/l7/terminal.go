@@ -16,10 +16,11 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // The console. A device whose lab asks for a terminal can be opened in the browser on a host of its own under the labs' base domain,
-// <device>-<code>--term.<base> (names.AccessHostLabel): the page, a WebSocket for the shell and two requests for files all live there.
+// <device>-<code>.<base> with the console's kind in the last character of the code (names.AccessHostLabel): the page, a WebSocket for the shell and two requests for files all live there.
 // Nothing about the device is in a path or a query; the host is the address, and the group of the session is the only namespace it is
 // looked for in. The proxy authorizes exactly as it
 // does for a web request (the session cookie, the group, the access policy that allows the lab, the lab running) and adds that the
@@ -43,9 +44,9 @@ type DeviceInfo struct {
 	User    string
 }
 
-// DeviceLookup finds the device with a console that a host names, in a group namespace: base is the first label of the host without
-// its kind mark (<device>-<code>, names.ParseAccessHost).
-type DeviceLookup func(ctx context.Context, namespace, base string) (DeviceInfo, error)
+// DeviceLookup finds the device with a console that a host names, in a group namespace: the device name and base code that
+// names.ParseAccessHost read from the first label of the host.
+type DeviceLookup func(ctx context.Context, namespace, device, code string) (DeviceInfo, error)
 
 // ServiceDirectory maps a node to the base URL of the device access service pod on it, e.g. "http://10.0.3.7:8080".
 type ServiceDirectory func(node string) (baseURL string, ok bool)
@@ -92,7 +93,7 @@ type consoleSession struct {
 	group, client       string
 	tenant              string
 	namespace, lab, dev string
-	host                string // the console host without its mark; a file request must come on the same one
+	host                string // <device>-<code> of the base code; a file request must come on the same console host
 	base                string
 	command             []string
 	user                string
@@ -163,11 +164,11 @@ type terminalTarget struct {
 	client                 string
 	info                   DeviceInfo
 	base                   string
-	host                   string // the first label of the console host without its mark, <device>-<code>
+	host                   string // <device>-<code> of the base code of the device
 }
 
 // serveTerminal answers a request for the console host. The session was validated by the caller (cookie, group, tenant).
-func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, base string, claims jwtClaims, client string, group AccessGroup) {
+func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, device, code string, claims jwtClaims, client string, group AccessGroup) {
 	t := h.terminal
 	ancestor := ancestorNone
 	if r.URL.Path == "/" {
@@ -184,19 +185,19 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, base str
 			fail(w, r, http.StatusMethodNotAllowed, pageGone, "method not allowed")
 			return
 		}
-		tg, ok := h.authorizeTerminal(w, r, base, claims, client, group)
+		tg, ok := h.authorizeTerminal(w, r, device, code, claims, client, group)
 		if !ok {
 			return
 		}
 		serveTerminalPage(w, r, tg)
 	case r.URL.Path == "/ws":
-		tg, ok := h.authorizeTerminal(w, r, base, claims, client, group)
+		tg, ok := h.authorizeTerminal(w, r, device, code, claims, client, group)
 		if !ok {
 			return
 		}
 		h.terminalSocket(w, r, tg)
 	case r.URL.Path == "/files":
-		h.terminalFile(w, r, base, claims, client, group)
+		h.terminalFile(w, r, names.WebHostLabel(device, code), claims, client, group)
 	default:
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 	}
@@ -205,7 +206,7 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, base str
 // authorizeTerminal is the authorization of a console request: the client may reach the lab (the same Allowed check as for a web
 // request: the client exists, the policy allows the lab, the lab is not stopped) and the device has a console. Every refusal is the
 // same card, so the answer does not tell a lab that does not exist from one the client may not use.
-func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, base string, claims jwtClaims, client string, group AccessGroup) (terminalTarget, bool) {
+func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, hostDevice, hostCode string, claims jwtClaims, client string, group AccessGroup) (terminalTarget, bool) {
 	t := h.terminal
 	if t.cfg.Devices == nil || t.cfg.Services == nil {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
@@ -214,7 +215,7 @@ func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, base
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	// The host is looked up in the namespace of the session's own group only: a console host of another group is no device here.
-	info, err := t.cfg.Devices(ctx, group.Namespace, base)
+	info, err := t.cfg.Devices(ctx, group.Namespace, hostDevice, hostCode)
 	if err != nil || !plainName(info.Lab) || !plainName(info.Device) || !h.access.Allowed(ctx, group.Namespace, client, info.Lab) {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 		return terminalTarget{}, false
@@ -226,7 +227,7 @@ func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, base
 		fail(w, r, http.StatusServiceUnavailable, pageStarting, "the console is not ready")
 		return terminalTarget{}, false
 	}
-	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc, host: base}, true
+	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc, host: names.WebHostLabel(hostDevice, hostCode)}, true
 }
 
 // plainName accepts a name that can be a lab or device: bounded, printable, no separator or control character.

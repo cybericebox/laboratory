@@ -1010,9 +1010,9 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 // buildAccessEntries returns the externally-visible URL for each web-exposed
 // device in the lab (none if BaseDomain is unset), then one entry with protocol
 // "terminal" for each device that enables the browser terminal. A terminal entry
-// has no port; its URL is the console host of the device (names.AccessHostLabel, the
-// same <device>-<code> as the web host plus the mark of the kind), empty until the
-// device has its code.
+// has no port; its URL is the console host of the device (names.AccessHostLabel: the
+// same <device>-<code> as the web host with the kind in the last character of the
+// code), empty until the device has its base code.
 // The host of a web port is the name of the device's existing web Service, never
 // recomputed; a device whose Service does not exist yet is skipped.
 func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
