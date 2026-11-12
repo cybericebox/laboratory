@@ -55,6 +55,12 @@ func contractSpecJSON(t *testing.T, mod func(*laboratoryv1alpha1.LabSpec), devic
 	if err := json.Unmarshal(specJSON(devices...), &spec); err != nil {
 		t.Fatal(err)
 	}
+	// A device with a bootstrap needs a service, and a service needs a user (the agent refuses a launcher start without one).
+	for i := range spec.Devices {
+		if spec.Devices[i].Service == nil {
+			spec.Devices[i].Service = &laboratoryv1alpha1.DeviceService{Command: []string{"/srv"}, User: "app"}
+		}
+	}
 	if mod != nil {
 		mod(&spec)
 	}

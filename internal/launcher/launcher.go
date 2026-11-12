@@ -35,7 +35,8 @@ type Config struct {
 	// Attempt is the number of this attempt when the caller counts them (a pod that is not restarted in place); 0 means the
 	// launcher counts them itself in Dir.
 	Attempt int
-	// User is the service user as the image names it; empty is root.
+	// User is the service user as the image names it: a name, a uid, name:group or uid:gid. It is required: "root", "0" and "0:0" are the
+	// explicit root (a numeric id needs no /etc/passwd, which an image without a shell lacks), and an empty user is refused, never root.
 	User string
 	// WorkDir is the working directory of the service; empty keeps "/".
 	WorkDir string
@@ -60,6 +61,11 @@ func Run(cfg Config, sys System) int {
 		cfg.Dir = names.BootstrapDir
 	}
 	l := &run{cfg: cfg, sys: sys, acc: Accounts{Root: cfg.Root}}
+	if cfg.User == "" {
+		// Before anything is placed or run: the launcher runs as root and would leave the service root.
+		Message{Kind: KindStart, Reason: "the service has no user: the user of the image, or root named explicitly"}.write(cfg.TerminationLog)
+		return ExitStart
+	}
 	if cfg.Bootstrap {
 		if code, done := l.bootstrap(); done {
 			return code
@@ -228,7 +234,7 @@ func (l *run) startService() int {
 	}
 	svcEnv := l.sys.Environ()
 	var id *Identity
-	if l.cfg.User != "" {
+	{
 		resolved, err := l.acc.Resolve(l.cfg.User)
 		if err != nil {
 			return fail(err.Error())

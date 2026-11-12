@@ -92,6 +92,9 @@ func (r *DeviceReconciler) refuseUnbootstrappable(device *laboratoryv1alpha1.Dev
 		return nil
 	}
 	switch {
+	case device.Spec.Service != nil && device.Spec.Service.User == "":
+		// Defence in depth (the agent refuses this): the launcher runs as root, and without a user the service would stay root.
+		return &errBootstrapRefused{reason: "the service has no user: the user of the image, or root named explicitly"}
 	case len(serviceArgv(device)) == 0:
 		return &errBootstrapRefused{reason: "the service command is unknown: the image configuration gave none and the device has no command, so nothing can be started after the bootstrap"}
 	case r.NetConfigImage == "":
