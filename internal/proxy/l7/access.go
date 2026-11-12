@@ -127,7 +127,7 @@ func CompactCacheObject(in any) (any, error) {
 	case *lab.Device:
 		// Only what the console needs: which device it is, its terminal settings and the node it runs on.
 		d := &lab.Device{ObjectMeta: x.ObjectMeta}
-		d.Spec = lab.DeviceSpec{Name: x.Spec.Name, LabRef: x.Spec.LabRef, Code: x.Spec.Code, Terminal: x.Spec.Terminal}
+		d.Spec = lab.DeviceSpec{Name: x.Spec.Name, LabRef: x.Spec.LabRef, Code: x.Spec.Code, Access: x.Spec.Access}
 		d.Status = lab.DeviceStatus{NodeName: x.Status.NodeName}
 		out = d
 	case *discoveryv1.EndpointSlice:

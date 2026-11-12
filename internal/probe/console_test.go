@@ -89,7 +89,7 @@ func TestGetSendsTheLengthThenTheContentAndRefusesTheRest(t *testing.T) {
 	}
 }
 
-func TestResolveUser(t *testing.T) {
+func TestConsoleResolveUser(t *testing.T) {
 	if _, err := os.Stat("/etc/passwd"); err != nil || !strings.Contains(readFile("/etc/passwd"), "root:") {
 		t.Skip("no /etc/passwd with root")
 	}
