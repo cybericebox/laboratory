@@ -156,7 +156,7 @@ func termDevice(labName, name string, enabled bool, node string) *lab.Device {
 	d := &lab.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name(labName, name), Namespace: termNS}}
 	d.Spec.Name, d.Spec.LabRef = name, labName
 	if enabled {
-		d.Spec.Terminal = &lab.DeviceTerminal{Enabled: true, Command: []string{"/bin/bash"}, User: "kali"}
+		d.Spec.Access = []lab.DeviceAccess{{Kind: lab.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali"}}
 	}
 	d.Status.NodeName = node
 	return d

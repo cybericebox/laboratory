@@ -39,7 +39,7 @@ func TestDevicePodConsoleLabel(t *testing.T) {
 	if _, ok := labels[names.LabelTerminal]; ok {
 		t.Errorf("a device without a console got the label (or a user label set it): %v", labels)
 	}
-	device.Spec.Terminal = &laboratoryv1alpha1.DeviceTerminal{Enabled: true}
+	device.Spec.Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}
 	labels, selector, _, _ = (&DeviceReconciler{}).workloadTemplate(device)
 	if labels[names.LabelTerminal] != "true" {
 		t.Errorf("labels = %v", labels)

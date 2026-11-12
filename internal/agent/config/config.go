@@ -122,6 +122,8 @@ type Config struct {
 	// default. A lab with checks (or a terminal device) is refused while the matching option is off; GetFeatures reports them.
 	ChecksEnabled   bool `env:"CHECKS_ENABLED" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// TerminalServed says the device access service and the proxy's console route are deployed (the chart renders both with terminal.enabled).
+	TerminalServed bool `env:"TERMINAL_SERVED" envDefault:"false"`
 	// AdmissionStaleAfter is how long a pending child admission of another lab that wrote nothing blocks its group before the
 	// next claim clears it (ADMISSION_STALE_AFTER).
 	AdmissionStaleAfter time.Duration `env:"ADMISSION_STALE_AFTER" envDefault:"10m"`
