@@ -119,7 +119,7 @@ func TestAuthRefusesAModifiedRequest(t *testing.T) {
 		"client":    func(r *wire.OpenRequest) { r.Client = "other" },
 		"group":     func(r *wire.OpenRequest) { r.Group = "other" },
 		"time":      func(r *wire.OpenRequest) { r.Time++ },
-		"nonce":     func(r *wire.OpenRequest) { r.Nonce = "00" + r.Nonce[2:] },
+		"nonce":     func(r *wire.OpenRequest) { r.Nonce = flipFirst(r.Nonce) },
 	}
 	for name, mod := range mods {
 		a := authAt(&now, k)
@@ -196,4 +196,12 @@ func TestKeyFiles(t *testing.T) {
 	if len(k.Accepted()) != 2 {
 		t.Fatalf("a bad file replaced the keys: %d", len(k.Accepted()))
 	}
+}
+
+// flipFirst changes the first character of a hex string, whatever it is (a fixed replacement is a no-op for one nonce in 256).
+func flipFirst(s string) string {
+	if s[0] == '0' {
+		return "1" + s[1:]
+	}
+	return "0" + s[1:]
 }

@@ -4,44 +4,76 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 )
 
-// newTestHandler bootstraps an envtest environment with the laboratory CRDs
-// and returns a Handler backed by a real typed clientset talking to it,
-// along with a plain kubernetes clientset for setting up core resources
-// (e.g. namespaces) that tests need but the Handler itself doesn't manage.
-// Mirrors the envtest bootstrap in internal/controller/laboratory/suite_test.go,
-// but this package uses plain go test (not Ginkgo).
+// One API server (envtest: kube-apiserver and etcd with the laboratory CRDs) serves the whole package. Starting one takes seconds and
+// every test used to start its own (more than a hundred); the package then took more than ten minutes on a CI runner. A test gets a
+// clean cluster instead: resetCluster, registered by newTestHandler, deletes everything the test left (see its comment).
+var shared struct {
+	once sync.Once
+	env  *envtest.Environment
+	cfg  *rest.Config
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if shared.env != nil {
+		_ = shared.env.Stop()
+	}
+	os.Exit(code)
+}
+
+func sharedConfig(t *testing.T) *rest.Config {
+	t.Helper()
+	shared.once.Do(func() {
+		env := &envtest.Environment{
+			CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+			ErrorIfCRDPathMissing: true,
+		}
+		if dir := firstEnvTestBinaryDir(); dir != "" {
+			env.BinaryAssetsDirectory = dir
+		}
+		shared.cfg, shared.err = env.Start()
+		if shared.err != nil {
+			return
+		}
+		shared.env = env
+		cs, err := NewVersionedClientset(shared.cfg)
+		if err != nil {
+			shared.err = err
+			return
+		}
+		waitForCRDsServed(t, cs)
+	})
+	if shared.err != nil {
+		t.Fatalf("start envtest: %v", shared.err)
+	}
+	return shared.cfg
+}
+
+// newTestHandler returns a Handler backed by a real typed clientset talking to the shared envtest API server with the laboratory
+// CRDs, along with a plain kubernetes clientset for setting up core resources (e.g. namespaces) that tests need but the Handler itself
+// doesn't manage. The cluster is emptied when the test ends. This package uses plain go test (not Ginkgo).
 func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 	t.Helper()
 
-	testEnv := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-
-	if dir := firstEnvTestBinaryDir(); dir != "" {
-		testEnv.BinaryAssetsDirectory = dir
-	}
-
-	cfg, err := testEnv.Start()
-	if err != nil {
-		t.Fatalf("start envtest: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := testEnv.Stop(); err != nil {
-			t.Errorf("stop envtest: %v", err)
-		}
-	})
+	cfg := sharedConfig(t)
+	// Every call gets an empty cluster (a few tests ask for several handlers, each of which used to have an API server of its own), and
+	// the test leaves one behind.
+	resetCluster(t, cfg)
+	t.Cleanup(func() { resetCluster(t, cfg) })
 
 	// The generated typed clientset was produced with client-gen's
 	// --prefers-protobuf flag (see hack/update-codegen.sh), which is meant
@@ -53,8 +85,6 @@ func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 	if err != nil {
 		t.Fatalf("build versioned clientset: %v", err)
 	}
-
-	waitForCRDsServed(t, cs)
 
 	// Namespaces (and other core resources) are built-in API types and are
 	// served over protobuf, so the plain cfg is fine here.
