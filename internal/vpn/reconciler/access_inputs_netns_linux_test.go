@@ -45,7 +45,7 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 	}
 	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-l1", Namespace: ns}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(peer, deviceLab, policy).
+		WithStatusSubresource(peer, deviceLab, policy, leg).
 		WithObjects(peer, deviceLab, policy, leg).Build()
 	ipt, err := vpn.NewIPTablesManager("wg0")
 	if err != nil {
