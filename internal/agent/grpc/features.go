@@ -70,6 +70,8 @@ type Features struct {
 	// TerminalServed: the component that serves terminals exists in this installation. features.access.terminal is true only with both
 	// this and the option (a lab with a terminal device is refused by the option alone).
 	TerminalServed bool
+	// TerminalHost is the first label of the console's host (the chart's terminal.host); it is reported only while the console is served.
+	TerminalHost string
 	// CheckMaxTimeLimit is the ceiling of the time limit of one check run in seconds (0: the contract's); ManualCooldown is the least time
 	// between two manual runs of one lab (0: none). Both are chart values (checks.maxTimeLimitSeconds, checks.manualCooldown).
 	CheckMaxTimeLimit int32
@@ -143,7 +145,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
 				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				Checks:          h.checksFeature(),
-				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed},
+				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed, TerminalHost: terminalHost(f)},
 				Bootstrap:       bootstrapFeature(),
 				Vpn:             h.vpnFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
@@ -264,4 +266,13 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 // code that generates the rules (vpn.LabInitiatedBlockEnforced), so it cannot say true for a gate that does not install them.
 func (h *Handler) vpnFeature() *protobuf.VPNFeature {
 	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced()}
+}
+
+// terminalHost is the console host label the features report: only while the console is served, so a caller never builds a link to a console
+// that is not there.
+func terminalHost(f Features) string {
+	if f.TerminalEnabled && f.TerminalServed {
+		return f.TerminalHost
+	}
+	return ""
 }

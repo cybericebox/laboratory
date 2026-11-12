@@ -565,6 +565,7 @@ func TestFeaturesReportChecksAndAccess(t *testing.T) {
 	for _, c := range []struct{ checks, terminal, served bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false}, {true, true, true}, {false, false, true}} {
 		f := testFeatures
 		f.ChecksEnabled, f.TerminalEnabled, f.TerminalServed = c.checks, c.terminal, c.served
+		f.TerminalHost = "shell"
 		h := featuresHandler(t, f, newTenantTenant("a", true, nil))
 		got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
 		if err != nil {
@@ -573,6 +574,10 @@ func TestFeaturesReportChecksAndAccess(t *testing.T) {
 		acc := got.GetAccess()
 		if got.GetChecks().GetEnabled() != c.checks || acc.GetTerminal() != (c.terminal && c.served) || !acc.GetHttp() || acc.GetVnc() || acc.GetRdp() {
 			t.Errorf("%+v: reported checks %v, access %+v (only http is always served, terminal needs the option and the component, vnc and rdp never)", c, got.GetChecks().GetEnabled(), acc)
+		}
+		// the console host is reported only while the console is served
+		if want := map[bool]string{true: "shell", false: ""}[c.terminal && c.served]; acc.GetTerminalHost() != want {
+			t.Errorf("%+v: terminal_host %q, want %q", c, acc.GetTerminalHost(), want)
 		}
 		if ch := got.GetChecks(); ch.GetMaxChecksPerLab() != labchecks.MaxChecksPerLab || ch.GetMaxTimeLimitSeconds() != labchecks.MaxCheckTimeLimit || ch.GetMaxDetailBytes() != labchecks.MaxResultDetailBytes {
 			t.Errorf("checks limits: %+v", ch)

@@ -1167,11 +1167,14 @@ message ChecksFeature {
 }
 // AccessFeature: http is always served (the L7 proxy). terminal is true only when its option is on AND the component that serves
 // it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
+// terminal_host is the first label of the console's host under endpoints.labs_domain (the chart's terminal.host): the console of a device is at
+// https://<terminal_host>.<endpoints.labs_domain>/?lab=<lab>&device=<device>. Set only when terminal is true; empty otherwise, and then no link is built.
 message AccessFeature {
   bool http = 1;
   bool terminal = 2;
   bool vnc = 3;
   bool rdp = 4;
+  string terminal_host = 5;
 }
 // The limits of a device bootstrap; bootstrap itself is always available.
 message BootstrapFeature {

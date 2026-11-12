@@ -8011,12 +8011,15 @@ func (x *ChecksFeature) GetObservations() []string {
 
 // AccessFeature: http is always served (the L7 proxy). terminal is true only when its option is on AND the component that serves
 // it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
+// terminal_host is the first label of the console's host under endpoints.labs_domain (the chart's terminal.host): the console of a device is at
+// https://<terminal_host>.<endpoints.labs_domain>/?lab=<lab>&device=<device>. Set only when terminal is true; empty otherwise, and then no link is built.
 type AccessFeature struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Http          bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
 	Terminal      bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
 	Vnc           bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
 	Rdp           bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
+	TerminalHost  string                 `protobuf:"bytes,5,opt,name=terminal_host,json=terminalHost,proto3" json:"terminal_host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8077,6 +8080,13 @@ func (x *AccessFeature) GetRdp() bool {
 		return x.Rdp
 	}
 	return false
+}
+
+func (x *AccessFeature) GetTerminalHost() string {
+	if x != nil {
+		return x.TerminalHost
+	}
+	return ""
 }
 
 // The limits of a device bootstrap; bootstrap itself is always available.
@@ -13239,12 +13249,13 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x16max_time_limit_seconds\x18\x04 \x01(\x05R\x13maxTimeLimitSeconds\x120\n" +
 	"\x14max_schedule_seconds\x18\x05 \x01(\x05R\x12maxScheduleSeconds\x12(\n" +
 	"\x10max_detail_bytes\x18\x06 \x01(\x05R\x0emaxDetailBytes\x12\"\n" +
-	"\fobservations\x18\a \x03(\tR\fobservations\"c\n" +
+	"\fobservations\x18\a \x03(\tR\fobservations\"\x88\x01\n" +
 	"\rAccessFeature\x12\x12\n" +
 	"\x04http\x18\x01 \x01(\bR\x04http\x12\x1a\n" +
 	"\bterminal\x18\x02 \x01(\bR\bterminal\x12\x10\n" +
 	"\x03vnc\x18\x03 \x01(\bR\x03vnc\x12\x10\n" +
-	"\x03rdp\x18\x04 \x01(\bR\x03rdp\"\xff\x01\n" +
+	"\x03rdp\x18\x04 \x01(\bR\x03rdp\x12#\n" +
+	"\rterminal_host\x18\x05 \x01(\tR\fterminalHost\"\xff\x01\n" +
 	"\x10BootstrapFeature\x12(\n" +
 	"\x10max_script_bytes\x18\x01 \x01(\x05R\x0emaxScriptBytes\x12\x1b\n" +
 	"\tmax_files\x18\x02 \x01(\x05R\bmaxFiles\x12$\n" +

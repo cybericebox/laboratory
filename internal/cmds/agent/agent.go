@@ -181,7 +181,7 @@ func Run() {
 func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	f = grpcserver.Features{
 		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
-		ChecksEnabled: cfg.ChecksEnabled, CheckerRequired: cfg.ChecksEnabled, TerminalEnabled: cfg.TerminalEnabled, TerminalServed: cfg.TerminalServed, CheckMaxTimeLimit: int32(cfg.ChecksMaxTimeLimit), ManualCooldown: cfg.ChecksManualCooldown,
+		ChecksEnabled: cfg.ChecksEnabled, CheckerRequired: cfg.ChecksEnabled, TerminalEnabled: cfg.TerminalEnabled, TerminalServed: cfg.TerminalServed, TerminalHost: cfg.TerminalHost, CheckMaxTimeLimit: int32(cfg.ChecksMaxTimeLimit), ManualCooldown: cfg.ChecksManualCooldown,
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		NodeTimeoutSeconds: int32(cfg.Scheduler.NodeTimeout / time.Second),
