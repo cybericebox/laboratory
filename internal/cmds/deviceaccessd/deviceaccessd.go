@@ -45,14 +45,11 @@ type Config struct {
 	CheckerMaxSeconds    int    `env:"CHECKER_MAX_SECONDS" envDefault:"120"`
 	CheckerMaxConcurrent int    `env:"CHECKER_MAX_CONCURRENT" envDefault:"8"`
 
-	PerClient          int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
-	PerLab             int           `env:"LIMIT_PER_LAB" envDefault:"10"`
-	PerNode            int           `env:"LIMIT_PER_NODE" envDefault:"200"`
-	Transfers          int           `env:"LIMIT_TRANSFERS" envDefault:"16"`
-	TransfersPerClient int           `env:"LIMIT_TRANSFERS_PER_CLIENT" envDefault:"2"`
-	Idle               time.Duration `env:"IDLE_TIMEOUT" envDefault:"30m"`
-	Lifetime           time.Duration `env:"MAX_LIFETIME" envDefault:"8h"`
-	MaxFile            int64         `env:"MAX_FILE_BYTES" envDefault:"16777216"`
+	PerClient int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
+	PerLab    int           `env:"LIMIT_PER_LAB" envDefault:"10"`
+	PerNode   int           `env:"LIMIT_PER_NODE" envDefault:"200"`
+	Idle      time.Duration `env:"IDLE_TIMEOUT" envDefault:"30m"`
+	Lifetime  time.Duration `env:"MAX_LIFETIME" envDefault:"8h"`
 }
 
 // Health is the command of the kubelet's exec probes: it asks the local listener for /healthz.
@@ -118,8 +115,7 @@ func run(cfg Config) error {
 
 	lim := deviceaccess.DefaultLimits()
 	lim.PerClient, lim.PerLab, lim.PerNode = cfg.PerClient, cfg.PerLab, cfg.PerNode
-	lim.Transfers, lim.TransfersPerClient = cfg.Transfers, cfg.TransfersPerClient
-	lim.Idle, lim.Lifetime, lim.MaxFile = cfg.Idle, cfg.Lifetime, cfg.MaxFile
+	lim.Idle, lim.Lifetime = cfg.Idle, cfg.Lifetime
 	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Accepted)})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())

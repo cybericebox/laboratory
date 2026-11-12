@@ -2,8 +2,6 @@ package l7
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,11 +14,10 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
-	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // The console. A device whose lab asks for a terminal can be opened in the browser on a host of its own under the labs' base domain,
-// <device>-<code>t.<base> (names.AccessHostLabel: the last character of the first label is the kind of access, t for the console): the page, a WebSocket for the shell and two requests for files all live there.
+// <device>-<code>t.<base> (names.AccessHostLabel: the last character of the first label is the kind of access, t for the console): the page and a WebSocket for the shell live there.
 // Nothing about the device is in a path or a query; the host is the address, and the group of the session is the only namespace it is
 // looked for in. The proxy authorizes exactly as it
 // does for a web request (the session cookie, the group, the access policy that allows the lab, the lab running) and adds that the
@@ -28,8 +25,7 @@ import (
 // The proxy never learns the container; it names a device (namespace, lab, device) and the service finds the container itself.
 //
 // Because the cookie of the session covers every host under the base domain, a page of a device (written by a participant) could ask
-// for the console of the participant's own session. What stops it: the WebSocket accepts only the page's own Origin, and a file
-// request needs the token that only this page receives over the WebSocket.
+// for the console of the participant's own session. What stops it: the WebSocket accepts only the page's own Origin.
 
 // ErrNoConsole is returned by a DeviceLookup for a device that has no console (or does not exist; the answer is the same).
 var ErrNoConsole = errors.New("the device has no console")
@@ -42,8 +38,6 @@ type DeviceInfo struct {
 	Node    string
 	Command []string
 	User    string
-	// Files is true when the author switched file transfer on for the console of this device.
-	Files bool
 }
 
 // DeviceLookup finds the device with a console that a host names, in a group namespace: the device name and base code that
@@ -62,8 +56,6 @@ type TerminalConfig struct {
 	PerClient int
 	// Idle closes a console that no byte crossed for that long; Lifetime closes any console at that age. 0 is no limit.
 	Idle, Lifetime time.Duration
-	// MaxFile is the largest file one transfer moves; MaxSession is the most one console moves in all (both directions).
-	MaxFile, MaxSession int64
 	// OriginScheme is the scheme of the page's origin ("https" unless a test serves it plainly).
 	OriginScheme string
 	// Embed decides which sites may show the console page in a frame (see terminal_embed.go); nil means none.
@@ -78,32 +70,26 @@ type TerminalConfig struct {
 // DefaultTerminalConfig carries the chart defaults for the limits.
 func DefaultTerminalConfig() TerminalConfig {
 	return TerminalConfig{PerClient: 3, Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
-		MaxFile: 16 << 20, MaxSession: 64 << 20, OriginScheme: "https"}
+		OriginScheme: "https"}
 }
 
 type terminalState struct {
 	cfg TerminalConfig
 
 	mu        sync.Mutex
-	sessions  map[string]*consoleSession
+	open      map[*consoleSession]struct{}
 	perClient map[liveClientKey]int
 }
 
-// consoleSession is an open console, found by the token the page received.
+// consoleSession is an open console.
 type consoleSession struct {
-	token               string
 	group, client       string
 	tenant              string
 	namespace, lab, dev string
-	host                string // first label of the console host; a file request must come on the same one
 	base                string
 	command             []string
 	user                string
-	files               bool // the author switched file transfer on for this device
 	entry               *liveEntry
-	// budget is what the console may still move as files; transferring is set while a transfer runs (one at a time).
-	budget       atomic.Int64
-	transferring atomic.Bool
 	// sent and acked count output bytes towards the browser and the ones it has drawn (the flow control, see relayDown).
 	sent, acked       atomic.Int64
 	ackCh             chan struct{}
@@ -117,7 +103,7 @@ func (h *Handler) WithTerminal(c TerminalConfig) *Handler {
 	if c.OriginScheme == "" {
 		c.OriginScheme = "https"
 	}
-	h.terminal = &terminalState{cfg: c, sessions: map[string]*consoleSession{}, perClient: map[liveClientKey]int{}}
+	h.terminal = &terminalState{cfg: c, open: map[*consoleSession]struct{}{}, perClient: map[liveClientKey]int{}}
 	return h
 }
 
@@ -129,35 +115,21 @@ func (t *terminalState) add(s *consoleSession) bool {
 		return false
 	}
 	t.perClient[key]++
-	t.sessions[s.token] = s
+	t.open[s] = struct{}{}
 	return true
 }
 
 func (t *terminalState) remove(s *consoleSession) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.sessions[s.token]; !ok {
+	if _, ok := t.open[s]; !ok {
 		return
 	}
-	delete(t.sessions, s.token)
+	delete(t.open, s)
 	key := liveClientKey{s.group, s.client}
 	if t.perClient[key]--; t.perClient[key] <= 0 {
 		delete(t.perClient, key)
 	}
-}
-
-func (t *terminalState) session(token string) *consoleSession {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.sessions[token]
-}
-
-func newToken() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
 }
 
 // terminalTarget is a console request that passed authorization.
@@ -167,7 +139,6 @@ type terminalTarget struct {
 	client                 string
 	info                   DeviceInfo
 	base                   string
-	host                   string // first label of the console host, <device>-<code>t
 }
 
 // serveTerminal answers a request for the console host. The session was validated by the caller (cookie, group, tenant).
@@ -199,8 +170,6 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, device, 
 			return
 		}
 		h.terminalSocket(w, r, tg)
-	case r.URL.Path == "/files":
-		h.terminalFile(w, r, consoleHost(device, code), claims, client, group)
 	default:
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 	}
@@ -230,13 +199,7 @@ func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, host
 		fail(w, r, http.StatusServiceUnavailable, pageStarting, "the console is not ready")
 		return terminalTarget{}, false
 	}
-	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc, host: consoleHost(hostDevice, hostCode)}, true
-}
-
-// consoleHost is the first label of the console host of a device, the key a file request is bound to.
-func consoleHost(device, code string) string {
-	label, _ := names.AccessHostLabel(device, code, names.AccessKindTerminal)
-	return label
+	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc}, true
 }
 
 // plainName accepts a name that can be a lab or device: bounded, printable, no separator or control character.

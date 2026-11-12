@@ -222,57 +222,7 @@ func main() {
 		s2.c.CloseNow()
 	}
 
-	// 5. files
-	payload := make([]byte, 1<<20)
-	_, _ = rand.Read(payload)
-	path := "/tmp/cib-check-" + strconv.FormatInt(time.Now().Unix(), 10)
-	put, pr, err := open(ctx, wire.OpenRequest{Kind: wire.KindPut, Namespace: *ns, Lab: *labName, Device: *device, User: *user, Path: path, Size: int64(len(payload)), Client: "check", Group: "check"})
-	if err != nil || !pr.OK {
-		check("upload", false, fmt.Sprint(err, pr))
-	} else {
-		for b := payload; len(b) > 0; {
-			n := min(len(b), wire.MaxData)
-			_ = put.c.Write(ctx, websocket.MessageBinary, wire.Data(b[:n]))
-			b = b[n:]
-		}
-		_ = put.c.Write(ctx, websocket.MessageBinary, wire.Close(wire.ReasonExit))
-		typ, msg, err := put.c.Read(ctx)
-		var fin wire.OpenReply
-		_ = json.Unmarshal(msg, &fin)
-		check("upload of 1 MiB", err == nil && typ == websocket.MessageText && fin.OK, fmt.Sprint(err, fin))
-		put.c.CloseNow()
-	}
-	get, gr, err := open(ctx, wire.OpenRequest{Kind: wire.KindGet, Namespace: *ns, Lab: *labName, Device: *device, User: *user, Path: path, Client: "check", Group: "check"})
-	if err != nil || !gr.OK {
-		check("download", false, fmt.Sprint(err, gr))
-	} else {
-		var got bytes.Buffer
-		for {
-			typ, msg, err := get.c.Read(ctx)
-			if err != nil || typ != websocket.MessageBinary {
-				break
-			}
-			ft, p, _ := wire.Parse(msg)
-			if ft == wire.TypeData {
-				got.Write(p)
-			}
-			if ft == wire.TypeClose {
-				break
-			}
-		}
-		a, b := sha256.Sum256(payload), sha256.Sum256(got.Bytes())
-		check("download returns the same bytes", a == b && gr.Size == int64(len(payload)), fmt.Sprintf("%d bytes, announced %d", got.Len(), gr.Size))
-		get.c.CloseNow()
-	}
-	for _, bad := range []struct{ name, path string }{{"a directory", "/tmp"}, {"a device node", "/dev/null"}, {"a missing file", "/tmp/does-not-exist-cib"}} {
-		g, rr, err := open(ctx, wire.OpenRequest{Kind: wire.KindGet, Namespace: *ns, Lab: *labName, Device: *device, User: *user, Path: bad.path, Client: "check", Group: "check"})
-		check("download of "+bad.name+" is refused", err == nil && !rr.OK, fmt.Sprint(err, rr))
-		if g != nil {
-			g.c.CloseNow()
-		}
-	}
-
-	// 6. the white list
+	// 5. the white list
 	cases := []string{*ns + "/" + *labName + "/no-such-device", "kube-system/coredns/coredns"}
 	if *refuse != "" {
 		cases = append(cases, strings.Split(*refuse, ",")...)
@@ -289,7 +239,7 @@ func main() {
 		}
 	}
 
-	// 7. an unsigned open request is refused
+	// 6. an unsigned open request is refused
 	{
 		c, _, err := websocket.Dial(ctx, "ws://"+*addr+wire.StreamPath, &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled})
 		if err == nil {
@@ -412,12 +362,12 @@ func checkerPath() {
 		body   map[string]any
 		status int
 	}{
-		"another subcommand (put)":   {target(probe.CommandPut, "/tmp/x", time.Second), 400},
-		"the launch subcommand":      {target("launch", "x", time.Second), 400},
-		"a user other than root":     {withField(target(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd"}, time.Second), "user", "1000"), 400},
-		"a program":                  {withField(target(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd"}, time.Second), "program", "/bin/sh"), 400},
-		"a pod of kube-system":       {map[string]any{"namespace": "kube-system", "lab": "coredns", "device": "coredns", "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000}, 404},
-		"a device that is not there": {map[string]any{"namespace": *ns, "lab": *labName, "device": "no-such-device", "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000}, 404},
+		"another subcommand (resolve-user)": {target(probe.CommandResolveUser, "/tmp/x", time.Second), 400},
+		"the launch subcommand":             {target("launch", "x", time.Second), 400},
+		"a user other than root":            {withField(target(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd"}, time.Second), "user", "1000"), 400},
+		"a program":                         {withField(target(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd"}, time.Second), "program", "/bin/sh"), 400},
+		"a pod of kube-system":              {map[string]any{"namespace": "kube-system", "lab": "coredns", "device": "coredns", "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000}, 404},
+		"a device that is not there":        {map[string]any{"namespace": *ns, "lab": *labName, "device": "no-such-device", "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000}, 404},
 	} {
 		status, r, err := probeCall(c.body)
 		check("refused: "+name, err == nil && status == c.status && r.Error != "", fmt.Sprint(err, status, r.Error))

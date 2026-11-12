@@ -182,21 +182,15 @@ terminal:
   containerdSocket: ""   # empty = nodeAgent.criSocket
   containerdNamespace: k8s.io
   fifoDir: /run/containerd/fifo
-  # Limits (the service enforces them; the L7 proxy applies the per-client one and the file limits too). 0 = unlimited.
+  # Limits (the service enforces them; the L7 proxy applies the per-client one too). 0 = unlimited.
   limits:
     # Consoles open at once: per participant (client of a group), per lab, per node.
     perClient: 3
     perLab: 10
     perNode: 200
-    # File transfers at once: per node and per participant.
-    transfers: 16
-    transfersPerClient: 2
     # A console with no byte in either direction for this long is closed; any console is closed at this age.
     idleTimeout: 30m
     maxLifetime: 8h
-    # The largest file of one transfer, and the most one console moves in all (both directions together).
-    maxFileBytes: 16777216
-    maxSessionBytes: 67108864
   # Cilium policy of the service pod: ingress only from the L7 proxy pods on the service port, no egress at all. The chart refuses to render
   # with the console on and this off (the listener is plain HTTP and trusts its caller; the policy is the whole protection of it). The
   # narrowed egress of the L7 proxy (proxy.networkPolicy) is required too.

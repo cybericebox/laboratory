@@ -28,7 +28,7 @@ func Canonical(r OpenRequest) []byte {
 	var b []byte
 	str := func(s string) { b = binary.AppendUvarint(b, uint64(len(s))); b = append(b, s...) }
 	num := func(n int64) { b = binary.AppendVarint(b, n) }
-	str("cib-device-access-open-v1")
+	str("cib-device-access-open-v2")
 	str(r.Kind)
 	str(r.Namespace)
 	str(r.Lab)
@@ -40,8 +40,6 @@ func Canonical(r OpenRequest) []byte {
 	str(r.User)
 	num(int64(r.Cols))
 	num(int64(r.Rows))
-	str(r.Path)
-	num(r.Size)
 	str(r.Client)
 	str(r.Group)
 	num(r.Time)

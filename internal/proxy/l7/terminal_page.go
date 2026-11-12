@@ -51,21 +51,16 @@ func serveTerminalAsset(w http.ResponseWriter, r *http.Request) {
 type terminalText struct {
 	Lang       string            `json:"-"`
 	Title      string            `json:"-"`
-	Upload     string            `json:"-"`
-	Download   string            `json:"-"`
-	UploadDir  string            `json:"-"`
-	DownPath   string            `json:"-"`
 	Again      string            `json:"-"`
 	Connecting string            `json:"connecting"`
 	Connected  string            `json:"connected"`
 	Ended      string            `json:"ended"`
 	Reasons    map[string]string `json:"reasons"`
-	Files      map[string]string `json:"files"`
 }
 
 var terminalUK = terminalText{
-	Lang: "uk", Title: "Термінал", Upload: "Завантажити на пристрій", Download: "Скачати з пристрою",
-	UploadDir: "Каталог на пристрої", DownPath: "Шлях до файлу на пристрої", Again: "Підключитися знову",
+	Lang: "uk", Title: "Термінал",
+	Again:      "Підключитися знову",
 	Connecting: "Зʼєднуємо…", Connected: "Підключено", Ended: "Сеанс завершено",
 	Reasons: map[string]string{
 		"exit":               "Оболонку завершено.",
@@ -82,27 +77,11 @@ var terminalUK = terminalText{
 		"error":              "Сталася помилка зʼєднання.",
 		wire.CodeBadRequest:  "Сталася помилка зʼєднання.",
 	},
-	Files: map[string]string{
-		"uploading":          "Завантажуємо…",
-		"uploaded":           "Файл завантажено:",
-		"downloading":        "Скачуємо…",
-		"downloaded":         "Файл скачано.",
-		wire.CodeNotFound:    "Файл не знайдено.",
-		wire.CodeDenied:      "Немає прав на цей файл.",
-		wire.CodeNotRegular:  "Це не звичайний файл.",
-		wire.CodeTooBig:      "Файл завеликий або вичерпано ліміт сеансу.",
-		wire.CodeBusy:        "Зачекайте, поки завершиться попередня передача.",
-		wire.CodeLimit:       "Забагато передач одночасно.",
-		wire.CodeBadRequest:  "Некоректний шлях.",
-		wire.CodeIncomplete:  "Передачу перервано.",
-		wire.CodeUnavailable: "Передача файлів зараз недоступна.",
-		wire.CodeFilesOff:    "Передачу файлів для цього пристрою не ввімкнено.",
-	},
 }
 
 var terminalEN = terminalText{
-	Lang: "en", Title: "Terminal", Upload: "Upload to the device", Download: "Download from the device",
-	UploadDir: "Directory on the device", DownPath: "Path of the file on the device", Again: "Reconnect",
+	Lang: "en", Title: "Terminal",
+	Again:      "Reconnect",
 	Connecting: "Connecting…", Connected: "Connected", Ended: "Session ended",
 	Reasons: map[string]string{
 		"exit":               "The shell has exited.",
@@ -118,22 +97,6 @@ var terminalEN = terminalText{
 		"shutdown":           "The service is restarting.",
 		"error":              "A connection error occurred.",
 		wire.CodeBadRequest:  "A connection error occurred.",
-	},
-	Files: map[string]string{
-		"uploading":          "Uploading…",
-		"uploaded":           "File uploaded:",
-		"downloading":        "Downloading…",
-		"downloaded":         "File downloaded.",
-		wire.CodeNotFound:    "File not found.",
-		wire.CodeDenied:      "No permission for this file.",
-		wire.CodeNotRegular:  "This is not a regular file.",
-		wire.CodeTooBig:      "The file is too large or the session limit is used up.",
-		wire.CodeBusy:        "Wait for the previous transfer to finish.",
-		wire.CodeLimit:       "Too many transfers at once.",
-		wire.CodeBadRequest:  "Invalid path.",
-		wire.CodeIncomplete:  "The transfer was interrupted.",
-		wire.CodeUnavailable: "File transfer is not available right now.",
-		wire.CodeFilesOff:    "File transfer is not switched on for this device.",
 	},
 }
 
@@ -161,16 +124,8 @@ var terminalTmpl = template.Must(template.New("terminal").Parse(`<!doctype html>
   <header>
     <h1>{{.T.Title}}</h1>
     <span id="target">{{.Lab}} / {{.Device}}</span>
-    {{if .Files}}<div class="files">
-      <input id="updir" type="text" value="/tmp" aria-label="{{.T.UploadDir}}" title="{{.T.UploadDir}}" maxlength="1024" spellcheck="false" autocomplete="off">
-      <button id="upload" type="button" disabled>{{.T.Upload}}</button>
-      <input id="upfile" type="file">
-      <input id="downpath" type="text" placeholder="/path/file" aria-label="{{.T.DownPath}}" title="{{.T.DownPath}}" maxlength="1024" spellcheck="false" autocomplete="off">
-      <button id="download" type="button" disabled>{{.T.Download}}</button>
-    </div>{{end}}
     <span id="status"></span>
   </header>
-  <div id="note" role="status"></div>
   <div id="term"></div>
 </div>
 <div id="over" role="alertdialog" aria-labelledby="over-text"><div><p id="over-text"></p><button id="again" type="button">{{.T.Again}}</button></div></div>
@@ -191,7 +146,6 @@ func serveTerminalPage(w http.ResponseWriter, r *http.Request, tg terminalTarget
 		T      terminalText
 		Lab    string
 		Device string
-		Files  bool
 		I18N   template.JS
-	}{t, tg.lab, tg.device, tg.info.Files, template.JS(raw)})
+	}{t, tg.lab, tg.device, template.JS(raw)})
 }

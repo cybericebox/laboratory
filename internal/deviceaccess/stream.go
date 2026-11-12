@@ -19,9 +19,9 @@ import (
 type Direction int
 
 const (
-	// ToDevice is what the participant types (and the content of an upload).
+	// ToDevice is what the participant types.
 	ToDevice Direction = iota
-	// FromDevice is what the device prints (and the content of a download).
+	// FromDevice is what the device prints.
 	FromDevice
 )
 
@@ -41,7 +41,7 @@ type StreamInfo struct {
 // today, and the bytes must not be kept, logged or copied anywhere until the owner decides on recording.
 type Tap func(info StreamInfo, dir Direction, p []byte)
 
-// stream is the state of one open console or file transfer.
+// stream is the state of one open console.
 type stream struct {
 	svc   *Service
 	req   wire.OpenRequest
@@ -80,7 +80,7 @@ func (st *stream) idleC() <-chan time.Time {
 	return st.idle.C
 }
 
-// pass is the one function the bytes of a stream go through, in both directions, for a console and for a file. It counts them, keeps
+// pass is the one function the bytes of a stream go through, in both directions, for a console. It counts them, keeps
 // the stream from going idle and shows them to the Tap. Recording, if the owner ever decides to build it, attaches here and nowhere
 // else; until then the bytes are not stored, logged or copied.
 func (st *stream) pass(dir Direction, p []byte) {

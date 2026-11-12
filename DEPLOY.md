@@ -933,7 +933,7 @@ the binary, no CDN; no clipboard write, links only `http(s)` on a click, the tit
 | `terminal.port` (8080), `terminal.metricsPort` (9102) | stream and metrics ports of the service pod (plain HTTP on the pod network) |
 | `terminal.containerdSocket` (empty = `nodeAgent.criSocket`), `terminal.containerdNamespace` (`k8s.io`) | the runtime socket of the node and the kubelet's containerd namespace |
 | `terminal.fifoDir` (`/run/containerd/fifo`) | host directory for the FIFOs of the execs, mounted at the **same path**; create it on every lab node first. The service owns the subdirectory `cib-device-access` |
-| `terminal.limits.*` | consoles per participant (3), per lab (10), per node (200); file transfers per node (16) and per participant (2); idle timeout (30m); lifetime (8h); largest file (16 MiB); most per console (64 MiB) |
+| `terminal.limits.*` | consoles per participant (3), per lab (10), per node (200); idle timeout (30m); lifetime (8h) |
 | `terminal.networkPolicy.enabled` (true) | the Cilium policy of the service. **The chart refuses to render with the console on and this off**; so it does with `proxy.networkPolicy.enabled=false` |
 | `terminal.networkPolicy.metricsFrom` | extra ingress peers for the metrics port; empty means nothing scrapes it |
 | `terminal.securityContext` | `runAsUser`/`runAsGroup` (default 0) and `supplementalGroups` for a non-root run |
@@ -967,11 +967,7 @@ because the service cannot see the device's file system; the runtime gets number
 exited, idle, lifetime, an error, the service stopping) the service kills and deletes the exec and removes its FIFOs; a journal in the FIFO directory lets the
 next start remove execs and FIFOs a crash left behind (containerd does not kill an exec when its client goes away).
 
-**Files.** File transfer is an option of the author, **off by default**, on the terminal entry of the device (`access: [{kind: terminal, files: true}]`; the lab reports it in `LabAccessEntry.files` of the `terminal` entry, and `features.access.terminal_files` says the laboratory can do it at all). Without it the proxy refuses `/files` (put and get) with `403 {"error":"files-off"}` before it calls the device access service, and the console page is rendered without the upload and download controls; the service's own white list is unchanged. `files: true` is refused for a `vm` profile and on any access that is not a terminal. With it, the console page can upload to and download from the device. The file is read or written by the probe inside the device
-(`probe put`/`probe get`), run through the same exec as the user of the console, so the participant reaches what the shell reaches, never the node. Only
-regular files (a link in the last component, a device node, a FIFO and a directory are refused), streaming with backpressure, at most `maxFileBytes`
-per file and `maxSessionBytes` per console. A download is served as `Content-Type: application/octet-stream`, `Content-Disposition: attachment` with a
-sanitized name, `X-Content-Type-Options: nosniff`, a `sandbox` CSP. A transfer needs the token only the page of an open console receives.
+**No file transfer.** There is none through the console: copy-paste only. Files come from the image, the bootstrap, or over VPN. (The earlier author option `files`, `/files`, `probe put`/`probe get` and the file limits were removed; the chart keys `terminal.limits.transfers`, `transfersPerClient`, `maxFileBytes` and `maxSessionBytes` no longer exist.)
 
 **What it needs on the node, and why.**
 
@@ -990,7 +986,7 @@ egress. The egress of the L7 proxy is narrowed to: DNS, the API server, the **de
 dials in those namespaces is the web port of the pod behind the Service of an exposed device and nothing else (its traffic reports and the report preparation go
 through the API server).
 
-**Shared secret and rotation.** On top of the network policy every open request (console, file put, file get) carries an HMAC-SHA256 made by the proxy with a secret only
+**Shared secret and rotation.** On top of the network policy every open request (the console) carries an HMAC-SHA256 made by the proxy with a secret only
 the proxy and the service hold, over every field of the request, a timestamp and a random nonce. The service checks it first, in constant time, then that the
 timestamp is within 30 s of its own clock (keep the node clocks in sync) and that the nonce was not seen in that window, before it does anything else with the
 request. A failure is answered `unauthorized` without saying which check failed, and the secret is never logged, never in an environment variable and never in a metric:
@@ -1025,8 +1021,8 @@ and `<kind>` is ONE character that only says which access it is: `w` web, `t` co
 last hyphen; it does not depend on the length of the code. The letters are the lab's private encoding (an internal note, not an interface): A client never parses the host: it takes the link and its kind from the access entry of the lab (`LabAccessEntry.protocol` + `url`), and frames a console link only if the entry says `terminal` and the host is one label under the labs domain (a CSP cannot say more, so `frame-src` is `https://*.<labs domain>`). The web host of a device never reads as its console, because its kind letter is `w`. The management agent puts the link in the `terminal` entry of
 the lab's access list (`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing. The link is opened through the handoff
 of the platform like a device link (`/_auth?t=<handoff token for the host label>`). The proxy reads the device and the kind from the label, looks the device up among the devices of
-the session's own group only and compares full hosts (Origin, file token, lookup): the console host of another group, or of a lab the client may not use, is the same "not found" page,
-and so is a kind that is not served (vnc, rdp, reserved). The page, the WebSocket (`/ws`) and the file requests (`/files`) are all on that host. **Older devices:** the stored code is
+the session's own group only and compares full hosts (Origin, lookup): the console host of another group, or of a lab the client may not use, is the same "not found" page,
+and so is a kind that is not served (vnc, rdp, reserved). The page and the WebSocket (`/ws`) are on that host. **Older devices:** the stored code is
 only the random part, so a Device keeps its code whatever its length; a Service named before the kind character existed (`<device>-<code>`) is read as an unknown kind until its lab is
 created again. There is no production data to migrate.
 

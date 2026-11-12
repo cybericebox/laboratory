@@ -143,7 +143,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
 				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				Checks:          h.checksFeature(),
-				Access:          accessFeature(f),
+				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed},
 				Bootstrap:       bootstrapFeature(),
 				Vpn:             h.vpnFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
@@ -264,11 +264,4 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 // code that generates the rules (vpn.LabInitiatedBlockEnforced), so it cannot say true for a gate that does not install them.
 func (h *Handler) vpnFeature() *protobuf.VPNFeature {
 	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced()}
-}
-
-// accessFeature reports the access kinds this laboratory serves. terminal_files is true with the console: the probe runs inside every
-// device that can have a terminal (profiles container and microvm), so the answer does not differ per device.
-func accessFeature(f Features) *protobuf.AccessFeature {
-	terminal := f.TerminalEnabled && f.TerminalServed
-	return &protobuf.AccessFeature{Http: true, Terminal: terminal, TerminalFiles: terminal}
 }

@@ -9,7 +9,6 @@
   const MAX_FRAME = 32 * 1024;
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status');
-  const noteEl = $('note');
 
   // One rule for every link, the ones found in the text and the ones a program declares with OSC 8: only http(s), only on a click, in a
   // new context without the opener or the referrer.
@@ -35,7 +34,7 @@
   fit.fit();
 
   let ws = null;
-  let session = '';
+  let ready = false;
   let ended = false;
   let reason = '';
   let owed = 0;
@@ -56,7 +55,7 @@
   }
 
   function send(type, payload) {
-    if (ws && ws.readyState === WebSocket.OPEN && session) {
+    if (ws && ws.readyState === WebSocket.OPEN && ready) {
       ws.send(frame(type, payload));
     }
   }
@@ -95,8 +94,7 @@
       return;
     }
     ended = true;
-    session = '';
-    setFiles(false);
+    ready = false;
     setStatus(T.ended, 'bad');
     $('over-text').textContent = T.reasons[code] || T.reasons.error;
     $('over').classList.add('show');
@@ -112,10 +110,9 @@
       if (typeof ev.data === 'string') {
         let m;
         try { m = JSON.parse(ev.data); } catch (e) { return; }
-        if (m.type === 'ready' && typeof m.session === 'string') {
-          session = m.session;
+        if (m.type === 'ready') {
+          ready = true;
           setStatus(T.connected, 'ok');
-          setFiles(true);
           term.focus();
         } else if (m.type === 'error') {
           finish(m.code);
@@ -147,79 +144,5 @@
   });
   $('again').addEventListener('click', () => location.reload());
 
-  // Files. The page holds the token of its console; a transfer is refused without it.
-  const upBtn = $('upload');
-  const upInput = $('upfile');
-  const downBtn = $('download');
-  // The controls are rendered only when the author switched file transfer on for this device; without them there is nothing to wire.
-  const hasFiles = !!(upBtn && upInput && downBtn);
-  function setFiles(on) {
-    if (hasFiles) upBtn.disabled = downBtn.disabled = !on;
-  }
-  function note(text) {
-    noteEl.textContent = text || '';
-  }
-  function failText(code) {
-    return T.files[code] || T.files.unavailable;
-  }
-  function filesURL(path) {
-    return '/files?session=' + encodeURIComponent(session) + '&path=' + encodeURIComponent(path);
-  }
-  if (hasFiles) {
-    upBtn.addEventListener('click', () => upInput.click());
-    upInput.addEventListener('change', () => {
-      const file = upInput.files[0];
-      upInput.value = '';
-      if (!file || !session) {
-        return;
-      }
-      const dir = $('updir').value.replace(/\/+$/, '') || '';
-      const path = dir + '/' + file.name;
-      const xhr = new XMLHttpRequest();
-      xhr.open('PUT', filesURL(path));
-      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-      xhr.upload.onprogress = (e) => note(T.files.uploading + ' ' + (e.lengthComputable ? Math.floor(e.loaded * 100 / e.total) + '%' : ''));
-      xhr.onload = () => {
-        if (xhr.status === 204) {
-          note(T.files.uploaded + ' ' + path);
-          return;
-        }
-        let code = 'unavailable';
-        try { code = JSON.parse(xhr.responseText).error; } catch (e) { /* keep the default */ }
-        note(failText(code));
-      };
-      xhr.onerror = () => note(failText('unavailable'));
-      note(T.files.uploading);
-      xhr.send(file);
-    });
-    downBtn.addEventListener('click', async () => {
-      const path = $('downpath').value.trim();
-      if (!path || !session) {
-        return;
-      }
-      note(T.files.downloading);
-      try {
-        const resp = await fetch(filesURL(path), { credentials: 'same-origin' });
-        if (!resp.ok) {
-          let code = 'unavailable';
-          try { code = (await resp.json()).error; } catch (e) { /* keep the default */ }
-          note(failText(code));
-          return;
-        }
-        const blob = await resp.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = path.split('/').pop() || 'download';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-        note(T.files.downloaded);
-      } catch (e) {
-        note(failText('incomplete'));
-      }
-    });
-  }
-  setFiles(false);
   connect();
 })();

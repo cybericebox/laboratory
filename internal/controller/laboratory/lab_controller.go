@@ -1027,7 +1027,7 @@ func (r *LabReconciler) terminalAccessEntries(ctx context.Context, lab *laborato
 		if term == nil {
 			continue
 		}
-		entry := laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal", Files: term.Files}
+		entry := laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"}
 		if r.BaseDomain != "" {
 			if dev, err := devices.Get(ctx, r.reader(), lab.Namespace, lab.Name, d.Name); err == nil && dev.Spec.Code != "" {
 				if label, ok := names.AccessHostLabel(d.Name, dev.Spec.Code, names.AccessKindTerminal); ok {

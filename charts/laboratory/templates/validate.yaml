@@ -136,9 +136,6 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 {{- end }}
-{{- if lt (int64 .Values.terminal.limits.maxSessionBytes) (int64 .Values.terminal.limits.maxFileBytes) }}
-{{- fail "terminal.limits.maxSessionBytes must not be below terminal.limits.maxFileBytes" }}
-{{- end }}
 {{- end }}
 
 {{- /* Scheduler values: the operator refuses to start on bad ones, so fail at install time. */ -}}
