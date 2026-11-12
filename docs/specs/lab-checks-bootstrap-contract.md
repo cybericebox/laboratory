@@ -1,6 +1,6 @@
 # Device bootstrap, lab checks and device access: the laboratory contract
 
-**Agent API contract version:** 1.4 -> 1.7 (1.6 added a console files option, 1.7 removed it again: see the end of the access section). Everything here is additive: new field numbers, no renames, no removals. An old daemon keeps working; an old agent simply lacks the fields.
+**Agent API contract version:** 1.4 -> 1.8 (1.8: the service user is required with the launcher; 1.6 added a console files option, 1.7 removed it again: see the end of the access section). Everything here is additive: new field numbers, no renames, no removals. An old daemon keeps working; an old agent simply lacks the fields.
 
 **Design record:** `docs/specs/2026-11-11-lab-checkers-bootstrap-devices.md` in the platform repo (sections 3, 4.1, 4.2, 5, 7). **Scope of this step:** the data model, the Secrets, the validation, the report and the manual-run request. The checker is described in `lab-checker.md`.
 
@@ -63,6 +63,7 @@ There is no typed proto message for the device spec; it travels as `spec_json` (
 `DeviceTemplate` and `DeviceSpec` (same names in both):
 
 - `service {command[], args[], user, workingDir}`: from the image configuration, set by the daemon; empty = not provided (the image decides). Container devices only.
+  **The client must send `service.user` (contract 1.8).** A device that the launcher starts (a service `command` or `args`, or a bootstrap) with an empty `service.user` is refused with `INVALID_ARGUMENT` ("the service needs a user: the user of the image, or root named explicitly"; a bootstrap without a service is refused the same way). The launcher runs as root and drops to the user; without one it would leave the service root whatever the image says. Send the `USER` of the image config as it is (a name, a uid, `name:group` or `uid:gid`), and `0` when the image names none: `root`, `0` and `0:0` are all the explicit root, and a numeric id needs no `/etc/passwd`, which an image without a shell lacks (a name does). The launcher drops to any other user and stays as it is for root; an empty user is refused by the agent, and by the launcher itself before it places or runs anything. A service with only `workingDir` does not start the launcher and needs no user. This refuses requests that 1.7 accepted, so it is a version step; there are no released callers.
 - `access[]`: see "Device access" above (the terminal is the `terminal` entry; command empty = `/bin/sh`, user empty = the image's user).
 - `bootstrap {enabled}`: set by the agent when it received a non-empty list for the device (a client's value is dropped). The list and its time limit are only in the Secret.
 

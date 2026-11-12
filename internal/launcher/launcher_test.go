@@ -90,7 +90,7 @@ func (r *rig) list(b labchecks.Bootstrap) {
 }
 
 func (r *rig) config(bootstrap bool, command ...string) Config {
-	return Config{Dir: r.dir, Bootstrap: bootstrap, Command: command, TerminationLog: r.log, Root: r.root}
+	return Config{Dir: r.dir, Bootstrap: bootstrap, Command: command, TerminationLog: r.log, Root: r.root, User: "root"}
 }
 
 func (r *rig) has(name string) bool {
@@ -437,5 +437,50 @@ func TestParseMessage(t *testing.T) {
 	}
 	if m, ok := ParseMessage(`{"kind":"failed","attempt":2,"final":true,"reason":"r"}`); !ok || m.Attempt != 2 || !m.Final {
 		t.Fatal(m)
+	}
+}
+
+// The explicit forms of root stay root and are never dropped: the name, and the numeric ids, which need no /etc/passwd (the backend
+// sends "0" for an image whose config names no USER, and such an image may have no passwd file at all).
+func TestExplicitRootFormsAreNotDropped(t *testing.T) {
+	for _, withPasswd := range []bool{true, false} {
+		for _, user := range []string{"root", "0", "0:0"} {
+			r := newRig(t)
+			if !withPasswd {
+				_ = os.Remove(filepath.Join(r.root, "etc/passwd"))
+				_ = os.Remove(filepath.Join(r.root, "etc/group"))
+			}
+			cfg := r.config(false, "/bin/true")
+			cfg.User = user
+			code := Run(cfg, r.sys)
+			if user == "root" && !withPasswd {
+				// a name needs the passwd file; this is why the backend sends "0"
+				if code != ExitStart {
+					t.Errorf("%q without /etc/passwd: %d", user, code)
+				}
+				continue
+			}
+			if code != 0 || r.sys.dropped != nil || r.sys.exec.path == "" {
+				t.Errorf("%q (passwd %v): code %d, dropped %+v", user, withPasswd, code, r.sys.dropped)
+			}
+		}
+	}
+}
+
+// No user is refused before anything runs, never started as root.
+func TestEmptyServiceUserIsRefused(t *testing.T) {
+	for _, bootstrap := range []bool{false, true} {
+		r := newRig(t)
+		if bootstrap {
+			r.list(labchecks.Bootstrap{Script: "true"})
+		}
+		cfg := r.config(bootstrap, "/bin/true")
+		cfg.User = ""
+		if Run(cfg, r.sys) != ExitStart || r.message().Kind != KindStart || r.sys.exec.path != "" {
+			t.Fatalf("bootstrap %v: an empty user must stop the start", bootstrap)
+		}
+		if !strings.Contains(r.message().Reason, "root named explicitly") {
+			t.Errorf("the reason: %q", r.message().Reason)
+		}
 	}
 }

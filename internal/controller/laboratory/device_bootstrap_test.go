@@ -541,3 +541,32 @@ func TestAttemptLimitMatchesTheContract(t *testing.T) {
 		t.Fatal("pauses must grow")
 	}
 }
+
+// The service user of a device started by the launcher: a named user is passed on (the launcher drops to it), "root" is passed on as
+// "root" and stays root, and no user is refused, never a silent root (the launcher runs as root; internal/launcher tests the drop).
+func TestLauncherServiceUserIsNeverImplicitRoot(t *testing.T) {
+	r := readinessReconciler()
+	for _, tc := range []struct {
+		user    string
+		refused bool
+	}{{"www-data", false}, {"1000:1000", false}, {"root", false}, {"0", false}, {"0:0", false}, {"", true}} {
+		d := bootstrapDevice()
+		d.Spec.Service.User = tc.user
+		err := r.refuseUnbootstrappable(d)
+		if (err != nil) != tc.refused {
+			t.Fatalf("user %q: refusal %v", tc.user, err)
+		}
+		if tc.refused {
+			if !strings.Contains(err.Error(), "root named explicitly") {
+				t.Errorf("the refusal does not say what to do: %v", err)
+			}
+			continue
+		}
+		_, _, _, spec := r.workloadTemplate(d)
+		cmd := spec.Containers[0].Command
+		i := slices.Index(cmd, "-user")
+		if i < 0 || cmd[i+1] != tc.user {
+			t.Errorf("user %q: the launcher is not told it: %v", tc.user, cmd)
+		}
+	}
+}

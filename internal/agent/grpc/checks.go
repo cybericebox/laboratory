@@ -131,6 +131,13 @@ func validateBootstrapLists(lists bootstrapLists, spec *laboratoryv1alpha1.LabSp
 		if b.Empty() {
 			continue
 		}
+		for i := range spec.Devices {
+			if spec.Devices[i].Name == dev {
+				if err := requireServiceUser(&spec.Devices[i], true); err != nil {
+					return err
+				}
+			}
+		}
 		labchecks.NormalizeBootstrap(b)
 		if err := labchecks.ValidateBootstrap(b); err != nil {
 			return fmt.Errorf("device %q: bootstrap: %w", dev, err)
@@ -231,9 +238,32 @@ func validateDeviceExtras(spec *laboratoryv1alpha1.LabSpec) error {
 				return fmt.Errorf("device %q: invalid service user", d.Name)
 			}
 		}
+		if err := requireServiceUser(d, false); err != nil {
+			return err
+		}
 		if err := validateAccess(d); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// errServiceUser is the refusal of a device whose service would start under the launcher without a user. The launcher runs as root and
+// drops to the service user; with none it would leave the service root, whatever the image says.
+const errServiceUser = "the service needs a user: the user of the image, or root named explicitly"
+
+// requireServiceUser refuses a device that is started by the launcher (a service command or args, or a bootstrap) and has no
+// service user. bootstrap says the device has a bootstrap list, which needs a service as well.
+func requireServiceUser(d *laboratoryv1alpha1.DeviceTemplate, bootstrap bool) error {
+	s := d.Service
+	if s == nil || len(s.Command)+len(s.Args) == 0 {
+		if bootstrap {
+			return fmt.Errorf("device %q: a bootstrap needs a service command; %s", d.Name, errServiceUser)
+		}
+		return nil
+	}
+	if s.User == "" {
+		return fmt.Errorf("device %q: %s", d.Name, errServiceUser)
 	}
 	return nil
 }
