@@ -187,6 +187,8 @@ func (c *pipeConn) Read(ctx context.Context) (bool, []byte, error) {
 	case m := <-c.in:
 		return m.text, m.data, nil
 	case <-ctx.Done():
+		// Like the WebSocket library the service uses: a read whose context ends closes the connection.
+		c.hangUp()
 		return false, nil, ctx.Err()
 	case <-c.cl:
 		return false, nil, io.EOF

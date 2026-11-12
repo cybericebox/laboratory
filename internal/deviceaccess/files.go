@@ -327,7 +327,8 @@ func (s *Service) get(ctx context.Context, conn Conn, st *stream, dev Device, pr
 	case <-ctx.Done():
 		reason = wire.ReasonLifetime
 	}
-	cancel()
+	// The close frame goes out before the reader is cancelled: cancelling the context of a WebSocket read closes the connection.
 	st.closeFrame(conn, reason)
+	cancel()
 	st.end(reason)
 }

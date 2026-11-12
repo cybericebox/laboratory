@@ -11,9 +11,9 @@ import (
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 )
 
-// StreamPath is where the proxy opens a stream (a WebSocket). HealthPath answers 200 while the service runs.
+// StreamPath (wire.StreamPath) is where the proxy opens a stream, a WebSocket. HealthPath answers 200 while the service runs.
 const (
-	StreamPath = "/v1/stream"
+	StreamPath = wire.StreamPath
 	HealthPath = "/healthz"
 )
 

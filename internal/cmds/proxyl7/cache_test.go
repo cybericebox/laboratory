@@ -10,6 +10,7 @@ import (
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/proxy"
 	"github.com/cybericebox/laboratory/internal/proxy/l7"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -61,13 +62,13 @@ func TestProxyWarmCachePreservesAccessAndNamespace(t *testing.T) {
 	if err := writer.Create(ctx, secret); err != nil {
 		t.Fatal(err)
 	}
-	options := proxyCacheOptions()
+	options := proxyCacheOptions(&proxy.L7Config{})
 	options.Scheme = scheme
 	reader, err := cache.New(cfg, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := warmProxyCache(ctx, reader); err != nil {
+	if err := warmProxyCache(ctx, reader, &proxy.L7Config{}); err != nil {
 		t.Fatal(err)
 	}
 	running, stop := context.WithCancel(context.Background())

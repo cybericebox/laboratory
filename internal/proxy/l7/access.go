@@ -6,6 +6,7 @@ import (
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -62,6 +63,21 @@ func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName s
 	}
 	return PolicyAllows(policy.Spec.Rules, member, labName)
 }
+
+// Device finds the device of a lab that has a console. A device without one, a missing device and a deleting one are the same
+// answer. Node is empty while the device has no pod placed yet.
+func (a *AccessReader) Device(ctx context.Context, namespace, labName, device string) (DeviceInfo, error) {
+	d, err := devices.Get(ctx, a.Reader, namespace, labName, device)
+	if err != nil || !d.DeletionTimestamp.IsZero() {
+		return DeviceInfo{}, ErrNoConsole
+	}
+	enabled, command, user := d.TerminalSettings()
+	if !enabled {
+		return DeviceInfo{}, ErrNoConsole
+	}
+	return DeviceInfo{Node: d.Status.NodeName, Command: command, User: user}, nil
+}
+
 func (a *AccessReader) Tenant(id string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -107,6 +123,18 @@ func CompactCacheObject(in any) (any, error) {
 		s.Spec = corev1.ServiceSpec{Ports: ports}
 		s.Status = corev1.ServiceStatus{}
 		out = s
+	case *lab.Device:
+		// Only what the console needs: which device it is, its terminal settings and the node it runs on.
+		d := &lab.Device{ObjectMeta: x.ObjectMeta}
+		d.Spec = lab.DeviceSpec{Name: x.Spec.Name, LabRef: x.Spec.LabRef, Code: x.Spec.Code, Terminal: x.Spec.Terminal}
+		d.Status = lab.DeviceStatus{NodeName: x.Status.NodeName}
+		out = d
+	case *corev1.Pod:
+		// The pods of the device access service: where they run and their address.
+		p := &corev1.Pod{ObjectMeta: x.ObjectMeta}
+		p.Spec.NodeName = x.Spec.NodeName
+		p.Status = corev1.PodStatus{PodIP: x.Status.PodIP, Phase: x.Status.Phase, Conditions: x.Status.Conditions}
+		out = p
 	case *corev1.Secret:
 		out = x.DeepCopy()
 	default:
