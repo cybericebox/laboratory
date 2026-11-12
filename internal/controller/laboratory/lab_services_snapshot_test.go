@@ -220,7 +220,7 @@ func TestLabReconcileServiceCreateCollisionRetriesWithoutAdoption(t *testing.T) 
 		t.Fatal(err)
 	}
 	var foreign corev1.Service
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: lab.Namespace, Name: "web0-aaa"}, &foreign); err != nil {
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: lab.Namespace, Name: "web0-aaaw"}, &foreign); err != nil {
 		t.Fatal(err)
 	}
 	if foreign.Labels[names.LabelLab] != "foreign" || len(foreign.OwnerReferences) != 0 {
@@ -228,14 +228,14 @@ func TestLabReconcileServiceCreateCollisionRetriesWithoutAdoption(t *testing.T) 
 	}
 	var current api.Lab
 	_ = c.Get(context.Background(), client.ObjectKeyFromObject(lab), &current)
-	if len(current.Status.Access) != 1 || current.Status.Access[0].URL != "https://web0-bbb.labs.example.com" {
+	if len(current.Status.Access) != 1 || current.Status.Access[0].URL != "https://web0-bbbw.labs.example.com" {
 		t.Fatalf("retry host: %+v", current.Status.Access)
 	}
 }
 
 func TestLabReconcileCodeExhaustionKeepsForeignServices(t *testing.T) {
 	r, lab, c := snapshotReconcileFixture(t, 1)
-	for _, name := range []string{"web0-aaa", "web0-aaaa"} {
+	for _, name := range []string{"web0-aaaw", "web0-aaaaw"} {
 		if err := c.Create(context.Background(), &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lab.Namespace}}); err != nil {
 			t.Fatal(err)
 		}
@@ -262,7 +262,7 @@ func TestLabSnapshotSelectionKeepsOwnerUIDOldestTieAndDeletion(t *testing.T) {
 	makeService := func(name, uid, kind string, age time.Duration) *corev1.Service {
 		return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lab.Namespace, CreationTimestamp: metav1.NewTime(start.Add(age)), Labels: map[string]string{names.LabelLab: lab.Name, names.LabelDevice: "web0"}, OwnerReferences: []metav1.OwnerReference{{APIVersion: api.SchemeGroupVersion.String(), Kind: kind, Name: lab.Name, UID: types.UID(uid)}}}}
 	}
-	objects := []*corev1.Service{makeService("web0-bbb", string(lab.UID), "Lab", 0), makeService("web0-aaa", string(lab.UID), "Lab", 0), makeService("web0-zzz", "wrong-uid", "Lab", -time.Hour), makeService("web0-yyy", string(lab.UID), "Device", -time.Hour)}
+	objects := []*corev1.Service{makeService("web0-bbbw", string(lab.UID), "Lab", 0), makeService("web0-aaaw", string(lab.UID), "Lab", 0), makeService("web0-zzz", "wrong-uid", "Lab", -time.Hour), makeService("web0-yyy", string(lab.UID), "Device", -time.Hour)}
 	objects[1].DeletionTimestamp = &metav1.Time{Time: start}
 	objects[1].Finalizers = []string{"hold-for-test"}
 	for _, svc := range objects {
@@ -275,7 +275,7 @@ func TestLabSnapshotSelectionKeepsOwnerUIDOldestTieAndDeletion(t *testing.T) {
 	}
 	var current api.Lab
 	_ = c.Get(context.Background(), client.ObjectKeyFromObject(lab), &current)
-	if len(current.Status.Access) != 1 || current.Status.Access[0].URL != "https://web0-aaa.labs.example.com" {
+	if len(current.Status.Access) != 1 || current.Status.Access[0].URL != "https://web0-aaaw.labs.example.com" {
 		t.Fatalf("selection changed: %v", current.Status.Access)
 	}
 	recreated := lab.DeepCopy()

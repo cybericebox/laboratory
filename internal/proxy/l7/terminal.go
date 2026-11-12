@@ -20,7 +20,7 @@ import (
 )
 
 // The console. A device whose lab asks for a terminal can be opened in the browser on a host of its own under the labs' base domain,
-// <device>-<code>.<base> with the console's kind in the last character of the code (names.AccessHostLabel): the page, a WebSocket for the shell and two requests for files all live there.
+// <device>-<code>t.<base> (names.AccessHostLabel: the last character of the first label is the kind of access, t for the console): the page, a WebSocket for the shell and two requests for files all live there.
 // Nothing about the device is in a path or a query; the host is the address, and the group of the session is the only namespace it is
 // looked for in. The proxy authorizes exactly as it
 // does for a web request (the session cookie, the group, the access policy that allows the lab, the lab running) and adds that the
@@ -93,7 +93,7 @@ type consoleSession struct {
 	group, client       string
 	tenant              string
 	namespace, lab, dev string
-	host                string // <device>-<code> of the base code; a file request must come on the same console host
+	host                string // first label of the console host; a file request must come on the same one
 	base                string
 	command             []string
 	user                string
@@ -164,7 +164,7 @@ type terminalTarget struct {
 	client                 string
 	info                   DeviceInfo
 	base                   string
-	host                   string // <device>-<code> of the base code of the device
+	host                   string // first label of the console host, <device>-<code>t
 }
 
 // serveTerminal answers a request for the console host. The session was validated by the caller (cookie, group, tenant).
@@ -197,7 +197,7 @@ func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, device, 
 		}
 		h.terminalSocket(w, r, tg)
 	case r.URL.Path == "/files":
-		h.terminalFile(w, r, names.WebHostLabel(device, code), claims, client, group)
+		h.terminalFile(w, r, consoleHost(device, code), claims, client, group)
 	default:
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 	}
@@ -227,7 +227,13 @@ func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, host
 		fail(w, r, http.StatusServiceUnavailable, pageStarting, "the console is not ready")
 		return terminalTarget{}, false
 	}
-	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc, host: names.WebHostLabel(hostDevice, hostCode)}, true
+	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc, host: consoleHost(hostDevice, hostCode)}, true
+}
+
+// consoleHost is the first label of the console host of a device, the key a file request is bound to.
+func consoleHost(device, code string) string {
+	label, _ := names.AccessHostLabel(device, code, names.AccessKindTerminal)
+	return label
 }
 
 // plainName accepts a name that can be a lab or device: bounded, printable, no separator or control character.

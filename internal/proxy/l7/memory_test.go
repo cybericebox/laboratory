@@ -141,7 +141,7 @@ func TestL7MemoryPerConnection(t *testing.T) {
 				c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: true,
 					DialContext: (&net.Dialer{Timeout: 3 * time.Second}).DialContext}}
 				req, _ := http.NewRequest("GET", "https://"+l7addr+"/", nil)
-				req.Host = "web-abc123.challenges.example.com"
+				req.Host = "web-abc12w.challenges.example.com"
 				req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 				// The accept queue of a loopback listener is short and a loaded machine (the race detector, parallel packages) can
 				// overflow it: the kernel then resets the connection before the proxy ever saw it. That says nothing about the proxy,

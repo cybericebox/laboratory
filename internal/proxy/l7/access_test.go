@@ -97,7 +97,7 @@ func TestAccessHandlerUsesOneGroupAndServiceRead(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = lab.AddToScheme(scheme)
 	group := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "g1", Labels: map[string]string{names.LabelTenant: "acme"}}, Status: lab.LabGroupStatus{Namespace: "legacy"}}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc123", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, ClientNames: []string{"p-u1"}, LabNames: []string{"lab"}}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
@@ -108,11 +108,11 @@ func TestAccessHandlerUsesOneGroupAndServiceRead(t *testing.T) {
 	h.transport = accountingRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("abc")), ContentLength: 3}, nil
 	})
-	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
+	req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 || reader.gets["g1"] != 1 || reader.gets["web-abc123"] != 1 || reader.gets["p-u1"] != 1 || reader.gets[names.LabGroupAccessPolicyName] != 1 {
+	if rec.Code != 200 || reader.gets["g1"] != 1 || reader.gets["web-abc12w"] != 1 || reader.gets["p-u1"] != 1 || reader.gets[names.LabGroupAccessPolicyName] != 1 {
 		t.Fatal(rec.Code, reader.gets)
 	}
 	rows, _ := m.Ledger("legacy")
@@ -171,7 +171,7 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 		_ = rw.Flush()
 		_, _ = io.Copy(conn, conn)
 	}))
-	backend, err := h.resolver("web-abc123", "g1")
+	backend, err := h.resolver("web-abc12w", "g1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 	group := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "g1", Labels: map[string]string{names.LabelTenant: "acme"}}, Status: lab.LabGroupStatus{Namespace: "legacy"}}
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc123", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "a", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "a", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target, group, member, policy, svc).Build()
 	h.WithAccessReader(&AccessReader{Reader: c})
 	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
@@ -196,7 +196,7 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	fmt.Fprintf(conn, "GET /term HTTP/1.1\r\nHost: web-abc123.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
+	fmt.Fprintf(conn, "GET /term HTTP/1.1\r\nHost: web-abc12w.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
 	if err != nil || !strings.Contains(line, "101") {
@@ -227,7 +227,7 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 		t.Fatal("upgrade not closed within measured boundary")
 	}
 	req, _ := http.NewRequest("GET", srv.URL+"/term", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

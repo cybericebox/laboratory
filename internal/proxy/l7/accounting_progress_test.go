@@ -30,7 +30,7 @@ func TestActiveHTTPProgressAndActualResponseTime(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/stream", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	result := make(chan *http.Response, 1)
 	go func() {
@@ -93,7 +93,7 @@ func TestWebSocketCountsPayloadBothDirectionsAndBufferedInput(t *testing.T) {
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-	header := fmt.Sprintf("GET / HTTP/1.1\r\nHost: web-abc123.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
+	header := fmt.Sprintf("GET / HTTP/1.1\r\nHost: web-abc12w.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
 	frame := []byte{0x81, 0x83, 1, 2, 3, 4, 'a' ^ 1, 'b' ^ 2, 'c' ^ 3}
 	_, _ = c.Write(append([]byte(header), frame...))
 	br := bufio.NewReader(c)
@@ -182,7 +182,7 @@ func TestAbortKeepsProgressAndFinishesMeter(t *testing.T) {
 	h.transport = accountingRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: &brokenBody{}, ContentLength: 10}, nil
 	})
-	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
+	req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	req = req.WithContext(context.WithValue(req.Context(), http.ServerContextKey, &http.Server{}))
 	var caught any
@@ -249,7 +249,7 @@ func TestNegotiatedCompressedWebSocketPreservesFragmentedPayload(t *testing.T) {
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-	header := fmt.Sprintf("GET / HTTP/1.1\r\nHost: web-abc123.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate\r\nCookie: challenge=%s\r\n\r\n", cookie)
+	header := fmt.Sprintf("GET / HTTP/1.1\r\nHost: web-abc12w.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate\r\nCookie: challenge=%s\r\n\r\n", cookie)
 	_, _ = c.Write(append([]byte(header), input...))
 	br := bufio.NewReader(c)
 	resp, err := http.ReadResponse(br, nil)

@@ -233,7 +233,7 @@ type AccessEntry struct {
 	Port   int32  `json:"port"`
 	// Protocol is http or https for a web port, and "terminal" for the browser terminal of the device.
 	Protocol string `json:"protocol"`
-	// URL is the address of a web port, and of the console of a terminal entry (https://<device>-<code>.<labs domain>, the kind in the last character of the code). It is empty
+	// URL is the address of a web port, and of the console of a terminal entry (https://<device>-<code>t.<labs domain>; the last character of the first label is the kind of access). It is empty
 	// until the device has its code.
 	URL string `json:"url,omitempty"`
 }

@@ -38,7 +38,7 @@ func TestLifecycleSettlesActiveStreamBeforeFinalReport(t *testing.T) {
 		done <- RunLifecycle(ctx, server, h, writer, time.Hour, time.Hour, func() error { return server.Serve(ln) }, nil)
 	}()
 	req, _ := http.NewRequest("GET", "http://"+ln.Addr().String()+"/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

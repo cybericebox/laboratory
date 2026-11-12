@@ -66,10 +66,10 @@ type terminalText struct {
 var terminalUK = terminalText{
 	Lang: "uk", Title: "Термінал", Upload: "Завантажити на пристрій", Download: "Скачати з пристрою",
 	UploadDir: "Каталог на пристрої", DownPath: "Шлях до файлу на пристрої", Again: "Підключитися знову",
-	Connecting: "З’єднуємо…", Connected: "Підключено", Ended: "Сеанс завершено",
+	Connecting: "Зʼєднуємо…", Connected: "Підключено", Ended: "Сеанс завершено",
 	Reasons: map[string]string{
 		"exit":               "Оболонку завершено.",
-		"client":             "З’єднання закрито.",
+		"client":             "Зʼєднання закрито.",
 		"idle":               "Сеанс закрито через неактивність.",
 		"lifetime":           "Сеанс досяг максимальної тривалості.",
 		"access-lost":        "Доступ до лабораторії втрачено.",
@@ -79,8 +79,8 @@ var terminalUK = terminalText{
 		wire.CodeUnavailable: "Термінал тимчасово недоступний. Спробуйте за хвилину.",
 		"stalled":            "Сеанс закрито: сторінка не встигає за виводом.",
 		"shutdown":           "Сервіс перезапускається.",
-		"error":              "Сталася помилка з’єднання.",
-		wire.CodeBadRequest:  "Сталася помилка з’єднання.",
+		"error":              "Сталася помилка зʼєднання.",
+		wire.CodeBadRequest:  "Сталася помилка зʼєднання.",
 	},
 	Files: map[string]string{
 		"uploading":          "Завантажуємо…",

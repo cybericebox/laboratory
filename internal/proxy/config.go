@@ -72,7 +72,7 @@ type L7Config struct {
 	ProxyProtocolSecrets []string `env:"L7_PROXY_PROTOCOL_SECRETS" envSeparator:","`
 	ProxyProtocolTLVType uint8    `env:"L7_PROXY_PROTOCOL_TLV_TYPE" envDefault:"224"`
 
-	// The console (docs/specs/2026-11-12-device-access-and-checks.md): TerminalEnabled serves it on a host of its own per device (names.AccessHostLabel, the kind in the last character of the code) under
+	// The console (docs/specs/2026-11-12-device-access-and-checks.md): TerminalEnabled serves it on a host of its own per device (names.AccessHostLabel, the kind of access in the last character of the first label) under
 	// BaseDomain, relayed to the device access service pods of TerminalNamespace on TerminalPort. The limits mirror the chart values of the
 	// service (terminal.limits.*) and are enforced at the proxy as well.
 	TerminalEnabled    bool          `env:"TERMINAL_ENABLED" envDefault:"false"`

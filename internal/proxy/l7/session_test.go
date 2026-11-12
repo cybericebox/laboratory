@@ -14,7 +14,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const labHost = "web-abc123.challenges.example.com"
+const labHost = "web-abc12w.challenges.example.com"
 
 // staticKeys is a KeyLookup with one key.
 func staticKeys(tenant, kid string, pub ed25519.PublicKey) KeyLookup {
@@ -29,7 +29,7 @@ func staticKeys(tenant, kid string, pub ed25519.PublicKey) KeyLookup {
 // baseHandoff is a valid handoff of tenant acme for group g1.
 func baseHandoff(now time.Time) handoffClaims {
 	return handoffClaims{
-		GroupID: "g1", Host: "web-abc123", Session: now.Add(24 * time.Hour).Unix(),
+		GroupID: "g1", Host: "web-abc12w", Session: now.Add(24 * time.Hour).Unix(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: "acme", Subject: "p-u1", Audience: jwt.ClaimStrings{HandoffAudience},
 			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
