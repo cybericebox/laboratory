@@ -41,7 +41,7 @@ func (v view) observe(req ObserveRequest) ObserveResponse {
 	case KindDirectory:
 		return v.directory(req)
 	case KindProcess:
-		return v.processes(req)
+		return v.processes()
 	case KindPort:
 		return v.port(req)
 	case KindKernelParam:
@@ -84,25 +84,30 @@ func (v view) directory(req ObserveRequest) ObserveResponse {
 	if !f.IsDir {
 		return ObserveResponse{Directory: f}
 	}
-	if len(req.Names) > MaxDirNames {
-		return ObserveResponse{Error: "too many names asked"}
+	if len(req.Key) < MinDirKeyBytes {
+		return ObserveResponse{Error: "the question has no key"}
 	}
-	// Each asked name is answered by lstat on its own: the answer does not depend on how many entries the directory has, so padding
-	// the directory hides nothing.
-	for _, n := range req.Names {
-		if n == "" || n == "." || n == ".." || len(n) > MaxDirNameBytes || strings.ContainsAny(n, "/\x00") {
-			return ObserveResponse{Error: "bad entry name"}
+	d, err := os.Open(req.Path)
+	if err != nil {
+		return ObserveResponse{Error: "cannot read the directory: " + errnoName(err)}
+	}
+	defer func() { _ = d.Close() }()
+	for {
+		names, err := d.Readdirnames(1024)
+		for _, n := range names {
+			if len(f.Hashes) >= MaxDirHashes {
+				f.Truncated = true
+				return ObserveResponse{Directory: f}
+			}
+			f.Hashes = append(f.Hashes, EntryHash(req.Key, n))
 		}
-		_, err := os.Lstat(filepath.Join(req.Path, n))
-		switch {
-		case err == nil:
-			f.Present = append(f.Present, n)
-		case notFound(err):
-		default:
-			return ObserveResponse{Error: "cannot look for an entry: " + errnoName(err)}
+		if errors.Is(err, io.EOF) {
+			return ObserveResponse{Directory: f}
+		}
+		if err != nil {
+			return ObserveResponse{Error: "cannot read the directory: " + errnoName(err)}
 		}
 	}
-	return ObserveResponse{Directory: f}
 }
 
 // modeBits are the permission bits with setuid, setgid and sticky, as a number.
@@ -122,23 +127,13 @@ func modeBits(m fs.FileMode) uint32 {
 
 // ---- process -----------------------------------------------------------------------------------------------------------
 
-func (v view) processes(req ObserveRequest) ObserveResponse {
-	if req.Name == "" && req.Matches == "" {
-		return ObserveResponse{Error: "give a name or a pattern"}
-	}
-	var re *regexp.Regexp
-	if req.Matches != "" {
-		var err error
-		if re, err = regexp.Compile(req.Matches); err != nil {
-			return ObserveResponse{Error: "the pattern does not compile"}
-		}
-	}
+func (v view) processes() ObserveResponse {
 	ents, err := os.ReadDir(v.proc)
 	if err != nil {
 		return ObserveResponse{Error: "cannot read the process table: " + errnoName(err)}
 	}
 	names := v.idNames()
-	facts := &ProcessFacts{}
+	facts := &ProcessFacts{List: []Process{}}
 	for i, e := range ents {
 		if i >= MaxProcessScan {
 			facts.Incomplete++
@@ -155,40 +150,14 @@ func (v view) processes(req ObserveRequest) ObserveResponse {
 		case procUnreadable:
 			facts.Incomplete++
 			continue
-		case procCut:
-			facts.Incomplete++ // the command line is longer than what was looked at: judge it as far as it goes, but remember
 		}
-		facts.Scanned++
-		if processMatch(req, re, p) {
-			facts.Found = true
+		if len(facts.List) >= MaxProcesses {
+			facts.Truncated = true
 			break
 		}
+		facts.List = append(facts.List, p)
 	}
 	return ObserveResponse{Processes: facts}
-}
-
-// processMatch: a process matches when every key that is given holds. The name is the command without its directory (the kernel keeps
-// 15 characters of it); the user is a name or a number.
-func processMatch(req ObserveRequest, re *regexp.Regexp, p Process) bool {
-	if req.Name != "" {
-		cut := len(req.Name) > 15 && p.Comm == req.Name[:15]
-		if p.Comm != req.Name && p.Arg0 != req.Name && !cut {
-			return false
-		}
-	}
-	if re != nil && !re.MatchString(p.Cmdline) {
-		return false
-	}
-	if req.User != "" {
-		if n, err := strconv.ParseUint(req.User, 10, 32); err == nil {
-			if uint32(n) != p.UID {
-				return false
-			}
-		} else if p.User != req.User {
-			return false
-		}
-	}
-	return true
 }
 
 type procState int
@@ -197,7 +166,6 @@ const (
 	procOK procState = iota
 	procGone
 	procUnreadable
-	procCut
 )
 
 // process reads one process. procGone: it ended while we looked. procUnreadable: it is there but not readable (hidepid, a denied
@@ -212,22 +180,24 @@ func (v view) process(pid int, names IDNames) (Process, procState) {
 		return Process{}, procUnreadable
 	}
 	p := Process{PID: pid, Comm: strings.TrimRight(string(comm), "\n")}
-	state := procOK
-	raw, err := readLimited(filepath.Join(dir, "cmdline"), MaxCmdlineBytes+1)
+	raw, err := readLimited(filepath.Join(dir, "cmdline"), maxCmdlineRead)
 	switch {
 	case err != nil && (notFound(err) || errors.Is(err, syscall.ESRCH)):
 		return Process{}, procGone
 	case err != nil:
 		return Process{}, procUnreadable
-	case len(raw) > MaxCmdlineBytes:
-		raw, state = raw[:MaxCmdlineBytes], procCut
 	}
 	if len(raw) > 0 {
 		words := bytes.Split(bytes.TrimRight(raw, "\x00"), []byte{0})
 		// A server that renames itself ("nginx: master process /usr/sbin/nginx") has one word with spaces in it.
 		first, _, _ := strings.Cut(string(words[0]), " ")
 		p.Arg0 = filepath.Base(strings.TrimSuffix(first, ":"))
-		p.Cmdline = strings.ToValidUTF8(string(bytes.Join(words, []byte{' '})), "?")
+		cmd := strings.ToValidUTF8(string(bytes.Join(words, []byte{' '})), "?")
+		if len(cmd) > MaxCmdlineBytes || int64(len(raw)) >= maxCmdlineRead {
+			p.Cut = true
+			cmd = strings.ToValidUTF8(cmd[:min(len(cmd), MaxCmdlineBytes)], "")
+		}
+		p.Cmdline = cmd
 	}
 	status, err := readLimited(filepath.Join(dir, "status"), 8192)
 	if err != nil {
@@ -238,7 +208,7 @@ func (v view) process(pid int, names IDNames) (Process, procState) {
 	}
 	p.UID = uidOfStatus(status)
 	p.User = names.Users[p.UID]
-	return p, state
+	return p, procOK
 }
 
 // readLimited reads up to limit bytes of a file and returns the error, unlike readBounded.

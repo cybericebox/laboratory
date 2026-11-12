@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"github.com/cybericebox/laboratory/internal/labchecks"
@@ -15,13 +16,14 @@ import (
 // table, the sockets of a port, the value of a sysctl, the answer of a request, the verdict of access(2)); the expected values of the
 // author never leave the checker. Reasons name the kind of expectation that did not hold and never the expected value.
 
-// EvalDirectory compares a directory listing with the expectations of the part.
-func EvalDirectory(p *labchecks.DirectoryPart, f *probe.DirectoryFacts) (Outcome, []string) {
-	v := evalDirectory(p, f)
+// EvalDirectory compares a directory with the expectations of the part. key is the key of the question the facts answer: the names the
+// author expects are hashed with it here, never sent to the device.
+func EvalDirectory(p *labchecks.DirectoryPart, f *probe.DirectoryFacts, key []byte) (Outcome, []string) {
+	v := evalDirectory(p, f, key)
 	return v.outcome, v.reasons
 }
 
-func evalDirectory(p *labchecks.DirectoryPart, f *probe.DirectoryFacts) partVerdict {
+func evalDirectory(p *labchecks.DirectoryPart, f *probe.DirectoryFacts, key []byte) partVerdict {
 	if p.Exists != nil && !*p.Exists {
 		if f.Exists {
 			return partVerdict{NotPassed, []string{"exists: the path is present"}}
@@ -44,50 +46,101 @@ func evalDirectory(p *labchecks.DirectoryPart, f *probe.DirectoryFacts) partVerd
 	if p.Group != nil && !ownerMatches(*p.Group, f.GID, f.Group, false) {
 		fails = append(fails, "group: differs")
 	}
-	have := make(map[string]bool, len(f.Present))
-	for _, e := range f.Present {
-		have[e] = true
+	have := make(map[string]bool, len(f.Hashes))
+	for _, h := range f.Hashes {
+		have[string(h)] = true
 	}
+	present := func(name string) bool { return have[string(probe.EntryHash(key, name))] }
+	// A listing that was cut says nothing about the names it did not reach: what was seen is seen, what was not is not known, in both
+	// the positive and the negative form.
+	undecided := false
 	for _, n := range p.HasEntries {
-		if !have[n] {
-			fails = append(fails, "has_entries: a name is missing")
+		if !present(n) {
+			if f.Truncated {
+				undecided = true
+			} else {
+				fails = append(fails, "has_entries: a name is missing")
+			}
 			break
 		}
 	}
 	for _, n := range p.LacksEntries {
-		if have[n] {
+		if present(n) {
 			fails = append(fails, "lacks_entries: a name is present")
+			undecided = false
 			break
 		}
+		undecided = undecided || f.Truncated
 	}
-	if len(fails) > 0 {
+	switch {
+	case len(fails) > 0:
 		return partVerdict{NotPassed, fails}
+	case undecided:
+		return partVerdict{Failed, []string{"entries: the directory has more entries than are listed"}}
 	}
 	return partVerdict{outcome: Passed}
 }
 
-// EvalProcess judges the result of the scan of the process table: the program looked at every process and says whether one matched.
+// EvalProcess judges the process table.
 func EvalProcess(p *labchecks.ProcessPart, f *probe.ProcessFacts) (Outcome, []string) {
 	v := evalProcess(p, f)
 	return v.outcome, v.reasons
 }
 
+// processVerdict: does the process match what is looked for? known is false when it cannot be told: the command line was cut and the
+// pattern is about the command line (an anchor would fit the cut).
+func processVerdict(p *labchecks.ProcessPart, re *regexp.Regexp, q probe.Process) (match, known bool) {
+	if p.Name != nil {
+		name := *p.Name
+		// The kernel keeps 15 characters of the name.
+		cut := len(name) > 15 && q.Comm == name[:15]
+		if q.Comm != name && q.Arg0 != name && !cut {
+			return false, true
+		}
+	}
+	if p.User != nil && !ownerMatches(*p.User, q.UID, q.User, false) {
+		return false, true
+	}
+	if re != nil {
+		if q.Cut {
+			return false, false
+		}
+		if !re.MatchString(q.Cmdline) {
+			return false, true
+		}
+	}
+	return true, true
+}
+
 func evalProcess(p *labchecks.ProcessPart, f *probe.ProcessFacts) partVerdict {
+	var re *regexp.Regexp
 	if p.Matches != nil {
-		if _, err := compile(*p.Matches); err != nil {
+		var err error
+		if re, err = compile(*p.Matches); err != nil {
 			return partVerdict{Failed, []string{"matches: the pattern does not compile"}}
+		}
+	}
+	unknown := f.Truncated || f.Incomplete > 0
+	found := false
+	for _, q := range f.List {
+		match, known := processVerdict(p, re, q)
+		switch {
+		case match:
+			found = true
+		case !known:
+			unknown = true
 		}
 	}
 	wantRunning := p.Running == nil || *p.Running
 	switch {
-	case f.Found && wantRunning:
+	case found && wantRunning:
 		return partVerdict{outcome: Passed}
-	case f.Found:
+	case found:
 		return partVerdict{NotPassed, []string{"running: such a process runs"}}
-	case f.Incomplete > 0:
-		// Nothing matched among what could be seen; a process that could not be seen completely may match. Neither "no such process" nor
-		// "none runs" is known.
-		return partVerdict{Failed, []string{"running: part of the process table could not be seen"}}
+	case unknown:
+		// Nothing matched among what could be judged; the rest of the table (cut, unreadable, or a command line too long to judge) may
+		// hold the process. Neither "no such process" nor "none runs" is known.
+		return partVerdict{Failed, []string{"running: part of the process table could not be judged"}}
 	case wantRunning:
 		return partVerdict{NotPassed, []string{"running: no such process"}}
 	}

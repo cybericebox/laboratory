@@ -2,6 +2,7 @@ package checker
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"time"
 
@@ -144,26 +145,16 @@ func builtinKind(p *labchecks.Part) string {
 	return ""
 }
 
-// questionFor is what the in-device program is asked for a part: where to look, never what is expected.
-func questionFor(p *labchecks.Part, left time.Duration) probe.ObserveRequest {
+// questionFor is what the in-device program is asked for a part: where to look, and nothing the author expects. A path, a port and its
+// protocol, a sysctl name, the target of a request, a user and a path for a permission (that IS the question). Everything an author
+// writes as an expectation (names of entries, process name, pattern or user, address, status, body rules, mode, owner, values) stays here
+// in the checker and is compared with the facts that come back. key is the random key of the keyed hashes of a directory's entries.
+func questionFor(p *labchecks.Part, left time.Duration, key []byte) probe.ObserveRequest {
 	switch {
 	case p.Directory != nil:
-		// The names are asked by lstat, one by one: the answer does not depend on the size of the directory.
-		names := append(append([]string(nil), p.Directory.HasEntries...), p.Directory.LacksEntries...)
-		return probe.ObserveRequest{Kind: probe.KindDirectory, Path: p.Directory.Path, Names: names}
+		return probe.ObserveRequest{Kind: probe.KindDirectory, Path: p.Directory.Path, Key: key}
 	case p.Process != nil:
-		// The scan of the whole process table is done by the program, which returns only whether one matched.
-		q := probe.ObserveRequest{Kind: probe.KindProcess}
-		if p.Process.Name != nil {
-			q.Name = *p.Process.Name
-		}
-		if p.Process.Matches != nil {
-			q.Matches = *p.Process.Matches
-		}
-		if p.Process.User != nil {
-			q.User = *p.Process.User
-		}
-		return q
+		return probe.ObserveRequest{Kind: probe.KindProcess}
 	case p.Port != nil:
 		return probe.ObserveRequest{Kind: probe.KindPort, Port: int(p.Port.Port), Protocol: p.Port.Protocol}
 	case p.KernelParam != nil:
@@ -180,7 +171,12 @@ func observeBuiltin(ctx context.Context, p *labchecks.Part, obs Observer, left t
 	if !ok {
 		return partVerdict{Failed, []string{"this device cannot run built-in observations"}}
 	}
-	resp, err := prober.Probe(ctx, questionFor(p, left))
+	// A new key for every question: the hashes of one answer mean nothing in another.
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return partVerdict{Failed, []string{"the check could not make a key"}}
+	}
+	resp, err := prober.Probe(ctx, questionFor(p, left, key))
 	if err != nil {
 		return partVerdict{Failed, []string{reasonOf(ctx, err)}}
 	}
@@ -189,7 +185,7 @@ func observeBuiltin(ctx context.Context, p *labchecks.Part, obs Observer, left t
 	}
 	switch {
 	case p.Directory != nil && resp.Directory != nil:
-		return evalDirectory(p.Directory, resp.Directory)
+		return evalDirectory(p.Directory, resp.Directory, key)
 	case p.Process != nil && resp.Processes != nil:
 		return evalProcess(p.Process, resp.Processes)
 	case p.Port != nil && resp.Port != nil:

@@ -42,7 +42,7 @@ func addProc(t *testing.T, v view, pid int, comm, cmdline string, uid int) {
 	write(t, filepath.Join(d, "status"), "Name:\t"+comm+"\nUid:\t"+strconv.Itoa(uid)+"\t"+strconv.Itoa(uid)+"\t0\t0\n")
 }
 
-func TestProcessScan(t *testing.T) {
+func TestProcessTable(t *testing.T) {
 	v := fixture(t)
 	addProc(t, v, 1, "nginx", "nginx: master process /usr/sbin/nginx\x00-g\x00daemon off;\x00", 0)
 	addProc(t, v, 7, "nginx", "nginx: worker process\x00", 33)
@@ -52,59 +52,68 @@ func TestProcessScan(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(v.proc, "net"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ask := func(q ObserveRequest) ProcessFacts {
-		q.Kind = KindProcess
-		got := v.observe(q)
+	get := func() ProcessFacts {
+		got := v.observe(ObserveRequest{Kind: KindProcess})
 		if got.Error != "" || got.Processes == nil {
-			t.Fatalf("%+v: %+v", q, got)
+			t.Fatalf("%+v", got)
 		}
 		return *got.Processes
 	}
-	for _, c := range []struct {
-		name  string
-		q     ObserveRequest
-		found bool
-	}{
-		{"by name", ObserveRequest{Name: "nginx"}, true},
-		{"by a long name the kernel cut", ObserveRequest{Name: "postgres"}, true}, // arg0 is postgres
-		{"by the full long name", ObserveRequest{Name: "postgresql-16-main"}, false},
-		{"by pattern", ObserveRequest{Matches: "nginx: master process"}, true},
-		{"by pattern, none", ObserveRequest{Matches: "apache"}, false},
-		{"by name and user", ObserveRequest{Name: "nginx", User: "www-data"}, true},
-		{"by name and uid", ObserveRequest{Name: "nginx", User: "33"}, true},
-		{"by name and the wrong user", ObserveRequest{Name: "nginx", User: "root"}, true}, // pid 1 is root's
-		{"name of a worker with the wrong user", ObserveRequest{Name: "postgres", User: "root"}, false},
-		{"a kernel thread by comm", ObserveRequest{Name: "kworker/0:1"}, true},
-		{"the probe itself is never a match", ObserveRequest{Name: "probe"}, false},
-	} {
-		if got := ask(c.q); got.Found != c.found || got.Incomplete != 0 {
-			t.Errorf("%s: %+v", c.name, got)
+	f := get()
+	if len(f.List) != 4 || f.Truncated || f.Incomplete != 0 {
+		t.Fatalf("got %+v", f)
+	}
+	by := map[int]Process{}
+	for _, p := range f.List {
+		by[p.PID] = p
+	}
+	if p := by[1]; p.Comm != "nginx" || p.Arg0 != "nginx" || p.User != "root" || p.Cut || !strings.Contains(p.Cmdline, "nginx: master process /usr/sbin/nginx -g daemon off;") {
+		t.Errorf("pid 1: %+v", p)
+	}
+	if p := by[7]; p.User != "www-data" || p.UID != 33 {
+		t.Errorf("pid 7: %+v", p)
+	}
+	if p := by[8]; p.Arg0 != "" || p.Comm != "kworker/0:1" {
+		t.Errorf("kernel thread: %+v", p)
+	}
+	if p := by[9]; p.Arg0 != "postgres" {
+		t.Errorf("pid 9: %+v", p)
+	}
+	if _, ok := by[999]; ok {
+		t.Error("the probe listed itself")
+	}
+	// A long command line is cut where it is returned and says so; its first word is still known.
+	write(t, filepath.Join(v.proc, "9", "cmdline"), "/usr/bin/postgres\x00"+strings.Repeat("a", MaxCmdlineBytes+100))
+	for _, p := range get().List {
+		if p.PID == 9 && (!p.Cut || len(p.Cmdline) > MaxCmdlineBytes || p.Arg0 != "postgres") {
+			t.Errorf("a long command line: %d bytes, cut %v, arg0 %q", len(p.Cmdline), p.Cut, p.Arg0)
 		}
 	}
-	if got := v.observe(ObserveRequest{Kind: KindProcess}); got.Error == "" {
-		t.Error("a question with neither a name nor a pattern must be refused")
-	}
-	if got := v.observe(ObserveRequest{Kind: KindProcess, Matches: "("}); got.Error == "" {
-		t.Error("a bad pattern")
-	}
-	// What cannot be read completely is counted, so that "not found" is not taken for "absent".
-	write(t, filepath.Join(v.proc, "9", "cmdline"), strings.Repeat("a", MaxCmdlineBytes+10))
-	if got := ask(ObserveRequest{Name: "zzz"}); got.Found || got.Incomplete != 1 {
-		t.Errorf("a command line over the bound: %+v", got)
-	}
+	// Something that vanished half-way is gone; something that cannot be read is counted.
 	if err := os.Remove(filepath.Join(v.proc, "9", "status")); err != nil {
 		t.Fatal(err)
 	}
-	if got := ask(ObserveRequest{Name: "zzz"}); got.Found || got.Incomplete != 0 {
-		t.Errorf("a process that vanished half-way is gone, not incomplete: %+v", got)
-	}
-	if err := os.Chmod(filepath.Join(v.proc, "8", "comm"), 0); err != nil {
-		t.Fatal(err)
+	if f := get(); len(f.List) != 3 || f.Incomplete != 0 {
+		t.Errorf("a process that vanished: %+v", f)
 	}
 	if os.Geteuid() != 0 {
-		if got := ask(ObserveRequest{Name: "zzz"}); got.Found || got.Incomplete < 1 {
-			t.Errorf("an unreadable process: %+v", got)
+		if err := os.Chmod(filepath.Join(v.proc, "8", "comm"), 0); err != nil {
+			t.Fatal(err)
 		}
+		if f := get(); f.Incomplete != 1 || len(f.List) != 2 {
+			t.Errorf("an unreadable process: %+v", f)
+		}
+	}
+}
+
+func TestProcessTableIsBounded(t *testing.T) {
+	v := fixture(t)
+	for i := 1; i <= MaxProcesses+5; i++ {
+		addProc(t, v, i, "p", "p\x00", 0)
+	}
+	got := v.observe(ObserveRequest{Kind: KindProcess})
+	if got.Processes == nil || len(got.Processes.List) != MaxProcesses || !got.Processes.Truncated {
+		t.Fatalf("got %d, truncated %v", len(got.Processes.List), got.Processes.Truncated)
 	}
 }
 
@@ -261,6 +270,14 @@ func TestKernelParam(t *testing.T) {
 
 func TestDirectory(t *testing.T) {
 	v := fixture(t)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	hashes := func(f *DirectoryFacts) map[string]bool {
+		m := map[string]bool{}
+		for _, h := range f.Hashes {
+			m[string(h)] = true
+		}
+		return m
+	}
 	dir := t.TempDir()
 	for _, n := range []string{"config.php", "uploads", ".hidden"} {
 		write(t, filepath.Join(dir, n), "x")
@@ -271,55 +288,63 @@ func TestDirectory(t *testing.T) {
 	if err := os.Chmod(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Names: []string{"config.php", "install.php", ".hidden", "dangling", "nothing.txt"}})
-	if got.Error != "" || got.Directory == nil || !got.Directory.Exists || !got.Directory.IsDir || got.Directory.Mode != 0o750 ||
-		strings.Join(got.Directory.Present, ",") != "config.php,.hidden,dangling" {
+	got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Key: key})
+	if got.Error != "" || got.Directory == nil || !got.Directory.Exists || !got.Directory.IsDir || got.Directory.Mode != 0o750 || got.Directory.Truncated || len(got.Directory.Hashes) != 4 {
 		t.Fatalf("got %+v %v", got.Directory, got.Error)
+	}
+	have := hashes(got.Directory)
+	for _, n := range []string{"config.php", "uploads", ".hidden", "dangling"} {
+		if !have[string(EntryHash(key, n))] {
+			t.Errorf("%s is missing from the hashes", n)
+		}
+	}
+	if have[string(EntryHash(key, "install.php"))] {
+		t.Error("a name that is not there")
+	}
+	if len(got.Directory.Hashes[0]) != DirHashBytes {
+		t.Errorf("hash length %d", len(got.Directory.Hashes[0]))
+	}
+	// A hash means something only with its key.
+	if hashes(got.Directory)[string(EntryHash([]byte("another key another key another"), "config.php"))] {
+		t.Error("a hash under another key matched")
 	}
 	if got.Directory.UID != uint32(os.Getuid()) {
 		t.Errorf("uid %d", got.Directory.UID)
 	}
-	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "nope"), Names: []string{"a"}}); got.Directory == nil || got.Directory.Exists || got.Directory.Present != nil {
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "nope"), Key: key}); got.Directory == nil || got.Directory.Exists || got.Directory.Hashes != nil {
 		t.Fatalf("missing: %+v", got)
 	}
-	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "config.php")}); got.Directory == nil || !got.Directory.Exists || got.Directory.IsDir {
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "config.php"), Key: key}); got.Directory == nil || !got.Directory.Exists || got.Directory.IsDir {
 		t.Fatalf("a file is not a directory: %+v", got.Directory)
 	}
-	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: "relative"}); got.Error == "" {
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: "relative", Key: key}); got.Error == "" {
 		t.Fatal("relative path")
 	}
-	for _, bad := range []string{"", ".", "..", "a/b", "a\x00b", strings.Repeat("a", MaxDirNameBytes+1)} {
-		if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Names: []string{bad}}); got.Error == "" {
-			t.Errorf("%q must be refused", bad)
-		}
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir}); got.Error == "" {
+		t.Fatal("no key")
 	}
-	many := make([]string, MaxDirNames+1)
-	for i := range many {
-		many[i] = "f"
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Key: []byte("short")}); got.Error == "" {
+		t.Fatal("a short key")
 	}
-	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Names: many}); got.Error == "" {
-		t.Error("too many names")
-	}
-	// A directory padded with a huge number of entries changes nothing: each name is asked on its own.
+	// A directory over the bound says so, and returns only the bound.
 	big := t.TempDir()
-	for i := 0; i < 6000; i++ {
+	for i := 0; i < MaxDirHashes+7; i++ {
 		write(t, filepath.Join(big, "f"+strconv.Itoa(i)), "")
 	}
-	write(t, filepath.Join(big, "forbidden.php"), "")
-	got = v.observe(ObserveRequest{Kind: KindDirectory, Path: big, Names: []string{"forbidden.php", "f5999", "absent"}})
-	if got.Directory == nil || strings.Join(got.Directory.Present, ",") != "forbidden.php,f5999" {
-		t.Fatalf("padding hid a name: %+v", got.Directory)
+	got = v.observe(ObserveRequest{Kind: KindDirectory, Path: big, Key: key})
+	if got.Directory == nil || len(got.Directory.Hashes) != MaxDirHashes || !got.Directory.Truncated {
+		t.Fatalf("bound: %d hashes, truncated %v", len(got.Directory.Hashes), got.Directory.Truncated)
 	}
-	// A directory the user cannot search is an error, not "absent".
+	// A directory that cannot be read is an error, not an empty listing.
 	if os.Geteuid() != 0 {
 		locked := filepath.Join(dir, "locked")
 		write(t, filepath.Join(locked, "inner"), "x")
-		if err := os.Chmod(locked, 0o600); err != nil {
+		if err := os.Chmod(locked, 0); err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.Chmod(locked, 0o700) }()
-		if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: locked, Names: []string{"inner"}}); got.Error == "" {
-			t.Errorf("a name that cannot be looked up is not 'absent': %+v", got)
+		if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: locked, Key: key}); got.Error == "" {
+			t.Errorf("an unreadable directory is not an empty one: %+v", got)
 		}
 	}
 }
