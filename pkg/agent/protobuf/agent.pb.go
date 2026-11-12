@@ -5918,9 +5918,8 @@ func (x *LabConnectionStatus) GetReady() bool {
 
 // protocol is http or https for a web port. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0, and url is
 // the host of its console, https://<device>-<code>t.<endpoints.labs_domain>. Every access host is one label <device>-<code><kind>; the
-// last character is the kind of access: w web (the http url), t console, v vnc, r rdp. url is empty until the device has its code; no
-// link is built by the caller. A site that frames a console may do it only for a url whose first label ends in "t", and never for any
-// other host.
+// last character is the kind of access (w web, t console, v vnc, r rdp), which is the lab's private encoding: a caller never parses the host, it
+// takes the link and its kind from this entry (protocol + url). url is empty until the device has its code; no link is built by the caller.
 type LabAccessEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Device        string                 `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
