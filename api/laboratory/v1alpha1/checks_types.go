@@ -29,19 +29,66 @@ type DeviceService struct {
 	WorkingDir string `json:"workingDir,omitempty"`
 }
 
-// DeviceTerminal enables the browser terminal of a device. Only the data model: the component that serves it comes later.
-type DeviceTerminal struct {
-	// Enabled turns the terminal on. A lab with a terminal is refused by a laboratory whose terminal option is off.
-	Enabled bool `json:"enabled,omitempty"`
-	// Command starts the terminal session; empty means /bin/sh.
+// AccessKind is one way a participant reaches a device besides its network (design record docs/specs/2026-11-12-device-access-and-checks.md,
+// section 2).
+// +kubebuilder:validation:Enum=http;terminal;vnc;rdp
+type AccessKind string
+
+const (
+	// AccessHTTP publishes a web port of the device through the L7 proxy.
+	AccessHTTP AccessKind = "http"
+	// AccessTerminal is a browser terminal (a shell in the device). Container devices only; refused by a laboratory whose terminal
+	// option is off.
+	AccessTerminal AccessKind = "terminal"
+	// AccessVNC and AccessRDP are accepted and stored, and served by nothing yet: the laboratory reports them as not available.
+	AccessVNC AccessKind = "vnc"
+	AccessRDP AccessKind = "rdp"
+)
+
+// DeviceAccess is one access of a device. At most one entry per kind. http, vnc and rdp need a port (and http a protocol);
+// terminal takes a command and a user and no port.
+// +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' ? (!has(self.port) && !has(self.protocol)) : (has(self.port) && self.port > 0 && self.port <= 65535)",message="http, vnc and rdp need a port from 1 to 65535, terminal takes none"
+// +kubebuilder:validation:XValidation:rule="self.kind == 'http' || !has(self.protocol)",message="only an http access has a protocol"
+// +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' || (!has(self.command) && !has(self.user))",message="only a terminal access has a command and a user"
+type DeviceAccess struct {
+	Kind AccessKind `json:"kind"`
+	// Port of the device (http, vnc, rdp).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+	// Protocol of an http access: http (the default) or https.
+	// +kubebuilder:validation:Enum=http;https
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+	// Command starts the terminal session; empty means /bin/sh. Terminal only.
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:items:MaxLength=4096
 	// +optional
 	Command []string `json:"command,omitempty"`
-	// User the session runs as; empty means the user of the service.
+	// User the terminal session runs as; empty means the user of the image (root if the image names none). Terminal only.
 	// +kubebuilder:validation:MaxLength=128
 	// +optional
 	User string `json:"user,omitempty"`
+}
+
+// AccessOf returns the access of a kind, or nil.
+func AccessOf(list []DeviceAccess, kind AccessKind) *DeviceAccess {
+	for i := range list {
+		if list[i].Kind == kind {
+			return &list[i]
+		}
+	}
+	return nil
+}
+
+// HTTPAccess is the web port of a device (the http access with a port), or nil. Everything that used the old "external" exposure
+// (the L7 proxy routes, the readiness by port, the access URLs, the access port of the pod) reads this.
+func HTTPAccess(list []DeviceAccess) *DeviceAccess {
+	if a := AccessOf(list, AccessHTTP); a != nil && a.Port > 0 {
+		return a
+	}
+	return nil
 }
 
 // DeviceBootstrapSpec says that the device has a bootstrap list in the Secret <device>-bootstrap. The management agent sets

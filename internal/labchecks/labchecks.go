@@ -23,7 +23,7 @@ const (
 // Defaults filled in by Normalize, so a consumer never guesses them.
 const (
 	DefaultInterpreter        = "/bin/sh"
-	DefaultCustomUser         = "root"
+	DefaultCustomUser         = "nobody"
 	DefaultBootstrapTimeLimit = 300
 	DefaultCheckTimeLimit     = 30
 )

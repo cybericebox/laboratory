@@ -48,7 +48,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "not ready:", err)
 			os.Exit(1)
 		}
-	case probe.CommandCheckExec, probe.CommandCheckFile:
+	case probe.CommandCheckExec, probe.CommandCheckFile, probe.CommandCheckObserve, probe.CommandCheckPerm:
 		os.Exit(probe.RunCheckCommand(os.Args[1], os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])

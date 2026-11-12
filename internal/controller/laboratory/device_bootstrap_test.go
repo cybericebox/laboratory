@@ -146,7 +146,7 @@ func TestBootstrapSecretIsMountedOnlyInTheStager(t *testing.T) {
 func TestReadinessNeedsBootstrapAndTheDevicesCondition(t *testing.T) {
 	d := bootstrapDevice()
 	d.Spec.WaitReadyFile = true
-	d.Spec.Exposure = &laboratoryv1alpha1.ExposureSpec{Web: &laboratoryv1alpha1.WebExposure{Port: 8080}}
+	d.Spec.Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessHTTP, Port: 8080}}
 	_, _, _, spec := readinessReconciler().workloadTemplate(d)
 	want := []string{names.ProbeBinary, "ready", "-file", names.BootstrapOKFile + ":" + names.ReadyFile, "-port", "8080", "-scheme", "http"}
 	if got := spec.Containers[0].ReadinessProbe.Exec.Command; !slices.Equal(got, want) {
@@ -157,7 +157,7 @@ func TestReadinessNeedsBootstrapAndTheDevicesCondition(t *testing.T) {
 // A device without a bootstrap and without a service command gets exactly the pod it gets today.
 func TestDeviceWithoutBootstrapOrServiceIsUnchanged(t *testing.T) {
 	r := readinessReconciler()
-	plain := readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80}, true)
+	plain := readinessDevice(&laboratoryv1alpha1.DeviceAccess{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80}, true)
 	_, _, annPlain, specPlain := r.workloadTemplate(plain)
 	if specPlain.Containers[0].Command != nil || specPlain.Containers[0].StartupProbe != nil || specPlain.Containers[0].SecurityContext.RunAsUser != nil {
 		t.Fatalf("a plain device must keep the image's entrypoint and user: %+v", specPlain.Containers[0])
@@ -171,7 +171,7 @@ func TestDeviceWithoutBootstrapOrServiceIsUnchanged(t *testing.T) {
 		t.Fatal("annotation on a plain device")
 	}
 	// A service block that names no command or arguments changes nothing either: the image decides.
-	withUser := readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80}, true)
+	withUser := readinessDevice(&laboratoryv1alpha1.DeviceAccess{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80}, true)
 	withUser.Spec.Service = &laboratoryv1alpha1.DeviceService{User: "app", WorkingDir: "/app"}
 	_, _, annUser, specUser := r.workloadTemplate(withUser)
 	if !reflect.DeepEqual(specPlain, specUser) || !reflect.DeepEqual(annPlain, annUser) {

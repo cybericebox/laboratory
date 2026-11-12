@@ -11,8 +11,8 @@ import (
 // the link later. The entry does not depend on the lab domain, and a device without a terminal gets none.
 func TestTerminalAccessEntries(t *testing.T) {
 	lab := &laboratoryv1alpha1.Lab{Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
-		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Terminal: &laboratoryv1alpha1.DeviceTerminal{Enabled: true}},
-		{Name: "off", Type: laboratoryv1alpha1.DeviceTypeContainer, Terminal: &laboratoryv1alpha1.DeviceTerminal{Enabled: false}},
+		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}},
+		{Name: "off", Type: laboratoryv1alpha1.DeviceTypeContainer},
 		{Name: "db", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}}}
 	for _, domain := range []string{"", "labs.example.com"} {

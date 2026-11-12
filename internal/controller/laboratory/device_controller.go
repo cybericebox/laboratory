@@ -403,7 +403,7 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 		// a running lab is never evicted by a cluster autoscaler
 		names.AnnotationSafeToEvict: "false",
 	}
-	if device.Spec.Exposure != nil {
+	if laboratoryv1alpha1.HTTPAccess(device.Spec.Access) != nil {
 		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
 	} else if len(device.Spec.Interfaces) > 0 {
 		annotations[names.AnnotationDefaultNetwork] = ""

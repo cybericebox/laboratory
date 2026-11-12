@@ -22,7 +22,13 @@ type DeviceSpec struct {
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
+	// +listType=map
+	// +listMapKey=kind
+	// +kubebuilder:validation:MaxItems=4
+	// +optional
+	Access []DeviceAccess `json:"access,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
@@ -57,9 +63,6 @@ type DeviceSpec struct {
 	// Service is the service command of a container device (see DeviceTemplate).
 	// +optional
 	Service *DeviceService `json:"service,omitempty"`
-	// Terminal enables the browser terminal of the device (see DeviceTemplate).
-	// +optional
-	Terminal *DeviceTerminal `json:"terminal,omitempty"`
 	// Bootstrap says the device has a bootstrap list in the Secret <device>-bootstrap (see DeviceTemplate).
 	// +optional
 	Bootstrap *DeviceBootstrapSpec `json:"bootstrap,omitempty"`

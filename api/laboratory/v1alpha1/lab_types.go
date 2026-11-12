@@ -86,7 +86,13 @@ type DeviceTemplate struct {
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
+	// +listType=map
+	// +listMapKey=kind
+	// +kubebuilder:validation:MaxItems=4
+	// +optional
+	Access []DeviceAccess `json:"access,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
@@ -95,16 +101,13 @@ type DeviceTemplate struct {
 	// +optional
 	Persistence *DevicePersistence `json:"persistence,omitempty"`
 	// WaitReadyFile makes the device Ready only once the application has created /run/ready inside the container.
-	// A port published through the web exposure is checked in any case, whatever this says. Container devices only.
+	// A port published through the http access is checked in any case, whatever this says. Container devices only.
 	// +optional
 	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
 	// Service is the service command of a container device, set by the platform from the image configuration. Empty fields
 	// mean "not provided": the image decides.
 	// +optional
 	Service *DeviceService `json:"service,omitempty"`
-	// Terminal enables a browser terminal for the device. Refused by a laboratory whose terminal option is off.
-	// +optional
-	Terminal *DeviceTerminal `json:"terminal,omitempty"`
 	// Bootstrap is set by the management agent when it received a bootstrap list for the device; a value sent in the spec is
 	// replaced. The list is in the Secret <device>-bootstrap, never here.
 	// +optional

@@ -177,17 +177,3 @@ type Route struct {
 	Via    string            `json:"via,omitempty"`
 	ViaRef *NetworkIPRef     `json:"viaRef,omitempty"`
 }
-
-// ExposureSpec declares how a device is externally reachable.
-type ExposureSpec struct {
-	Web *WebExposure `json:"web,omitempty"`
-}
-
-// WebExposure publishes a device port via an L7 proxy.
-type WebExposure struct {
-	// +kubebuilder:validation:Required
-	Port int32 `json:"port"`
-	// Protocol is "http" or "https".
-	// +kubebuilder:default=http
-	Protocol string `json:"protocol,omitempty"`
-}

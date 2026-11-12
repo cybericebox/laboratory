@@ -39,6 +39,69 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
+              access:
+                description: |-
+                  Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+                  and rdp. At most one entry per kind.
+                items:
+                  description: |-
+                    DeviceAccess is one access of a device. At most one entry per kind. http, vnc and rdp need a port (and http a protocol);
+                    terminal takes a command and a user and no port.
+                  properties:
+                    command:
+                      description: Command starts the terminal session; empty means
+                        /bin/sh. Terminal only.
+                      items:
+                        maxLength: 4096
+                        type: string
+                      maxItems: 32
+                      type: array
+                    kind:
+                      description: |-
+                        AccessKind is one way a participant reaches a device besides its network (design record docs/specs/2026-11-12-device-access-and-checks.md,
+                        section 2).
+                      enum:
+                      - http
+                      - terminal
+                      - vnc
+                      - rdp
+                      type: string
+                    port:
+                      description: Port of the device (http, vnc, rdp).
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      description: 'Protocol of an http access: http (the default)
+                        or https.'
+                      enum:
+                      - http
+                      - https
+                      type: string
+                    user:
+                      description: User the terminal session runs as; empty means
+                        the user of the image (root if the image names none). Terminal
+                        only.
+                      maxLength: 128
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                  x-kubernetes-validations:
+                  - message: http, vnc and rdp need a port from 1 to 65535, terminal
+                      takes none
+                    rule: 'self.kind == ''terminal'' ? (!has(self.port) && !has(self.protocol))
+                      : (has(self.port) && self.port > 0 && self.port <= 65535)'
+                  - message: only an http access has a protocol
+                    rule: self.kind == 'http' || !has(self.protocol)
+                  - message: only a terminal access has a command and a user
+                    rule: self.kind == 'terminal' || (!has(self.command) && !has(self.user))
+                maxItems: 4
+                type: array
+                x-kubernetes-list-map-keys:
+                - kind
+                x-kubernetes-list-type: map
               bootstrap:
                 description: Bootstrap says the device has a bootstrap list in the
                   Secret <device>-bootstrap (see DeviceTemplate).
@@ -55,23 +118,6 @@ spec:
                   one. It is drawn when the Device is created and never changes. Empty on a
                   Device that predates codes: its workload keeps the name of the Device.
                 type: string
-              exposure:
-                description: ExposureSpec declares how a device is externally reachable.
-                properties:
-                  web:
-                    description: WebExposure publishes a device port via an L7 proxy.
-                    properties:
-                      port:
-                        format: int32
-                        type: integer
-                      protocol:
-                        default: http
-                        description: Protocol is "http" or "https".
-                        type: string
-                    required:
-                    - port
-                    type: object
-                type: object
               image:
                 type: string
               imageDigests:
@@ -408,28 +454,6 @@ spec:
                       the last good snapshot is kept and a warning is reported.
                     format: int64
                     type: integer
-                type: object
-              terminal:
-                description: Terminal enables the browser terminal of the device (see
-                  DeviceTemplate).
-                properties:
-                  command:
-                    description: Command starts the terminal session; empty means
-                      /bin/sh.
-                    items:
-                      maxLength: 4096
-                      type: string
-                    maxItems: 32
-                    type: array
-                  enabled:
-                    description: Enabled turns the terminal on. A lab with a terminal
-                      is refused by a laboratory whose terminal option is off.
-                    type: boolean
-                  user:
-                    description: User the session runs as; empty means the user of
-                      the service.
-                    maxLength: 128
-                    type: string
                 type: object
               type:
                 description: DeviceType distinguishes network device kinds.

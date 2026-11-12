@@ -10,14 +10,14 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
-func readinessDevice(web *laboratoryv1alpha1.WebExposure, waitFile bool) *laboratoryv1alpha1.Device {
+func readinessDevice(web *laboratoryv1alpha1.DeviceAccess, waitFile bool) *laboratoryv1alpha1.Device {
 	d := &laboratoryv1alpha1.Device{}
 	d.Name, d.Spec.Name, d.Spec.LabRef = "lab1-web", "web", "lab1"
 	d.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
 	d.Spec.Image = "nginx:1"
 	d.Spec.WaitReadyFile = waitFile
 	if web != nil {
-		d.Spec.Exposure = &laboratoryv1alpha1.ExposureSpec{Web: web}
+		d.Spec.Access = []laboratoryv1alpha1.DeviceAccess{*web}
 	}
 	return d
 }
@@ -49,7 +49,7 @@ func TestProxiedPortGetsAnAutomaticProbe(t *testing.T) {
 		name, protocol, scheme string
 	}{{"http", "http", "http"}, {"https", "https", "https"}, {"default is http", "", "http"}, {"other is tcp", "grpc", "tcp"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 8080, Protocol: tc.protocol}, false))
+			_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.DeviceAccess{Kind: laboratoryv1alpha1.AccessHTTP, Port: 8080, Protocol: tc.protocol}, false))
 			p := mainContainer(spec).ReadinessProbe
 			if p == nil || p.Exec == nil {
 				t.Fatalf("readiness probe = %+v", p)
@@ -75,7 +75,7 @@ func TestMarkerFileProbe(t *testing.T) {
 }
 
 func TestMarkerAndPortProbeChecksBoth(t *testing.T) {
-	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 443, Protocol: "https"}, true))
+	_, _, _, spec := readinessReconciler().workloadTemplate(readinessDevice(&laboratoryv1alpha1.DeviceAccess{Kind: laboratoryv1alpha1.AccessHTTP, Port: 443, Protocol: "https"}, true))
 	want := []string{names.ProbeBinary, "ready", "-file", names.ReadyFile, "-port", "443", "-scheme", "https"}
 	if got := mainContainer(spec).ReadinessProbe.Exec.Command; !slices.Equal(got, want) {
 		t.Fatalf("command = %v, want %v", got, want)
@@ -145,7 +145,7 @@ func TestProbeInstallerRunsAfterNetconfig(t *testing.T) {
 // Without the node image there is nothing to install the probe from: the device runs as before rather than never ready.
 func TestNoProbeWithoutTheNodeImage(t *testing.T) {
 	r := &DeviceReconciler{Defaults: testDefaults}
-	_, _, _, spec := r.workloadTemplate(readinessDevice(&laboratoryv1alpha1.WebExposure{Port: 80, Protocol: "http"}, true))
+	_, _, _, spec := r.workloadTemplate(readinessDevice(&laboratoryv1alpha1.DeviceAccess{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80, Protocol: "http"}, true))
 	if mainContainer(spec).ReadinessProbe != nil || len(spec.InitContainers) != 0 || len(spec.Volumes) != 0 {
 		t.Fatalf("pod = %+v", spec)
 	}

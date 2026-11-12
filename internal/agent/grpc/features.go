@@ -67,6 +67,9 @@ type Features struct {
 	// checks, or with a terminal device, is refused while the matching one is off.
 	ChecksEnabled   bool
 	TerminalEnabled bool
+	// TerminalServed: the component that serves terminals exists in this installation. features.access.terminal is true only with both
+	// this and the option (a lab with a terminal device is refused by the option alone).
+	TerminalServed bool
 	// CheckerRequired: checks count as available only while the checker DaemonSet exists (production sets it with ChecksEnabled).
 	CheckerRequired bool
 }
@@ -136,7 +139,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
 				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				Checks:          h.checksFeature(),
-				Terminal:        &protobuf.TerminalFeature{Enabled: f.TerminalEnabled},
+				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed},
 				Bootstrap:       bootstrapFeature(),
 				Vpn:             h.vpnFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{

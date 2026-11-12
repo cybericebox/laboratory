@@ -66,7 +66,7 @@ func snapshotReconcileFixture(t *testing.T, n int) (*LabReconciler, *api.Lab, *s
 	lab := webLab("snapshot", "uid-snapshot")
 	lab.Spec.Devices = nil
 	for i := 0; i < n; i++ {
-		lab.Spec.Devices = append(lab.Spec.Devices, api.DeviceTemplate{Name: fmt.Sprintf("web%d", i), Type: api.DeviceTypeContainer, Image: "example/image:stable", Exposure: &api.ExposureSpec{Web: &api.WebExposure{Port: 80}}})
+		lab.Spec.Devices = append(lab.Spec.Devices, api.DeviceTemplate{Name: fmt.Sprintf("web%d", i), Type: api.DeviceTypeContainer, Image: "example/image:stable", Access: []api.DeviceAccess{{Kind: api.AccessHTTP, Port: 80}}})
 	}
 	c := &serviceSnapshotClient{Client: fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&api.Lab{}, &api.Device{}).WithObjects(lab).Build()}
 	return &LabReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(100), BaseDomain: "labs.example.com"}, lab, c
@@ -193,8 +193,8 @@ func TestLabReconcileSnapshotKeepsExposureUpdate(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(lab), &current); err != nil {
 		t.Fatal(err)
 	}
-	current.Spec.Devices[0].Exposure.Web.Port = 8080
-	current.Spec.Devices[0].Exposure.Web.Protocol = "https"
+	current.Spec.Devices[0].Access[0].Port = 8080
+	current.Spec.Devices[0].Access[0].Protocol = "https"
 	if err := c.Update(context.Background(), &current); err != nil {
 		t.Fatal(err)
 	}

@@ -1073,12 +1073,16 @@ message FeaturesResponse {
   // Optional parts of the laboratory (contract 1.5). A lab with checks is refused when checks.enabled is false, a lab with a terminal
   // device when terminal.enabled is false. Absent = an agent older than the fields (nothing of it).
   ChecksFeature checks = 17;
-  TerminalFeature terminal = 18;
+  reserved 18;                     // was terminal (TerminalFeature): replaced by access
+  reserved "terminal";
   BootstrapFeature bootstrap = 19;
   // How the VPN gateway treats connections started by a lab (contract 1.5). Absent = an agent older than the field: it does not
   // enforce the default, so a daemon must not send spec.vpn.reverseConnections to it and must not promise the participant that
   // the lab cannot connect to the participant's machine.
   VPNFeature vpn = 20;
+  // Which device access kinds this laboratory serves (contract 1.5; docs/specs/2026-11-12-device-access-and-checks.md). Absent = an
+  // agent older than the field: only http.
+  AccessFeature access = 21;
 }
 
 // VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
@@ -1094,8 +1098,18 @@ message ChecksFeature {
   int32 max_time_limit_seconds = 4;
   int32 max_schedule_seconds = 5;
   int32 max_detail_bytes = 6;
+  // The kinds of observation this laboratory's checker runs: file, custom, and the built-in ones (directory, process, port,
+  // kernel_param, request, permission). A check with a kind that is not listed is refused.
+  repeated string observations = 7;
 }
-message TerminalFeature {bool enabled = 1;}
+// AccessFeature: http is always served (the L7 proxy). terminal is true only when its option is on AND the component that serves
+// it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
+message AccessFeature {
+  bool http = 1;
+  bool terminal = 2;
+  bool vnc = 3;
+  bool rdp = 4;
+}
 // The limits of a device bootstrap; bootstrap itself is always available.
 message BootstrapFeature {
   int32 max_script_bytes = 1;
