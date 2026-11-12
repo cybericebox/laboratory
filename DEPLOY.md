@@ -1023,7 +1023,7 @@ keeps its check: `Origin` must equal the console page's own origin, which is the
 `<device>-<code>--term.<operator.baseDomain>`: the web host label of the device (`<device>-<code>`, the code is the device's own and unique in its group
 namespace) plus the fixed mark `--term` (`vnc` and `rdp` will be `--vnc` and `--rdp`). The mark cannot be taken for a web host: a web host ends in a hyphen and
 three or four letters or digits, a kind host in `--<mark>`, and no new device name may end in a mark (the agent refuses it). A site tells a console host from a
-device web host by that suffix alone, and may frame only the first. The management agent puts the link in the `terminal` entry of the lab's access list
+device web host by that suffix alone, and may frame only the first. A site's CSP cannot express the suffix (its `frame-src` becomes `https://*.<labs domain>`), so the check of `--term` in the client that builds the frame is what keeps device web hosts out of frames. The proxy compares full hosts (Origin, file token, device lookup), never the suffix. The management agent puts the link in the `terminal` entry of the lab's access list
 (`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing. The link is opened through the handoff
 of the platform like a device link (`/_auth?t=<handoff token for the host label>`). The proxy looks the host up among the devices of the session's own group only:
 the console host of another group, or of a lab the client may not use, is the same "not found" page. The page, the WebSocket (`/ws`) and the file requests
