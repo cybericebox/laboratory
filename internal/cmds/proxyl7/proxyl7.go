@@ -87,7 +87,7 @@ func Run() {
 		WithAccessLog(log.WithName("access"), cfg.SlowRequest)
 	if cfg.TerminalEnabled {
 		tc := l7.DefaultTerminalConfig()
-		tc.Host, tc.Log = cfg.TerminalHost, log.WithName("console")
+		tc.Log = log.WithName("console")
 		tc.PerClient, tc.Idle, tc.Lifetime, tc.MaxFile, tc.MaxSession = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime, cfg.TerminalMaxFile, cfg.TerminalMaxSession
 		keys, err := wire.NewKeyFiles(10*time.Second, cfg.TerminalKeyFile)
 		if err != nil {

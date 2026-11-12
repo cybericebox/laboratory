@@ -48,12 +48,12 @@ func fileFailure(w http.ResponseWriter, code string) {
 }
 
 // terminalFile handles /files: PUT uploads a file to the device, GET downloads one.
-func (h *Handler) terminalFile(w http.ResponseWriter, r *http.Request, claims jwtClaims, client string, group AccessGroup) {
+func (h *Handler) terminalFile(w http.ResponseWriter, r *http.Request, base string, claims jwtClaims, client string, group AccessGroup) {
 	t := h.terminal
 	q := r.URL.Query()
 	sess := t.session(q.Get("session"))
 	// The token is the capability; the session behind it must also be the caller's own, so a token read by someone else is useless.
-	if sess == nil || sess.group != claims.GroupID || sess.client != client || sess.tenant != claims.Tenant || sess.namespace != group.Namespace {
+	if sess == nil || sess.group != claims.GroupID || sess.client != client || sess.tenant != claims.Tenant || sess.namespace != group.Namespace || sess.host != base {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
 		return
 	}

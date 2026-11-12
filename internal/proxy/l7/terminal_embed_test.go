@@ -99,7 +99,7 @@ func TestTerminalPageFrameAncestors(t *testing.T) {
 		"http://exercises.example.com/":         "'none'",
 		"":                                      "'none'",
 	} {
-		code, got, vary := ancestors("/?lab=lab1&device=kali", referer)
+		code, got, vary := ancestors("/", referer)
 		if code != 200 {
 			t.Errorf("referer %q: the page did not load as a top-level navigation: %d", referer, code)
 		}
@@ -110,7 +110,7 @@ func TestTerminalPageFrameAncestors(t *testing.T) {
 			t.Errorf("referer %q: Vary = %q", referer, vary)
 		}
 	}
-	if rec := f.get("/?lab=lab1&device=kali", map[string]string{"Referer": "https://a.example.com/"}); rec.Header().Get("X-Frame-Options") != "" || rec.Header().Get("Cache-Control") != "no-store" {
+	if rec := f.get("/", map[string]string{"Referer": "https://a.example.com/"}); rec.Header().Get("X-Frame-Options") != "" || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("headers: %v", rec.Header())
 	}
 	// the assets are never offered to a frame
@@ -119,7 +119,7 @@ func TestTerminalPageFrameAncestors(t *testing.T) {
 	}
 	// without any list the default is no embedding at all
 	g := newTermFixture(t, nil)
-	rec := g.get("/?lab=lab1&device=kali", map[string]string{"Referer": "https://a.example.com/"})
+	rec := g.get("/", map[string]string{"Referer": "https://a.example.com/"})
 	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "frame-ancestors 'none'") {
 		t.Errorf("default: %s", csp)
 	}

@@ -22,7 +22,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/limits"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -69,8 +68,6 @@ func Run() {
 	h.EnableReadCache()
 	h.SetAdmissionStaleAfter(cfg.AdmissionStaleAfter)
 	h.SetRequiredSnapshotAvailable(cfg.RequiredSnapshotAvailable && cfg.StatePersistence)
-	// The host of the console is the platform's: no device is named like it.
-	names.ReserveHost(cfg.TerminalHost)
 	feat, err := features(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -181,7 +178,7 @@ func Run() {
 func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	f = grpcserver.Features{
 		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
-		ChecksEnabled: cfg.ChecksEnabled, CheckerRequired: cfg.ChecksEnabled, TerminalEnabled: cfg.TerminalEnabled, TerminalServed: cfg.TerminalServed, TerminalHost: cfg.TerminalHost, CheckMaxTimeLimit: int32(cfg.ChecksMaxTimeLimit), ManualCooldown: cfg.ChecksManualCooldown,
+		ChecksEnabled: cfg.ChecksEnabled, CheckerRequired: cfg.ChecksEnabled, TerminalEnabled: cfg.TerminalEnabled, TerminalServed: cfg.TerminalServed, CheckMaxTimeLimit: int32(cfg.ChecksMaxTimeLimit), ManualCooldown: cfg.ChecksManualCooldown,
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		NodeTimeoutSeconds: int32(cfg.Scheduler.NodeTimeout / time.Second),

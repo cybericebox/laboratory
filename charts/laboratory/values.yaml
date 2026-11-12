@@ -150,12 +150,10 @@ checks:
 terminal:
   # Browser terminal (the console): a container device may ask for a terminal (a `terminal` entry in devices[].access) and the lab reports a
   # "terminal" access entry. Off by default. On, it renders the device access service (a DaemonSet on the lab nodes, the only component with the
-  # container runtime socket, templates/deviceaccess), turns on the console route of the L7 proxy (the reserved host
-  # <host>.<operator.baseDomain>) and gives the proxy the read rights it needs for it. The management agent reports it in the features, so
+  # container runtime socket, templates/deviceaccess), turns on the console route of the L7 proxy (a host of its own per
+  # device, <device>-<code>--term.<operator.baseDomain>, under the same wildcard certificate as the device web hosts) and gives the proxy the read rights it needs for it. The management agent reports it in the features, so
   # the backend can refuse or hide a console. DEPLOY.md, "Device console", lists the rights, the paths and the checks to make on a node.
   enabled: false
-  # The first label of the console's host under operator.baseDomain. Reserved: no device Service is looked up under it.
-  host: terminal
   # The namespace of the device access service. Its own: the pod needs the privileged Pod Security level (hostPath), and the one Role the L7
   # proxy gets there (EndpointSlices of the service) then covers nothing else. Create the imagePullSecrets there too, as for the proxy.
   namespace: laboratory-device-access

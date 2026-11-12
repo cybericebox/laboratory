@@ -124,8 +124,6 @@ type Config struct {
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
 	// TerminalServed says the device access service and the proxy's console route are deployed (the chart renders both with terminal.enabled).
 	TerminalServed bool `env:"TERMINAL_SERVED" envDefault:"false"`
-	// TerminalHost is the reserved first label of the console's host (the chart's terminal.host): no device may be named like it.
-	TerminalHost string `env:"TERMINAL_HOST" envDefault:"terminal"`
 	// ChecksMaxTimeLimit is the ceiling of the time limit of one check run in seconds, ChecksManualCooldown the least time between two manual
 	// runs of one lab (the chart's checks.maxTimeLimitSeconds and checks.manualCooldown).
 	ChecksMaxTimeLimit   int           `env:"CHECKS_MAX_TIME_LIMIT_SECONDS" envDefault:"120"`

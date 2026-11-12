@@ -59,7 +59,7 @@ type Handler struct {
 	authLimit *bucketSet
 	// accessLog, when set, writes a line per proxied request (see accesslog.go).
 	accessLog *accessLog
-	// terminal, when set, serves the console on its reserved host (see terminal.go).
+	// terminal, when set, serves the console on a host of its own per device (see terminal.go).
 	terminal *terminalState
 	// throttle paces each participant to its fair share of the bandwidth class of this proxy (see pace.go); no limits until set.
 	throttle *bandwidth.Throttle[string]
@@ -174,9 +174,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.renewSession(w, claims)
 	var backendURL, lab string
 	if h.access != nil {
-		if h.terminal != nil && task == h.terminal.cfg.Host {
-			// The console host is reserved: it is never looked up as the Service of a device.
-			h.serveTerminal(w, r, claims, client, group)
+		if base, kind := names.ParseAccessHost(task); kind != names.AccessKindHTTP {
+			// A host with the mark of a kind is the access of that kind to a device, never the Service of a device. Only the console
+			// is served; vnc and rdp are reserved and answer like a host that does not exist.
+			if kind == names.AccessKindTerminal && h.terminal != nil {
+				h.serveTerminal(w, r, base, claims, client, group)
+			} else {
+				fail(w, r, http.StatusNotFound, pageGone, "not found")
+			}
 			return
 		}
 		route, routeErr := h.access.Route(r.Context(), task, namespace)
