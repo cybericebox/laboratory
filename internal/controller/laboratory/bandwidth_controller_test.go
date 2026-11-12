@@ -71,7 +71,8 @@ func TestPlanDividesTheNodeBetweenEntryAndInternet(t *testing.T) {
 	plan := bandwidthPlan(cfg, nodes, pods, map[string]int{"lg-a": 5, "lg-b": 5})
 	// U = 1562 - 100 system - 100 registry = 1362 Mbit/s; entry 681, halved between the demux and the L7 proxy
 	l := entryOf(t, plan, "n1")
-	if l.ClassKbps != 340_500 || l.CapKbps != 50_000 {
+	// the ceiling and the floor of one participant are the chart defaults (20 Mbit/s, 1 Mbit/s)
+	if l.ClassKbps != 340_500 || l.CapKbps != 20_000 || l.MinKbps != 1000 {
 		t.Errorf("entry: %+v", l)
 	}
 	// Geneve 25% of 1362 Mbit/s = 340.5, scaled by 0.85; the lab cap as configured
