@@ -88,8 +88,14 @@ func TestCheckerProbeIsRootEvenForAnOrdinaryUserImage(t *testing.T) {
 	if code, _ := callProbe(checkerHandler(rt), probeBody(nil)); code != 200 {
 		t.Fatal(code)
 	}
-	if rt.started()[0].proc.User.UID != 0 {
+	p := rt.started()[0].proc
+	if p.User.UID != 0 {
 		t.Fatal("not root")
+	}
+	// a root with the powers of the device (the bounding set), so the probe can drop to the check's user and read a file of another user
+	bound := deviceSpec().Process.Capabilities.Bounding
+	if len(p.Capabilities.Effective) != len(bound) || len(p.Capabilities.Permitted) != len(bound) || len(p.Capabilities.Ambient) != 0 || len(p.Capabilities.Inheritable) != 0 {
+		t.Fatalf("effective %v permitted %v ambient %v inheritable %v, want the bounding set %v", p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Ambient, p.Capabilities.Inheritable, bound)
 	}
 }
 

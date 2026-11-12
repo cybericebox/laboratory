@@ -20,6 +20,10 @@
 # runs as a plain user. Run it for a runc device, for a Kata (micro-VM) device, and for a device whose IMAGE user is not root (every check, custom as
 # root and as nobody included, must still pass there). CHECKER_NS (default laboratory-system) is the namespace of the checker.
 #
+# A device whose IMAGE user is not root: run it with user "root" (the 4th argument) as well: the root console must have effective == permitted ==
+# bounding (the script prints the sets, a capsh --print equivalent, and checks them), the checker path makes a 0600 file as nobody and reads it as the probe's
+# root, and runs custom as nobody. On Kata the sets of the exec spec are not passed by the shim (see DEPLOY.md): a failure there is a finding to report.
+#
 # Non-root run (chart values terminal.securityContext): the default is uid 0 with every capability dropped, because the runtime socket is root:root
 # 0660. To find out whether it also works non-root where the group of the socket is known, this script prints the owner and group of the socket and
 # the user the service runs as. Then: helm upgrade with terminal.securityContext.runAsUser=<uid> runAsGroup=<gid> supplementalGroups={<socket gid>},

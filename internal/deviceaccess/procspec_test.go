@@ -39,26 +39,28 @@ func TestProcessForCopiesTheContainer(t *testing.T) {
 	}
 }
 
+// Whatever the user, no set holds a capability outside the container's bounding set.
 func TestProcessForNeverWidensCapabilities(t *testing.T) {
 	base := deviceSpec().Process
+	bound := map[string]bool{}
+	for _, x := range base.Capabilities.Bounding {
+		bound[x] = true
+	}
 	for _, a := range []ExecArgs{
 		{Args: []string{"x"}},
 		{Args: []string{"x"}, Terminal: true},
 		{Args: []string{"x"}, User: &ExecUser{UID: 0, GID: 0, Groups: []uint32{4}, Home: "/root"}},
+		{Args: []string{"x"}, User: &ExecUser{UID: 1000, GID: 1000}},
 	} {
 		p, err := ProcessFor(base, a)
 		if err != nil {
 			t.Fatal(err)
 		}
-		c, b := p.Capabilities, base.Capabilities
-		for _, pair := range [][2][]string{{c.Bounding, b.Bounding}, {c.Effective, b.Effective}, {c.Permitted, b.Permitted}, {c.Inheritable, b.Inheritable}, {c.Ambient, b.Ambient}} {
-			have := map[string]bool{}
-			for _, x := range pair[1] {
-				have[x] = true
-			}
-			for _, x := range pair[0] {
-				if !have[x] {
-					t.Fatalf("capability %s is wider than the container's", x)
+		c := p.Capabilities
+		for _, set := range [][]string{c.Bounding, c.Effective, c.Permitted, c.Inheritable, c.Ambient} {
+			for _, x := range set {
+				if !bound[x] {
+					t.Fatalf("capability %s is outside the container's bounding set", x)
 				}
 			}
 		}
@@ -144,27 +146,68 @@ func TestProcessForNonRootUserKeepsOnlyTheBoundingSet(t *testing.T) {
 	}
 }
 
-func TestProcessForRootUserKeepsTheContainersSetsAndNeverWidensThem(t *testing.T) {
-	base := deviceSpec().Process
-	p, _ := ProcessFor(base, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 0, GID: 0}})
+// A root exec in a container that itself runs as an ordinary user: its sets are empty, the bounding set holds the device's capabilities. A
+// root with empty sets could not drop to another user or read a file of another user, so effective and permitted become the bounding set.
+func TestProcessForRootInANonRootImageGetsTheBoundingSet(t *testing.T) {
+	base := deviceSpec().Process // runs as uid 1000
+	base.Capabilities.Effective, base.Capabilities.Permitted = nil, nil
+	base.Capabilities.Bounding = []string{"CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_CHOWN"}
+	base.Capabilities.Inheritable, base.Capabilities.Ambient = []string{"CAP_CHOWN"}, []string{"CAP_CHOWN"}
+	p, err := ProcessFor(base, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 0, GID: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := p.Capabilities
-	if !reflect.DeepEqual(c.Effective, base.Capabilities.Effective) || !reflect.DeepEqual(c.Permitted, base.Capabilities.Permitted) || !reflect.DeepEqual(c.Bounding, base.Capabilities.Bounding) {
-		t.Fatalf("root exec: %+v", c)
+	if !reflect.DeepEqual(c.Effective, base.Capabilities.Bounding) || !reflect.DeepEqual(c.Permitted, base.Capabilities.Bounding) || !reflect.DeepEqual(c.Bounding, base.Capabilities.Bounding) {
+		t.Fatalf("effective %v permitted %v bounding %v", c.Effective, c.Permitted, c.Bounding)
 	}
-	// a container that runs as an ordinary user (empty sets but the bounding one) and a root console: still nothing beyond the bounding set
-	nonroot := deviceSpec().Process
-	nonroot.User.UID = 1000
-	nonroot.Capabilities.Effective, nonroot.Capabilities.Permitted = nil, nil
-	p, _ = ProcessFor(nonroot, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 0}})
-	bound := map[string]bool{}
-	for _, x := range nonroot.Capabilities.Bounding {
-		bound[x] = true
+	if len(c.Inheritable) != 0 || len(c.Ambient) != 0 {
+		t.Fatalf("inheritable %v ambient %v must stay empty", c.Inheritable, c.Ambient)
 	}
-	for _, set := range [][]string{p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Bounding, p.Capabilities.Inheritable, p.Capabilities.Ambient} {
-		for _, x := range set {
-			if !bound[x] {
-				t.Fatalf("%s is outside the container's bounding set", x)
+	// the container's own spec is not touched
+	if len(base.Capabilities.Effective) != 0 {
+		t.Fatal("the container's spec was modified")
+	}
+	// the slices are copies: changing the result must not change the bounding set
+	c.Effective[0] = "CAP_SYS_ADMIN"
+	if base.Capabilities.Bounding[0] != "CAP_SETUID" || p.Capabilities.Bounding[0] != "CAP_SETUID" || c.Permitted[0] != "CAP_SETUID" {
+		t.Fatal("the sets share memory")
+	}
+}
+
+// A profile with a reduced bounding set gives a reduced root: nothing outside the bounding set, whatever the device's other sets say.
+func TestProcessForRootNeverGetsMoreThanTheBoundingSet(t *testing.T) {
+	for _, imageUID := range []uint32{0, 1000} {
+		base := deviceSpec().Process
+		base.User.UID = imageUID
+		base.Capabilities.Bounding = []string{"CAP_NET_BIND_SERVICE"}
+		base.Capabilities.Effective = []string{"CAP_NET_BIND_SERVICE"}
+		base.Capabilities.Permitted = []string{"CAP_NET_BIND_SERVICE"}
+		p, _ := ProcessFor(base, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 0}})
+		for _, set := range [][]string{p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Bounding, p.Capabilities.Inheritable, p.Capabilities.Ambient} {
+			for _, x := range set {
+				if x != "CAP_NET_BIND_SERVICE" {
+					t.Fatalf("image uid %d: %s is outside the reduced bounding set", imageUID, x)
+				}
 			}
+		}
+		if len(p.Capabilities.Effective) != 1 || len(p.Capabilities.Permitted) != 1 {
+			t.Fatalf("image uid %d: effective %v permitted %v", imageUID, p.Capabilities.Effective, p.Capabilities.Permitted)
+		}
+	}
+}
+
+// A root exec in a container that runs as root is the container's own sets, unchanged.
+func TestProcessForRootInARootImageIsUnchanged(t *testing.T) {
+	base := deviceSpec().Process
+	base.User.UID = 0
+	base.Capabilities.Effective = []string{"CAP_CHOWN"} // narrower than the bounding set on purpose
+	base.Capabilities.Permitted = []string{"CAP_CHOWN"}
+	for _, u := range []*ExecUser{nil, {UID: 0}} {
+		p, _ := ProcessFor(base, ExecArgs{Args: []string{"x"}, User: u})
+		if !reflect.DeepEqual(p.Capabilities.Effective, []string{"CAP_CHOWN"}) || !reflect.DeepEqual(p.Capabilities.Permitted, []string{"CAP_CHOWN"}) ||
+			!reflect.DeepEqual(p.Capabilities.Bounding, base.Capabilities.Bounding) {
+			t.Fatalf("user %v: %+v", u, p.Capabilities)
 		}
 	}
 }

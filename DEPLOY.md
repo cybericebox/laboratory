@@ -867,7 +867,7 @@ that the **device access service** of the node makes in the device when the chec
 - the container is found with the same white list as the console (a sandbox with both UIDs of the operator and no component label, then the running container of that pod
   named like the device): never the VPN, the gateway or a system pod; unlike the console it does not need the console label;
 - the probe always runs **as root in the device** (the checker cannot ask for another user); for a `custom` check the probe itself drops to the check's user (default
-  `nobody`). The capability sets are the container's, never wider (see "The exec" below);
+  `nobody`). The capability sets follow the rule of "The exec" under Device console: the container's own for a root image; for an image that runs as an ordinary user, effective and permitted are the bounding set (so the probe can drop to the check's user and read a file of another user), never outside it;
 - one run per lab at a time and `checks.maxConcurrent` per node (`busy` otherwise), a ceiling on the time limit, the output cut at 4 MiB.
 
 The protection of the socket is **file permissions**, not the HMAC key of the console: it is mode 0660, group `checks.socketGid`, and the service closes at once a
@@ -953,7 +953,17 @@ them: the program must be an absolute path outside `/proc` and `/sys`, at most 3
 working directory, rlimits; seccomp and AppArmor are the container's, applied by the runtime), as the CRI plugin does for `kubectl exec`; only the
 arguments, `TERM`, the terminal and the user are set. The runtime does not clamp capabilities for an exec, so the capabilities are never built from
 scratch (a unit test proves they are never wider than the container's). For a user that is not root the effective, permitted, ambient and inheritable sets are cleared and
-only the bounding set stays (as runc, the CRI plugin and Docker do): otherwise a console opened as an ordinary user would be a shell with root's capabilities. `no_new_privs`,
+only the bounding set stays (as runc, the CRI plugin and Docker do): otherwise a console opened as an ordinary user would be a shell with root's capabilities. For **root** the sets
+follow the image: in a container that runs as root they are the container's own, unchanged; in a container whose image runs as an ordinary user the container's effective and
+permitted sets are empty while the bounding set holds what the device may have, and a root with empty sets could not drop to another user (`CAP_SETUID`, `CAP_SETGID`), read a
+file of another user (`CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`) or do what a root is for, so for a root exec there effective and permitted are set to the **bounding set**
+(inheritable and ambient empty), as `docker exec -u 0` and runc do. Nothing outside the bounding set is ever given, so the device's security profile (its dropped
+capabilities, seccomp, AppArmor, `no_new_privs`) still limits the root. One function (`ProcessFor`) does this for the console and for the checker's probe. **Kata:** the
+shim does not pass capabilities from the exec spec (it reads only the arguments, environment, user, working directory and terminal) and the guest agent gives an exec
+without capabilities the sets of the container's init, so on a micro-VM a root exec gets the container's own spec sets, not the ones written here; for an image that runs as
+an ordinary user those may be empty, and then a `custom` check as another user and a `file` check on a 0600 file of another user may fail there. This is not verified:
+`hack/device-access-check.sh <ns> <lab> <device> root` on a Kata device with a non-root image prints the sets of a root console and the checker path runs the same
+two checks; a failure there is the finding to report (the options are to give such devices a root image user, or to add capabilities to the micro-VM device's spec). `no_new_privs`,
 the AppArmor profile, the SELinux label, the rlimits and the OOM score of the container are carried over by the copy. A named user is looked up *inside* the device by the probe (`probe resolve-user`),
 because the service cannot see the device's file system; the runtime gets numbers only. When a stream ends for any reason (the participant left, the shell
 exited, idle, lifetime, an error, the service stopping) the service kills and deletes the exec and removes its FIFOs; a journal in the FIFO directory lets the
