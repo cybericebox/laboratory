@@ -1,10 +1,18 @@
 package grpc
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/cybericebox/laboratory/internal/labchecks"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 func TestCooldownWait(t *testing.T) {
@@ -50,5 +58,39 @@ func TestTimeLimitCeilingIsEnforcedWhereChecksAreAccepted(t *testing.T) {
 	h.features.CheckMaxTimeLimit = 100000
 	if got := h.maxCheckTimeLimit(); got != labchecks.MaxCheckTimeLimit {
 		t.Fatalf("a ceiling above the contract's: %d", got)
+	}
+}
+
+// The wait of the cooldown reaches the caller as a number: a RetryInfo detail on the status, and ItemResult.retry_after (with the machine
+// reason COOLDOWN and retryable) on the item. The text stays for people.
+func TestCooldownRefusalCarriesTheWaitAsANumber(t *testing.T) {
+	err := cooldownError(6400 * time.Millisecond)
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.ResourceExhausted || !strings.Contains(st.Message(), "wait 7 seconds") {
+		t.Fatalf("status %v %q", st.Code(), st.Message())
+	}
+	var delay time.Duration
+	for _, d := range st.Details() {
+		if ri, ok := d.(*errdetails.RetryInfo); ok {
+			delay = ri.GetRetryDelay().AsDuration()
+		}
+	}
+	if delay != 7*time.Second {
+		t.Fatalf("RetryInfo delay %v, want 7s (a whole second above the exact wait, never below it)", delay)
+	}
+	ref := &protobuf.ItemRef{Name: "l"}
+	res := failedResult(ref, err)
+	if res.State != protobuf.ItemState_ITEM_STATE_FAILED || res.Reason != client.ReasonCooldown || !res.Retryable || res.RetryAfter.AsDuration() != 7*time.Second || !strings.Contains(res.Error, "wait 7 seconds") {
+		t.Fatalf("%+v", res)
+	}
+	// the number never falls below the exact wait, even for a fraction of a second
+	if got := failedResult(ref, cooldownError(200*time.Millisecond)).RetryAfter.AsDuration(); got < 200*time.Millisecond || got != time.Second {
+		t.Fatalf("a short wait: %v", got)
+	}
+	// other failures carry no retry_after, and are not turned into a cooldown
+	for _, other := range []error{errors.New("x"), status.Error(codes.ResourceExhausted, "busy"), notReadyError{group: "g"}} {
+		if r := failedResult(ref, other); r.RetryAfter != nil || r.Reason == client.ReasonCooldown {
+			t.Errorf("%v: %+v", other, r)
+		}
 	}
 }

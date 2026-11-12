@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -445,6 +447,17 @@ func cooldownWait(cooldown time.Duration, prevAt int64, now time.Time) time.Dura
 	return max(cooldown-now.Sub(time.Unix(prevAt, 0)), 0)
 }
 
+// cooldownError is the refusal of a manual run inside the cooldown: RESOURCE_EXHAUSTED with the text for a person and a google.rpc.RetryInfo
+// detail carrying the wait, so a caller reads a number and parses no text. failedResult copies it into ItemResult.retry_after.
+func cooldownError(wait time.Duration) error {
+	wait = wait.Round(time.Second) + time.Second // a whole second above the exact wait, never below it
+	st := status.New(codes.ResourceExhausted, fmt.Sprintf("wait %d seconds before the next manual run of this lab", int(wait/time.Second)))
+	if withInfo, err := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(wait)}); err == nil {
+		st = withInfo
+	}
+	return st.Err()
+}
+
 type runChecksRequest struct {
 	// Token grows by one with every accepted request; the checker acknowledges it in status.checksRunAck.
 	Token int64 `json:"token"`
@@ -521,7 +534,7 @@ func (h *Handler) recordRunChecks(ctx context.Context, resolver *groupResolver, 
 		// a button pressed in a loop cannot keep the checker, the device access service and the devices busy.
 		now := h.now()
 		if wait := cooldownWait(h.features.ManualCooldown, prev.At, now); wait > 0 {
-			return status.Errorf(codes.ResourceExhausted, "wait %d seconds before the next manual run of this lab", int(wait/time.Second)+1)
+			return cooldownError(wait)
 		}
 		next.At = now.Unix()
 		next.Token = max(prev.Token, cur.Status.ChecksRunAck) + 1
