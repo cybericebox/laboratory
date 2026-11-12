@@ -35,12 +35,12 @@ func TestDevicePodConsoleLabel(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{UID: "device-uid", Labels: map[string]string{names.LabelTerminal: "true"}}}
 	device.Spec.Name = "web"
 	device.Spec.LabRef = "lab"
-	labels, selector, _, _ := (&DeviceReconciler{}).workloadTemplate(device)
+	labels, _, _, _ := (&DeviceReconciler{}).workloadTemplate(device)
 	if _, ok := labels[names.LabelTerminal]; ok {
 		t.Errorf("a device without a console got the label (or a user label set it): %v", labels)
 	}
 	device.Spec.Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}
-	labels, selector, _, _ = (&DeviceReconciler{}).workloadTemplate(device)
+	labels, selector, _, _ := (&DeviceReconciler{}).workloadTemplate(device)
 	if labels[names.LabelTerminal] != "true" {
 		t.Errorf("labels = %v", labels)
 	}

@@ -91,27 +91,27 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 	hcancel()
 	var hi hello
 	if err != nil || typ != websocket.MessageText || json.Unmarshal(msg, &hi) != nil || hi.Cols < wire.MinSize || hi.Cols > wire.MaxSize || hi.Rows < wire.MinSize || hi.Rows > wire.MaxSize {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeBadRequest})
+		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: wire.CodeBadRequest})
 		return wire.ReasonError
 	}
 
 	svc, err := t.dial(ctx, sess.base)
 	if err != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
+		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	defer func() { _ = svc.CloseNow() }()
 	open, err := t.openMessage(wire.OpenRequest{Kind: wire.KindConsole, Namespace: sess.namespace, Lab: sess.lab, Device: sess.dev,
 		Command: sess.command, User: sess.user, Cols: hi.Cols, Rows: hi.Rows, Client: sess.client, Group: sess.group})
 	if err != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
+		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	wctx, wcancel := context.WithTimeout(ctx, terminalWrite)
 	err = svc.Write(wctx, websocket.MessageText, open)
 	wcancel()
 	if err != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
+		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
@@ -119,11 +119,11 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 	rcancel()
 	var reply wire.OpenReply
 	if err != nil || rt != websocket.MessageText || json.Unmarshal(rmsg, &reply) != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
+		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	if !reply.OK {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: browserCode(reply.Error)})
+		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: browserCode(reply.Error)})
 		return wire.ReasonRefused
 	}
 	if err := browserText(ctx, browser, browserMsg{Type: "ready"}); err != nil {

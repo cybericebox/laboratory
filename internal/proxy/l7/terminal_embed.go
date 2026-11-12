@@ -104,7 +104,7 @@ func (m *EmbedMatcher) Ancestor(referer string) string {
 		return ancestorNone
 	}
 	u, err := url.Parse(referer)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme != schemeHTTPS || u.Host == "" || u.User != nil {
 		return ancestorNone
 	}
 	host, port := strings.ToLower(u.Hostname()), u.Port()

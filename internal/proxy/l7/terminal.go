@@ -70,7 +70,7 @@ type TerminalConfig struct {
 // DefaultTerminalConfig carries the chart defaults for the limits.
 func DefaultTerminalConfig() TerminalConfig {
 	return TerminalConfig{PerClient: 3, Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
-		OriginScheme: "https"}
+		OriginScheme: schemeHTTPS}
 }
 
 type terminalState struct {
@@ -101,7 +101,7 @@ type consoleSession struct {
 // WithTerminal switches the console on. It needs the access reader: without it the proxy has no groups to authorize a console by.
 func (h *Handler) WithTerminal(c TerminalConfig) *Handler {
 	if c.OriginScheme == "" {
-		c.OriginScheme = "https"
+		c.OriginScheme = schemeHTTPS
 	}
 	h.terminal = &terminalState{cfg: c, open: map[*consoleSession]struct{}{}, perClient: map[liveClientKey]int{}}
 	return h

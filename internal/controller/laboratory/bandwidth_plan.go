@@ -47,7 +47,7 @@ func bandwidthPlan(cfg bandwidth.Config, nodes []corev1.Node, pods []corev1.Pod,
 	// smallest receiver (cfg.EntryClassKbps).
 	senders, minEntry := 0, int64(0)
 	for i := range nodes {
-		if nodes[i].Labels[names.LabelNodeAgentReady] != "true" {
+		if nodes[i].Labels[names.LabelNodeAgentReady] != valueTrue {
 			continue
 		}
 		senders++

@@ -5,4 +5,6 @@ const (
 	labelApp = "app"
 	// valueTrue is the value of the boolean annotations and labels.
 	valueTrue = "true"
+	// kindClusterRole is the kind of a RoleBinding's role reference to a ClusterRole.
+	kindClusterRole = "ClusterRole"
 )

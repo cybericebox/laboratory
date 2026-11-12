@@ -174,14 +174,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.renewSession(w, claims)
 	var backendURL, lab string
 	if h.access != nil {
-		if device, code, kind := names.ParseAccessHost(task); kind != "" && kind != names.AccessKindHTTP {
-			// The last character of the code says which access the host is: a host of another kind is never the Service of a device.
-			// Only the console is served; vnc, rdp and the reserved slots answer like a host that does not exist.
-			if kind == names.AccessKindTerminal && h.terminal != nil {
-				h.serveTerminal(w, r, device, code, claims, client, group)
-			} else {
-				fail(w, r, http.StatusNotFound, pageGone, "not found")
-			}
+		if h.serveAccessKind(w, r, task, claims, client, group) {
 			return
 		}
 		route, routeErr := h.access.Route(r.Context(), task, namespace)
@@ -195,19 +188,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		backendURL, err = h.resolver(task, claims.GroupID)
-		if err != nil {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-		if h.attribute != nil {
-			lab, _ = h.attribute(task, claims.GroupID)
-			if lab == "" {
-				fail(w, r, http.StatusNotFound, pageGone, "not found")
-				return
-			}
-		}
-		if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
+		var ok bool
+		if backendURL, lab, ok = h.legacyRoute(task, claims.GroupID, client); !ok {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
@@ -237,7 +219,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Set("Cookie", strings.Join(kept, "; "))
 	stripClientAddress(r.Header)
-	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-Proto", schemeHTTPS)
 
 	// Track the request: when the client loses access, CheckLive cancels it or closes its upgraded connection.
 	clientCtx := r.Context()
@@ -365,7 +347,7 @@ func ServiceResolver(getServiceProtocol func(task, namespace string) (string, er
 			return "", err
 		}
 		port := 80
-		if proto == "https" {
+		if proto == schemeHTTPS {
 			port = 443
 		}
 		return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", proto, task, ns, port), nil
@@ -490,4 +472,38 @@ func stripClientAddress(h http.Header) {
 		h.Del(name)
 	}
 	h["X-Forwarded-For"] = nil
+}
+
+// serveAccessKind answers a host that is the access of a kind other than http to a device and reports whether it did. The last character
+// of the first label says which access the host is: a host of another kind is never the Service of a device. Only the console is served;
+// vnc, rdp and the reserved characters answer like a host that does not exist.
+func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task string, claims jwtClaims, client string, group AccessGroup) bool {
+	device, code, kind := names.ParseAccessHost(task)
+	if kind == "" || kind == names.AccessKindHTTP {
+		return false
+	}
+	if kind == names.AccessKindTerminal && h.terminal != nil {
+		h.serveTerminal(w, r, device, code, claims, client, group)
+	} else {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+	}
+	return true
+}
+
+// legacyRoute is the route of a task without the access reader: the backend the resolver names, the lab the attribution gives and the
+// authorization of the client for it. ok is false for any refusal.
+func (h *Handler) legacyRoute(task, groupID, client string) (backendURL, lab string, ok bool) {
+	backendURL, err := h.resolver(task, groupID)
+	if err != nil {
+		return "", "", false
+	}
+	if h.attribute != nil {
+		if lab, _ = h.attribute(task, groupID); lab == "" {
+			return "", "", false
+		}
+	}
+	if h.authorize != nil && !h.authorize(groupID, client, lab) {
+		return "", "", false
+	}
+	return backendURL, lab, true
 }
