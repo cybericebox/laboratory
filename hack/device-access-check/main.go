@@ -17,6 +17,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -26,6 +29,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/probe"
 )
 
 var (
@@ -36,6 +40,8 @@ var (
 	device  = flag.String("device", "", "device name (its lab must ask for a terminal)")
 	user    = flag.String("user", "", "terminal user, empty = the user of the image")
 	command = flag.String("command", "", "terminal command, empty = /bin/sh")
+	checker = flag.Bool("checker", false, "run the checker path instead of the console path: this must run INSIDE the checker pod (as its user), where the checker socket is")
+	sockets = flag.String("checker-socket", os.Getenv("DEVICE_ACCESS_SOCKET"), "the checker socket (the DEVICE_ACCESS_SOCKET of the checker pod)")
 	refuse  = flag.String("refuse", "", "comma separated namespace/lab/device triples that must be refused (the VPN pod, the gateway, a pod of kube-system, a device without a console)")
 )
 
@@ -138,6 +144,10 @@ func main() {
 	if *ns == "" || *labName == "" || *device == "" {
 		fmt.Fprintln(os.Stderr, "-namespace, -lab and -device are required")
 		os.Exit(2)
+	}
+	if *checker {
+		checkerPath()
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -280,4 +290,121 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("\nall checks passed")
+}
+
+// ---- the checker path -------------------------------------------------------------------------------------------------------------------
+
+// probeCall makes one request on the checker socket the way the checker does.
+func probeCall(body map[string]any) (int, wire.ProbeResponse, error) {
+	client := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", *sockets)
+	}, DisableKeepAlives: true}}
+	raw, _ := json.Marshal(body)
+	resp, err := client.Post("http://device-access"+wire.CheckerPath, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		return 0, wire.ProbeResponse{}, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var out wire.ProbeResponse
+	_ = json.Unmarshal(b, &out)
+	return resp.StatusCode, out, nil
+}
+
+func target(command string, arg any, timeout time.Duration) map[string]any {
+	a, _ := json.Marshal(arg)
+	return map[string]any{"namespace": *ns, "lab": *labName, "device": *device, "command": command, "arg": string(a), "timeoutMs": timeout.Milliseconds()}
+}
+
+// ask runs a probe subcommand and decodes its one JSON answer into out.
+func ask(command string, arg, out any) error {
+	status, r, err := probeCall(target(command, arg, 20*time.Second))
+	if err != nil {
+		return err
+	}
+	if status != 200 || r.Error != "" || r.Exit != 0 {
+		return fmt.Errorf("status %d error %q exit %d", status, r.Error, r.Exit)
+	}
+	return json.Unmarshal(r.Stdout, out)
+}
+
+func checkerPath() {
+	fmt.Println("INFO  uid", os.Getuid(), "gid", os.Getgid(), "socket", *sockets, "(must be a plain user, not root)")
+	check("the checker runs as a plain user", os.Getuid() != 0, fmt.Sprint(os.Getuid()))
+
+	// one check of each kind
+	var f probe.FileResponse
+	err := ask(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd", WantContent: true}, &f)
+	check("file: /etc/passwd exists and is read", err == nil && f.Exists && f.Regular && len(f.Content) > 0, fmt.Sprint(err))
+	f = probe.FileResponse{}
+	err = ask(probe.CommandCheckFile, probe.FileRequest{Path: "/no/such/file-cib"}, &f)
+	check("file: a missing file is reported as missing", err == nil && !f.Exists, fmt.Sprint(err))
+	// a file only root can read (the probe runs as root in the device, so a 0600 root file of a non-root image is readable)
+	f = probe.FileResponse{}
+	err = ask(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/shadow"}, &f)
+	fmt.Println("INFO  /etc/shadow:", f.Exists, f.Mode, err)
+
+	var o probe.ObserveResponse
+	err = ask(probe.CommandCheckObserve, probe.ObserveRequest{Kind: probe.KindKernelParam, Name: "kernel.ostype"}, &o)
+	check("kernel_param: kernel.ostype", err == nil && o.KernelParam != nil && o.KernelParam.Exists, fmt.Sprint(err, o.Error))
+	o = probe.ObserveResponse{}
+	err = ask(probe.CommandCheckObserve, probe.ObserveRequest{Kind: probe.KindProcess}, &o)
+	check("process: the process table is read", err == nil && o.Processes != nil, fmt.Sprint(err, o.Error))
+	o = probe.ObserveResponse{}
+	err = ask(probe.CommandCheckObserve, probe.ObserveRequest{Kind: probe.KindPort, Port: 1, Protocol: "tcp"}, &o)
+	check("port: a port is looked at", err == nil && o.Port != nil, fmt.Sprint(err, o.Error))
+	o = probe.ObserveResponse{}
+	err = ask(probe.CommandCheckObserve, probe.ObserveRequest{Kind: probe.KindDirectory, Path: "/etc", Key: bytes.Repeat([]byte{1}, 32)}, &o)
+	check("directory: /etc is listed (as keyed hashes)", err == nil && o.Directory != nil && o.Directory.Exists, fmt.Sprint(err, o.Error))
+	o = probe.ObserveResponse{}
+	err = ask(probe.CommandCheckObserve, probe.ObserveRequest{Kind: probe.KindPermission, User: "root", Path: "/etc/passwd"}, &o)
+	check("permission: root may read /etc/passwd", err == nil && o.Permission != nil, fmt.Sprint(err, o.Error))
+	o = probe.ObserveResponse{}
+	err = ask(probe.CommandCheckObserve, probe.ObserveRequest{Kind: probe.KindRequest, Protocol: "tcp", Host: "127.0.0.1", Port: 1, TimeoutMs: 2000}, &o)
+	check("request: a connection to a closed port is a fact, not an error", err == nil && o.Request != nil, fmt.Sprint(err, o.Error))
+
+	// custom: as root and as nobody (the probe drops to the user itself); on a device whose image user is not root this still works
+	for _, user := range []string{"root", "nobody"} {
+		var e probe.ExecResponse
+		err = ask(probe.CommandCheckExec, probe.ExecRequest{Argv: []string{"/bin/sh", "-c", "id -un"}, User: user, TimeoutMs: 10000}, &e)
+		check("custom as "+user, err == nil && e.Started && strings.TrimSpace(string(e.Output)) == user, fmt.Sprint(err, " ", e.Error, " ", string(e.Output)))
+	}
+	var e probe.ExecResponse
+	err = ask(probe.CommandCheckExec, probe.ExecRequest{Argv: []string{"/bin/sh", "-c", "sleep 30"}, TimeoutMs: 1000}, &e)
+	check("custom over its limit is killed and reported", err == nil && e.TimedOut, fmt.Sprint(err, e.TimedOut))
+
+	// what the socket must refuse
+	for name, c := range map[string]struct {
+		body   map[string]any
+		status int
+	}{
+		"another subcommand (put)":   {target(probe.CommandPut, "/tmp/x", time.Second), 400},
+		"the launch subcommand":      {target("launch", "x", time.Second), 400},
+		"a user other than root":     {withField(target(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd"}, time.Second), "user", "1000"), 400},
+		"a program":                  {withField(target(probe.CommandCheckFile, probe.FileRequest{Path: "/etc/passwd"}, time.Second), "program", "/bin/sh"), 400},
+		"a pod of kube-system":       {map[string]any{"namespace": "kube-system", "lab": "coredns", "device": "coredns", "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000}, 404},
+		"a device that is not there": {map[string]any{"namespace": *ns, "lab": *labName, "device": "no-such-device", "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000}, 404},
+	} {
+		status, r, err := probeCall(c.body)
+		check("refused: "+name, err == nil && status == c.status && r.Error != "", fmt.Sprint(err, status, r.Error))
+	}
+	for _, x := range strings.Split(*refuse, ",") {
+		parts := strings.Split(x, "/")
+		if len(parts) != 3 {
+			continue
+		}
+		status, r, err := probeCall(map[string]any{"namespace": parts[0], "lab": parts[1], "device": parts[2], "command": probe.CommandCheckFile, "arg": "{}", "timeoutMs": 1000})
+		check("refused (not a lab device): "+x, err == nil && status == 404 && r.Error != "", fmt.Sprint(err, status, r.Error))
+	}
+	if failures > 0 {
+		fmt.Printf("\n%d check(s) FAILED\n", failures)
+		os.Exit(1)
+	}
+	fmt.Println("\nall checks passed")
+}
+
+func withField(m map[string]any, k string, v any) map[string]any {
+	m[k] = v
+	return m
 }

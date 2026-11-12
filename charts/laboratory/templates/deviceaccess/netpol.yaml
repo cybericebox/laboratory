@@ -1,8 +1,8 @@
-{{- if and .Values.terminal.enabled .Values.terminal.networkPolicy.enabled }}
+{{- if and (include "laboratory.deviceAccess.enabled" .) .Values.terminal.networkPolicy.enabled }}
 {{- /*
 The listener of the device access service is plain HTTP on the pod network and trusts its caller: this policy is the whole protection of
-it. Ingress only from the L7 proxy pods (their namespace and label), on the stream port; nothing else may connect, not another pod of the
-cluster and not another namespace. No egress at all: the service talks to the runtime through a socket and to nothing on the network.
+it. Ingress only from the L7 proxy pods (their namespace and label), on the stream port, and only with the console on; nothing else may
+connect, not another pod of the cluster and not another namespace. No egress at all: the service talks to the runtime through a socket and to nothing on the network.
 */ -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -16,6 +16,7 @@ spec:
     matchLabels:
       {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 6 }}
   ingress:
+    {{- if .Values.terminal.enabled }}
     - fromEndpoints:
         - matchLabels:
             app: laboratory-proxy-l7
@@ -24,6 +25,10 @@ spec:
         - ports:
             - port: {{ .Values.terminal.port | quote }}
               protocol: TCP
+    {{- else }}
+    # Only the lab checker uses the service (over a unix socket), so nothing connects over the network. An empty rule makes ingress default-deny.
+    - {}
+    {{- end }}
     {{- with .Values.terminal.networkPolicy.metricsFrom }}
     - fromEndpoints:
         {{- toYaml . | nindent 8 }}

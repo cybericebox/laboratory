@@ -1,4 +1,4 @@
-{{- if .Values.terminal.enabled }}
+{{- if include "laboratory.deviceAccess.enabled" . }}
 {{- /*
 The device access service (docs/specs/2026-11-12-device-access-and-checks.md, section 3; DEPLOY.md, "Device console"): a DaemonSet on the lab
 nodes, one container, the only component that holds the container runtime socket. It opens a shell or moves a file in a lab device for the L7
@@ -41,7 +41,12 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-        {{- with .Values.terminal.securityContext.supplementalGroups }}
+        {{- $groups := .Values.terminal.securityContext.supplementalGroups }}
+        {{- if .Values.checks.enabled }}
+        {{- /* A member of the checker's group can hand the checker socket to it without CAP_CHOWN. */}}
+        {{- $groups = append (without $groups (int .Values.checks.socketGid)) (int .Values.checks.socketGid) }}
+        {{- end }}
+        {{- with $groups }}
         supplementalGroups:
           {{- toYaml . | nindent 10 }}
         {{- end }}
@@ -98,6 +103,19 @@ spec:
               value: {{ $lim.maxLifetime | quote }}
             - name: MAX_FILE_BYTES
               value: {{ $lim.maxFileBytes | int64 | quote }}
+            {{- if .Values.checks.enabled }}
+            # The checker socket: the lab checker of this node runs the probe in a device through it (file permissions: group {{ .Values.checks.socketGid }}).
+            - name: CHECKER_SOCKET
+              value: {{ printf "%s/checker.sock" (trimSuffix "/" .Values.checks.socketDir) | quote }}
+            - name: CHECKER_UID
+              value: {{ .Values.checks.socketUid | quote }}
+            - name: CHECKER_GID
+              value: {{ .Values.checks.socketGid | quote }}
+            - name: CHECKER_MAX_SECONDS
+              value: {{ .Values.checks.maxTimeLimitSeconds | quote }}
+            - name: CHECKER_MAX_CONCURRENT
+              value: {{ .Values.checks.maxConcurrent | quote }}
+            {{- end }}
           ports:
             - name: stream
               containerPort: {{ .Values.terminal.port }}
@@ -141,6 +159,10 @@ spec:
               mountPath: {{ $socket | quote }}
             - name: fifo
               mountPath: {{ .Values.terminal.fifoDir | quote }}
+            {{- if .Values.checks.enabled }}
+            - name: checker-socket
+              mountPath: {{ .Values.checks.socketDir | quote }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             # The secret shared with the L7 proxy, as files (current, and accept during a rotation). The service does not start without it.
@@ -162,6 +184,12 @@ spec:
             # Made on the host beforehand (DEPLOY.md): a missing directory keeps the pod from starting, which says so, instead of a
             # directory the kubelet would make with the wrong owner.
             type: Directory
+        {{- if .Values.checks.enabled }}
+        - name: checker-socket
+          hostPath:
+            path: {{ .Values.checks.socketDir | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
         - name: tmp
           emptyDir:
             sizeLimit: 8Mi

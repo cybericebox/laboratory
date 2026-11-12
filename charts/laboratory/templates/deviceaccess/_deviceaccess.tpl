@@ -23,3 +23,8 @@ app: laboratory-device-access
 {{- end -}}
 {{- $secret -}}
 {{- end }}
+
+{{- /* The service runs when either of its two users is on: the console (terminal.enabled) or the lab checker (checks.enabled). */ -}}
+{{- define "laboratory.deviceAccess.enabled" -}}
+{{- if or .Values.terminal.enabled .Values.checks.enabled -}}true{{- end -}}
+{{- end }}

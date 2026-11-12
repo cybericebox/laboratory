@@ -238,6 +238,9 @@ VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
 TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
 TERMINAL_SERVED: {{ .Values.terminal.enabled | quote }}
+TERMINAL_HOST: {{ .Values.terminal.host | quote }}
+CHECKS_MAX_TIME_LIMIT_SECONDS: {{ .Values.checks.maxTimeLimitSeconds | quote }}
+CHECKS_MANUAL_COOLDOWN: {{ .Values.checks.manualCooldown | quote }}
 STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
 STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
 STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}

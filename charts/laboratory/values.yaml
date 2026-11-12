@@ -113,18 +113,28 @@ profileLabels:
 # checks.enabled also renders the lab checker, a DaemonSet of its own (apart from the node-agent). The terminal component is built later
 # and will be started by its switch.
 checks:
-  # Lab checks: a lab may carry checks (file and custom observations of its devices), the RunChecks call is accepted, and the checker
+  # Lab checks: a lab may carry checks (built-in observations and custom ones in its devices), the RunChecks call is accepted, and the checker
   # DaemonSet (templates/checker) runs on the lab nodes. It runs the image of the node-agent (/node checker), takes no inbound
-  # connection and needs no host namespace. DEPLOY.md, "Lab checks", lists its rights and what it needs on the node.
+  # connection and needs no host namespace. It needs the device access service on the same node (rendered with this option too).
+  # DEPLOY.md, "Lab checks", lists its rights and what it needs on the node.
   enabled: false
-  # How many checks run at once on one node (a run is a file read or an exec in a device).
+  # How many checks run at once on one node, in all (a run is one exec of the probe in a device, made by the device access service). At most one
+  # run of a lab goes at a time on a node, whatever this is.
   maxConcurrent: 4
-  # The containerd state directory of the node, where the runtime keeps the root file system of every container
-  # (<state>/io.containerd.runtime.v2.task/<namespace>/<container id>/rootfs). Mounted read-only at the same path. k0s: /run/k0s/containerd.
-  containerdState: /run/k0s/containerd
-  # The containerd namespace of the kubelet's CRI.
-  containerdNamespace: k8s.io
-  # Cilium policy of the checker pod: no ingress, egress to the API server only.
+  # The ceiling of the time limit of one check run, in seconds: a lab with a check that asks for more is refused, the checker runs nothing
+  # longer and the device access service kills a probe at it. The contract's own maximum is 600.
+  maxTimeLimitSeconds: 120
+  # The least time between two manual runs of one lab (RunChecks): a button pressed in a loop cannot keep the node busy.
+  manualCooldown: 10s
+  # How the checker reaches the devices: the device access service of the node (the same DaemonSet that serves the console, see terminal.*)
+  # makes a unix socket in this node directory and the checker pod mounts the directory. The checker holds NO container runtime socket, reads NO
+  # file of a container from the node and runs as a plain user with every capability dropped. socketGid and socketUid are the group and the user
+  # the checker runs as: the socket is mode 0660 for that group and the service refuses a peer that is not that user (SO_PEERCRED).
+  socketDir: /run/cib-checker
+  socketUid: 65532
+  socketGid: 65532
+  # Cilium policy of the checker pod: no ingress, egress to the API server only. The chart refuses to render with the checker on and this off
+  # (and with the admission policies, operator.admissionPolicy.enabled, off).
   networkPolicy:
     enabled: true
   # The checker keeps a trimmed copy of every Lab of the cluster and of the pods of its own node; the limits bound it.

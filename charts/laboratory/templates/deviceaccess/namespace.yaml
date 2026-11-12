@@ -1,4 +1,4 @@
-{{- if .Values.terminal.enabled }}
+{{- if include "laboratory.deviceAccess.enabled" . }}
 {{- /*
 The device access service has a namespace of its own. The pod mounts the runtime socket and a host directory, which only the privileged Pod
 Security level admits, and the L7 proxy reads the EndpointSlices of the service there (one Role): nothing else lives here, so neither is wider

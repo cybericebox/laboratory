@@ -43,6 +43,9 @@ func TestCheckerIsNotRenderedWhileTheOptionIsOff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
+		// The operator may bind the checker's secrets role while the checker is off (a bind permission by name grants nothing without the
+		// role); that name is the only mention allowed.
+		out = strings.ReplaceAll(out, "laboratory-checker-secrets", "")
 		for _, bad := range []string{"laboratory-checker", "app: checker", "checker-health"} {
 			if strings.Contains(out, bad) {
 				t.Errorf("checks.enabled=false, but the chart renders %q", bad)
@@ -84,8 +87,13 @@ func TestCheckerDaemonSetIsSeparateAndLean(t *testing.T) {
 		sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 		t.Fatalf("security context %+v", sc)
 	}
-	if sc.Capabilities == nil || strings.Join(capNames(sc.Capabilities.Drop), ",") != "ALL" || strings.Join(capNames(sc.Capabilities.Add), ",") != "DAC_READ_SEARCH" {
-		t.Errorf("capabilities %+v: exactly DAC_READ_SEARCH on top of none", sc.Capabilities)
+	// Nothing at all: every capability dropped and none added (it used to hold DAC_READ_SEARCH to read the files of containers from the node),
+	// a plain user.
+	if sc.Capabilities == nil || strings.Join(capNames(sc.Capabilities.Drop), ",") != "ALL" || len(sc.Capabilities.Add) != 0 {
+		t.Errorf("capabilities %+v: the checker holds none", sc.Capabilities)
+	}
+	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot || sc.RunAsUser == nil || *sc.RunAsUser != 65532 || sc.RunAsGroup == nil || *sc.RunAsGroup != 65532 {
+		t.Errorf("the checker must run as a plain user: %+v", sc)
 	}
 	if spec.SecurityContext == nil || spec.SecurityContext.SeccompProfile == nil || spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Errorf("pod security context %+v", spec.SecurityContext)
@@ -93,25 +101,33 @@ func TestCheckerDaemonSetIsSeparateAndLean(t *testing.T) {
 	if c.Resources.Limits.Memory().IsZero() || c.Resources.Limits.Cpu().IsZero() || c.Resources.Requests.Memory().IsZero() {
 		t.Errorf("the checker has limits of its own: %+v", c.Resources)
 	}
-	// The host paths: the runtime socket, and the containerd state read-only with propagation.
+	// The one host path: the directory of the checker socket of the device access service, read-only. No runtime socket, no state directory.
 	hostPaths := map[string]string{}
 	for _, v := range spec.Volumes {
 		if v.HostPath != nil {
 			hostPaths[v.Name] = v.HostPath.Path
 		}
 	}
-	if len(hostPaths) != 2 || hostPaths["cri-sock"] != "/run/k0s/containerd.sock" || hostPaths["containerd-state"] != "/run/k0s/containerd" {
+	if len(hostPaths) != 1 || hostPaths["device-socket"] != "/run/cib-checker" {
 		t.Errorf("host paths %v", hostPaths)
 	}
 	for _, m := range c.VolumeMounts {
-		if m.Name == "containerd-state" && (!m.ReadOnly || m.MountPropagation == nil || *m.MountPropagation != corev1.MountPropagationHostToContainer) {
-			t.Errorf("the containerd state must be read-only with HostToContainer: %+v", m)
+		if m.Name == "device-socket" && (!m.ReadOnly || m.MountPropagation != nil) {
+			t.Errorf("the socket directory must be mounted read-only: %+v", m)
 		}
 	}
+	if raw, _ := yaml.Marshal(spec); strings.Contains(string(raw), "containerd") || strings.Contains(string(raw), "cri-sock") || strings.Contains(string(raw), "DAC_READ_SEARCH") {
+		t.Errorf("the checker pod still mentions the runtime or a capability to read files:\n%s", raw)
+	}
 	env := envOf(c)
-	for _, k := range []string{"NODE_NAME", "POD_NAME", "POD_NAMESPACE", "CRI_SOCK", "CONTAINERD_STATE", "CONTAINERD_NAMESPACE", "CHECKER_MAX_CONCURRENT"} {
+	for _, k := range []string{"NODE_NAME", "POD_NAME", "POD_NAMESPACE", "DEVICE_ACCESS_SOCKET", "CHECKER_MAX_CONCURRENT", "CHECKER_MAX_TIME_LIMIT_SECONDS"} {
 		if _, ok := env[k]; !ok {
 			t.Errorf("env %s missing", k)
+		}
+	}
+	for _, gone := range []string{"CRI_SOCK", "CONTAINERD_STATE", "CONTAINERD_NAMESPACE"} {
+		if _, ok := env[gone]; ok {
+			t.Errorf("env %s must be gone", gone)
 		}
 	}
 }
@@ -124,20 +140,23 @@ func capNames(in []corev1.Capability) []string {
 	return out
 }
 
-// The values reach the pod: the state directory, the namespace, the concurrency and the placement of the lab nodes.
+// The values reach the pod: the socket directory, the concurrency, the ceiling and the placement of the lab nodes.
 func TestCheckerFollowsItsValuesAndTheLabNodes(t *testing.T) {
-	ds := checkerDaemonSet(t, "--set", "checks.containerdState=/var/run/c8d", "--set", "checks.containerdNamespace=cri", "--set", "checks.maxConcurrent=9",
-		"--set", "nodeAgent.criSocket=/run/c8d.sock", "--set", "labWorkloads.nodeSelector.pool=labs")
+	ds := checkerDaemonSet(t, "--set", "checks.socketDir=/var/run/cib", "--set", "checks.maxConcurrent=9", "--set", "checks.maxTimeLimitSeconds=45",
+		"--set", "checks.socketUid=2000", "--set", "checks.socketGid=2001", "--set", "labWorkloads.nodeSelector.pool=labs")
 	spec := ds.Spec.Template.Spec
 	env := envOf(spec.Containers[0])
-	if env["CONTAINERD_STATE"].Value != "/var/run/c8d" || env["CONTAINERD_NAMESPACE"].Value != "cri" || env["CHECKER_MAX_CONCURRENT"].Value != "9" || env["CRI_SOCK"].Value != "/run/c8d.sock" {
+	if env["DEVICE_ACCESS_SOCKET"].Value != "/var/run/cib/checker.sock" || env["CHECKER_MAX_CONCURRENT"].Value != "9" || env["CHECKER_MAX_TIME_LIMIT_SECONDS"].Value != "45" {
 		t.Errorf("env %v", env)
+	}
+	if sc := spec.Containers[0].SecurityContext; *sc.RunAsUser != 2000 || *sc.RunAsGroup != 2001 {
+		t.Errorf("user %v group %v", *sc.RunAsUser, *sc.RunAsGroup)
 	}
 	if spec.NodeSelector["pool"] != "labs" {
 		t.Errorf("node selector %v: the checker runs where the labs run", spec.NodeSelector)
 	}
 	for _, v := range spec.Volumes {
-		if v.Name == "containerd-state" && v.HostPath.Path != "/var/run/c8d" {
+		if v.Name == "device-socket" && v.HostPath.Path != "/var/run/cib" {
 			t.Errorf("host path %q", v.HostPath.Path)
 		}
 	}
@@ -146,10 +165,14 @@ func TestCheckerFollowsItsValuesAndTheLabNodes(t *testing.T) {
 // Every rule of the checker, with its verbs: nothing is created, updated or deleted outside the Lease and the status of a Lab.
 func TestCheckerRBACIsExactlyWhatItNeeds(t *testing.T) {
 	docs := decodeDocs(t, "templates/checker/rbac.yaml", checksOn...)
-	var role rbacv1.ClusterRole
+	var role, secretRole rbacv1.ClusterRole
 	var ns rbacv1.Role
 	for _, d := range docs {
 		switch {
+		case strings.Contains(d, "name: laboratory-checker-secrets\n") && strings.Contains(d, "kind: ClusterRole\n"):
+			if err := yaml.Unmarshal([]byte(d), &secretRole); err != nil {
+				t.Fatal(err)
+			}
 		case strings.Contains(d, "kind: ClusterRole\n"):
 			if err := yaml.Unmarshal([]byte(d), &role); err != nil {
 				t.Fatal(err)
@@ -170,7 +193,6 @@ func TestCheckerRBACIsExactlyWhatItNeeds(t *testing.T) {
 		"laboratory.cybericebox.com/labs":        "get,list,watch",
 		"laboratory.cybericebox.com/labs/status": "patch",
 		"/pods":                                  "get,list,watch",
-		"/secrets":                               "get",
 	}
 	if len(got) != len(want) {
 		t.Errorf("cluster rules %v, want %v", got, want)
@@ -179,6 +201,10 @@ func TestCheckerRBACIsExactlyWhatItNeeds(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("%s: %q, want %q", k, got[k], v)
 		}
+	}
+	// Secrets are read only through the role the operator binds in each lab group namespace: one verb, one resource.
+	if len(secretRole.Rules) != 1 || strings.Join(secretRole.Rules[0].Resources, ",") != "secrets" || strings.Join(secretRole.Rules[0].Verbs, ",") != "get" {
+		t.Errorf("the secrets role: %+v", secretRole.Rules)
 	}
 	if len(ns.Rules) != 1 || strings.Join(ns.Rules[0].Resources, ",") != "leases" || strings.Join(ns.Rules[0].Verbs, ",") != "get,create,update,patch" || ns.Namespace != "laboratory-system" {
 		t.Errorf("the namespaced role: %+v", ns)
