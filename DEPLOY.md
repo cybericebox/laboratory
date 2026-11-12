@@ -917,6 +917,9 @@ the binary, no CDN; no clipboard write, links only `http(s)` on a click, the tit
 | Setting | Meaning |
 |---|---|
 | `terminal.enabled` | the option; renders the DaemonSet, its ServiceAccount, the Cilium policy; gives the proxy the console settings and its two read rights |
+| `terminal.namespace` (`laboratory-device-access`) | the namespace of the service: its own (privileged Pod Security level for the hostPath; the proxy's one Role covers only it). Create the `imagePullSecrets` there too, as for the proxy. It must not be the release or the proxy namespace |
+| `terminal.sharedSecret.value`, `.accept` | the secret shared by the proxy and the service (see "Shared secret and rotation"); empty `value` = made by the chart and kept in the cluster |
+| `terminal.embedding.allow`, `.deny` | the sites that may show the console page in a frame (see "Embedding"); empty = none |
 | `terminal.host` (`terminal`) | first label of the console host, reserved: it is never looked up as the Service of a device |
 | `terminal.port` (8080), `terminal.metricsPort` (9102) | stream and metrics ports of the service pod (plain HTTP on the pod network) |
 | `terminal.containerdSocket` (empty = `nodeAgent.criSocket`), `terminal.containerdNamespace` (`k8s.io`) | the runtime socket of the node and the kubelet's containerd namespace |
@@ -933,12 +936,14 @@ only when a sandbox with that namespace, lab and device name, both UIDs, no `lab
 the console label exists, and then takes the single *running* container of the same pod UID whose name is the device name. Labels are never read from
 an app container: the CRI copies the labels of the image onto it, and the image of a device is written by a participant. It accepts no container id,
 pod name or program path from a caller. The terminal command and user come from the lab (the proxy passes what the Device says, the service validates
-them); they are not secret and not a free choice of the participant.
+them: the program must be an absolute path outside `/proc` and `/sys`, at most 32 arguments of at most 4096 bytes, the user a name or a number of a plain pattern); they are not secret and not a free choice of the participant.
 
 **The exec.** The process of a console is a copy of the process block of the device container (user, capabilities, `no_new_privs`, environment base,
 working directory, rlimits; seccomp and AppArmor are the container's, applied by the runtime), as the CRI plugin does for `kubectl exec`; only the
 arguments, `TERM`, the terminal and the user are set. The runtime does not clamp capabilities for an exec, so the capabilities are never built from
-scratch (a unit test proves they are never wider than the container's). A named user is looked up *inside* the device by the probe (`probe resolve-user`),
+scratch (a unit test proves they are never wider than the container's). For a user that is not root the effective, permitted, ambient and inheritable sets are cleared and
+only the bounding set stays (as runc, the CRI plugin and Docker do): otherwise a console opened as an ordinary user would be a shell with root's capabilities. `no_new_privs`,
+the AppArmor profile, the SELinux label, the rlimits and the OOM score of the container are carried over by the copy. A named user is looked up *inside* the device by the probe (`probe resolve-user`),
 because the service cannot see the device's file system; the runtime gets numbers only. When a stream ends for any reason (the participant left, the shell
 exited, idle, lifetime, an error, the service stopping) the service kills and deletes the exec and removes its FIFOs; a journal in the FIFO directory lets the
 next start remove execs and FIFOs a crash left behind (containerd does not kill an exec when its client goes away).
@@ -955,26 +960,59 @@ sanitized name, `X-Content-Type-Options: nosniff`, a `sandbox` CSP. A transfer n
 |---|---|
 | hostPath socket (`nodeAgent.criSocket`) | the native containerd client. **This is the widest right of the pod**: the socket is the full containerd API, root on the node. The service is the only component that holds it; its listener is reachable only from the L7 proxy pods (Cilium) |
 | hostPath `terminal.fifoDir` (a `Directory`) | the client makes the FIFOs and the shim, on the host, opens them by the same path; no mount propagation is needed (the files appear in the same bind mount) |
-| runs as uid 0, **all capabilities dropped**, no privilege escalation, read-only root file system, seccomp `RuntimeDefault` | the socket is root:root 0660 on k0s; root without capabilities needs no DAC override for a file it owns. A non-root run needs the socket's group in `supplementalGroups` and a writable FIFO directory; it is a value, not the default, because the group differs per installation. Pod Security `baseline`/`restricted` refuse hostPath, and SELinux/AppArmor may refuse the socket to a confined container; the release namespace has no such label by default |
+| runs as uid 0, **all capabilities dropped**, no privilege escalation, read-only root file system, seccomp `RuntimeDefault` | the socket is root:root 0660 on k0s, so only uid 0 or the group root can connect; root without capabilities needs no DAC override for a file it owns, and the FIFO directory is made by this user for the root shim to open. A non-root run needs the socket's group in `terminal.securityContext.supplementalGroups` (and `runAsUser`/`runAsGroup`) and a FIFO directory that user can write; it is a value and not the default, because the group differs per installation (find it: `stat -c %g <socket>` on the node; `hack/device-access-check.sh` prints it and says how to test the non-root run). Pod Security `baseline`/`restricted` refuse hostPath (the namespace is labelled `privileged`), and SELinux/AppArmor may refuse the socket to a confined container |
 | no host network, PID or IPC; no ServiceAccount token | the proxy dials the pod; the service needs no Kubernetes API |
 | L7 proxy: ClusterRole `devices` get/list/watch | the node a device runs on and its terminal settings (a trimmed cache of the Devices) |
-| L7 proxy: Role in the release namespace, `pods` get/list/watch | the address of the service pod on that node; the cache is limited to that namespace and the label `app=laboratory-device-access` |
+| L7 proxy: Role in the service's own namespace, `endpointslices` get/list/watch | the address of the service pod on that node (the headless Service `laboratory-device-access` has one EndpointSlice per ready pod: an address and a node name). The proxy reads **no pod**: pod specs of the operator or the registry never become readable by the internet-facing proxy. The namespace holds nothing else |
 
-**Network.** The Cilium policy of the service admits ingress only from the pods `app=laboratory-proxy-l7` of the proxy namespace on `terminal.port`, and has no
+**Network.** The listener is bound to the pod IP only (downward API), not to every interface. The Cilium policy of the service admits ingress only from the pods `app=laboratory-proxy-l7` of the proxy namespace on `terminal.port`, and has no
 egress. The egress of the L7 proxy is narrowed to: DNS, the API server, the **device pods** of lab group namespaces (the namespace's group label *and* the pod's
 `laboratory.cybericebox.com/device` label, no longer every pod of the namespace) and, with the console on, the service pods on their one port. What the proxy
 dials in those namespaces is the web port of the pod behind the Service of an exposed device and nothing else (its traffic reports and the report preparation go
 through the API server).
 
+**Shared secret and rotation.** On top of the network policy every open request (console, file put, file get) carries an HMAC-SHA256 made by the proxy with a secret only
+the proxy and the service hold, over every field of the request, a timestamp and a random nonce. The service checks it first, in constant time, then that the
+timestamp is within 30 s of its own clock (keep the node clocks in sync) and that the nonce was not seen in that window, before it does anything else with the
+request. A failure is answered `unauthorized` without saying which check failed, and the secret is never logged, never in an environment variable and never in a metric:
+it is mounted as files from a Secret in each of the two namespaces (`laboratory-device-access-auth` and `laboratory-proxy-device-access-auth`). The service has no
+Kubernetes API token even so. There is no mode without a secret: the service does not start without `current`, and the proxy does not start the console without it.
+
+The chart makes the secret (48 random characters) and keeps it across upgrades by finding the existing Secret with `lookup`. **Where the chart is rendered without a
+cluster** (`helm template`, a dry run, GitOps tools such as Argo CD or Flux's renderer) `lookup` returns nothing and every render would make a new secret: set
+`terminal.sharedSecret.value` from a sealed secret or the like there. The chart refuses a value shorter than 32 characters.
+
+Rotation (no simultaneous restart: the service reads the files again every 10 s, and a mounted Secret changes in place in a minute or two):
+1. Set `terminal.sharedSecret.value=<old>` (explicitly) and `terminal.sharedSecret.accept=<new>`; upgrade. The service accepts both; the proxy still signs with the old one.
+2. Wait until every service pod has it (`kubectl -n laboratory-device-access exec <pod> -- ls /etc/device-access/auth` shows `accept`; allow a few minutes).
+3. Set `value=<new>` and `accept=<old>`; upgrade. The proxy signs with the new one; the service accepts both.
+4. After the proxy pods have the new secret, clear `accept`; upgrade.
+
+**Embedding.** The console page may be shown in a frame of a platform page. Two lists decide and nothing is implied: the origin of the page's `Referer` must match an
+`allow` entry and no `deny` entry (deny wins), otherwise the page says `frame-ancestors 'none'`. An entry is `https://host[:port]` or `https://*.base[:port]` where `*` is
+exactly one label (`a.example.com`, not `x.labs.example.com`), leftmost only; a malformed entry fails the chart render and the proxy start. The lists are parsed once at start.
+CSP cannot say "one label", so the proxy makes the header per response: it matches the Referer's origin itself and writes that one origin into `frame-ancestors`; the browser
+enforces it against the real parent, so a forged Referer only yields a header that blocks the forger. The page answers `Vary: Referer` and is never cached; opened as a
+top-level tab it works whatever the Referer. **Prefer exact entries** (the catalog site, the Academy site). With a wildcard, list in `deny` every host under it that must not
+embed: the landing, the controller, the VPN host and the labs base domain (nothing is excluded implicitly). **The embedding site must not send `Referrer-Policy: no-referrer`**
+(or the console cannot tell who frames it and refuses). Inside a frame the console needs the lab session cookie, which is `SameSite=Lax` and is not weakened: a browser sends it
+in a cross-site frame only when the embedding site shares the registrable domain with the labs' domain. On a custom event domain the console opens in a tab. The WebSocket
+keeps its check: `Origin` must equal the console page's own origin, which is the same in a frame.
+
+**Console link.** The link to a device's terminal is deterministic and needs no status field:
+`https://<terminal.host>.<operator.baseDomain>/?lab=<lab name>&device=<device name>`, opened through the handoff of the platform like a device link
+(`/_auth?t=<handoff token for host "<terminal.host>">&next=/?lab=<lab>&device=<device>`; the `host` claim of the token is the host label, `terminal` by default).
+
 **Logs and metrics.** One log line at the start and one at the end of a stream with metadata only: kind, namespace, lab, device, client and group as the proxy
-knows them (a pseudonym, no address), reason, duration, bytes in and out. No content. Metrics on `terminal.metricsPort`: `device_access_streams_active`,
+knows them (a pseudonym, no address), the console user and a short hash of the console command (so a wrong value stays visible afterwards), reason, duration,
+bytes in and out. No content. Metrics on `terminal.metricsPort`: `device_access_streams_active`,
 `device_access_streams_total{kind,reason}`, `device_access_bytes_total{kind,direction}`, `device_access_refused_total{code}`. Every byte of a stream passes
 one function (`stream.pass`); recording a console could be attached there later and is not built.
 
 **Not run yet.** Everything above was verified by unit tests with a fake runtime, by `helm template`, and by compiling for linux. Nothing was run on a live node:
 first run needs one runc node and one Kata node (`hack/device-access-check.sh`).
 
-Check it: `kubectl -n laboratory-system get ds laboratory-device-access`, then open a console of a lab with `terminal.enabled` in its device template.
+Check it: `kubectl -n laboratory-device-access get ds laboratory-device-access`, then open a console of a lab with `terminal.enabled` in its device template.
 
 ## 6. Uninstall
 

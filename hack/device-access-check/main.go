@@ -1,11 +1,12 @@
 //go:build ignore
 
 // device-access-check drives a running device access service against one real lab device and reports what it saw. It is run by
-// hack/device-access-check.sh (which port-forwards to the service pod on the node of the device), once for a device on a runc node and once
-// for a device on a Kata node. It was written on a machine without a Linux node and has NOT been run: treat the first run as part of the
+// hack/device-access-check.sh INSIDE the service pod on the node of the device (the listener is bound to the pod IP and the network policy
+// admits only the L7 proxy, so a port-forward would not reach it), once for a device on a runc node and once for a device on a Kata node.
+// It signs its open requests with the secret the pod has mounted, so it exercises the authentication too. It was written on a machine without a Linux node and has NOT been run: treat the first run as part of the
 // verification, not as a formality.
 //
-//	go run hack/device-access-check/main.go -addr 127.0.0.1:18080 -namespace <ns> -lab <lab> -device <device> [-user <name>] [-command /bin/sh]
+//	device-access-check -namespace <ns> -lab <lab> -device <device> [-user <name>] [-command /bin/sh]
 package main
 
 import (
@@ -28,7 +29,8 @@ import (
 )
 
 var (
-	addr    = flag.String("addr", "127.0.0.1:18080", "address of the service (a port-forward)")
+	addr    = flag.String("addr", os.Getenv("LISTEN"), "address of the service (the LISTEN of the pod: <pod ip>:<port>)")
+	secret  = flag.String("secret-file", "/etc/device-access/auth/current", "the secret shared with the proxy")
 	ns      = flag.String("namespace", "", "namespace of the lab group")
 	labName = flag.String("lab", "", "lab name")
 	device  = flag.String("device", "", "device name (its lab must ask for a terminal)")
@@ -59,6 +61,13 @@ func open(ctx context.Context, req wire.OpenRequest) (*session, wire.OpenReply, 
 		return nil, wire.OpenReply{}, err
 	}
 	c.SetReadLimit(wire.MaxFrame)
+	key, err := os.ReadFile(*secret)
+	if err != nil {
+		return nil, wire.OpenReply{}, err
+	}
+	if err := wire.Sign([]byte(strings.TrimRight(string(key), "\r\n")), &req, time.Now()); err != nil {
+		return nil, wire.OpenReply{}, err
+	}
 	raw, _ := json.Marshal(req)
 	if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
 		return nil, wire.OpenReply{}, err
@@ -249,6 +258,20 @@ func main() {
 		check("refused: "+c, err == nil && !rr.OK, fmt.Sprint(err, rr.Error))
 		if x != nil {
 			x.c.CloseNow()
+		}
+	}
+
+	// 7. an unsigned open request is refused
+	{
+		c, _, err := websocket.Dial(ctx, "ws://"+*addr+wire.StreamPath, &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled})
+		if err == nil {
+			raw, _ := json.Marshal(consoleReq())
+			_ = c.Write(ctx, websocket.MessageText, raw)
+			_, msg, rerr := c.Read(ctx)
+			var rr wire.OpenReply
+			_ = json.Unmarshal(msg, &rr)
+			check("an unsigned open request is refused", rerr == nil && !rr.OK && rr.Error == wire.CodeUnauthorized, fmt.Sprint(rerr, rr.Error))
+			c.CloseNow()
 		}
 	}
 

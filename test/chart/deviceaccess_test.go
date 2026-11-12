@@ -230,7 +230,8 @@ func TestProxyEgressIsNarrowedToDevicePods(t *testing.T) {
 	}
 }
 
-// The proxy gets the two read rights the console needs, narrow: devices (get, list, watch) and pods of the release namespace only.
+// The proxy gets the two read rights the console needs, narrow: devices (get, list, watch) and the EndpointSlices of the service's own namespace.
+// No pod is readable by it through the console.
 func TestProxyConsoleRBAC(t *testing.T) {
 	out, err := helmTemplate(t, consoleOn...)
 	if err != nil {
@@ -245,19 +246,199 @@ func TestProxyConsoleRBAC(t *testing.T) {
 		switch {
 		case kind == "Role" && name == "laboratory-proxy-device-access":
 			sawRole = true
-			if meta["namespace"] != "laboratory-system" || !strings.Contains(string(raw), "pods") || strings.Contains(string(raw), "create") ||
-				strings.Contains(string(raw), "update") || strings.Contains(string(raw), "delete") || strings.Contains(string(raw), "exec") {
+			if meta["namespace"] != "laboratory-device-access" || !strings.Contains(string(raw), "endpointslices") || strings.Contains(string(raw), "pods") ||
+				strings.Contains(string(raw), "secrets") || strings.Contains(string(raw), "create") || strings.Contains(string(raw), "update") || strings.Contains(string(raw), "delete") {
 				t.Errorf("role: %v %s", meta, raw)
 			}
 		case kind == "ClusterRole" && name == "laboratory-proxy":
 			sawDevices = strings.Contains(string(raw), "devices")
-			if strings.Contains(string(raw), "pods") {
-				t.Errorf("the proxy may not read pods cluster-wide: %s", raw)
+			if strings.Contains(string(raw), "pods") || strings.Contains(string(raw), "endpointslices") {
+				t.Errorf("the proxy may not read pods or slices cluster-wide: %s", raw)
 			}
+		case kind == "Role" && strings.Contains(string(raw), "pods") && strings.Contains(name, "proxy"):
+			t.Errorf("a Role that lets the proxy read pods: %s", name)
 		}
 	}
 	if !sawRole || !sawDevices {
 		t.Errorf("role %v, devices %v", sawRole, sawDevices)
+	}
+}
+
+// The service has a namespace of its own (privileged for the hostPath), a headless Service for its slices, and nothing else of the platform in it.
+func TestDeviceAccessHasANamespaceOfItsOwn(t *testing.T) {
+	out, err := helmTemplate(t, consoleOn...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	inNS := map[string]bool{}
+	var sawNS, sawSvc bool
+	for _, d := range docs(t, out) {
+		meta, _ := d["metadata"].(map[string]any)
+		kind, _ := d["kind"].(string)
+		if meta["namespace"] == "laboratory-device-access" {
+			inNS[kind+"/"+meta["name"].(string)] = true
+		}
+		if kind == "Namespace" && meta["name"] == "laboratory-device-access" {
+			sawNS = true
+			if l, _ := meta["labels"].(map[string]any); l["pod-security.kubernetes.io/enforce"] != "privileged" {
+				t.Errorf("namespace labels: %v", l)
+			}
+		}
+		if kind == "Service" && meta["name"] == "laboratory-device-access" {
+			sawSvc = true
+			spec, _ := d["spec"].(map[string]any)
+			if spec["clusterIP"] != "None" {
+				t.Errorf("the service must be headless: %v", spec["clusterIP"])
+			}
+		}
+	}
+	if !sawNS || !sawSvc {
+		t.Fatalf("namespace %v, service %v", sawNS, sawSvc)
+	}
+	want := map[string]bool{"ServiceAccount/laboratory-device-access": true, "DaemonSet/laboratory-device-access": true, "Service/laboratory-device-access": true,
+		"CiliumNetworkPolicy/laboratory-device-access": true, "Secret/laboratory-device-access-auth": true, "Role/laboratory-proxy-device-access": true,
+		"RoleBinding/laboratory-proxy-device-access": true}
+	for k := range inNS {
+		if !want[k] {
+			t.Errorf("unexpected object in the service's namespace: %s", k)
+		}
+	}
+	for k := range want {
+		if !inNS[k] {
+			t.Errorf("missing in the service's namespace: %s", k)
+		}
+	}
+	// it must be a namespace of its own
+	if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "--set", "terminal.namespace=laboratory-system")...); err == nil {
+		t.Errorf("the release namespace was accepted:\n%s", out)
+	}
+	if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "--set", "terminal.namespace=laboratory-proxy")...); err == nil {
+		t.Errorf("the proxy namespace was accepted:\n%s", out)
+	}
+}
+
+func TestDeviceAccessListensOnThePodIPOnly(t *testing.T) {
+	ds := deviceAccessDaemonSet(t)
+	env := map[string]corev1.EnvVar{}
+	for _, e := range ds.Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e
+	}
+	if env["POD_IP"].ValueFrom == nil || env["POD_IP"].ValueFrom.FieldRef.FieldPath != "status.podIP" {
+		t.Errorf("POD_IP: %+v", env["POD_IP"])
+	}
+	for _, k := range []string{"LISTEN", "METRICS_LISTEN"} {
+		if !strings.HasPrefix(env[k].Value, "$(POD_IP):") {
+			t.Errorf("%s = %q: bound to every interface", k, env[k].Value)
+		}
+	}
+	// POD_IP is declared before the variables that use it (the kubelet expands $(VAR) only from earlier ones)
+	order := map[string]int{}
+	for i, e := range ds.Spec.Template.Spec.Containers[0].Env {
+		order[e.Name] = i
+	}
+	if order["POD_IP"] > order["LISTEN"] || order["POD_IP"] > order["METRICS_LISTEN"] {
+		t.Error("POD_IP must come before LISTEN")
+	}
+}
+
+// The shared secret: one value in two Secrets, mounted as files, never an environment variable; the chart refuses a short one.
+func TestSharedSecretIsMountedAsFilesAndNeverInTheEnvironment(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef0123456789"
+	set := append(append([]string{}, consoleOn...), "--set", "terminal.sharedSecret.value="+secret, "--set", "terminal.sharedSecret.accept=fedcba9876543210fedcba9876543210fedcba98")
+	out, err := helmTemplate(t, set...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	values := map[string]map[string]any{}
+	for _, d := range docs(t, out) {
+		meta, _ := d["metadata"].(map[string]any)
+		if d["kind"] == "Secret" && strings.HasSuffix(meta["name"].(string), "device-access-auth") {
+			values[meta["namespace"].(string)], _ = d["stringData"].(map[string]any)
+		}
+	}
+	if values["laboratory-device-access"]["current"] != secret || values["laboratory-proxy"]["current"] != secret {
+		t.Fatalf("secrets: %v", values)
+	}
+	if values["laboratory-device-access"]["accept"] == nil || values["laboratory-proxy"]["accept"] != nil {
+		t.Errorf("the service accepts the second secret, the proxy never signs with it: %v", values)
+	}
+	// nowhere in a workload: no env value, no argument
+	for _, d := range docs(t, out) {
+		kind, _ := d["kind"].(string)
+		if kind != "DaemonSet" && kind != "Deployment" {
+			continue
+		}
+		raw, _ := yaml.Marshal(d)
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("the secret appears in a %s", kind)
+		}
+	}
+	ds := deviceAccessDaemonSet(t)
+	var mounted bool
+	for _, m := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "auth" && m.MountPath == "/etc/device-access/auth" && m.ReadOnly {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Error("the service does not mount the secret read-only")
+	}
+	var dep appsv1.Deployment
+	render(t, "templates/proxy/deployment.yaml", &dep, consoleOn...)
+	var proxyMount bool
+	for _, m := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
+		proxyMount = proxyMount || m.Name == "device-access-auth" && m.MountPath == "/etc/proxy/device-access-auth" && m.ReadOnly
+	}
+	if !proxyMount {
+		t.Error("the proxy does not mount the secret")
+	}
+	for _, short := range []string{"terminal.sharedSecret.value=short", "terminal.sharedSecret.accept=short"} {
+		if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "--set", short)...); err == nil {
+			t.Errorf("%s accepted:\n%s", short, out)
+		}
+	}
+	// without a value the chart makes one of at least 32 characters, the same in both namespaces
+	out, err = helmTemplate(t, consoleOn...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen := map[string]string{}
+	for _, d := range docs(t, out) {
+		meta, _ := d["metadata"].(map[string]any)
+		if d["kind"] == "Secret" && strings.HasSuffix(meta["name"].(string), "device-access-auth") {
+			sd, _ := d["stringData"].(map[string]any)
+			gen[meta["namespace"].(string)], _ = sd["current"].(string)
+		}
+	}
+	if len(gen["laboratory-proxy"]) < 32 || gen["laboratory-proxy"] != gen["laboratory-device-access"] {
+		t.Errorf("generated secrets: %v", gen)
+	}
+}
+
+func TestEmbeddingListsAreValidatedAndReachTheProxy(t *testing.T) {
+	var dep appsv1.Deployment
+	render(t, "templates/proxy/deployment.yaml", &dep, append(append([]string{}, consoleOn...),
+		"--set", "terminal.embedding.allow={https://exercises.example.com,https://*.example.org}", "--set", "terminal.embedding.deny={https://vpn.example.org}")...)
+	env := map[string]string{}
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["TERMINAL_EMBED_ALLOW"] != "https://exercises.example.com,https://*.example.org" || env["TERMINAL_EMBED_DENY"] != "https://vpn.example.org" {
+		t.Errorf("env: %v", env)
+	}
+	render(t, "templates/proxy/deployment.yaml", &dep, consoleOn...)
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		if (e.Name == "TERMINAL_EMBED_ALLOW" || e.Name == "TERMINAL_EMBED_DENY") && e.Value != "" {
+			t.Errorf("%s = %q by default: no embedding is the default", e.Name, e.Value)
+		}
+	}
+	for _, bad := range []string{"http://a.example.com", "https://*.com", "https://**.example.com", "https://a.example.com/x", "https://A.example.com", "*.example.com",
+		"https://a.*.example.com", "https://a.example.com:port", "https://*"} {
+		for _, list := range []string{"allow", "deny"} {
+			if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "--set", "terminal.embedding."+list+"={"+bad+"}")...); err == nil {
+				t.Errorf("%s entry %q accepted:\n%s", list, bad, out)
+			}
+		}
 	}
 }
 
@@ -268,7 +449,7 @@ func TestProxyGetsTheConsoleSettings(t *testing.T) {
 	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
 		env[e.Name] = e.Value
 	}
-	for k, want := range map[string]string{"TERMINAL_ENABLED": "true", "TERMINAL_HOST": "shell", "TERMINAL_SERVICE_NAMESPACE": "laboratory-system", "TERMINAL_SERVICE_PORT": "8080",
+	for k, want := range map[string]string{"TERMINAL_ENABLED": "true", "TERMINAL_HOST": "shell", "TERMINAL_SERVICE_NAMESPACE": "laboratory-device-access", "TERMINAL_SERVICE_PORT": "8080",
 		"TERMINAL_PER_CLIENT": "5", "TERMINAL_MAX_FILE_BYTES": "16777216", "TERMINAL_MAX_SESSION_BYTES": "67108864"} {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q", k, env[k], want)

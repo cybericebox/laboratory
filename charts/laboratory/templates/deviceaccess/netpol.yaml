@@ -8,7 +8,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: laboratory-device-access
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "laboratory.deviceAccess.namespace" . }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

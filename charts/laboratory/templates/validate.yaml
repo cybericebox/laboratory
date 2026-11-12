@@ -95,6 +95,27 @@ at install time instead of shipping a broken deployment.
 {{- if or (not (hasPrefix "/" (include "laboratory.deviceAccess.socket" .))) (not (hasPrefix "/" .Values.terminal.fifoDir)) }}
 {{- fail "terminal.containerdSocket (or nodeAgent.criSocket) and terminal.fifoDir must be absolute paths" }}
 {{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .Values.terminal.namespace) }}
+{{- fail (printf "terminal.namespace %q is not a namespace name" .Values.terminal.namespace) }}
+{{- end }}
+{{- if or (eq .Values.terminal.namespace .Release.Namespace) (eq .Values.terminal.namespace .Values.proxy.namespace) }}
+{{- fail "terminal.namespace must be a namespace of its own, not the release namespace or the proxy's: the privileged level and the proxy's Role over its EndpointSlices must cover nothing else" }}
+{{- end }}
+{{- range $v := list .Values.terminal.sharedSecret.value .Values.terminal.sharedSecret.accept }}
+{{- if and $v (lt (len $v) 32) }}
+{{- fail "terminal.sharedSecret.value and .accept must be at least 32 characters (or empty: the value is then made by the chart and kept in the cluster)" }}
+{{- end }}
+{{- end }}
+{{- range $list := list "allow" "deny" }}
+{{- range $e := index $.Values.terminal.embedding $list }}
+{{- if not (regexMatch "^https://(\\*\\.)?([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\.)*[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(:[0-9]{1,5})?$" $e) }}
+{{- fail (printf "terminal.embedding.%s entry %q is not https://host[:port] or https://*.base[:port] (lower case, no path, * only as the whole leftmost label)" $list $e) }}
+{{- end }}
+{{- if and (hasPrefix "https://*." $e) (not (contains "." (trimPrefix "https://*." $e))) }}
+{{- fail (printf "terminal.embedding.%s entry %q: a wildcard needs a base of at least two labels" $list $e) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if lt (int64 .Values.terminal.limits.maxSessionBytes) (int64 .Values.terminal.limits.maxFileBytes) }}
 {{- fail "terminal.limits.maxSessionBytes must not be below terminal.limits.maxFileBytes" }}
 {{- end }}

@@ -116,7 +116,13 @@ spec:
     - name: TERMINAL_HOST
       value: {{ .Values.terminal.host | quote }}
     - name: TERMINAL_SERVICE_NAMESPACE
-      value: {{ .Release.Namespace | quote }}
+      value: {{ include "laboratory.deviceAccess.namespace" . | quote }}
+    - name: TERMINAL_KEY_FILE
+      value: /etc/proxy/device-access-auth/current
+    - name: TERMINAL_EMBED_ALLOW
+      value: {{ join "," .Values.terminal.embedding.allow | quote }}
+    - name: TERMINAL_EMBED_DENY
+      value: {{ join "," .Values.terminal.embedding.deny | quote }}
     - name: TERMINAL_SERVICE_PORT
       value: {{ .Values.terminal.port | quote }}
     - name: TERMINAL_PER_CLIENT
@@ -181,6 +187,12 @@ spec:
       mountPath: /etc/bandwidth
       readOnly: true
     {{- end }}
+    {{- if .Values.terminal.enabled }}
+    # The secret shared with the device access service: the L7 proxy signs its open requests with it.
+    - name: device-access-auth
+      mountPath: /etc/proxy/device-access-auth
+      readOnly: true
+    {{- end }}
     resources:
       {{- toYaml .Values.proxy.l7.resources | nindent 6 }}
   {{- end }}
@@ -189,6 +201,12 @@ spec:
   - name: tls
     secret:
       secretName: proxy-tls
+  {{- if .Values.terminal.enabled }}
+  - name: device-access-auth
+    secret:
+      secretName: laboratory-proxy-device-access-auth
+      defaultMode: 0440
+  {{- end }}
   {{- if .Values.bandwidth.enabled }}
   # The bandwidth limits of every node, written by the operator; the proxy reads the key of its own node. Optional: the pod starts
   # before the operator has made the ConfigMap, and has no limit until it exists.
