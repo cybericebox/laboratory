@@ -106,7 +106,7 @@ func TestChecksDefaultsAndRoundTrip(t *testing.T) {
 		{Custom: &CustomPart{Command: []string{"/bin/true"}, OutputContains: s("ok")}},
 	}}}
 	NormalizeChecks(cs)
-	if cs[0].TimeLimitSeconds != DefaultCheckTimeLimit || cs[0].Parts[0].Custom.User != "root" || cs[0].Parts[0].Custom.Interpreter != "/bin/sh" || cs[0].Parts[1].Custom.Interpreter != "" {
+	if cs[0].TimeLimitSeconds != DefaultCheckTimeLimit || cs[0].Parts[0].Custom.User != "nobody" || cs[0].Parts[0].Custom.Interpreter != "/bin/sh" || cs[0].Parts[1].Custom.Interpreter != "" {
 		t.Fatalf("defaults: %+v", cs[0])
 	}
 	if err := ValidateChecks(cs, devices); err != nil {

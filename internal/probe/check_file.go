@@ -32,12 +32,21 @@ func runCheckFile(req FileRequest) FileResponse {
 	}
 	switch {
 	case err != nil && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)):
+		// A link that leads nowhere is still there.
+		if lst, lerr := os.Lstat(req.Path); lerr == nil {
+			resp.Exists, resp.Type = true, typeOf(lst.Mode())
+		}
 		return resp
 	case err != nil:
 		resp.Error = "cannot look at the file: " + errnoName(err)
 		return resp
 	}
 	resp.Exists = true
+	if lst, lerr := os.Lstat(req.Path); lerr == nil {
+		resp.Type = typeOf(lst.Mode())
+	} else {
+		resp.Type = typeOf(st.Mode())
+	}
 	resp.Regular = st.Mode().IsRegular()
 	resp.Mode = uint32(st.Mode().Perm())
 	if st.Mode()&fs.ModeSetuid != 0 {
@@ -75,4 +84,17 @@ func errnoName(err error) string {
 		return errno.Error()
 	}
 	return "I/O error"
+}
+
+// typeOf names what a file mode is.
+func typeOf(m fs.FileMode) string {
+	switch {
+	case m&fs.ModeSymlink != 0:
+		return "symlink"
+	case m.IsDir():
+		return "directory"
+	case m.IsRegular():
+		return "file"
+	}
+	return "other"
 }

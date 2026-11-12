@@ -250,7 +250,7 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
   4-символьным (длиннее не бывает). Имя нигде не хранится: следующий reconcile находит Service по лейблам
   `laboratory.cybericebox.com/lab` и `.../device` плюс ownerReference на Lab и использует его имя; URL в `status.access`
   строится из фактического имени Service. По этим же лейблам прокси относит запрос к лаборатории (см. proxy.md).
-- **Что считать выполненным:** для каждого Device с `exposure.web != nil` существует Service и NetworkPolicy; пакеты не
+- **Что считать выполненным:** для каждого Device с `есть запись access вида http` существует Service и NetworkPolicy; пакеты не
   от prox-pod-а отбрасываются; egress полностью запрещён.
 - **Заметки/gap:** spec §5 говорит о «второй ноге» (отдельный интерфейс) на под — здесь web-нога совпадает с дефолтным
   eth0 (потому что Service использует под селектор). Это OK для текущей реализации, но в спецификации описана
@@ -460,7 +460,7 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
 #### REQ-OP-081: Lab → VNI/subnet alloc → Device/Connection materialize → VPN port → web Service+NP
 
 - **Источник:** §14 «`Lab` создан → VNI и подсети, материализует Device/Connection, поднимает порт-на-лабу на
-  VPN-сервере, для `exposure.web` — Service + NetworkPolicy».
+  VPN-сервере, для записи `access` вида `http` — Service + NetworkPolicy».
 - **Статус:** ⚠️ Partial
 - **Реализация:** subnet ✅, device materialize ✅, connection materialize ✅, web Service+NP ✅. Поднятие порта-на-лабу на
   VPN-сервере — задача VPN-контроллера (см. `vpn.md`), не оператора.

@@ -1,4 +1,4 @@
-# Device bootstrap, lab checks and terminal: the laboratory contract
+# Device bootstrap, lab checks and device access: the laboratory contract
 
 **Agent API contract version:** 1.4 -> 1.5. Everything here is additive: new field numbers, no renames, no removals. An old daemon keeps working; an old agent simply lacks the fields.
 
@@ -20,7 +20,7 @@ Not implemented (deliberately):
 | Bootstrap list of a device (script, files, time limit) | yes | Secret `<device object>-bootstrap`, key `bootstrap.json` |
 | Checks of a lab (parts, expected values, schedule, time limit) | yes | Secret `<lab>-checks`, key `checks.json` |
 | Device environment (unchanged) | yes | Secret `<device object>-env` |
-| Service command, terminal switch | no | `Lab.spec.devices[]` (`spec_json`), copied to `Device.spec` |
+| Service command, access list | no | `Lab.spec.devices[]` (`spec_json`), copied to `Device.spec` |
 | "This device has a bootstrap", "this lab has checks" | no | `spec.devices[].bootstrap.enabled`, `spec.checks.items[] {id, device, manualRun}`, set by the agent only |
 | Bootstrap state, check results | no | status, see section 3 |
 
@@ -48,16 +48,20 @@ Status messages and fields: `BootstrapStatus {BootstrapPhase phase=1, attempts=2
 
 Features: `FeaturesResponse.checks = 17` (`ChecksFeature {enabled, max_checks_per_lab, max_parts_per_check, max_time_limit_seconds, max_schedule_seconds, max_detail_bytes}`), `terminal = 18` (`TerminalFeature {enabled}`), `bootstrap = 19` (`BootstrapFeature {max_script_bytes, max_files, max_file_bytes, max_total_bytes, max_time_limit_seconds, max_attempts}`). The same message is carried in `MonitoringUpdate.features`.
 
+**Device access (2026-11-12, owner decision; docs/specs/2026-11-12-device-access-and-checks.md in the platform repo).** The device's `exposure` (a web port) and `terminal` are removed, with no compatibility. One list `access` replaces them, in `spec_json`, in `DeviceTemplate`/`DeviceSpec`: `access[] {kind: http | terminal | vnc | rdp, port, protocol, command[], user}`, at most one entry of each kind (a map list keyed by `kind`). `http`: `port` 1..65535, `protocol` http (the default) or https. `terminal`: `command` (empty = `/bin/sh`), `user` (empty = the image's user), no port. `vnc`, `rdp`: `port` only; accepted and stored, served by nothing, `features.access.vnc/rdp` is false. Everything that read `exposure.web` (L7 proxy routes and Services, readiness by port, `LabStatus.access` URLs, the access port of the pod) reads the `http` entry. Only a container device can have a terminal.
+
+Features: `FeaturesResponse.terminal = 18` is removed (the number and the name are reserved); `FeaturesResponse.access = 21` is `AccessFeature {http, terminal, vnc, rdp}`: http is always true, `terminal` is true only when `terminal.enabled` is on AND the component that serves it exists (the agent's `Features.TerminalServed`), vnc and rdp are false. A lab with a terminal device is still refused by the option alone.
+
 Terminal access entry: no new field. `LabAccessEntry` with `protocol = "terminal"`, `port = 0`, `url = ""`. It is not added to `LabStatus.access_urls`.
 
-There is no typed proto message for the device spec; it travels as `spec_json` (the `DeviceTemplate` shape), so the service command and the terminal switch are spec fields.
+There is no typed proto message for the device spec; it travels as `spec_json` (the `DeviceTemplate` shape), so the service command and the access list are spec fields.
 
 ## 3. CRD fields
 
 `DeviceTemplate` and `DeviceSpec` (same names in both):
 
 - `service {command[], args[], user, workingDir}`: from the image configuration, set by the daemon; empty = not provided (the image decides). Container devices only.
-- `terminal {enabled, command[], user}`: command empty = `/bin/sh`; user empty = the service user. Container devices only.
+- `access[]`: see "Device access" above (the terminal is the `terminal` entry; command empty = `/bin/sh`, user empty = the image's user).
 - `bootstrap {enabled}`: set by the agent when it received a non-empty list for the device (a client's value is dropped). The list and its time limit are only in the Secret.
 
 `LabSpec.checks {items[] {id, device, manualRun}}`: set by the agent when it received checks. Mode, schedule, time limit and parts are only in the Secret.
@@ -150,3 +154,26 @@ Built and unit-tested off-cluster; not verified without a Linux node with Kata:
 - the writable layer of a container restarted in place is fresh (containerd), and image `VOLUME` paths do not keep data across the restart;
 - the kubelet's restart back-off (10 s, 20 s, ...) adds to the launcher's own pauses between attempts;
 - `HOME` handling: the launcher replaces `/root` with the service user's home; a device whose image or env Secret sets `HOME=/root` explicitly for a non-root user would get the user's home instead.
+
+## 10. Built-in observations (2026-11-12)
+
+A check part is exactly one of eight observations. `file` and `custom` are as before (see 4) with additions; the six new ones read the state of the device **themselves**: the in-device program (`probe check-observe`) executes nothing of the device, no shell, no tool, no library of the image. The expected values stay in the checker; the program is asked where to look (a path, a port, a sysctl name, a user and a path, a destination) and answers with facts, bounded in size.
+
+Proto (`CheckPart` oneof, numbers 3..8): `DirectoryObservation`, `ProcessObservation`, `PortObservation`, `KernelParamObservation`, `RequestObservation`, `PermissionObservation`; `FileObservation` gets `type = 8` and `checksum = 9`. Names follow the exercise schema 1.0, section 4.2.
+
+| Observation | Keys (optional unless said; defaults are filled in by the agent) |
+|---|---|
+| `file` | `path`, `exists`, `type` (file/directory/symlink, link not followed), `content_contains`, `content_matches`, `checksum` (sha256 hex of a regular file of at most 256 KiB), `mode`, `owner`, `group` |
+| `directory` | `path`, `exists` (true), `mode`, `owner`, `group`, `has_entries[]`, `lacks_entries[]` (at most 64 names each, a name has no `/`) |
+| `process` | `name` (the command without its directory) and/or `matches` (regexp on the command line), at least one; `user`; `running` (true) |
+| `port` | `port` 1..65535, `protocol` tcp (default) or udp, `listening` (true), `address` (an IP; a listener on the wildcard counts), `process` (the socket's holder) |
+| `kernel_param` | `name` (sysctl with dots), `equals` and/or `matches`, at least one |
+| `request` | `protocol` tcp / http / https, `host` (127.0.0.1), `port`; http(s): `method` GET (default) or HEAD, `path` (/), `status` (200), `body_contains`, `body_matches` (GET only). No redirect is followed, https is not verified, the body is read up to 64 KiB, proxy variables are ignored |
+| `permission` | `user`, `path`, and at least one of `read`, `write`, `execute`; each given boolean must equal the real answer. Tested with `faccessat(AT_EACCESS)` in a child that runs as the user (groups from `/etc/group`); nothing is opened for writing, nothing is changed. A missing path is `not_passed` |
+| `custom` | as before; `user` defaults to **nobody** (uid 65534 when the image has no such name); any other user, root included, is the author's explicit choice. The command gets a clean environment (`PATH` fixed, `HOME`, `LC_ALL=C`, `USER`/`LOGNAME`) and is looked up in that PATH; its working directory is `/` |
+
+Bounds of what the device returns: 4096 directory names, 8192 processes (command line 1024 bytes), 256 sockets of one port, a sysctl value of 4096 bytes, a request body of 64 KiB, a file of 256 KiB (a larger file is an `error` where the content or the checksum matters, never a silent fail). A list cut at its bound decides only what it can: a name found is found, a name not found is `error`.
+
+Features: `ChecksFeature.observations = 7` lists the kinds the checker runs: file, directory, process, port, kernel_param, request, permission, custom. A kind that is not listed is not run.
+
+Today the user of a `custom` check can be switched only when the container's own user is root (the runtime's exec starts the tool as the image's user); with another user the result is `error` ("the in-device tool does not run as root"). The device access service will start the tool as root.

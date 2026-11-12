@@ -611,6 +611,14 @@ message CheckPart {
   oneof observation {
     FileObservation file = 1;
     CustomObservation custom = 2;
+    // The built-in observations: the in-device program reads the state itself and executes nothing of the device. Expected values
+    // never go to the device; they are compared by the checker.
+    DirectoryObservation directory = 3;
+    ProcessObservation process = 4;
+    PortObservation port = 5;
+    KernelParamObservation kernel_param = 6;
+    RequestObservation request = 7;
+    PermissionObservation permission = 8;
   }
 }
 // FileObservation reads a file of the device; every expectation is optional, at least one is required.
@@ -622,13 +630,68 @@ message FileObservation {
   optional uint32 mode = 5;              // permission bits
   optional string owner = 6;
   optional string group = 7;
+  optional string type = 8;              // file | directory | symlink (what the path itself is)
+  optional string checksum = 9;          // sha256 of the content, 64 lower-case hex characters; a regular file of at most 256 KiB
+}
+// DirectoryObservation: exists (default true), mode, owner, group, names that must be directly in the directory and names that must not.
+message DirectoryObservation {
+  string path = 1;                       // absolute, clean
+  optional bool exists = 2;
+  optional uint32 mode = 3;
+  optional string owner = 4;
+  optional string group = 5;
+  repeated string has_entries = 6;       // at most 64 names
+  repeated string lacks_entries = 7;     // at most 64 names
+}
+// ProcessObservation: a process by name (the command without its directory) or by a regular expression on the command line; at
+// least one of name and matches.
+message ProcessObservation {
+  optional string name = 1;
+  optional string matches = 2;           // RE2 regular expression on the command line
+  optional string user = 3;
+  optional bool running = 4;             // default true; false: no such process may run
+}
+// PortObservation: whether something listens on a port of the device.
+message PortObservation {
+  int32 port = 1;                        // 1..65535
+  string protocol = 2;                   // tcp (default) | udp
+  optional bool listening = 3;           // default true
+  optional string address = 4;           // an IP address; a listener on the wildcard also counts
+  optional string process = 5;           // the listener belongs to a process of this name
+}
+// KernelParamObservation: the value of a sysctl; at least one of equals and matches.
+message KernelParamObservation {
+  string name = 1;                       // with dots, e.g. net.ipv4.ip_forward
+  optional string equals = 2;
+  optional string matches = 3;           // RE2 regular expression
+}
+// RequestObservation: a connection made from inside the device by the in-device program. tcp: passed when the connection opens.
+// http and https: GET or HEAD with the expected status and body rules; a redirect is not followed; https is not verified.
+message RequestObservation {
+  string protocol = 1;                   // tcp | http | https
+  string host = 2;                       // empty = 127.0.0.1
+  int32 port = 3;                        // 1..65535
+  string method = 4;                     // http(s): GET (default) | HEAD
+  string path = 5;                       // http(s): starts with /, default /
+  optional int32 status = 6;             // http(s): expected status, default 200
+  optional string body_contains = 7;     // GET only
+  optional string body_matches = 8;      // RE2 regular expression; GET only
+}
+// PermissionObservation: whether a user may read, write or execute a path. Tested without changing anything. Each given boolean must
+// equal the real answer; at least one is required.
+message PermissionObservation {
+  string user = 1;
+  string path = 2;                       // absolute, clean
+  optional bool read = 3;
+  optional bool write = 4;
+  optional bool execute = 5;
 }
 // CustomObservation runs a command or a script in the device; exit code 0 is "passed".
 message CustomObservation {
   repeated string command = 1;           // exactly one of command and script
   string script = 2;
   string interpreter = 3;                // for a script; empty = /bin/sh
-  string user = 4;                       // empty = root
+  string user = 4;                       // empty = nobody; any other user, root included, is the author's explicit choice
   optional string output_contains = 5;
   optional string output_matches = 6;    // RE2 regular expression
 }
