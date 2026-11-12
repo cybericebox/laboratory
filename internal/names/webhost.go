@@ -28,17 +28,32 @@ const (
 	base36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 )
 
-var base36Radix = big.NewInt(36)
+var (
+	base36Radix    = big.NewInt(36)
+	kindSlotsRadix = big.NewInt(36 / KindSlots)
+)
 
-// NewWebCode returns n random lowercase base36 characters from crypto/rand.
+// NewWebCode returns a random base code of n lowercase base36 characters from crypto/rand. A base code is the code a device stores
+// (Device.spec.code): its last character is one of the six that stand for the access kind http (the base36 index is a multiple of
+// KindSlots), so the other kinds of access to the device can be written in the same position (see AccessHostLabel). The first n-1
+// characters are free, which leaves 36^(n-1)*KindSlots codes of length n (a sixth of the space of fully random codes); the widening
+// to WebCodeMaxLen after WebCodeAttempts collisions is unchanged.
 func NewWebCode(n int) (string, error) {
 	out := make([]byte, n)
 	for i := range out {
-		d, err := rand.Int(rand.Reader, base36Radix)
+		radix := base36Radix
+		if i == n-1 {
+			radix = kindSlotsRadix
+		}
+		d, err := rand.Int(rand.Reader, radix)
 		if err != nil {
 			return "", fmt.Errorf("names: random web code: %w", err)
 		}
-		out[i] = base36[d.Int64()]
+		v := d.Int64()
+		if i == n-1 {
+			v *= KindSlots
+		}
+		out[i] = base36[v]
 	}
 	return string(out), nil
 }
@@ -75,11 +90,6 @@ func ValidateNewDeviceName(name string) error {
 			return fmt.Errorf("device name %q is reserved by the platform", name)
 		}
 	}
-	for _, m := range kindMarkers {
-		if strings.HasSuffix(name, "--"+m) {
-			return fmt.Errorf("device name %q may not end in %q, the mark of an access host", name, "--"+m)
-		}
-	}
 	return nil
 }
 
@@ -105,41 +115,82 @@ func WorkloadName(device, code, legacy string) string {
 }
 
 // Access kinds of a device, as the host of the L7 proxy addresses them. Every access to a device through the proxy is addressed by a
-// host name alone, never by a path or a query.
+// host name alone, never by a path or a query, and every such host looks the same: one label <device>-<code> under the labs domain.
+// The kind of access is the LAST character of the code: its base36 index is the index of the device's stored base code (a multiple of
+// KindSlots) plus the index of the kind. There are KindSlots=6 slots; 4 and 5 are reserved.
 const (
 	AccessKindHTTP     = "http"
 	AccessKindTerminal = "terminal"
 	AccessKindVNC      = "vnc"
 	AccessKindRDP      = "rdp"
+	// AccessKindUnknown is what ParseAccessHost says of a reserved slot.
+	AccessKindUnknown = "unknown"
+
+	// KindSlots is the number of access kinds a host can tell apart.
+	KindSlots = 6
 )
 
-// kindMarkers are the fixed suffixes of the host labels of the kinds other than http. The web host <device>-<code> ends in a hyphen
-// and a code of 3 to 4 letters or digits, so it never has "--" in its last 6 characters (a device name does not end in a hyphen
-// either); a kind host ends in "--<marker>". Neither can be the other, whatever the names of the devices are.
-var kindMarkers = map[string]string{AccessKindTerminal: "term", AccessKindVNC: "vnc", AccessKindRDP: "rdp"}
+var (
+	kindIndex = map[string]int{AccessKindHTTP: 0, AccessKindTerminal: 1, AccessKindVNC: 2, AccessKindRDP: 3}
+	kindNames = [KindSlots]string{AccessKindHTTP, AccessKindTerminal, AccessKindVNC, AccessKindRDP, AccessKindUnknown, AccessKindUnknown}
+)
 
-// AccessHostLabel is the first DNS label of the host that serves a kind of access to a device: the web host for http, and
-// <device>-<code>--<marker> for the others. ok is false for an unknown kind. The code is the device's own (Device.Spec.Code); a device
-// without one has no access host except the one its web Service already has.
-func AccessHostLabel(device, code, kind string) (label string, ok bool) {
-	if kind == AccessKindHTTP {
-		return WebHostLabel(device, code), true
+func base36Index(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'z':
+		return int(c-'a') + 10
 	}
-	m, found := kindMarkers[kind]
-	if !found {
-		return "", false
-	}
-	return WebHostLabel(device, code) + "--" + m, true
+	return -1
 }
 
-// ParseAccessHost splits the first label of a host into the web host label of the device (<device>-<code>) and the kind. A label
-// without a kind marker is a plain web host: kind is http and base is the label itself. A label that carries a marker of a kind is
-// that kind. Nothing else decides which kind a host is, so a site that frames a console host (kind terminal) decides by this alone.
-func ParseAccessHost(label string) (base, kind string) {
-	for k, m := range kindMarkers {
-		if b, ok := strings.CutSuffix(label, "--"+m); ok {
-			return b, k
+// IsBaseCode says whether a code is a base code: the last character is one of the six that stand for http (index 0, 6, 12, 18, 24 or
+// 30), and the code is made of lowercase letters and digits only.
+func IsBaseCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if base36Index(code[i]) < 0 {
+			return false
 		}
 	}
-	return label, AccessKindHTTP
+	return base36Index(code[len(code)-1])%KindSlots == 0
+}
+
+// AccessHostLabel is the first DNS label of the host that serves a kind of access to a device: <device>-<code> with the last character
+// of the base code moved on by the index of the kind (http 0, terminal 1, vnc 2, rdp 3). For http it is the web host of the device, as
+// it always was. ok is false for an unknown kind or a code that is not a base code (a device that predates the rule has no access host
+// of another kind).
+func AccessHostLabel(device, code, kind string) (label string, ok bool) {
+	k, found := kindIndex[kind]
+	if !found || !IsBaseCode(code) {
+		return "", false
+	}
+	last := base36Index(code[len(code)-1])
+	return device + "-" + code[:len(code)-1] + string(base36[last+k]), true
+}
+
+// ParseAccessHost reads the first label of a host as an access host: the device name, the base code of the device and the kind. A
+// label that is not <device>-<code> (a code of WebCodeLen to WebCodeMaxLen lowercase letters or digits after the last hyphen, a valid
+// device name before it) returns an empty kind: it is no access host, and the caller looks it up as it always did. A label whose last
+// character is in a reserved slot returns AccessKindUnknown. The rule for a client that has no code: a console host is one label whose
+// last character has a base36 index that leaves 1 when divided by 6.
+func ParseAccessHost(label string) (device, code, kind string) {
+	i := strings.LastIndexByte(label, '-')
+	if i <= 0 {
+		return "", "", ""
+	}
+	device, code = label[:i], label[i+1:]
+	if len(code) < WebCodeLen || len(code) > WebCodeMaxLen || ValidateDeviceName(device) != nil {
+		return "", "", ""
+	}
+	for j := 0; j < len(code); j++ {
+		if base36Index(code[j]) < 0 {
+			return "", "", ""
+		}
+	}
+	last := base36Index(code[len(code)-1])
+	return device, code[:len(code)-1] + string(base36[last-last%KindSlots]), kindNames[last%KindSlots]
 }

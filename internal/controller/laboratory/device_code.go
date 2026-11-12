@@ -69,7 +69,13 @@ func (a *codeAllocator) load(ctx context.Context) error {
 // codeFor returns the code of a container device of the lab: the one it already
 // has (on its Device, or in the name of its web Service when the Device is not
 // created yet), a new one for a device that has none, and "" for a device that
-// exists without a code (it predates codes and keeps its names).
+// exists without a code (it predates codes and keeps its names). Codes are base
+// codes (names.NewWebCode: the last character is the slot of the kind http). A
+// Device that already exists keeps the code it has even if it is not a base code
+// (an older one): the code is part of the names of its workload and Service, so it is
+// never changed in place; such a device has no access host of another kind until
+// its lab is created again. A Service name with a code that is not a base code is
+// not taken over for a new Device.
 func (a *codeAllocator) codeFor(ctx context.Context, device string) (string, error) {
 	existing, err := devices.Get(ctx, a.r.reader(), a.lab.Namespace, a.lab.Name, device)
 	switch {
@@ -83,7 +89,7 @@ func (a *codeAllocator) codeFor(ctx context.Context, device string) (string, err
 		return "", err
 	}
 	if svc != nil {
-		if code, ok := strings.CutPrefix(svc.Name, device+"-"); ok && code != "" {
+		if code, ok := strings.CutPrefix(svc.Name, device+"-"); ok && names.IsBaseCode(code) {
 			return code, nil
 		}
 	}

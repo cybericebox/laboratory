@@ -919,8 +919,7 @@ The same service also carries the lab checker's way to the devices (see "Lab che
 network ingress at all (the checker uses a unix socket), no proxy secret and no proxy Role.
 
 Path of a console: participant, L7 proxy (authorization), the service on the node of the device, a shell in the device. The browser opens
-`https://<device>-<code>--term.<operator.baseDomain>` (a host of its own per device, built like the web host of the device with the mark `--term`;
-the platform issues the handoff link for that host like for any device host). Nothing about the device is in a path or a query. The proxy authorizes exactly as for a web request (the session cookie, the group, the access policy that allows
+`https://<device>-<code>.<operator.baseDomain>` (a host of its own per device, the same shape as its web host; the kind of access is in the last character of the code; the platform issues the handoff link for that host like for any device host). Nothing about the device is in a path or a query. The proxy authorizes exactly as for a web request (the session cookie, the group, the access policy that allows
 the lab, the lab running) and adds that the device has a console. The WebSocket accepts only the page's own `Origin`; the live re-check
 (`proxy.l7.liveCheckInterval`) closes a console whose client lost access. The proxy serves the terminal page itself (xterm.js 6 is embedded in
 the binary, no CDN; no clipboard write, links only `http(s)` on a click, the title is ignored).
@@ -1019,15 +1018,21 @@ embed: the landing, the controller, the VPN host and the labs base domain (nothi
 in a cross-site frame only when the embedding site shares the registrable domain with the labs' domain. On a custom event domain the console opens in a tab. The WebSocket
 keeps its check: `Origin` must equal the console page's own origin, which is the same in a frame.
 
-**Console link.** Every access to a device through the proxy is addressed by a host name alone. The console of a device has the host
-`<device>-<code>--term.<operator.baseDomain>`: the web host label of the device (`<device>-<code>`, the code is the device's own and unique in its group
-namespace) plus the fixed mark `--term` (`vnc` and `rdp` will be `--vnc` and `--rdp`). The mark cannot be taken for a web host: a web host ends in a hyphen and
-three or four letters or digits, a kind host in `--<mark>`, and no new device name may end in a mark (the agent refuses it). A site tells a console host from a
-device web host by that suffix alone, and may frame only the first. A site's CSP cannot express the suffix (its `frame-src` becomes `https://*.<labs domain>`), so the check of `--term` in the client that builds the frame is what keeps device web hosts out of frames. The proxy compares full hosts (Origin, file token, device lookup), never the suffix. The management agent puts the link in the `terminal` entry of the lab's access list
-(`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing. The link is opened through the handoff
-of the platform like a device link (`/_auth?t=<handoff token for the host label>`). The proxy looks the host up among the devices of the session's own group only:
-the console host of another group, or of a lab the client may not use, is the same "not found" page. The page, the WebSocket (`/ws`) and the file requests
-(`/files`) are all on that host, with `Origin` equal to it.
+**Console link.** Every access to a device through the proxy is addressed by a host name alone, and every access host looks the same: one label
+`<device>-<code>` under `<operator.baseDomain>`. The stored code of a device (`Device.spec.code`) is a *base code*: its last character is one of `0 6 c i o u`
+(base36 index 0, 6, 12, 18, 24, 30, a multiple of 6), so the codes drawn are a sixth of the space (36^(n-1)*6 for n characters; the widening to 4 characters
+after 8 collisions is unchanged). The kind of access is that last character moved on by the index of the kind: http 0 (the web host, exactly `<device>-<code>`),
+terminal 1, vnc 2, rdp 3; 4 and 5 are reserved. **The rule for a client:** a console host is one label under the labs domain whose last character's base36
+index (`0-9` = 0-9, `a-z` = 10-35) modulo 6 is 1; a web host has 0. A site may frame only a console host and must check that rule (a CSP cannot express it:
+its `frame-src` is `https://*.<labs domain>`), so that a device web host never gets into a frame. Codes of one namespace are unique as base codes, and a kind
+host differs from every stored base code in its last character, so no two (device, kind) share a label. The management agent puts the link in the
+`terminal` entry of the lab's access list (`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing.
+The link is opened through the handoff of the platform like a device link (`/_auth?t=<handoff token for the host label>`). The proxy reads the device and the kind
+from the label, looks the device up among the devices of the session's own group only and compares full hosts (Origin, file token, lookup): the console host of
+another group, or of a lab the client may not use, is the same "not found" page, and so is a reserved slot (vnc, rdp, 4, 5). The page, the WebSocket (`/ws`) and
+the file requests (`/files`) are all on that host. **Older devices:** a Device that exists with a code that is not a base code keeps it (the code is part of the
+names of its workload and Service and is never changed in place); it has no console host until its lab is created again, and its web host may then be read as another kind by the
+proxy. There is no production data to migrate.
 
 **Logs and metrics.** One log line at the start and one at the end of a stream with metadata only: kind, namespace, lab, device, client and group as the proxy
 knows them (a pseudonym, no address), the console user and a short hash of the console command (so a wrong value stays visible afterwards), reason, duration,

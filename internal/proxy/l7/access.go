@@ -66,7 +66,7 @@ func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName s
 
 // Device finds the device of a lab that has a console. A device without one, a missing device and a deleting one are the same
 // answer. Node is empty while the device has no pod placed yet.
-func (a *AccessReader) Device(ctx context.Context, namespace, base string) (DeviceInfo, error) {
+func (a *AccessReader) Device(ctx context.Context, namespace, device, code string) (DeviceInfo, error) {
 	var list lab.DeviceList
 	if err := a.Reader.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return DeviceInfo{}, ErrNoConsole
@@ -75,7 +75,7 @@ func (a *AccessReader) Device(ctx context.Context, namespace, base string) (Devi
 		d := &list.Items[i]
 		// The code is what makes the host: a device without one (it predates codes) has no console host. The label is unique in
 		// the namespace, and the first match is the only one.
-		if d.Spec.Code == "" || names.WebHostLabel(d.Spec.Name, d.Spec.Code) != base {
+		if d.Spec.Code == "" || d.Spec.Code != code || d.Spec.Name != device {
 			continue
 		}
 		if !d.DeletionTimestamp.IsZero() {
