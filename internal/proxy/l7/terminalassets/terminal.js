@@ -13,7 +13,16 @@
   const statusEl = $('status');
   const noteEl = $('note');
 
+  // One rule for every link, the ones found in the text and the ones a program declares with OSC 8: only http(s), only on a click, in a
+  // new context without the opener or the referrer.
+  function openLink(event, uri) {
+    if (/^https?:\/\//i.test(uri)) {
+      window.open(uri, '_blank', 'noopener,noreferrer');
+    }
+  }
+
   const term = new Terminal({
+    linkHandler: { activate: openLink },
     cursorBlink: true,
     scrollback: 5000,
     fontSize: 14,
@@ -23,11 +32,7 @@
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-  term.loadAddon(new WebLinksAddon.WebLinksAddon((event, uri) => {
-    if (/^https?:\/\//i.test(uri)) {
-      window.open(uri, '_blank', 'noopener,noreferrer');
-    }
-  }));
+  term.loadAddon(new WebLinksAddon.WebLinksAddon(openLink));
   term.open($('term'));
   fit.fit();
 
