@@ -112,9 +112,6 @@ type LabGroupReconciler struct {
 	AgentSA      types.NamespacedName
 	// ProxyEnabled gates the RoleBinding of the L7 proxy's traffic reports in each group namespace.
 	ProxyEnabled bool
-	// CheckerEnabled gates the RoleBinding that lets the lab checker read Secrets in each group namespace (the chart's checks.enabled). With it
-	// off the binding is removed, so a checker that is switched off leaves no right behind.
-	CheckerEnabled bool
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
@@ -210,8 +207,8 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure proxy reports role binding")
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureCheckerSecretsBinding(ctx, ns); err != nil {
-		logger.Error(err, "ensure checker secrets role binding")
+	if err := r.removeLegacyCheckerSecretsBinding(ctx, ns); err != nil {
+		logger.Error(err, "remove the namespace-wide checker secrets role binding")
 		return ctrl.Result{}, err
 	}
 
@@ -1058,34 +1055,15 @@ func (r *LabGroupReconciler) ensureProxyReportsBinding(ctx context.Context, ns s
 	})
 }
 
-// ensureCheckerSecretsBinding lets the lab checker read Secrets in this group namespace (and in no other): the right is a RoleBinding here,
-// made with the namespace and gone with it, not a cluster-wide permission. The namespaces of the groups hold only lab-level Secrets (the
-// checks, the device environment, the VPN keys, the tenant pull secret). With the checker off the binding is removed. It is made for
-// every existing group on the first reconcile after an upgrade, like the other bindings.
-func (r *LabGroupReconciler) ensureCheckerSecretsBinding(ctx context.Context, ns string) error {
-	key := types.NamespacedName{Name: names.CheckerSecretsBindingName, Namespace: ns}
-	var existing rbacv1.RoleBinding
-	err := r.Get(ctx, key, &existing)
-	if err != nil && !errors.IsNotFound(err) {
+// removeLegacyCheckerSecretsBinding deletes the namespace-wide RoleBinding of the earlier design, which gave the lab checker `get` on every
+// Secret of the group namespace. The checker's right is now one Role per lab, for the one Secret it reads (checker_access.go). It is
+// removed from every existing group namespace on the first reconcile after an upgrade.
+func (r *LabGroupReconciler) removeLegacyCheckerSecretsBinding(ctx context.Context, ns string) error {
+	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: ns}}
+	if err := r.Delete(ctx, rb); err != nil && !errors.IsNotFound(err) {
 		return err
 	}
-	found := err == nil
-	if !r.CheckerEnabled {
-		if found {
-			if err := r.Delete(ctx, &existing); err != nil && !errors.IsNotFound(err) {
-				return err
-			}
-		}
-		return nil
-	}
-	if found {
-		return nil
-	}
-	return r.Create(ctx, &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: ns},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kindClusterRole, Name: names.RoleCheckerSecretsName},
-		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: names.CheckerServiceAccount, Namespace: names.SystemNamespace}},
-	})
+	return nil
 }
 
 // ensureDefaultDeny creates a default-deny NetworkPolicy in the group

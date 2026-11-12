@@ -43,9 +43,6 @@ func TestCheckerIsNotRenderedWhileTheOptionIsOff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
-		// The operator may bind the checker's secrets role while the checker is off (a bind permission by name grants nothing without the
-		// role); that name is the only mention allowed.
-		out = strings.ReplaceAll(out, "laboratory-checker-secrets", "")
 		for _, bad := range []string{"laboratory-checker", "app: checker", "checker-health"} {
 			if strings.Contains(out, bad) {
 				t.Errorf("checks.enabled=false, but the chart renders %q", bad)
@@ -165,14 +162,12 @@ func TestCheckerFollowsItsValuesAndTheLabNodes(t *testing.T) {
 // Every rule of the checker, with its verbs: nothing is created, updated or deleted outside the Lease and the status of a Lab.
 func TestCheckerRBACIsExactlyWhatItNeeds(t *testing.T) {
 	docs := decodeDocs(t, "templates/checker/rbac.yaml", checksOn...)
-	var role, secretRole rbacv1.ClusterRole
+	var role rbacv1.ClusterRole
 	var ns rbacv1.Role
 	for _, d := range docs {
 		switch {
-		case strings.Contains(d, "name: laboratory-checker-secrets\n") && strings.Contains(d, "kind: ClusterRole\n"):
-			if err := yaml.Unmarshal([]byte(d), &secretRole); err != nil {
-				t.Fatal(err)
-			}
+		case strings.Contains(d, "laboratory-checker-secrets"):
+			t.Error("the chart still renders the namespace-wide secrets role")
 		case strings.Contains(d, "kind: ClusterRole\n"):
 			if err := yaml.Unmarshal([]byte(d), &role); err != nil {
 				t.Fatal(err)
@@ -202,9 +197,11 @@ func TestCheckerRBACIsExactlyWhatItNeeds(t *testing.T) {
 			t.Errorf("%s: %q, want %q", k, got[k], v)
 		}
 	}
-	// Secrets are read only through the role the operator binds in each lab group namespace: one verb, one resource.
-	if len(secretRole.Rules) != 1 || strings.Join(secretRole.Rules[0].Resources, ",") != "secrets" || strings.Join(secretRole.Rules[0].Verbs, ",") != "get" {
-		t.Errorf("the secrets role: %+v", secretRole.Rules)
+	// No rule here reads a Secret: the checker's Role is made per lab by the operator (get on the lab's checks Secret).
+	for _, r := range role.Rules {
+		if has(r.Resources, "secrets") {
+			t.Errorf("a Secret right in the chart: %+v", r)
+		}
 	}
 	if len(ns.Rules) != 1 || strings.Join(ns.Rules[0].Resources, ",") != "leases" || strings.Join(ns.Rules[0].Verbs, ",") != "get,create,update,patch" || ns.Namespace != "laboratory-system" {
 		t.Errorf("the namespaced role: %+v", ns)

@@ -6,7 +6,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -529,25 +528,37 @@ func TestCheckerRefusals(t *testing.T) {
 	}
 }
 
-func TestCheckerSecretsRoleAndTheOperatorsBinding(t *testing.T) {
-	var found bool
+// The checker has no Secret right in the chart. The operator makes a Role per lab; for that it holds `roles` in the namespaces where it
+// works (the admission policy restricts roles to the group namespaces), and it may no longer bind a checker ClusterRole.
+func TestCheckerSecretsRightIsThePerLabRoleOfTheOperator(t *testing.T) {
 	for _, d := range decodeDocs(t, "templates/checker/rbac.yaml", checksOn...) {
-		if strings.Contains(d, "name: laboratory-checker-secrets\n") && strings.Contains(d, "kind: ClusterRole\n") {
-			found = true
-			var role rbacv1.ClusterRole
-			if err := yaml.Unmarshal([]byte(d), &role); err != nil {
-				t.Fatal(err)
-			}
-			if len(role.Rules) != 1 || strings.Join(role.Rules[0].Resources, ",") != "secrets" || strings.Join(role.Rules[0].Verbs, ",") != "get" {
-				t.Errorf("the secrets role: %+v", role.Rules)
-			}
-		}
-		// no binding of it in the chart: the operator makes one per group namespace
-		if strings.Contains(d, "kind: ClusterRoleBinding") && strings.Contains(d, "laboratory-checker-secrets") {
-			t.Error("the secrets role is bound cluster-wide")
+		if strings.Contains(d, "laboratory-checker-secrets") {
+			t.Error("the chart renders the namespace-wide secrets role")
 		}
 	}
-	if !found {
-		t.Error("no ClusterRole laboratory-checker-secrets")
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole-namespaced.yaml", "-s", "templates/operator/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var roles []string
+	for _, d := range docs(t, out) {
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "roles") {
+				roles = append(roles, strings.Join(r.Verbs, ","))
+			}
+			if has(r.ResourceNames, "laboratory-checker-secrets") {
+				t.Errorf("the operator still binds the namespace-wide role: %+v", r)
+			}
+		}
+	}
+	if len(roles) != 1 || roles[0] != "create,delete,get,list,patch,update,watch" {
+		t.Errorf("roles rules of the operator: %v", roles)
+	}
+	policy, err := helmTemplate(t, "-s", "templates/operator/admission-policy.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, policy)
+	}
+	if !strings.Contains(policy, "resources: [rolebindings, roles]") || !strings.Contains(policy, "!(request.resource.resource in ['rolebindings', 'roles'])") {
+		t.Error("the operator scope policy does not keep roles to the group namespaces")
 	}
 }

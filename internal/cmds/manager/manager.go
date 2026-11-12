@@ -32,6 +32,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -173,7 +174,8 @@ func Run() {
 		LeaderElectionID:       "2b172d9d.cybericebox.com",
 		// Secrets are read straight from the API server, not through an informer: an informer would need list and
 		// watch on every Secret of the cluster, and the operator has no such permission (only in its own namespaces).
-		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
+		// The same for Roles (the lab checker's Role per lab): the operator holds them in the group namespaces only.
+		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &rbacv1.Role{}}}},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -255,7 +257,6 @@ func Run() {
 		LabTolerations:          labTolerations,
 		AgentEnabled:            cfg.AgentEnabled,
 		ProxyEnabled:            cfg.ProxyEnabled,
-		CheckerEnabled:          cfg.ChecksEnabled,
 		AgentSA: types.NamespacedName{
 			Namespace: cfg.AgentServiceNamespace,
 			Name:      cfg.AgentServiceAccount,
@@ -295,6 +296,7 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
+		CheckerEnabled:            cfg.ChecksEnabled,
 		VNI:                       vniRetirer,
 		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 		LabNodeSelector:           labNodeSelector,

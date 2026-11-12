@@ -41,6 +41,8 @@ import (
 // LabReconciler reconciles a Lab object.
 type LabReconciler struct {
 	client.Client
+	// CheckerEnabled gates the Role that lets the lab checker read the checks Secret of a lab with checks (the chart's checks.enabled).
+	CheckerEnabled bool
 	// VNI batches the retirement of VNIs (nil: each one is retired at once).
 	VNI      *VNIRetirer
 	Scheme   *runtime.Scheme
@@ -127,6 +129,10 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if err := r.ensureCheckerSecretAccess(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if lab.Annotations[names.AnnotationLifecycleRetirement] != "" {
