@@ -74,7 +74,7 @@ func (r *RootFS) Close() { _ = unix.Close(r.root) }
 type FileFacts struct {
 	Exists  bool
 	Regular bool
-	// Type is file, directory, symlink or other. The node-side reader follows links, so it never says symlink; the in-device tool does.
+	// Type is what the path itself is. Only the in-device tool sets it; the node-side reader follows links and leaves it empty.
 	Type string
 	// Mode holds the permission bits including setuid, setgid and sticky.
 	Mode      uint32
@@ -279,7 +279,7 @@ func (r *RootFS) observeOnce(p string, wantContent bool, ids IDMap) (facts FileF
 func permBits[T ~uint16 | ~uint32](m T) uint32 { return uint32(m) & 0o7777 }
 
 func factsOf(st *unix.Stat_t, ids IDMap) FileFacts {
-	f := FileFacts{Exists: true, Regular: st.Mode&unix.S_IFMT == unix.S_IFREG, Mode: permBits(st.Mode), Type: typeOfMode(st.Mode)}
+	f := FileFacts{Exists: true, Regular: st.Mode&unix.S_IFMT == unix.S_IFREG, Mode: permBits(st.Mode)}
 	var uok, gok bool
 	f.UID, uok = ids.UID(st.Uid)
 	f.GID, gok = ids.GID(st.Gid)
@@ -302,16 +302,4 @@ func (r *RootFS) ReadSmall(p string) []byte {
 func (r *RootFS) Names(f *FileFacts) {
 	names := probe.ParseIDNames(r.ReadSmall("/etc/passwd"), r.ReadSmall("/etc/group"))
 	f.User, f.Group = names.Users[f.UID], names.Groups[f.GID]
-}
-
-func typeOfMode[T ~uint16 | ~uint32](mode T) string {
-	switch uint32(mode) & uint32(unix.S_IFMT) {
-	case unix.S_IFREG:
-		return "file"
-	case unix.S_IFDIR:
-		return "directory"
-	case unix.S_IFLNK:
-		return "symlink"
-	}
-	return "other"
 }

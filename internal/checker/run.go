@@ -94,9 +94,23 @@ func RunCheck(ctx context.Context, c *labchecks.Check, obs Observer) Run {
 	return combine(verdicts, kinds)
 }
 
+// FileProber is an Observer that can read a file through the in-device program. A file expectation of type or checksum always goes that
+// way, on every device: the node-side reader follows links and so cannot say what the path itself is; one behaviour for all.
+type FileProber interface {
+	ProbeFile(ctx context.Context, path string, wantContent bool) (FileFacts, error)
+}
+
 func observeFile(ctx context.Context, p *labchecks.FilePart, obs Observer) partVerdict {
 	wantContent := p.ContentContains != nil || p.ContentMatches != nil || p.Checksum != nil
-	facts, err := obs.ReadFile(ctx, p.Path, wantContent)
+	read := obs.ReadFile
+	if p.Type != nil || p.Checksum != nil {
+		fp, ok := obs.(FileProber)
+		if !ok {
+			return partVerdict{Failed, []string{"this device cannot read a file through the in-device program"}}
+		}
+		read = fp.ProbeFile
+	}
+	facts, err := read(ctx, p.Path, wantContent)
 	if err != nil {
 		return partVerdict{Failed, []string{reasonOf(ctx, err)}}
 	}
@@ -134,9 +148,22 @@ func builtinKind(p *labchecks.Part) string {
 func questionFor(p *labchecks.Part, left time.Duration) probe.ObserveRequest {
 	switch {
 	case p.Directory != nil:
-		return probe.ObserveRequest{Kind: probe.KindDirectory, Path: p.Directory.Path}
+		// The names are asked by lstat, one by one: the answer does not depend on the size of the directory.
+		names := append(append([]string(nil), p.Directory.HasEntries...), p.Directory.LacksEntries...)
+		return probe.ObserveRequest{Kind: probe.KindDirectory, Path: p.Directory.Path, Names: names}
 	case p.Process != nil:
-		return probe.ObserveRequest{Kind: probe.KindProcess}
+		// The scan of the whole process table is done by the program, which returns only whether one matched.
+		q := probe.ObserveRequest{Kind: probe.KindProcess}
+		if p.Process.Name != nil {
+			q.Name = *p.Process.Name
+		}
+		if p.Process.Matches != nil {
+			q.Matches = *p.Process.Matches
+		}
+		if p.Process.User != nil {
+			q.User = *p.Process.User
+		}
+		return q
 	case p.Port != nil:
 		return probe.ObserveRequest{Kind: probe.KindPort, Port: int(p.Port.Port), Protocol: p.Port.Protocol}
 	case p.KernelParam != nil:

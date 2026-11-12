@@ -76,3 +76,8 @@ func (o *nodeObserver) Exec(ctx context.Context, s ExecSpec) (ExecResult, error)
 func (o *nodeObserver) Probe(ctx context.Context, req probe.ObserveRequest) (probe.ObserveResponse, error) {
 	return o.exec.Probe(ctx, req)
 }
+
+// ProbeFile reads a file through the in-device program, not from the node.
+func (o *nodeObserver) ProbeFile(ctx context.Context, path string, wantContent bool) (FileFacts, error) {
+	return o.exec.ReadFile(ctx, path, wantContent)
+}

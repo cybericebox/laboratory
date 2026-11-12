@@ -15,3 +15,8 @@ func (o *execObserver) Probe(ctx context.Context, req probe.ObserveRequest) (pro
 	}
 	return resp, nil
 }
+
+// ProbeFile reads a file through the in-device program (probe check-file).
+func (o *execObserver) ProbeFile(ctx context.Context, path string, wantContent bool) (FileFacts, error) {
+	return o.ReadFile(ctx, path, wantContent)
+}

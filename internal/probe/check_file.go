@@ -61,7 +61,7 @@ func runCheckFile(req FileRequest) FileResponse {
 	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
 		resp.UID, resp.GID = sys.Uid, sys.Gid
 	}
-	names := ParseIDNames(readBounded("/etc/passwd", MaxIDFile), readBounded("/etc/group", MaxIDFile))
+	names := ParseIDNames(readBounded("/etc/passwd"), readBounded("/etc/group"))
 	resp.User, resp.Group = names.Users[resp.UID], names.Groups[resp.GID]
 	if req.WantContent && resp.Regular && f != nil {
 		buf, err := io.ReadAll(io.LimitReader(f, MaxCheckFile+1))

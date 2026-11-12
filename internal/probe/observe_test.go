@@ -42,34 +42,69 @@ func addProc(t *testing.T, v view, pid int, comm, cmdline string, uid int) {
 	write(t, filepath.Join(d, "status"), "Name:\t"+comm+"\nUid:\t"+strconv.Itoa(uid)+"\t"+strconv.Itoa(uid)+"\t0\t0\n")
 }
 
-func TestProcesses(t *testing.T) {
+func TestProcessScan(t *testing.T) {
 	v := fixture(t)
 	addProc(t, v, 1, "nginx", "nginx: master process /usr/sbin/nginx\x00-g\x00daemon off;\x00", 0)
 	addProc(t, v, 7, "nginx", "nginx: worker process\x00", 33)
 	addProc(t, v, 8, "kworker/0:1", "", 0)
+	addProc(t, v, 9, "postgresql-16-ma", "/usr/lib/postgresql/16/bin/postgres\x00-D\x00/var/lib\x00", 33)
 	addProc(t, v, 999, "probe", "/.cib/probe/probe\x00check-observe\x00", 0) // the probe itself
 	if err := os.MkdirAll(filepath.Join(v.proc, "net"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := v.observe(ObserveRequest{Kind: KindProcess})
-	if got.Error != "" || got.Processes == nil || len(got.Processes.List) != 3 {
-		t.Fatalf("got %+v", got)
+	ask := func(q ObserveRequest) ProcessFacts {
+		q.Kind = KindProcess
+		got := v.observe(q)
+		if got.Error != "" || got.Processes == nil {
+			t.Fatalf("%+v: %+v", q, got)
+		}
+		return *got.Processes
 	}
-	byPID := map[int]Process{}
-	for _, p := range got.Processes.List {
-		byPID[p.PID] = p
+	for _, c := range []struct {
+		name  string
+		q     ObserveRequest
+		found bool
+	}{
+		{"by name", ObserveRequest{Name: "nginx"}, true},
+		{"by a long name the kernel cut", ObserveRequest{Name: "postgres"}, true}, // arg0 is postgres
+		{"by the full long name", ObserveRequest{Name: "postgresql-16-main"}, false},
+		{"by pattern", ObserveRequest{Matches: "nginx: master process"}, true},
+		{"by pattern, none", ObserveRequest{Matches: "apache"}, false},
+		{"by name and user", ObserveRequest{Name: "nginx", User: "www-data"}, true},
+		{"by name and uid", ObserveRequest{Name: "nginx", User: "33"}, true},
+		{"by name and the wrong user", ObserveRequest{Name: "nginx", User: "root"}, true}, // pid 1 is root's
+		{"name of a worker with the wrong user", ObserveRequest{Name: "postgres", User: "root"}, false},
+		{"a kernel thread by comm", ObserveRequest{Name: "kworker/0:1"}, true},
+		{"the probe itself is never a match", ObserveRequest{Name: "probe"}, false},
+	} {
+		if got := ask(c.q); got.Found != c.found || got.Incomplete != 0 {
+			t.Errorf("%s: %+v", c.name, got)
+		}
 	}
-	if p := byPID[1]; p.Comm != "nginx" || p.Arg0 != "nginx" || p.User != "root" || !strings.Contains(p.Cmdline, "nginx: master process /usr/sbin/nginx -g daemon off;") {
-		t.Errorf("pid 1: %+v", p)
+	if got := v.observe(ObserveRequest{Kind: KindProcess}); got.Error == "" {
+		t.Error("a question with neither a name nor a pattern must be refused")
 	}
-	if p := byPID[7]; p.User != "www-data" || p.UID != 33 {
-		t.Errorf("pid 7: %+v", p)
+	if got := v.observe(ObserveRequest{Kind: KindProcess, Matches: "("}); got.Error == "" {
+		t.Error("a bad pattern")
 	}
-	if p := byPID[8]; p.Arg0 != "" || p.Comm != "kworker/0:1" {
-		t.Errorf("kernel thread: %+v", p)
+	// What cannot be read completely is counted, so that "not found" is not taken for "absent".
+	write(t, filepath.Join(v.proc, "9", "cmdline"), strings.Repeat("a", MaxCmdlineBytes+10))
+	if got := ask(ObserveRequest{Name: "zzz"}); got.Found || got.Incomplete != 1 {
+		t.Errorf("a command line over the bound: %+v", got)
 	}
-	if _, ok := byPID[999]; ok {
-		t.Error("the probe listed itself")
+	if err := os.Remove(filepath.Join(v.proc, "9", "status")); err != nil {
+		t.Fatal(err)
+	}
+	if got := ask(ObserveRequest{Name: "zzz"}); got.Found || got.Incomplete != 0 {
+		t.Errorf("a process that vanished half-way is gone, not incomplete: %+v", got)
+	}
+	if err := os.Chmod(filepath.Join(v.proc, "8", "comm"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() != 0 {
+		if got := ask(ObserveRequest{Name: "zzz"}); got.Found || got.Incomplete < 1 {
+			t.Errorf("an unreadable process: %+v", got)
+		}
 	}
 }
 
@@ -104,18 +139,55 @@ const tcpTable = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->
 `
 
 func TestParseNetTable(t *testing.T) {
-	got := parseNetTable(tcpTable, "tcp", 8080)
+	got, bad := parseNetTable(tcpTable, "tcp", 8080)
+	if bad != 0 {
+		t.Fatalf("bad lines %d", bad)
+	}
 	if len(got) != 2 || got[0].addr != "0.0.0.0" || got[0].inode != 5555 || got[1].addr != "127.0.0.1" {
 		t.Fatalf("only LISTEN sockets on the port: %+v", got)
 	}
 	udp := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n" +
 		"   0: 00000000:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 7001 2 0000000000000000 0\n" +
 		"   1: 00000000:0036 0100007F:0035 01 00000000:00000000 00:00000000 00000000     0        0 7002 2 0000000000000000 0\n"
-	if got := parseNetTable(udp, "udp", 53); len(got) != 1 || got[0].inode != 7001 {
+	if got, _ := parseNetTable(udp, "udp", 53); len(got) != 1 || got[0].inode != 7001 {
 		t.Fatalf("udp: %+v", got)
 	}
-	if got := parseNetTable(udp, "udp", 54); len(got) != 0 {
+	if got, _ := parseNetTable(udp, "udp", 54); len(got) != 0 {
 		t.Fatalf("a connected udp socket does not wait: %+v", got)
+	}
+}
+
+// A line of the socket table that cannot be read could be the socket that is asked about: the question is not answered.
+func TestPortTableWithAnUnreadableLine(t *testing.T) {
+	v := fixture(t)
+	write(t, filepath.Join(v.proc, "net", "tcp"), tcpTable+"   9: garbage\n")
+	if got := v.observe(ObserveRequest{Kind: KindPort, Port: 8080, Protocol: "tcp"}); got.Error == "" || got.Port != nil {
+		t.Fatalf("got %+v", got)
+	}
+	write(t, filepath.Join(v.proc, "net", "tcp"), tcpTable+"   9: ZZZZ:1F90 00000000:0000 0A 0:0 0:0 0 0 0 5559 1\n")
+	if got := v.observe(ObserveRequest{Kind: KindPort, Port: 8080, Protocol: "tcp"}); got.Error == "" {
+		t.Fatalf("an address that cannot be read: %+v", got)
+	}
+}
+
+func TestPortOwnersNotAllowedToBeSeen(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	v := fixture(t)
+	addProc(t, v, 1, "nginx", "nginx\x00", 0)
+	write(t, filepath.Join(v.proc, "net", "tcp"), tcpTable)
+	fdDir := filepath.Join(v.proc, "1", "fd")
+	if err := os.MkdirAll(fdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fdDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(fdDir, 0o755) }()
+	got := v.observe(ObserveRequest{Kind: KindPort, Port: 8080, Protocol: "tcp"})
+	if got.Port == nil || !got.Port.OwnersIncomplete {
+		t.Fatalf("got %+v", got)
 	}
 }
 
@@ -193,34 +265,62 @@ func TestDirectory(t *testing.T) {
 	for _, n := range []string{"config.php", "uploads", ".hidden"} {
 		write(t, filepath.Join(dir, n), "x")
 	}
+	if err := os.Symlink("/nowhere", filepath.Join(dir, "dangling")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir})
+	got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Names: []string{"config.php", "install.php", ".hidden", "dangling", "nothing.txt"}})
 	if got.Error != "" || got.Directory == nil || !got.Directory.Exists || !got.Directory.IsDir || got.Directory.Mode != 0o750 ||
-		strings.Join(got.Directory.Entries, ",") != ".hidden,config.php,uploads" {
-		t.Fatalf("got %+v", got.Directory)
+		strings.Join(got.Directory.Present, ",") != "config.php,.hidden,dangling" {
+		t.Fatalf("got %+v %v", got.Directory, got.Error)
 	}
 	if got.Directory.UID != uint32(os.Getuid()) {
 		t.Errorf("uid %d", got.Directory.UID)
 	}
-	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "nope")}); got.Directory == nil || got.Directory.Exists {
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "nope"), Names: []string{"a"}}); got.Directory == nil || got.Directory.Exists || got.Directory.Present != nil {
 		t.Fatalf("missing: %+v", got)
 	}
-	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "config.php")}); got.Directory == nil || !got.Directory.Exists || got.Directory.IsDir || got.Directory.Entries != nil {
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: filepath.Join(dir, "config.php")}); got.Directory == nil || !got.Directory.Exists || got.Directory.IsDir {
 		t.Fatalf("a file is not a directory: %+v", got.Directory)
 	}
 	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: "relative"}); got.Error == "" {
 		t.Fatal("relative path")
 	}
-	// A directory over the bound lists the first names and says so.
+	for _, bad := range []string{"", ".", "..", "a/b", "a\x00b", strings.Repeat("a", MaxDirNameBytes+1)} {
+		if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Names: []string{bad}}); got.Error == "" {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	many := make([]string, MaxDirNames+1)
+	for i := range many {
+		many[i] = "f"
+	}
+	if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: dir, Names: many}); got.Error == "" {
+		t.Error("too many names")
+	}
+	// A directory padded with a huge number of entries changes nothing: each name is asked on its own.
 	big := t.TempDir()
-	for i := 0; i < MaxDirEntries+5; i++ {
+	for i := 0; i < 6000; i++ {
 		write(t, filepath.Join(big, "f"+strconv.Itoa(i)), "")
 	}
-	got = v.observe(ObserveRequest{Kind: KindDirectory, Path: big})
-	if got.Directory == nil || len(got.Directory.Entries) != MaxDirEntries || !got.Directory.Truncated {
-		t.Fatalf("bound: %d entries", len(got.Directory.Entries))
+	write(t, filepath.Join(big, "forbidden.php"), "")
+	got = v.observe(ObserveRequest{Kind: KindDirectory, Path: big, Names: []string{"forbidden.php", "f5999", "absent"}})
+	if got.Directory == nil || strings.Join(got.Directory.Present, ",") != "forbidden.php,f5999" {
+		t.Fatalf("padding hid a name: %+v", got.Directory)
+	}
+	// A directory the user cannot search is an error, not "absent".
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(dir, "locked")
+		write(t, filepath.Join(locked, "inner"), "x")
+		if err := os.Chmod(locked, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Chmod(locked, 0o700) }()
+		if got := v.observe(ObserveRequest{Kind: KindDirectory, Path: locked, Names: []string{"inner"}}); got.Error == "" {
+			t.Errorf("a name that cannot be looked up is not 'absent': %+v", got)
+		}
 	}
 }
 
@@ -337,8 +437,16 @@ func TestPermissionFacts(t *testing.T) {
 			t.Errorf("%s: %+v", c.path, got)
 		}
 	}
-	if got := permFacts(filepath.Join(dir, "nope")); got.Exists || got.Read || got.Write || got.Execute {
+	if got := permFacts(filepath.Join(dir, "nope")); got.Exists || got.Read || got.Write || got.Execute || got.Error != "" {
 		t.Errorf("missing: %+v", got)
+	}
+	// A failure that is not the kernel's refusal is an error, never a "no": a loop of links, for one.
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if got := permFacts(loop); got.Error == "" || got.Read || got.Write {
+		t.Errorf("a symlink loop: %+v", got)
 	}
 	// Nothing was written: the files are as they were.
 	if raw, _ := os.ReadFile(rw); string(raw) != "x" {

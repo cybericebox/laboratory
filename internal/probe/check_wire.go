@@ -105,14 +105,14 @@ func parseIDFile(raw []byte) map[uint32]string {
 	return out
 }
 
-// readBounded reads at most limit bytes of a plain file of the tool's own root (the files of /etc), nil when it cannot.
-func readBounded(path string, limit int64) []byte {
+// readBounded reads at most MaxIDFile bytes of a plain file of the tool's own root (the files of /etc), nil when it cannot.
+func readBounded(path string) []byte {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
-	buf := make([]byte, limit)
+	buf := make([]byte, MaxIDFile)
 	n, _ := f.Read(buf)
 	return buf[:n]
 }

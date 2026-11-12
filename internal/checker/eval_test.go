@@ -51,9 +51,15 @@ func TestEvalFile(t *testing.T) {
 		{"group by number", labchecks.FilePart{Group: sp("33")}, present(""), Passed, ""},
 		{"owner unmapped", labchecks.FilePart{Owner: sp("0")}, unmapped, NotPassed, "unknown to the container"},
 		{"all must hold", labchecks.FilePart{Exists: bp(true), ContentContains: sp("a"), Mode: mp(0o600)}, present("a"), NotPassed, "mode"},
-		{"truncated and found", labchecks.FilePart{ContentContains: sp("abc")}, long, Passed, ""},
-		{"truncated and not found cannot be decided", labchecks.FilePart{ContentContains: sp("zzz")}, long, Failed, "larger"},
-		{"truncated, not found, mode also wrong is decided", labchecks.FilePart{ContentContains: sp("zzz"), Mode: mp(0o600)}, long, NotPassed, "mode"},
+		// A file over the size cap decides nothing about its content, found or not: an anchor in a pattern would fit the cut.
+		{"truncated and found", labchecks.FilePart{ContentContains: sp("abc")}, long, Failed, "larger"},
+		{"truncated and not found", labchecks.FilePart{ContentContains: sp("zzz")}, long, Failed, "larger"},
+		{"truncated, matches", labchecks.FilePart{ContentMatches: sp("abc$")}, long, Failed, "larger"},
+		{"truncated, checksum", labchecks.FilePart{Checksum: sp(strings.Repeat("0", 64))}, long, Failed, "larger"},
+		{"truncated, mode wrong is decided", labchecks.FilePart{ContentContains: sp("zzz"), Mode: mp(0o600)}, long, NotPassed, "mode"},
+		{"truncated, mode right, content undecided", labchecks.FilePart{ContentContains: sp("abc"), Mode: mp(0o640)}, long, Failed, "larger"},
+		{"truncated, no content rule at all", labchecks.FilePart{Mode: mp(0o640)}, long, Passed, ""},
+		{"exists:false on a present truncated file", labchecks.FilePart{Exists: bp(false)}, long, NotPassed, "present"},
 		{"bad pattern", labchecks.FilePart{ContentMatches: sp("(")}, present("x"), Failed, "compile"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -84,7 +90,10 @@ func TestEvalCustom(t *testing.T) {
 		{"output matches yes", labchecks.CustomPart{OutputMatches: sp(`^service\s+active$`)}, ExecResult{Started: true, Output: []byte("service active")}, Passed, ""},
 		{"output matches no", labchecks.CustomPart{OutputMatches: sp(`^inactive`)}, ok, NotPassed, "output_matches"},
 		{"exit code decides before output", labchecks.CustomPart{OutputContains: sp("active")}, ExecResult{Started: true, Exit: 3, Output: []byte("active")}, NotPassed, "exit code 3"},
-		{"truncated output cannot be decided", labchecks.CustomPart{OutputContains: sp("zzz")}, ExecResult{Started: true, Output: []byte("a"), Truncated: true}, Failed, "longer"},
+		{"truncated output, contains not found", labchecks.CustomPart{OutputContains: sp("zzz")}, ExecResult{Started: true, Output: []byte("a"), Truncated: true}, Failed, "longer"},
+		{"truncated output, contains found", labchecks.CustomPart{OutputContains: sp("a")}, ExecResult{Started: true, Output: []byte("a"), Truncated: true}, Failed, "longer"},
+		{"truncated output, matches", labchecks.CustomPart{OutputMatches: sp("a$")}, ExecResult{Started: true, Output: []byte("a"), Truncated: true}, Failed, "longer"},
+		{"truncated output, no output rule, the exit code decides", labchecks.CustomPart{}, ExecResult{Started: true, Output: []byte("a"), Truncated: true}, Passed, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, reasons := EvalCustom(&c.part, c.r)

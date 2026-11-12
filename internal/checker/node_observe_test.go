@@ -45,3 +45,42 @@ func TestBuiltinsGoThroughTheInDeviceProgram(t *testing.T) {
 		}
 	}
 }
+
+// A file expectation of type or checksum is answered by the in-device program on every device; the node-side reader, which follows links,
+// is not asked, so there is one behaviour.
+func TestTypeAndChecksumGoThroughTheProbe(t *testing.T) {
+	cri := &fakeCRI{info: ContainerInfo{ID: "cid"}, answer: func(cmd []string) ([]byte, int32, error) {
+		return jsonOf(t, probe.FileResponse{Exists: true, Regular: true, Type: "symlink", Content: []byte("hello")}), 0, nil
+	}}
+	b := &NodeBackend{CRI: cri, StateDir: t.TempDir(), Namespace: "k8s.io"}
+	root := b.RootDir("cid")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f"), []byte("on the node"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obs, release, err := b.Open(context.Background(), PodInfo{UID: "u", Device: "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	typed := check(labchecks.Part{File: &labchecks.FilePart{Path: "/f", Type: sp("symlink")}})
+	if r := RunCheck(context.Background(), typed, obs); r.Outcome != Passed || len(cri.asked) != 1 || cri.asked[0][2] != probe.CommandCheckFile {
+		t.Fatalf("type: %+v after %v", r, cri.asked)
+	}
+	sum := sha256Of([]byte("hello"))
+	summed := check(labchecks.Part{File: &labchecks.FilePart{Path: "/f", Checksum: &sum}})
+	if r := RunCheck(context.Background(), summed, obs); r.Outcome != Passed || len(cri.asked) != 2 {
+		t.Fatalf("checksum: %+v after %v", r, cri.asked)
+	}
+	// Without them the node-side reader is used and nothing is executed in the device.
+	plain := check(labchecks.Part{File: &labchecks.FilePart{Path: "/f", ContentContains: sp("on the node")}})
+	if r := RunCheck(context.Background(), plain, obs); r.Outcome != Passed || len(cri.asked) != 2 {
+		t.Fatalf("plain: %+v after %v", r, cri.asked)
+	}
+	// An observer that cannot ask the program cannot judge type or checksum.
+	if r := RunCheck(context.Background(), typed, &fakeObserver{files: map[string]FileFacts{"/f": present("x")}}); r.Outcome != Failed {
+		t.Fatalf("got %+v", r)
+	}
+}

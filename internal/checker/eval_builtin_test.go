@@ -66,9 +66,8 @@ func TestEvalFileTypeAndChecksum(t *testing.T) {
 }
 
 func TestEvalDirectory(t *testing.T) {
-	d := &probe.DirectoryFacts{Exists: true, IsDir: true, Mode: 0o750, User: "www", Group: "www", Entries: []string{"config.php", "uploads"}}
+	d := &probe.DirectoryFacts{Exists: true, IsDir: true, Mode: 0o750, User: "www", Group: "www", Present: []string{"config.php", "uploads"}}
 	file := &probe.DirectoryFacts{Exists: true}
-	cut := &probe.DirectoryFacts{Exists: true, IsDir: true, Entries: []string{"a"}, Truncated: true}
 	e := func(p labchecks.DirectoryPart, f *probe.DirectoryFacts) func() (Outcome, []string) {
 		return func() (Outcome, []string) { return EvalDirectory(&p, f) }
 	}
@@ -86,37 +85,31 @@ func TestEvalDirectory(t *testing.T) {
 		{"has entries missing", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"config.php", "install.php"}}, d), NotPassed, "has_entries"},
 		{"lacks entries", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"install.php"}}, d), Passed, ""},
 		{"lacks entries present", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"uploads"}}, d), NotPassed, "lacks_entries"},
-		{"long listing: a name found is found", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"a"}}, cut), Passed, ""},
-		{"long listing: a name not found cannot be decided", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"z"}}, cut), Failed, "more entries"},
-		{"long listing with another failure is decided", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"z"}, Mode: mp(0o700)}, cut), NotPassed, "mode"},
+		// The program answers each asked name on its own, so a directory padded with entries cannot hide a forbidden one: what is in
+		// Present is the whole truth about the asked names.
+		{"a forbidden name hidden among thousands is still present", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"forbidden.php"}}, &probe.DirectoryFacts{Exists: true, IsDir: true, Present: []string{"forbidden.php"}}), NotPassed, "lacks_entries"},
 	})
 }
 
 func TestEvalProcess(t *testing.T) {
-	f := &probe.ProcessFacts{List: []probe.Process{
-		{PID: 1, Comm: "nginx", Arg0: "nginx", Cmdline: "nginx: master process /usr/sbin/nginx -g daemon off;", User: "root"},
-		{PID: 7, Comm: "nginx", Arg0: "nginx", Cmdline: "nginx: worker process", UID: 33, User: "www-data"},
-		{PID: 9, Comm: "postgresql-16-ma", Arg0: "postgresql-16-main", Cmdline: "/usr/lib/postgresql/16/bin/postgres", User: "postgres"},
-	}}
-	cut := &probe.ProcessFacts{List: f.List[:1], Truncated: true}
+	found := &probe.ProcessFacts{Found: true, Scanned: 40}
+	none := &probe.ProcessFacts{Scanned: 40}
+	partial := &probe.ProcessFacts{Scanned: 40, Incomplete: 2}
 	e := func(p labchecks.ProcessPart, f *probe.ProcessFacts) func() (Outcome, []string) {
 		return func() (Outcome, []string) { return EvalProcess(&p, f) }
 	}
 	runVerdicts(t, []verdictCase{
-		{"by name", e(labchecks.ProcessPart{Name: sp("nginx")}, f), Passed, ""},
-		{"by a long name the kernel cut", e(labchecks.ProcessPart{Name: sp("postgresql-16-main")}, f), Passed, ""},
-		{"by pattern", e(labchecks.ProcessPart{Matches: sp(`nginx: master process`)}, f), Passed, ""},
-		{"by pattern no", e(labchecks.ProcessPart{Matches: sp(`apache`)}, f), NotPassed, "no such process"},
-		{"by user", e(labchecks.ProcessPart{Name: sp("nginx"), User: sp("www-data")}, f), Passed, ""},
-		{"by uid", e(labchecks.ProcessPart{Name: sp("nginx"), User: sp("33")}, f), Passed, ""},
-		{"name and user together", e(labchecks.ProcessPart{Name: sp("postgresql-16-main"), User: sp("root")}, f), NotPassed, "no such process"},
-		{"must not run, does not", e(labchecks.ProcessPart{Name: sp("telnetd"), Running: bp(false)}, f), Passed, ""},
-		{"must not run, runs", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, f), NotPassed, "such a process runs"},
-		{"running false is decided on a long table when found", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, cut), NotPassed, "runs"},
-		{"running true on a long table, found", e(labchecks.ProcessPart{Name: sp("nginx")}, cut), Passed, ""},
-		{"running true on a long table, not found", e(labchecks.ProcessPart{Name: sp("zzz")}, cut), Failed, "more processes"},
-		{"must not run on a long table, not found", e(labchecks.ProcessPart{Name: sp("zzz"), Running: bp(false)}, cut), Passed, ""},
-		{"bad pattern", e(labchecks.ProcessPart{Matches: sp("(")}, f), Failed, "compile"},
+		{"runs, must run", e(labchecks.ProcessPart{Name: sp("nginx")}, found), Passed, ""},
+		{"does not run, must run", e(labchecks.ProcessPart{Name: sp("nginx")}, none), NotPassed, "no such process"},
+		{"runs, must not run", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, found), NotPassed, "such a process runs"},
+		{"does not run, must not run", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, none), Passed, ""},
+		// Part of the table could not be seen (a denied read, a command line over the bound, a table over the scan bound): nothing
+		// that was not found is known to be absent.
+		{"must not run, not found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, partial), Failed, "could not be seen"},
+		{"must run, not found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx")}, partial), Failed, "could not be seen"},
+		{"must run, found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx")}, &probe.ProcessFacts{Found: true, Incomplete: 2}), Passed, ""},
+		{"must not run, found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, &probe.ProcessFacts{Found: true, Incomplete: 2}), NotPassed, "runs"},
+		{"bad pattern", e(labchecks.ProcessPart{Matches: sp("(")}, found), Failed, "compile"},
 	})
 }
 
@@ -127,6 +120,8 @@ func TestEvalPort(t *testing.T) {
 	wild := &probe.PortFacts{Listeners: []probe.Listener{{Protocol: "tcp", Addr: "0.0.0.0", Procs: []string{"nginx"}}}}
 	wild6 := &probe.PortFacts{Listeners: []probe.Listener{{Protocol: "tcp", Addr: "::"}}}
 	none := &probe.PortFacts{Listeners: []probe.Listener{}}
+	capped := &probe.PortFacts{Listeners: []probe.Listener{{Addr: "10.0.0.1"}}, Truncated: true}
+	blind := &probe.PortFacts{Listeners: []probe.Listener{{Addr: "0.0.0.0"}}, OwnersIncomplete: true}
 	e := func(p labchecks.PortPart, f *probe.PortFacts) func() (Outcome, []string) {
 		return func() (Outcome, []string) { return EvalPort(&p, f) }
 	}
@@ -142,6 +137,11 @@ func TestEvalPort(t *testing.T) {
 		{"ipv6 wildcard counts for both", e(labchecks.PortPart{Port: 80, Address: sp("10.0.0.5")}, wild6), Passed, ""},
 		{"process", e(labchecks.PortPart{Port: 80, Process: sp("nginx")}, wild), Passed, ""},
 		{"process other", e(labchecks.PortPart{Port: 80, Process: sp("apache2")}, wild), NotPassed, "process"},
+		{"must be closed, the table was cut, a listener was seen", e(labchecks.PortPart{Port: 80, Listening: bp(false)}, capped), NotPassed, "something listens"},
+		{"must listen on an address, the table was cut and no listener fits", e(labchecks.PortPart{Port: 80, Address: sp("10.9.9.9")}, capped), Failed, "more sockets"},
+		{"must listen, the table was cut, a listener fits", e(labchecks.PortPart{Port: 80, Address: sp("10.0.0.1")}, capped), Passed, ""},
+		{"process asked, some processes could not be looked into", e(labchecks.PortPart{Port: 80, Process: sp("nginx")}, blind), Failed, "could not be looked into"},
+		{"process asked and found, though some could not be looked into", e(labchecks.PortPart{Port: 80, Process: sp("nginx")}, &probe.PortFacts{Listeners: []probe.Listener{{Addr: "0.0.0.0", Procs: []string{"nginx"}}}, OwnersIncomplete: true}), Passed, ""},
 		{"address and process on the same listener", e(labchecks.PortPart{Port: 6379, Address: sp("127.0.0.1"), Process: sp("redis-server")}, two), Passed, ""},
 		{"address and process on different listeners do not add up", e(labchecks.PortPart{Port: 80, Address: sp("0.0.0.0"), Process: sp("redis-server")}, &probe.PortFacts{Listeners: []probe.Listener{
 			{Addr: "0.0.0.0", Procs: []string{"nginx"}}, {Addr: "127.0.0.1", Procs: []string{"redis-server"}}}}), NotPassed, "process"},
@@ -169,6 +169,7 @@ func TestEvalRequest(t *testing.T) {
 	ok := &probe.RequestFacts{Connected: true, Status: 200, Body: []byte(`{"state": "up"}`)}
 	cut := &probe.RequestFacts{Connected: true, Status: 200, Body: []byte("abc"), Truncated: true}
 	refused := &probe.RequestFacts{Failure: "refused"}
+	timedOut := &probe.RequestFacts{Failure: "timeout"}
 	e := func(p labchecks.RequestPart, f *probe.RequestFacts) func() (Outcome, []string) {
 		return func() (Outcome, []string) { return EvalRequest(&p, f) }
 	}
@@ -183,6 +184,10 @@ func TestEvalRequest(t *testing.T) {
 	runVerdicts(t, []verdictCase{
 		{"tcp opens", e(labchecks.RequestPart{Protocol: "tcp", Port: 22}, &probe.RequestFacts{Connected: true}), Passed, ""},
 		{"tcp refused", e(labchecks.RequestPart{Protocol: "tcp", Port: 22}, refused), NotPassed, "refused"},
+		{"tcp times out", e(labchecks.RequestPart{Protocol: "tcp", Port: 22}, timedOut), Failed, "no answer in time"},
+		{"tcp, an unnamed error", e(labchecks.RequestPart{Protocol: "tcp", Port: 22}, &probe.RequestFacts{}), Failed, "unknown error"},
+		{"tcp, the network is unreachable", e(labchecks.RequestPart{Protocol: "tcp", Port: 22}, &probe.RequestFacts{Failure: "unreachable"}), NotPassed, "unreachable"},
+		{"http times out", e(h(200), timedOut), Failed, "no answer in time"},
 		{"http status", e(h(200), ok), Passed, ""},
 		{"http other status", e(h(204), ok), NotPassed, "status: is 200"},
 		{"http refused", e(h(200), refused), NotPassed, "connect: failed (refused)"},
@@ -190,8 +195,10 @@ func TestEvalRequest(t *testing.T) {
 		{"body contains no", e(withBody(sp("down"), nil), ok), NotPassed, "body_contains"},
 		{"body matches", e(withBody(nil, sp(`"state":\s*"up"`)), ok), Passed, ""},
 		{"body matches no", e(withBody(nil, sp(`down`)), ok), NotPassed, "body_matches"},
-		{"cut body, found", e(withBody(sp("ab"), nil), cut), Passed, ""},
-		{"cut body, not found cannot be decided", e(withBody(sp("zzz"), nil), cut), Failed, "longer"},
+		{"cut body decides nothing: contains found", e(withBody(sp("ab"), nil), cut), Failed, "longer"},
+		{"cut body decides nothing: contains not found", e(withBody(sp("zzz"), nil), cut), Failed, "longer"},
+		{"cut body decides nothing: matches (an anchor would fit the cut)", e(withBody(nil, sp(`abc$`)), cut), Failed, "longer"},
+		{"cut body, no body rule, status is enough", e(h(200), cut), Passed, ""},
 		{"cut body, wrong status is decided", e(func() labchecks.RequestPart { r := withBody(sp("zzz"), nil); r.Status = i32p(500); return r }(), cut), NotPassed, "status"},
 		{"bad pattern", e(withBody(nil, sp("(")), ok), Failed, "compile"},
 	})
@@ -225,26 +232,41 @@ func (r *recordingProber) Probe(_ context.Context, q probe.ObserveRequest) (prob
 	return r.reply(q)
 }
 
-// A question to the device names where to look and never what is expected.
-func TestQuestionsCarryNoExpectedValue(t *testing.T) {
+// A question to the device says where to look and what to look for (a name, a pattern for a scan); it never carries the outcome that
+// is expected: not a mode, an owner, a status, a body rule, a value, the words running / listening / read / write.
+func TestQuestionsCarryNoExpectedOutcome(t *testing.T) {
 	secret := "EXPECTED-SECRET"
-	parts := []labchecks.Part{
-		{Directory: &labchecks.DirectoryPart{Path: "/srv", HasEntries: []string{secret}, LacksEntries: []string{secret}, Mode: mp(0o123), Owner: sp(secret), Group: sp(secret)}},
-		{Process: &labchecks.ProcessPart{Name: sp(secret), Matches: sp(secret), User: sp(secret)}},
-		{Port: &labchecks.PortPart{Port: 80, Protocol: "tcp", Address: sp("10.9.8.7"), Process: sp(secret)}},
-		{KernelParam: &labchecks.KernelParamPart{Name: "net.ipv4.ip_forward", Equals: sp(secret), Matches: sp(secret)}},
-		{Request: &labchecks.RequestPart{Protocol: "http", Host: "127.0.0.1", Port: 80, Method: "GET", Path: "/health", Status: i32p(299), BodyContains: sp(secret), BodyMatches: sp(secret)}},
-		{Permission: &labchecks.PermissionPart{User: "www", Path: "/etc/shadow", Read: bp(false), Write: bp(false), Execute: bp(false)}},
-	}
-	for i := range parts {
-		p := &parts[i]
-		raw, err := json.Marshal(questionFor(p, 5*time.Second))
+	for _, c := range []struct {
+		part labchecks.Part
+		must []string
+		not  []string
+	}{
+		{labchecks.Part{Directory: &labchecks.DirectoryPart{Path: "/srv", HasEntries: []string{"ASKED"}, LacksEntries: []string{"ASKED2"}, Mode: mp(0o123), Owner: sp(secret), Group: sp(secret)}},
+			[]string{"/srv", "ASKED", "ASKED2"}, []string{secret, "83", "123"}},
+		{labchecks.Part{Process: &labchecks.ProcessPart{Name: sp("ASKED"), Matches: sp("PAT"), User: sp("USR"), Running: bp(false)}},
+			[]string{"ASKED", "PAT", "USR"}, []string{"false", "running"}},
+		{labchecks.Part{Port: &labchecks.PortPart{Port: 80, Protocol: "tcp", Address: sp("10.9.8.7"), Process: sp(secret), Listening: bp(false)}},
+			[]string{"80", "tcp"}, []string{secret, "10.9.8.7", "false", "listening"}},
+		{labchecks.Part{KernelParam: &labchecks.KernelParamPart{Name: "net.ipv4.ip_forward", Equals: sp(secret), Matches: sp(secret)}},
+			[]string{"net.ipv4.ip_forward"}, []string{secret}},
+		{labchecks.Part{Request: &labchecks.RequestPart{Protocol: "http", Host: "127.0.0.1", Port: 80, Method: "GET", Path: "/health", Status: i32p(299), BodyContains: sp(secret), BodyMatches: sp(secret)}},
+			[]string{"/health", "127.0.0.1"}, []string{secret, "299"}},
+		{labchecks.Part{Permission: &labchecks.PermissionPart{User: "www", Path: "/etc/shadow", Read: bp(false), Write: bp(false), Execute: bp(false)}},
+			[]string{"www", "/etc/shadow"}, []string{"false", "read", "write", "execute"}},
+	} {
+		raw, err := json.Marshal(questionFor(&c.part, 5*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, leak := range []string{secret, "10.9.8.7", "299", "false"} {
+		kind := builtinKind(&c.part)
+		for _, m := range c.must {
+			if !strings.Contains(string(raw), m) {
+				t.Errorf("%s: the question %s lacks %q", kind, raw, m)
+			}
+		}
+		for _, leak := range c.not {
 			if strings.Contains(string(raw), leak) {
-				t.Errorf("%s: the question %s holds %q", builtinKind(p), raw, leak)
+				t.Errorf("%s: the question %s holds %q", kind, raw, leak)
 			}
 		}
 	}
@@ -254,7 +276,7 @@ func TestRunCheckBuiltinsAreJudgedByTheChecker(t *testing.T) {
 	obs := &recordingProber{reply: func(q probe.ObserveRequest) (probe.ObserveResponse, error) {
 		switch q.Kind {
 		case probe.KindDirectory:
-			return probe.ObserveResponse{Directory: &probe.DirectoryFacts{Exists: true, IsDir: true, Entries: []string{"a"}}}, nil
+			return probe.ObserveResponse{Directory: &probe.DirectoryFacts{Exists: true, IsDir: true, Present: []string{"a"}}}, nil
 		case probe.KindKernelParam:
 			return probe.ObserveResponse{KernelParam: &probe.KernelParamFacts{Exists: true, Value: "1"}}, nil
 		case probe.KindPort:

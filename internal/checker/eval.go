@@ -82,7 +82,7 @@ type partVerdict struct {
 }
 
 // EvalFile compares what a reader saw of a file with the expectations of the part. Every expectation must hold. A file that
-// is too large to decide (the expectation was not found in the part that was read) is Failed, not NotPassed: the checker does not know.
+// is too large to decide (content, matches or checksum over the size cap) is Failed, not Passed or NotPassed: the checker does not know.
 func EvalFile(p *labchecks.FilePart, f FileFacts) (Outcome, []string) {
 	v := evalFile(p, f)
 	return v.outcome, v.reasons
@@ -107,13 +107,16 @@ func evalFile(p *labchecks.FilePart, f FileFacts) partVerdict {
 		}
 	}
 	var fails []string
+	// Content that was cut at the size cap decides nothing: not "contains", not "matches" (an anchor would fit the cut), not the
+	// checksum. Whatever else can be judged is judged; the verdict is Failed (undecided, the previous state is kept) unless something
+	// else already failed.
 	undecided := false
 	if p.Checksum != nil {
 		switch {
 		case !f.Regular:
 			fails = append(fails, "checksum: not a regular file")
 		case f.Truncated:
-			return partVerdict{Failed, []string{"checksum: the file is larger than the part that is read"}}
+			undecided = true
 		case sha256Of(f.Content) != strings.ToLower(*p.Checksum):
 			fails = append(fails, "checksum: differs")
 		}
@@ -122,10 +125,11 @@ func evalFile(p *labchecks.FilePart, f FileFacts) partVerdict {
 		switch {
 		case !f.Regular:
 			fails = append(fails, "content: not a regular file")
+		case f.Truncated:
+			undecided = true
 		default:
 			if p.ContentContains != nil && !bytes.Contains(f.Content, []byte(*p.ContentContains)) {
 				fails = append(fails, "content_contains: not found")
-				undecided = undecided || f.Truncated
 			}
 			if p.ContentMatches != nil {
 				re, err := compile(*p.ContentMatches)
@@ -134,19 +138,18 @@ func evalFile(p *labchecks.FilePart, f FileFacts) partVerdict {
 					return partVerdict{Failed, []string{"content_matches: the pattern does not compile"}}
 				case !re.Match(f.Content):
 					fails = append(fails, "content_matches: no match")
-					undecided = undecided || f.Truncated
 				}
 			}
 		}
 	}
 	fails = append(fails, fileOwnership(p, f)...)
 	switch {
-	case len(fails) == 0:
-		return partVerdict{outcome: Passed}
-	case undecided && onlyContentFails(fails):
+	case len(fails) > 0:
+		return partVerdict{NotPassed, fails}
+	case undecided:
 		return partVerdict{Failed, []string{"content: the file is larger than the part that is read"}}
 	}
-	return partVerdict{NotPassed, fails}
+	return partVerdict{outcome: Passed}
 }
 
 // fileOwnership compares mode, owner and group.
@@ -169,15 +172,6 @@ func unmappedNote(unmapped bool) string {
 		return " (owner unknown to the container)"
 	}
 	return ""
-}
-
-func onlyContentFails(fails []string) bool {
-	for _, f := range fails {
-		if !strings.HasPrefix(f, "content") {
-			return false
-		}
-	}
-	return true
 }
 
 // ownerMatches: a number is compared with the numeric id, anything else with the name in the device's passwd or group file.
@@ -223,6 +217,10 @@ func evalCustom(p *labchecks.CustomPart, r ExecResult) partVerdict {
 	case r.Exit != 0:
 		return partVerdict{NotPassed, []string{fmt.Sprintf("exit code %d", r.Exit)}}
 	}
+	if r.Truncated && (p.OutputContains != nil || p.OutputMatches != nil) {
+		// An output cut at the cap decides nothing, whatever the rule says.
+		return partVerdict{Failed, []string{"output: longer than the part that is read"}}
+	}
 	var fails []string
 	if p.OutputContains != nil && !bytes.Contains(r.Output, []byte(*p.OutputContains)) {
 		fails = append(fails, "output_contains: not found")
@@ -236,11 +234,8 @@ func evalCustom(p *labchecks.CustomPart, r ExecResult) partVerdict {
 			fails = append(fails, "output_matches: no match")
 		}
 	}
-	switch {
-	case len(fails) == 0:
+	if len(fails) == 0 {
 		return partVerdict{outcome: Passed}
-	case r.Truncated:
-		return partVerdict{Failed, []string{"output: longer than the part that is read"}}
 	}
 	return partVerdict{NotPassed, fails}
 }
