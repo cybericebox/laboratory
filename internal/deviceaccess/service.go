@@ -126,7 +126,7 @@ func (s *Service) Serve(ctx context.Context, conn Conn) {
 
 	req, err := readOpen(ctx, conn)
 	if err != nil {
-		s.refuse(ctx, conn, wire.OpenRequest{}, "bad-request", err)
+		s.refuse(ctx, conn, wire.OpenRequest{}, wire.CodeBadRequest, err)
 		return
 	}
 	switch req.Kind {
@@ -135,7 +135,7 @@ func (s *Service) Serve(ctx context.Context, conn Conn) {
 	case wire.KindPut, wire.KindGet:
 		s.serveFile(ctx, conn, req)
 	default:
-		s.refuse(ctx, conn, req, "bad-request", fmt.Errorf("unknown kind %q", req.Kind))
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, fmt.Errorf("unknown kind %q", req.Kind))
 	}
 }
 
@@ -202,11 +202,11 @@ func (s *Service) resolve(ctx context.Context, req wire.OpenRequest) (Device, st
 	case err == nil:
 		return dev, "", nil
 	case errors.Is(err, ErrDisabled):
-		return Device{}, "disabled", err
+		return Device{}, wire.CodeDisabled, err
 	case errors.Is(err, ErrNotFound), errors.Is(err, ErrAmbiguous):
-		return Device{}, "not-found", err
+		return Device{}, wire.CodeNotFound, err
 	}
-	return Device{}, "unavailable", err
+	return Device{}, wire.CodeUnavailable, err
 }
 
 // labKey identifies a lab for the limits: the same lab name may exist in two groups.

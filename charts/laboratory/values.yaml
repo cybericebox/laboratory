@@ -138,8 +138,61 @@ checks:
       memory: 256Mi
       ephemeral-storage: 64Mi
 terminal:
-  # Browser terminal: a container device may ask for a terminal (a `terminal` entry in devices[].access) and the lab reports a "terminal" access entry.
+  # Browser terminal (the console): a container device may ask for a terminal (a `terminal` entry in devices[].access) and the lab reports a
+  # "terminal" access entry. Off by default. On, it renders the device access service (a DaemonSet on the lab nodes, the only component with the
+  # container runtime socket, templates/deviceaccess), turns on the console route of the L7 proxy (the reserved host
+  # <host>.<operator.baseDomain>) and gives the proxy the read rights it needs for it. The management agent reports it in the features, so
+  # the backend can refuse or hide a console. DEPLOY.md, "Device console", lists the rights, the paths and the checks to make on a node.
   enabled: false
+  # The first label of the console's host under operator.baseDomain. Reserved: no device Service is looked up under it.
+  host: terminal
+  # The device access service runs the image of the node-agent (/node device-access).
+  port: 8080
+  metricsPort: 9102
+  # The runtime socket of the node (the kubelet's containerd) and its namespace. The socket and the FIFO directory are mounted at the same
+  # path as on the host: the client makes the FIFOs and the runtime's shim, on the host, opens them by that path. The service owns the
+  # subdirectory cib-device-access of fifoDir and empties it at start; it never touches the FIFOs of another client of the runtime.
+  # k0s: /run/k0s/containerd.sock and, by default, /run/containerd/fifo (create it on the nodes: the service does not make hostPath parents).
+  containerdSocket: ""   # empty = nodeAgent.criSocket
+  containerdNamespace: k8s.io
+  fifoDir: /run/containerd/fifo
+  # Limits (the service enforces them; the L7 proxy applies the per-client one and the file limits too). 0 = unlimited.
+  limits:
+    # Consoles open at once: per participant (client of a group), per lab, per node.
+    perClient: 3
+    perLab: 10
+    perNode: 200
+    # File transfers at once: per node and per participant.
+    transfers: 16
+    transfersPerClient: 2
+    # A console with no byte in either direction for this long is closed; any console is closed at this age.
+    idleTimeout: 30m
+    maxLifetime: 8h
+    # The largest file of one transfer, and the most one console moves in all (both directions together).
+    maxFileBytes: 16777216
+    maxSessionBytes: 67108864
+  # Cilium policy of the service pod: ingress only from the L7 proxy pods on the service port, no egress at all. The chart refuses to render
+  # with the console on and this off (the listener is plain HTTP and trusts its caller; the policy is the whole protection of it). The
+  # narrowed egress of the L7 proxy (proxy.networkPolicy) is required too.
+  networkPolicy:
+    enabled: true
+    # Extra ingress peers for the metrics port (Cilium endpoint selectors, e.g. the monitoring namespace). Empty: nothing scrapes it.
+    metricsFrom: []
+  # Root without capabilities by default: the runtime socket is root:root 0660 (k0s). A non-root user works when the socket group is known:
+  # set runAsUser/runAsGroup and the socket's group in supplementalGroups, and make the FIFO directory writable by that user.
+  securityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    supplementalGroups: []
+  resources:
+    requests:
+      cpu: 20m
+      memory: 48Mi
+      ephemeral-storage: 16Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+      ephemeral-storage: 64Mi
 microvm:
   # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).
   enabled: false

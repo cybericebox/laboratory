@@ -109,6 +109,27 @@ spec:
       valueFrom:
         fieldRef:
           fieldPath: metadata.name
+    {{- if .Values.terminal.enabled }}
+    # The console: the reserved host, the device access service pods (their namespace and port) and the limits the proxy applies itself.
+    - name: TERMINAL_ENABLED
+      value: "true"
+    - name: TERMINAL_HOST
+      value: {{ .Values.terminal.host | quote }}
+    - name: TERMINAL_SERVICE_NAMESPACE
+      value: {{ .Release.Namespace | quote }}
+    - name: TERMINAL_SERVICE_PORT
+      value: {{ .Values.terminal.port | quote }}
+    - name: TERMINAL_PER_CLIENT
+      value: {{ .Values.terminal.limits.perClient | quote }}
+    - name: TERMINAL_IDLE_TIMEOUT
+      value: {{ .Values.terminal.limits.idleTimeout | quote }}
+    - name: TERMINAL_MAX_LIFETIME
+      value: {{ .Values.terminal.limits.maxLifetime | quote }}
+    - name: TERMINAL_MAX_FILE_BYTES
+      value: {{ .Values.terminal.limits.maxFileBytes | int64 | quote }}
+    - name: TERMINAL_MAX_SESSION_BYTES
+      value: {{ .Values.terminal.limits.maxSessionBytes | int64 | quote }}
+    {{- end }}
     {{- if .Values.bandwidth.enabled }}
     - name: NODE_NAME
       valueFrom:

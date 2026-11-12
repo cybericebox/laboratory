@@ -43,7 +43,7 @@ func browserText(ctx context.Context, c *websocket.Conn, m browserMsg) error {
 }
 
 // terminalSocket is the console's WebSocket: the browser's stream relayed to the service on the node of the device.
-func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg terminalTarget, group AccessGroup) {
+func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg terminalTarget) {
 	t := h.terminal
 	if !t.sameOrigin(r) {
 		// A page of a device, or any other site, may not drive the console with the participant's cookie.
@@ -98,13 +98,13 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 	hcancel()
 	var hi hello
 	if err != nil || typ != websocket.MessageText || json.Unmarshal(msg, &hi) != nil || hi.Cols < wire.MinSize || hi.Cols > wire.MaxSize || hi.Rows < wire.MinSize || hi.Rows > wire.MaxSize {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: "bad-request"})
+		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeBadRequest})
 		return wire.ReasonError
 	}
 
 	svc, err := t.dial(ctx, sess.base)
 	if err != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: "unavailable"})
+		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	defer func() { _ = svc.CloseNow() }()
@@ -114,7 +114,7 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 	err = svc.Write(wctx, websocket.MessageText, open)
 	wcancel()
 	if err != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: "unavailable"})
+		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
@@ -122,7 +122,7 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 	rcancel()
 	var reply wire.OpenReply
 	if err != nil || rt != websocket.MessageText || json.Unmarshal(rmsg, &reply) != nil {
-		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: "unavailable"})
+		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
 		return wire.ReasonError
 	}
 	if !reply.OK {
@@ -183,10 +183,10 @@ loop:
 
 func browserCode(c string) string {
 	switch c {
-	case "not-found", "disabled", "limit", "bad-request", "unavailable":
+	case wire.CodeNotFound, wire.CodeDisabled, wire.CodeLimit, wire.CodeBadRequest, wire.CodeUnavailable:
 		return c
 	}
-	return "unavailable"
+	return wire.CodeUnavailable
 }
 
 func (s *consoleSession) touch() { s.lastActive.Store(time.Now().UnixNano()) }

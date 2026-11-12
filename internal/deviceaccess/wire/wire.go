@@ -47,6 +47,22 @@ const (
 	KindGet     = "get"
 )
 
+// Codes of a refusal or of a failed transfer: the short words in OpenReply.Error and in the error message the browser gets. They name what
+// went wrong in the platform's terms and never carry text of the device.
+const (
+	CodeNotFound    = "not-found"
+	CodeDisabled    = "disabled"
+	CodeLimit       = "limit"
+	CodeBadRequest  = "bad-request"
+	CodeUnavailable = "unavailable"
+	CodeTooBig      = "too-big"
+	CodeDenied      = "denied"
+	CodeNotRegular  = "not-regular"
+	CodeIO          = "io"
+	CodeIncomplete  = "incomplete"
+	CodeBusy        = "busy"
+)
+
 // Close reasons. They are for the log and the metric label, never for the participant's eyes beyond a short word.
 const (
 	ReasonExit     = "exit"
@@ -88,7 +104,7 @@ type OpenRequest struct {
 // OpenReply answers an open request.
 type OpenReply struct {
 	OK bool `json:"ok"`
-	// Error is a short code when OK is false: "not-found", "disabled", "limit", "bad-request", "unavailable".
+	// Error is a short code (one of the Code constants) when OK is false.
 	Error string `json:"error,omitempty"`
 	// Size is the length of the file a get is about to send.
 	Size int64 `json:"size,omitempty"`
