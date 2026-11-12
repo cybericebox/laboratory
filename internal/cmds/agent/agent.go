@@ -22,6 +22,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/limits"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -68,6 +69,8 @@ func Run() {
 	h.EnableReadCache()
 	h.SetAdmissionStaleAfter(cfg.AdmissionStaleAfter)
 	h.SetRequiredSnapshotAvailable(cfg.RequiredSnapshotAvailable && cfg.StatePersistence)
+	// The host of the console is the platform's: no device is named like it.
+	names.ReserveHost(cfg.TerminalHost)
 	feat, err := features(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)

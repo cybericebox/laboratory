@@ -3,7 +3,7 @@ package names
 import "testing"
 
 func TestReservedDeviceNames(t *testing.T) {
-	want := map[string]bool{"vpn": true, "gateway": true, "internet": true}
+	want := map[string]bool{"vpn": true, "gateway": true, "internet": true, "terminal": true}
 	if len(ReservedDeviceNames) != len(want) {
 		t.Fatalf("got %v", ReservedDeviceNames)
 	}
