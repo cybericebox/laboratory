@@ -807,7 +807,7 @@ Off by default (`bandwidth.enabled`). On, no participant, lab or group can satur
 
     U = the node's bandwidth - the system reserve - the reserves of the platform pods that run on that node
 
-and U is divided into classes: the **entry** (the WireGuard demux and the L7 proxy) gets 50 %, the **internet** (the gateways) 25 %, **Geneve** (traffic between nodes) 25 % (`bandwidth.shares`). Inside a class everyone gets a fair share, never more than a cap: a participant 50, a lab's internet 50, a lab's Geneve traffic 100 Mbit/s (`bandwidth.caps`). **Nothing inside a node is limited**; only what crosses nodes and what goes to the internet:
+and U is divided into classes: the **entry** (the WireGuard demux and the L7 proxy) gets 50 %, the **internet** (the gateways) 25 %, **Geneve** (traffic between nodes) 25 % (`bandwidth.shares`). Inside a class everyone gets a fair share, never more than a cap: a participant 20, a lab's internet 50, a lab's Geneve traffic 100 Mbit/s (`bandwidth.caps`). A participant also has a floor, `bandwidth.caps.participantMinKbps` (default 1000 kbit/s, 0 = none): with very many active participants the fair share would fall toward 1 kbit/s, and a console session needs about 1 Mbit/s, so a participant still gets the floor. The ceiling wins over the floor (a floor above `participantMbit` is clamped to it). **Accepted trade-off:** with a floor the shares of all the active participants together can exceed the entry class when there are very many of them; the floor is not taken back by the class bucket, and lab internet and Geneve shares have no floor. **Nothing inside a node is limited**; only what crosses nodes and what goes to the internet:
 
 | What | Where | How |
 |---|---|---|

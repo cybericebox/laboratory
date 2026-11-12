@@ -147,9 +147,9 @@ func TestChartBandwidthOffChangesNoPod(t *testing.T) {
 }
 
 func TestChartBandwidthOn(t *testing.T) {
-	objs := renderAll(t, "--set", "bandwidth.enabled=true", "--set", "bandwidth.caps.participantMbit=30")
+	objs := renderAll(t, "--set", "bandwidth.enabled=true", "--set", "bandwidth.caps.participantMbit=30", "--set", "bandwidth.caps.participantMinKbps=500")
 	cm := objs["ConfigMap/laboratory-config"]["data"].(map[string]any)
-	if cm["BANDWIDTH_ENABLED"] != "true" || cm["BANDWIDTH_PARTICIPANT_CAP_MBIT"] != "30" || cm["BANDWIDTH_ENTRY_NAMESPACES"] != "laboratory-system,laboratory-proxy,laboratory-wg" {
+	if cm["BANDWIDTH_ENABLED"] != "true" || cm["BANDWIDTH_PARTICIPANT_CAP_MBIT"] != "30" || cm["BANDWIDTH_PARTICIPANT_MIN_KBPS"] != "500" || cm["BANDWIDTH_ENTRY_NAMESPACES"] != "laboratory-system,laboratory-proxy,laboratory-wg" {
 		t.Fatalf("operator settings: %v", cm)
 	}
 	na := podSpec(objs["DaemonSet/laboratory-node-agent"])

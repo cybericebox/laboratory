@@ -1068,7 +1068,12 @@ bandwidth:
     internet: 25
     geneve: 25
   caps:
-    participantMbit: 50
+    participantMbit: 20
+    # The lower bound of one participant's share (kbit/s; 0 = none, the share can then fall to 1 kbit/s). With very many active participants
+    # class/active drops below it and a participant still gets this much, so a console session keeps working. The ceiling wins: a floor above
+    # participantMbit is clamped to it. Accepted trade-off: with a floor the shares of all active participants together can pass the entry
+    # class. Applies to participants only (the VPN demux, userspace and kernel fast path, and the L7 proxy), not to lab internet or Geneve.
+    participantMinKbps: 1000
     labInternetMbit: 50
     labGeneveMbit: 100
     # What one lab may SEND to the internet (kbit/s, payload; the ACKs of what it downloads are not counted), and what all the labs of the

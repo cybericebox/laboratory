@@ -15,7 +15,8 @@ type Settings struct {
 	EntryShare         int64   `env:"BANDWIDTH_ENTRY_SHARE" envDefault:"50"`
 	InternetShare      int64   `env:"BANDWIDTH_INTERNET_SHARE" envDefault:"25"`
 	GeneveShare        int64   `env:"BANDWIDTH_GENEVE_SHARE" envDefault:"25"`
-	ParticipantCapMbit int64   `env:"BANDWIDTH_PARTICIPANT_CAP_MBIT" envDefault:"50"`
+	ParticipantCapMbit int64   `env:"BANDWIDTH_PARTICIPANT_CAP_MBIT" envDefault:"20"`
+	ParticipantMinKbps int64   `env:"BANDWIDTH_PARTICIPANT_MIN_KBPS" envDefault:"1000"`
 	LabInternetCapMbit int64   `env:"BANDWIDTH_LAB_INTERNET_CAP_MBIT" envDefault:"50"`
 	LabGeneveCapMbit   int64   `env:"BANDWIDTH_LAB_GENEVE_CAP_MBIT" envDefault:"100"`
 	LabUploadKbps      int64   `env:"BANDWIDTH_LAB_UPLOAD_KBPS" envDefault:"2048"`
@@ -29,7 +30,7 @@ func (s Settings) Config() Config {
 	return Config{
 		DefaultMbit: s.DefaultMbit, SystemReserveMbit: s.SystemReserveMbit,
 		EntryShare: s.EntryShare, InternetShare: s.InternetShare, GeneveShare: s.GeneveShare,
-		ParticipantCapMbit: s.ParticipantCapMbit, LabInternetCapMbit: s.LabInternetCapMbit, LabGeneveCapMbit: s.LabGeneveCapMbit,
+		ParticipantCapMbit: s.ParticipantCapMbit, ParticipantMinKbps: s.ParticipantMinKbps, LabInternetCapMbit: s.LabInternetCapMbit, LabGeneveCapMbit: s.LabGeneveCapMbit,
 		GeneveOverhead: s.GeneveOverhead, EntryOverhead: s.EntryOverhead,
 		LabUploadKbps: s.LabUploadKbps, UploadTotalMbit: s.UploadTotalMbit,
 	}

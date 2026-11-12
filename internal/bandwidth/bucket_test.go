@@ -262,3 +262,27 @@ func TestThrottleNewcomerStartsWithASmallBurst(t *testing.T) {
 		t.Fatal("a newcomer must not spend a full burst at once")
 	}
 }
+
+func TestThrottleFloorLiftsShareAndSkipsClass(t *testing.T) {
+	c := &clock{time.Unix(1000, 0)}
+	th := newTestThrottle(c)
+	th.SetFloor(1000)
+	th.SetLimits(2000, 50_000) // class 2 Mbit/s, floor 1 Mbit/s
+	for _, k := range []string{"a", "b", "c", "d"} {
+		send(th, k)
+	}
+	if got := th.Rate(); got != 1000 {
+		t.Fatalf("class/4 = 500 is lifted to the floor, got %d", got)
+	}
+	th.mu.Lock()
+	floored := th.flooredLocked()
+	th.mu.Unlock()
+	if !floored {
+		t.Fatal("the class is oversubscribed by the floor")
+	}
+	th.SetFloor(0)
+	th.SetLimits(2000, 50_000)
+	if got := th.Rate(); got != 500 {
+		t.Fatalf("without a floor the share is 500, got %d", got)
+	}
+}

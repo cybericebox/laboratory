@@ -170,9 +170,10 @@ func Run() {
 	runs := []func(){func() {
 		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, cfg.NodeName,
 			func(l bandwidth.Limits) {
+				ct.Throttle().SetFloor(l.MinKbps)
 				ct.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
 				shaper.set(l)
-				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps, "participantMinKbps", l.MinKbps)
 			},
 			func(err error) { log.Error(err, "read the bandwidth annotation") })
 		if err != nil {

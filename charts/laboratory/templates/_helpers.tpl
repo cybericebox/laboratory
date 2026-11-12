@@ -260,6 +260,7 @@ BANDWIDTH_ENTRY_SHARE: {{ .Values.bandwidth.shares.entry | quote }}
 BANDWIDTH_INTERNET_SHARE: {{ .Values.bandwidth.shares.internet | quote }}
 BANDWIDTH_GENEVE_SHARE: {{ .Values.bandwidth.shares.geneve | quote }}
 BANDWIDTH_PARTICIPANT_CAP_MBIT: {{ .Values.bandwidth.caps.participantMbit | quote }}
+BANDWIDTH_PARTICIPANT_MIN_KBPS: {{ .Values.bandwidth.caps.participantMinKbps | quote }}
 BANDWIDTH_LAB_INTERNET_CAP_MBIT: {{ .Values.bandwidth.caps.labInternetMbit | quote }}
 BANDWIDTH_LAB_GENEVE_CAP_MBIT: {{ .Values.bandwidth.caps.labGeneveMbit | quote }}
 BANDWIDTH_LAB_UPLOAD_KBPS: {{ .Values.bandwidth.caps.labUploadKbps | quote }}

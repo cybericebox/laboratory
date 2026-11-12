@@ -102,7 +102,7 @@ func (s *fastShaper) refresh() {
 			}
 			active = n
 		}
-		session = bandwidth.FairShare(l.ClassKbps, l.CapKbps, active)
+		session = bandwidth.FairShareFloor(l.ClassKbps, l.CapKbps, l.MinKbps, active)
 	}
 	if s.written && session == s.session && l.ClassKbps == s.cls {
 		return
