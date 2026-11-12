@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -61,6 +62,11 @@ type TerminalConfig struct {
 	MaxFile, MaxSession int64
 	// OriginScheme is the scheme of the page's origin ("https" unless a test serves it plainly).
 	OriginScheme string
+	// Embed decides which sites may show the console page in a frame (see terminal_embed.go); nil means none.
+	Embed *EmbedMatcher
+	// Signer signs every open request towards a service with the key it shares with it (see wire.Sign). It is required: without it no
+	// console opens.
+	Signer func(*wire.OpenRequest) error
 	// Dial opens the stream to a service; nil dials the base URL of the directory over a WebSocket.
 	Dial func(ctx context.Context, base string) (*websocket.Conn, error)
 }
@@ -162,7 +168,14 @@ type terminalTarget struct {
 
 // serveTerminal answers a request for the console host. The session was validated by the caller (cookie, group, tenant).
 func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, claims jwtClaims, client string, group AccessGroup) {
-	setTerminalHeaders(w, r)
+	t := h.terminal
+	ancestor := ancestorNone
+	if r.URL.Path == "/" {
+		// Only the page itself is framed; the answer depends on the Referer, so a cache must not reuse it.
+		w.Header().Add("Vary", "Referer")
+		ancestor = t.cfg.Embed.Ancestor(r.Referer())
+	}
+	setTerminalHeaders(w, r, ancestor)
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/assets/"):
 		serveTerminalAsset(w, r)
@@ -235,12 +248,12 @@ func plainName(s string) bool {
 // setTerminalHeaders are the headers of every answer of the console host. The page may run its own scripts and styles and open a
 // WebSocket to its own host, and nothing else: no frame, no form, no base tag, no external host. The stylesheet needs 'unsafe-inline'
 // because the terminal library writes style elements; scripts stay strict.
-func setTerminalHeaders(w http.ResponseWriter, r *http.Request) {
+func setTerminalHeaders(w http.ResponseWriter, r *http.Request, ancestor string) {
 	host := r.Host
 	hd := w.Header()
 	hd.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://"+host+
-		"; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
-	hd.Set("X-Frame-Options", "DENY")
+		"; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors "+ancestor)
+	// No X-Frame-Options: it cannot name an origin, and the CSP above is the one rule (an absent or unmatched ancestor is 'none').
 	hd.Set("X-Content-Type-Options", "nosniff")
 	hd.Set("Referrer-Policy", "no-referrer")
 	hd.Set("Cache-Control", "no-store")
@@ -275,4 +288,15 @@ func (t *terminalState) dial(ctx context.Context, base string) (*websocket.Conn,
 	}
 	c.SetReadLimit(wire.MaxFrame)
 	return c, nil
+}
+
+// openMessage signs an open request and encodes it.
+func (t *terminalState) openMessage(req wire.OpenRequest) ([]byte, error) {
+	if t.cfg.Signer == nil {
+		return nil, errors.New("no key to sign the request with")
+	}
+	if err := t.cfg.Signer(&req); err != nil {
+		return nil, err
+	}
+	return json.Marshal(req)
 }

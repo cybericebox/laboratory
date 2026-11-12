@@ -79,8 +79,10 @@ func (l Limits) withDefaults() Limits {
 // Config builds a Service.
 type Config struct {
 	Runtime Runtime
-	Limits  Limits
-	Log     logr.Logger
+	// Auth authenticates every open request. It is required: a service without one refuses every request.
+	Auth   *Auth
+	Limits Limits
+	Log    logr.Logger
 	// Tap, when set, sees every byte of a console in both directions (see stream.pass). Nothing sets it today.
 	Tap Tap
 }
@@ -88,6 +90,7 @@ type Config struct {
 // Service serves consoles and file transfers.
 type Service struct {
 	rt      Runtime
+	auth    *Auth
 	lim     Limits
 	log     logr.Logger
 	tap     Tap
@@ -104,7 +107,7 @@ type Service struct {
 // New returns a Service.
 func New(c Config) *Service {
 	reg := prometheus.NewRegistry()
-	s := &Service{rt: c.Runtime, lim: c.Limits.withDefaults(), log: c.Log, tap: c.Tap, reg: reg, m: newMetrics(reg), active: map[*stream]struct{}{}}
+	s := &Service{rt: c.Runtime, auth: c.Auth, lim: c.Limits.withDefaults(), log: c.Log, tap: c.Tap, reg: reg, m: newMetrics(reg), active: map[*stream]struct{}{}}
 	s.counter = limiter{perClient: map[string]int{}, perLab: map[string]int{}, transfersPerClient: map[string]int{}}
 	return s
 }
@@ -127,6 +130,16 @@ func (s *Service) Serve(ctx context.Context, conn Conn) {
 	req, err := readOpen(ctx, conn)
 	if err != nil {
 		s.refuse(ctx, conn, wire.OpenRequest{}, wire.CodeBadRequest, err)
+		return
+	}
+	// The open request is authenticated before anything else is done with it. Nothing else of it is logged on a failure, and the answer does
+	// not say which check failed.
+	if err := s.auth.Check(req); err != nil {
+		s.refuse(ctx, conn, wire.OpenRequest{}, wire.CodeUnauthorized, err)
+		return
+	}
+	if err := validateOpen(req); err != nil {
+		s.refuse(ctx, conn, req, wire.CodeBadRequest, err)
 		return
 	}
 	switch req.Kind {
@@ -183,7 +196,7 @@ func readOpen(ctx context.Context, conn Conn) (wire.OpenRequest, error) {
 	if !text || len(msg) > wire.MaxOpen {
 		return wire.OpenRequest{}, errors.New("the first message is not an open request")
 	}
-	return decodeOpen(msg)
+	return parseOpen(msg)
 }
 
 // refuse answers an open request with an error code and counts it.

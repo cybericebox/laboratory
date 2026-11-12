@@ -48,6 +48,8 @@ type stream struct {
 	start time.Time
 
 	in, out atomic.Int64
+	// cmdHash is a fingerprint of the console command, for the log (see CommandHash).
+	cmdHash string
 
 	// idle is reset by every byte that crosses the stream (see pass).
 	idleMu  sync.Mutex
@@ -108,14 +110,14 @@ func (st *stream) finish(reason string) {
 	st.svc.m.bytes.WithLabelValues(st.req.Kind, "in").Add(float64(st.in.Load()))
 	st.svc.m.bytes.WithLabelValues(st.req.Kind, "out").Add(float64(st.out.Load()))
 	st.svc.log.Info("stream end", "kind", st.req.Kind, "namespace", st.req.Namespace, "lab", st.req.Lab, "device", st.req.Device,
-		"client", st.req.Client, "group", st.req.Group, "reason", reason, "duration", d.Round(time.Millisecond).String(),
+		"client", st.req.Client, "group", st.req.Group, "user", st.req.User, "commandHash", st.cmdHash, "reason", reason, "duration", d.Round(time.Millisecond).String(),
 		"bytesIn", st.in.Load(), "bytesOut", st.out.Load())
 }
 
 func (st *stream) begin() {
 	st.svc.m.active.WithLabelValues(st.req.Kind).Inc()
 	st.svc.log.Info("stream start", "kind", st.req.Kind, "namespace", st.req.Namespace, "lab", st.req.Lab, "device", st.req.Device,
-		"client", st.req.Client, "group", st.req.Group)
+		"client", st.req.Client, "group", st.req.Group, "user", st.req.User, "commandHash", st.cmdHash)
 }
 
 func (st *stream) end(reason string) {
@@ -224,6 +226,7 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 	}
 
 	st := s.newStream(req, s.lim.Idle)
+	st.cmdHash = CommandHash(command)
 	if !s.track(st) {
 		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.New("shutting down"))
 		return

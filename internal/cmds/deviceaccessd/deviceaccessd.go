@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess"
+	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -30,6 +31,11 @@ type Config struct {
 	ContainerdSock      string `env:"CONTAINERD_SOCK" envDefault:"/run/k0s/containerd.sock"`
 	ContainerdNamespace string `env:"CONTAINERD_NAMESPACE" envDefault:"k8s.io"`
 	FifoDir             string `env:"FIFO_DIR" envDefault:"/run/containerd/fifo"`
+
+	// KeyFile and KeyFileAccept are the files of the shared key with the L7 proxy (a mounted Secret, never an environment variable): the
+	// current key, and one more accepted key while a key is rotated. The service does not start without the current one.
+	KeyFile       string `env:"KEY_FILE" envDefault:"/etc/device-access/key/current"`
+	KeyFileAccept string `env:"KEY_FILE_ACCEPT" envDefault:"/etc/device-access/key/accept"`
 
 	PerClient          int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
 	PerLab             int           `env:"LIMIT_PER_LAB" envDefault:"10"`
@@ -50,6 +56,7 @@ func Health() {
 	if listen[0] == ':' {
 		listen = "127.0.0.1" + listen
 	}
+	// With the chart the listener is bound to the pod IP (LISTEN=<pod ip>:<port>), and the probe asks that address.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listen+deviceaccess.HealthPath, nil)
@@ -91,6 +98,10 @@ func run(cfg Config) error {
 		return err
 	}
 	defer func() { _ = rt.Close() }()
+	keys, err := wire.NewKeyFiles(10*time.Second, cfg.KeyFile, cfg.KeyFileAccept)
+	if err != nil {
+		return fmt.Errorf("the key of the proxy: %w", err)
+	}
 	execs, fifos, err := rt.Sweep(ctx)
 	if err != nil {
 		return fmt.Errorf("sweep: %w", err)
@@ -101,7 +112,7 @@ func run(cfg Config) error {
 	lim.PerClient, lim.PerLab, lim.PerNode = cfg.PerClient, cfg.PerLab, cfg.PerNode
 	lim.Transfers, lim.TransfersPerClient = cfg.Transfers, cfg.TransfersPerClient
 	lim.Idle, lim.Lifetime, lim.MaxFile = cfg.Idle, cfg.Lifetime, cfg.MaxFile
-	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log})
+	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Accepted)})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())

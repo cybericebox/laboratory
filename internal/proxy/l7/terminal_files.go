@@ -144,8 +144,12 @@ func (h *Handler) openTransfer(ctx context.Context, sess *consoleSession, kind, 
 	if err != nil {
 		return nil, wire.OpenReply{}, err
 	}
-	open, _ := json.Marshal(wire.OpenRequest{Kind: kind, Namespace: sess.namespace, Lab: sess.lab, Device: sess.dev, User: sess.user,
+	open, err := h.terminal.openMessage(wire.OpenRequest{Kind: kind, Namespace: sess.namespace, Lab: sess.lab, Device: sess.dev, User: sess.user,
 		Path: filePath, Size: size, Client: sess.client, Group: sess.group})
+	if err != nil {
+		_ = svc.CloseNow()
+		return nil, wire.OpenReply{}, err
+	}
 	wctx, cancel := context.WithTimeout(ctx, terminalWrite)
 	err = svc.Write(wctx, websocket.MessageText, open)
 	cancel()

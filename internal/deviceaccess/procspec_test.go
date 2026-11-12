@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 func TestProcessForCopiesTheContainer(t *testing.T) {
@@ -120,5 +122,82 @@ func TestCheckSettings(t *testing.T) {
 		if _, err := CheckSettings(nil, u); err != nil {
 			t.Fatalf("user %q refused: %v", u, err)
 		}
+	}
+}
+
+func TestProcessForNonRootUserKeepsOnlyTheBoundingSet(t *testing.T) {
+	base := deviceSpec().Process
+	p, err := ProcessFor(base, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 1000, GID: 1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := p.Capabilities
+	if len(c.Effective) != 0 || len(c.Permitted) != 0 || len(c.Ambient) != 0 || len(c.Inheritable) != 0 {
+		t.Fatalf("an ordinary user got capabilities: %+v", c)
+	}
+	if !reflect.DeepEqual(c.Bounding, base.Capabilities.Bounding) {
+		t.Fatalf("the bounding set changed: %v", c.Bounding)
+	}
+	// the container's own sets are untouched
+	if len(base.Capabilities.Effective) == 0 {
+		t.Fatal("the container's spec was modified")
+	}
+}
+
+func TestProcessForRootUserKeepsTheContainersSetsAndNeverWidensThem(t *testing.T) {
+	base := deviceSpec().Process
+	p, _ := ProcessFor(base, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 0, GID: 0}})
+	c := p.Capabilities
+	if !reflect.DeepEqual(c.Effective, base.Capabilities.Effective) || !reflect.DeepEqual(c.Permitted, base.Capabilities.Permitted) || !reflect.DeepEqual(c.Bounding, base.Capabilities.Bounding) {
+		t.Fatalf("root exec: %+v", c)
+	}
+	// a container that runs as an ordinary user (empty sets but the bounding one) and a root console: still nothing beyond the bounding set
+	nonroot := deviceSpec().Process
+	nonroot.User.UID = 1000
+	nonroot.Capabilities.Effective, nonroot.Capabilities.Permitted = nil, nil
+	p, _ = ProcessFor(nonroot, ExecArgs{Args: []string{"x"}, User: &ExecUser{UID: 0}})
+	bound := map[string]bool{}
+	for _, x := range nonroot.Capabilities.Bounding {
+		bound[x] = true
+	}
+	for _, set := range [][]string{p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Bounding, p.Capabilities.Inheritable, p.Capabilities.Ambient} {
+		for _, x := range set {
+			if !bound[x] {
+				t.Fatalf("%s is outside the container's bounding set", x)
+			}
+		}
+	}
+}
+
+func TestProcessForCarriesTheRestOfTheContainersRestrictions(t *testing.T) {
+	base := deviceSpec().Process
+	score := 500
+	base.ApparmorProfile, base.SelinuxLabel, base.OOMScoreAdj = "cri-containerd.apparmor.d", "system_u:system_r:container_t:s0", &score
+	base.Rlimits = []specs.POSIXRlimit{{Type: "RLIMIT_NOFILE", Hard: 1024, Soft: 1024}}
+	for _, u := range []*ExecUser{nil, {UID: 0}, {UID: 1000}} {
+		p, err := ProcessFor(base, ExecArgs{Args: []string{"x"}, Terminal: true, User: u})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !p.NoNewPrivileges || p.ApparmorProfile != base.ApparmorProfile || p.SelinuxLabel != base.SelinuxLabel || p.OOMScoreAdj == nil || *p.OOMScoreAdj != 500 ||
+			len(p.Rlimits) != 1 || p.Rlimits[0].Hard != 1024 {
+			t.Fatalf("user %v: a restriction of the container was lost: %+v", u, p)
+		}
+	}
+}
+
+func TestCheckSettingsCommandRules(t *testing.T) {
+	for _, bad := range [][]string{{"sh"}, {"bin/sh"}, {"/proc/self/exe"}, {"/proc"}, {"/sys/kernel/x"}, {"/proc/../proc/1/exe"}, {"/./sys/x"}, {"/bin/../proc/self/exe"}, {"./sh"}} {
+		if _, err := CheckSettings(bad, ""); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+	for _, ok := range [][]string{{"/bin/sh"}, {"/usr/bin/env", "bash"}, {"/procfoo/x"}, {"/opt/sysmon/run"}} {
+		if _, err := CheckSettings(ok, ""); err != nil {
+			t.Errorf("%v refused: %v", ok, err)
+		}
+	}
+	if CommandHash([]string{"/bin/sh", "-l"}) == CommandHash([]string{"/bin/sh"}) || len(CommandHash(nil)) != 12 {
+		t.Error("command hash")
 	}
 }

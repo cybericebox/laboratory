@@ -84,6 +84,12 @@ type L7Config struct {
 	TerminalLifetime   time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
 	TerminalMaxFile    int64         `env:"TERMINAL_MAX_FILE_BYTES" envDefault:"16777216"`
 	TerminalMaxSession int64         `env:"TERMINAL_MAX_SESSION_BYTES" envDefault:"67108864"`
+	// TerminalKeyFile is the file of the key shared with the device access service (a mounted Secret); every open request is signed with it.
+	TerminalKeyFile string `env:"TERMINAL_KEY_FILE" envDefault:"/etc/proxy/device-access-key/current"`
+	// TerminalEmbedAllow and TerminalEmbedDeny are the lists of sites that may (and may not) show the console page in a frame; see
+	// l7.EmbedMatcher. Empty allow: no embedding.
+	TerminalEmbedAllow []string `env:"TERMINAL_EMBED_ALLOW" envSeparator:","`
+	TerminalEmbedDeny  []string `env:"TERMINAL_EMBED_DENY" envSeparator:","`
 }
 
 type WGConfig struct {

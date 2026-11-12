@@ -85,7 +85,7 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	// The console is over for everything that looks it up before the browser has even acknowledged the close.
 	t.remove(sess)
 	t.cfg.Log.Info("console end", "reason", reason, "lab", sess.lab, "device", sess.dev, "namespace", sess.namespace, "client", sess.client, "group", sess.group,
-		"duration", time.Since(sess.started).Round(time.Millisecond).String(), "bytesIn", sess.bytesIn.Load(), "bytesOut", sess.bytesOut.Load())
+		"user", sess.user, "commandHash", wire.CommandHash(sess.command), "duration", time.Since(sess.started).Round(time.Millisecond).String(), "bytesIn", sess.bytesIn.Load(), "bytesOut", sess.bytesOut.Load())
 	_ = browser.Close(websocket.StatusNormalClosure, reason)
 }
 
@@ -108,8 +108,12 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 		return wire.ReasonError
 	}
 	defer func() { _ = svc.CloseNow() }()
-	open, _ := json.Marshal(wire.OpenRequest{Kind: wire.KindConsole, Namespace: sess.namespace, Lab: sess.lab, Device: sess.dev,
+	open, err := t.openMessage(wire.OpenRequest{Kind: wire.KindConsole, Namespace: sess.namespace, Lab: sess.lab, Device: sess.dev,
 		Command: sess.command, User: sess.user, Cols: hi.Cols, Rows: hi.Rows, Client: sess.client, Group: sess.group})
+	if err != nil {
+		_ = browserText(ctx, browser, browserMsg{Type: "error", Code: wire.CodeUnavailable})
+		return wire.ReasonError
+	}
 	wctx, wcancel := context.WithTimeout(ctx, terminalWrite)
 	err = svc.Write(wctx, websocket.MessageText, open)
 	wcancel()
