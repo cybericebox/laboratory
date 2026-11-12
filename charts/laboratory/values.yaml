@@ -138,7 +138,7 @@ checks:
       memory: 256Mi
       ephemeral-storage: 64Mi
 terminal:
-  # Browser terminal: a container device may ask for a terminal (devices[].terminal.enabled) and the lab reports a "terminal" access entry.
+  # Browser terminal: a container device may ask for a terminal (a `terminal` entry in devices[].access) and the lab reports a "terminal" access entry.
   enabled: false
 microvm:
   # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).

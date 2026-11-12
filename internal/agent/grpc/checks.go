@@ -76,8 +76,9 @@ func checksFromProto(in *protobuf.LabChecks) *checkSet {
 		for _, p := range c.GetParts() {
 			var part labchecks.Part
 			if f := p.GetFile(); f != nil {
-				part.File = &labchecks.FilePart{Path: f.GetPath(), Exists: f.Exists, ContentContains: f.ContentContains, ContentMatches: f.ContentMatches, Mode: f.Mode, Owner: f.Owner, Group: f.Group}
+				part.File = &labchecks.FilePart{Path: f.GetPath(), Exists: f.Exists, ContentContains: f.ContentContains, ContentMatches: f.ContentMatches, Mode: f.Mode, Owner: f.Owner, Group: f.Group, Type: f.Type, Checksum: f.Checksum}
 			}
+			builtinFromProto(p, &part)
 			if cu := p.GetCustom(); cu != nil {
 				part.Custom = &labchecks.CustomPart{Command: append([]string(nil), cu.GetCommand()...), Script: cu.GetScript(), Interpreter: cu.GetInterpreter(), User: cu.GetUser(), OutputContains: cu.OutputContains, OutputMatches: cu.OutputMatches}
 			}
@@ -601,7 +602,7 @@ func checkResultsToProto(in []laboratoryv1alpha1.CheckResult) []*protobuf.CheckR
 func (h *Handler) checksFeature() *protobuf.ChecksFeature {
 	return &protobuf.ChecksFeature{
 		Enabled: h.checksAvailable(), MaxChecksPerLab: labchecks.MaxChecksPerLab, MaxPartsPerCheck: labchecks.MaxPartsPerCheck,
-		MaxTimeLimitSeconds: labchecks.MaxCheckTimeLimit, MaxScheduleSeconds: labchecks.MaxScheduleSeconds, MaxDetailBytes: labchecks.MaxResultDetailBytes,
+		MaxTimeLimitSeconds: labchecks.MaxCheckTimeLimit, Observations: append([]string(nil), labchecks.Observations...), MaxScheduleSeconds: labchecks.MaxScheduleSeconds, MaxDetailBytes: labchecks.MaxResultDetailBytes,
 	}
 }
 
@@ -609,5 +610,29 @@ func bootstrapFeature() *protobuf.BootstrapFeature {
 	return &protobuf.BootstrapFeature{
 		MaxScriptBytes: labchecks.MaxScriptBytes, MaxFiles: labchecks.MaxBootstrapFiles, MaxFileBytes: labchecks.MaxFileBytes,
 		MaxTotalBytes: labchecks.MaxBootstrapBytes, MaxTimeLimitSeconds: labchecks.MaxBootstrapTimeLimit, MaxAttempts: labchecks.BootstrapMaxAttempts,
+	}
+}
+
+// builtinFromProto maps the built-in observations (everything but file and custom).
+func builtinFromProto(p *protobuf.CheckPart, part *labchecks.Part) {
+	if d := p.GetDirectory(); d != nil {
+		part.Directory = &labchecks.DirectoryPart{Path: d.GetPath(), Exists: d.Exists, Mode: d.Mode, Owner: d.Owner, Group: d.Group,
+			HasEntries: append([]string(nil), d.GetHasEntries()...), LacksEntries: append([]string(nil), d.GetLacksEntries()...)}
+	}
+	if pr := p.GetProcess(); pr != nil {
+		part.Process = &labchecks.ProcessPart{Name: pr.Name, Matches: pr.Matches, User: pr.User, Running: pr.Running}
+	}
+	if po := p.GetPort(); po != nil {
+		part.Port = &labchecks.PortPart{Port: po.GetPort(), Protocol: po.GetProtocol(), Listening: po.Listening, Address: po.Address, Process: po.Process}
+	}
+	if k := p.GetKernelParam(); k != nil {
+		part.KernelParam = &labchecks.KernelParamPart{Name: k.GetName(), Equals: k.Equals, Matches: k.Matches}
+	}
+	if r := p.GetRequest(); r != nil {
+		part.Request = &labchecks.RequestPart{Protocol: r.GetProtocol(), Host: r.GetHost(), Port: r.GetPort(), Method: r.GetMethod(), Path: r.GetPath(),
+			Status: r.Status, BodyContains: r.BodyContains, BodyMatches: r.BodyMatches}
+	}
+	if pe := p.GetPermission(); pe != nil {
+		part.Permission = &labchecks.PermissionPart{User: pe.GetUser(), Path: pe.GetPath(), Read: pe.Read, Write: pe.Write, Execute: pe.Execute}
 	}
 }

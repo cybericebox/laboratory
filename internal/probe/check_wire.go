@@ -21,7 +21,7 @@ const (
 	// MaxCheckOutput bounds the output of a checked command that comes back (stdout and stderr together).
 	MaxCheckOutput = 64 << 10
 	// MaxCheckFile bounds the content of a file that comes back.
-	MaxCheckFile = 1 << 20
+	MaxCheckFile = 256 << 10
 	// MaxIDFile bounds /etc/passwd and /etc/group when names are looked up.
 	MaxIDFile = 256 << 10
 )
@@ -61,13 +61,15 @@ type FileRequest struct {
 
 // FileResponse is what the tool saw. Symbolic links are followed (inside the device, which the participant controls anyway).
 type FileResponse struct {
-	Exists  bool   `json:"exists"`
-	Regular bool   `json:"regular,omitempty"`
-	Mode    uint32 `json:"mode,omitempty"`
-	UID     uint32 `json:"uid,omitempty"`
-	GID     uint32 `json:"gid,omitempty"`
-	User    string `json:"user,omitempty"`
-	Group   string `json:"group,omitempty"`
+	Exists  bool `json:"exists"`
+	Regular bool `json:"regular,omitempty"`
+	// Type is what the path itself is, links not followed: file, directory, symlink or other.
+	Type  string `json:"type,omitempty"`
+	Mode  uint32 `json:"mode,omitempty"`
+	UID   uint32 `json:"uid,omitempty"`
+	GID   uint32 `json:"gid,omitempty"`
+	User  string `json:"user,omitempty"`
+	Group string `json:"group,omitempty"`
 	// Content is the start of the file (at most MaxCheckFile bytes) when it was asked for and the file is regular.
 	Content   []byte `json:"content,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`

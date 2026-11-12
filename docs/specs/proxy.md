@@ -189,16 +189,16 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 
 #### REQ-PX-018: Service existence as access gate
 
-- **Источник:** §5 «Разрешение = существование Service: оператор создаёт Service для exposure.web. Нет web-доступа → нет
+- **Источник:** §5 «Разрешение = существование Service: оператор создаёт Service для access[kind=http]. Нет web-доступа → нет
   Service → не резолвится → 404».
 - **Статус:** ✅ Implemented
 - **Реализация:** `main.go:svcResolver` возвращает ошибку при NotFound → handler → `http.Error(w, "not found", 404)`.
-- **Что считать выполненным:** Lab без `exposure.web` → Service не существует → 404; никакой отдельной authz-проверки не
+- **Что считать выполненным:** Lab без записи `access` вида `http` → Service не существует → 404; никакой отдельной authz-проверки не
   нужно.
 
 #### REQ-PX-019: Internal upstream — http (default) или https
 
-- **Источник:** §5 «exposure.web.internal: http (дефолт) — внутрь plain HTTP; https — re-encrypt».
+- **Источник:** §5 «access[kind=http].protocol: http (дефолт) — внутрь plain HTTP; https — re-encrypt».
 - **Статус:** ⚠️ Partial
 - **Реализация:** `main.go:svcResolver` берёт `proto := svc.Spec.Ports[0].Name` (`"http"` или `"https"`), пустое →
   `"http"`; backend URL формируется с этим proto.

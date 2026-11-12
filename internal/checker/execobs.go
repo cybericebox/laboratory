@@ -58,6 +58,6 @@ func (o *execObserver) ReadFile(ctx context.Context, path string, wantContent bo
 	if resp.Error != "" {
 		return FileFacts{}, &ObserveError{Reason: "the file could not be read in the device: " + resp.Error}
 	}
-	return FileFacts{Exists: resp.Exists, Regular: resp.Regular, Mode: resp.Mode, UID: resp.UID, GID: resp.GID, User: resp.User, Group: resp.Group,
+	return FileFacts{Exists: resp.Exists, Regular: resp.Regular, Type: resp.Type, Mode: resp.Mode, UID: resp.UID, GID: resp.GID, User: resp.User, Group: resp.Group,
 		Content: resp.Content, Truncated: resp.Truncated}, nil
 }

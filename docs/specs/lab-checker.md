@@ -25,7 +25,7 @@ Flush             ->  one server-side apply per dirty check; then the acknowledg
 - **Modes.** `once` stops after the first pass (its `firstPassedMs` is set and never cleared); `continuous` keeps running.
 - **All parts in the same run.** Parts run one after another inside the check's one time limit; the verdict is the conjunction. A part that is false decides (`not_passed`) even when another could not be made; otherwise a part that could not be made makes the run `error`.
 
-## 3. The two observations
+## 3. The observations (file and custom; the built-in ones are in the contract note, section 10)
 
 **file** (exists / absent, content contains, content matches a regexp (RE2, searched not anchored), mode (permission bits with setuid/setgid/sticky), owner, group; owner and group by number or by name from the device's own `/etc/passwd` and `/etc/group`).
 

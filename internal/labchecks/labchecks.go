@@ -6,6 +6,7 @@ package labchecks
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"path"
 	"regexp"
 	"strings"
@@ -22,7 +23,8 @@ const (
 
 // Defaults filled in by Normalize, so a consumer never guesses them.
 const (
-	DefaultInterpreter        = "/bin/sh"
+	DefaultInterpreter = "/bin/sh"
+	// DefaultCustomUser: a command of a check runs as nobody unless the author names a user (root included: an explicit choice).
 	DefaultCustomUser         = "nobody"
 	DefaultBootstrapTimeLimit = 300
 	DefaultCheckTimeLimit     = 30
@@ -54,7 +56,19 @@ const (
 	MaxNameBytes         = 128
 	MaxResultDetailBytes = 2048
 	MaxResultValueBytes  = 256
+
+	// The built-in observations.
+	MaxEntryNames     = 64        // names in has_entries / lacks_entries
+	MaxEntryNameBytes = 255       // one name
+	MaxProcessName    = 128       // a process name or a user to match
+	MaxHostBytes      = 253       // the host of a request
+	MaxRequestPath    = 2048      // the path of an HTTP request
+	MaxFileRead       = 256 << 10 // the part of a file that is read; a larger file is an error where the content matters
 )
+
+// The kinds of observation a laboratory's checker runs. File and custom are the first two; the rest read the state of the device
+// themselves and execute nothing of it.
+var Observations = []string{"file", "directory", "process", "port", "kernel_param", "request", "permission", "custom"}
 
 // File is a file to place on a device.
 type File struct {
@@ -89,10 +103,16 @@ type Check struct {
 	Parts []Part `json:"parts"`
 }
 
-// Part is one observation: exactly one of File and Custom is set.
+// Part is one observation: exactly one member is set.
 type Part struct {
-	File   *FilePart   `json:"file,omitempty"`
-	Custom *CustomPart `json:"custom,omitempty"`
+	File        *FilePart        `json:"file,omitempty"`
+	Custom      *CustomPart      `json:"custom,omitempty"`
+	Directory   *DirectoryPart   `json:"directory,omitempty"`
+	Process     *ProcessPart     `json:"process,omitempty"`
+	Port        *PortPart        `json:"port,omitempty"`
+	KernelParam *KernelParamPart `json:"kernelParam,omitempty"`
+	Request     *RequestPart     `json:"request,omitempty"`
+	Permission  *PermissionPart  `json:"permission,omitempty"`
 }
 
 // FilePart reads a file of the device and compares. Every expectation is optional, at least one is required.
@@ -105,6 +125,70 @@ type FilePart struct {
 	Mode            *uint32 `json:"mode,omitempty"`
 	Owner           *string `json:"owner,omitempty"`
 	Group           *string `json:"group,omitempty"`
+	// Type is what the path itself is (it is not followed): file, directory or symlink. Checksum is the sha256 of the content in
+	// lower-case hex. Both need the file to exist; the checksum needs a regular file of at most MaxFileRead bytes.
+	Type     *string `json:"type,omitempty"`
+	Checksum *string `json:"checksum,omitempty"`
+}
+
+// DirectoryPart: exists (default true), mode, owner, group, names that must be directly in the directory and names that must not.
+type DirectoryPart struct {
+	Path         string   `json:"path"`
+	Exists       *bool    `json:"exists,omitempty"`
+	Mode         *uint32  `json:"mode,omitempty"`
+	Owner        *string  `json:"owner,omitempty"`
+	Group        *string  `json:"group,omitempty"`
+	HasEntries   []string `json:"hasEntries,omitempty"`
+	LacksEntries []string `json:"lacksEntries,omitempty"`
+}
+
+// ProcessPart: a process by Name (the command without its directory) or by a regular expression on the command line; at least one.
+// Running defaults to true (false: no such process may run).
+type ProcessPart struct {
+	Name    *string `json:"name,omitempty"`
+	Matches *string `json:"matches,omitempty"`
+	User    *string `json:"user,omitempty"`
+	Running *bool   `json:"running,omitempty"`
+}
+
+// PortPart: whether something listens on a port. Protocol defaults to tcp, Listening to true. A listener on the wildcard address counts
+// for Address.
+type PortPart struct {
+	Port      int32   `json:"port"`
+	Protocol  string  `json:"protocol,omitempty"`
+	Listening *bool   `json:"listening,omitempty"`
+	Address   *string `json:"address,omitempty"`
+	Process   *string `json:"process,omitempty"`
+}
+
+// KernelParamPart: the value of a sysctl; at least one of Equals and Matches.
+type KernelParamPart struct {
+	Name    string  `json:"name"`
+	Equals  *string `json:"equals,omitempty"`
+	Matches *string `json:"matches,omitempty"`
+}
+
+// RequestPart: a connection from inside the device. Protocol is tcp, http or https; Host defaults to 127.0.0.1. For http and https:
+// Method (GET by default, or HEAD), Path (/ by default), Status (200 by default), and rules on the body (GET only).
+type RequestPart struct {
+	Protocol     string  `json:"protocol"`
+	Host         string  `json:"host,omitempty"`
+	Port         int32   `json:"port"`
+	Method       string  `json:"method,omitempty"`
+	Path         string  `json:"path,omitempty"`
+	Status       *int32  `json:"status,omitempty"`
+	BodyContains *string `json:"bodyContains,omitempty"`
+	BodyMatches  *string `json:"bodyMatches,omitempty"`
+}
+
+// PermissionPart: whether a user may read, write or execute a path, tested without changing anything. Each given boolean must equal the
+// real answer; at least one is required.
+type PermissionPart struct {
+	User    string `json:"user"`
+	Path    string `json:"path"`
+	Read    *bool  `json:"read,omitempty"`
+	Write   *bool  `json:"write,omitempty"`
+	Execute *bool  `json:"execute,omitempty"`
 }
 
 // CustomPart runs a command (or a script) in the device. Exit code 0 means passed.
@@ -215,6 +299,7 @@ func NormalizeChecks(checks []Check) {
 			c.TimeLimitSeconds = DefaultCheckTimeLimit
 		}
 		for j := range c.Parts {
+			normalizeBuiltin(&c.Parts[j])
 			if cu := c.Parts[j].Custom; cu != nil {
 				if cu.User == "" {
 					cu.User = DefaultCustomUser
@@ -273,13 +358,31 @@ func ValidateChecks(checks []Check, devices map[string]bool) error {
 }
 
 func validPart(p *Part) error {
+	n := 0
+	for _, set := range []bool{p.File != nil, p.Custom != nil, p.Directory != nil, p.Process != nil, p.Port != nil, p.KernelParam != nil, p.Request != nil, p.Permission != nil} {
+		if set {
+			n++
+		}
+	}
 	switch {
-	case p.File != nil && p.Custom != nil:
-		return fmt.Errorf("a part is either a file or a custom observation, not both")
+	case n > 1:
+		return fmt.Errorf("a part has one observation, not both or several")
 	case p.File != nil:
 		return validFilePart(p.File)
 	case p.Custom != nil:
 		return validCustomPart(p.Custom)
+	case p.Directory != nil:
+		return validDirectoryPart(p.Directory)
+	case p.Process != nil:
+		return validProcessPart(p.Process)
+	case p.Port != nil:
+		return validPortPart(p.Port)
+	case p.KernelParam != nil:
+		return validKernelParamPart(p.KernelParam)
+	case p.Request != nil:
+		return validRequestPart(p.Request)
+	case p.Permission != nil:
+		return validPermissionPart(p.Permission)
 	}
 	return fmt.Errorf("the observation is empty")
 }
@@ -288,10 +391,10 @@ func validFilePart(f *FilePart) error {
 	if err := validAbsPath(f.Path); err != nil {
 		return err
 	}
-	if f.Exists == nil && f.ContentContains == nil && f.ContentMatches == nil && f.Mode == nil && f.Owner == nil && f.Group == nil {
+	if f.Exists == nil && f.ContentContains == nil && f.ContentMatches == nil && f.Mode == nil && f.Owner == nil && f.Group == nil && f.Type == nil && f.Checksum == nil {
 		return fmt.Errorf("a file observation needs at least one expectation")
 	}
-	if f.Exists != nil && !*f.Exists && (f.ContentContains != nil || f.ContentMatches != nil || f.Mode != nil || f.Owner != nil || f.Group != nil) {
+	if f.Exists != nil && !*f.Exists && (f.ContentContains != nil || f.ContentMatches != nil || f.Mode != nil || f.Owner != nil || f.Group != nil || f.Type != nil || f.Checksum != nil) {
 		return fmt.Errorf("a file expected to be absent cannot have other expectations")
 	}
 	if err := validExpect("content_contains", f.ContentContains); err != nil {
@@ -300,16 +403,189 @@ func validFilePart(f *FilePart) error {
 	if err := validPattern("content_matches", f.ContentMatches); err != nil {
 		return err
 	}
-	if f.Mode != nil && *f.Mode > 0o7777 {
-		return fmt.Errorf("mode %o is not permission bits", *f.Mode)
+	if f.Type != nil && *f.Type != "file" && *f.Type != "directory" && *f.Type != "symlink" {
+		return fmt.Errorf("type %q is not file, directory or symlink", *f.Type)
 	}
-	if f.Owner != nil && !ownerName.MatchString(*f.Owner) {
-		return fmt.Errorf("invalid owner %q", *f.Owner)
+	if f.Checksum != nil && !sha256Hex.MatchString(*f.Checksum) {
+		return fmt.Errorf("checksum must be 64 lower-case hex characters (sha256)")
 	}
-	if f.Group != nil && !ownerName.MatchString(*f.Group) {
-		return fmt.Errorf("invalid group %q", *f.Group)
+	return validOwnership(f.Mode, f.Owner, f.Group)
+}
+
+var (
+	sha256Hex  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	sysctlName = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_-]+)*$`)
+	hostName   = regexp.MustCompile(`^[A-Za-z0-9._:\[\]-]+$`)
+)
+
+func validOwnership(mode *uint32, owner, group *string) error {
+	if mode != nil && *mode > 0o7777 {
+		return fmt.Errorf("mode %o is not permission bits", *mode)
+	}
+	if owner != nil && !ownerName.MatchString(*owner) {
+		return fmt.Errorf("invalid owner %q", *owner)
+	}
+	if group != nil && !ownerName.MatchString(*group) {
+		return fmt.Errorf("invalid group %q", *group)
 	}
 	return nil
+}
+
+func validEntryNames(what string, names []string) error {
+	if len(names) > MaxEntryNames {
+		return fmt.Errorf("%s has %d names, the limit is %d", what, len(names), MaxEntryNames)
+	}
+	for _, n := range names {
+		if n == "" || n == "." || n == ".." || len(n) > MaxEntryNameBytes || strings.ContainsAny(n, "/\x00") {
+			return fmt.Errorf("%s: %q is not the name of a directory entry", what, n)
+		}
+	}
+	return nil
+}
+
+func validDirectoryPart(d *DirectoryPart) error {
+	if err := validAbsPath(d.Path); err != nil {
+		return err
+	}
+	if d.Exists != nil && !*d.Exists && (d.Mode != nil || d.Owner != nil || d.Group != nil || len(d.HasEntries) > 0 || len(d.LacksEntries) > 0) {
+		return fmt.Errorf("a directory expected to be absent cannot have other expectations")
+	}
+	if err := validEntryNames("has_entries", d.HasEntries); err != nil {
+		return err
+	}
+	if err := validEntryNames("lacks_entries", d.LacksEntries); err != nil {
+		return err
+	}
+	return validOwnership(d.Mode, d.Owner, d.Group)
+}
+
+func validProcessPart(p *ProcessPart) error {
+	if p.Name == nil && p.Matches == nil {
+		return fmt.Errorf("a process observation needs a name or a pattern")
+	}
+	if p.Name != nil && (*p.Name == "" || len(*p.Name) > MaxProcessName || strings.ContainsAny(*p.Name, "/\x00 ")) {
+		return fmt.Errorf("the process name must be the command without its directory, up to %d bytes, without spaces", MaxProcessName)
+	}
+	if err := validPattern("matches", p.Matches); err != nil {
+		return err
+	}
+	if p.User != nil && !ownerName.MatchString(*p.User) {
+		return fmt.Errorf("invalid user %q", *p.User)
+	}
+	return nil
+}
+
+func validPortPart(p *PortPart) error {
+	if p.Port < 1 || p.Port > 65535 {
+		return fmt.Errorf("port %d is outside 1..65535", p.Port)
+	}
+	if p.Protocol != "tcp" && p.Protocol != "udp" {
+		return fmt.Errorf("protocol %q is neither tcp nor udp", p.Protocol)
+	}
+	if p.Listening != nil && !*p.Listening && (p.Address != nil || p.Process != nil) {
+		return fmt.Errorf("a port expected to be closed cannot have an address or a process")
+	}
+	if p.Address != nil && net.ParseIP(*p.Address) == nil {
+		return fmt.Errorf("address %q is not an IP address", *p.Address)
+	}
+	if p.Process != nil && (*p.Process == "" || len(*p.Process) > MaxProcessName || strings.ContainsAny(*p.Process, "/\x00 ")) {
+		return fmt.Errorf("invalid process name")
+	}
+	return nil
+}
+
+func validKernelParamPart(k *KernelParamPart) error {
+	if len(k.Name) > 256 || !sysctlName.MatchString(k.Name) {
+		return fmt.Errorf("%q is not a sysctl name with dots", k.Name)
+	}
+	if k.Equals == nil && k.Matches == nil {
+		return fmt.Errorf("a kernel_param observation needs equals or matches")
+	}
+	if err := validExpect("equals", k.Equals); err != nil {
+		return err
+	}
+	return validPattern("matches", k.Matches)
+}
+
+func validRequestPart(r *RequestPart) error {
+	if r.Host == "" || len(r.Host) > MaxHostBytes || !hostName.MatchString(r.Host) {
+		return fmt.Errorf("invalid host %q", r.Host)
+	}
+	if r.Port < 1 || r.Port > 65535 {
+		return fmt.Errorf("port %d is outside 1..65535", r.Port)
+	}
+	switch r.Protocol {
+	case "tcp":
+		if r.Method != "" || r.Path != "" || r.Status != nil || r.BodyContains != nil || r.BodyMatches != nil {
+			return fmt.Errorf("a tcp request has no method, path, status or body rules")
+		}
+		return nil
+	case "http", "https":
+	default:
+		return fmt.Errorf("protocol %q is not tcp, http or https", r.Protocol)
+	}
+	if r.Method != "GET" && r.Method != "HEAD" {
+		return fmt.Errorf("method %q is neither GET nor HEAD", r.Method)
+	}
+	if r.Path == "" || r.Path[0] != '/' || len(r.Path) > MaxRequestPath || strings.ContainsAny(r.Path, " \t\r\n\x00#") {
+		return fmt.Errorf("the path must start with / and hold no space, control character or #, up to %d bytes", MaxRequestPath)
+	}
+	if r.Status == nil || *r.Status < 100 || *r.Status > 599 {
+		return fmt.Errorf("status must be 100..599")
+	}
+	if r.Method == "HEAD" && (r.BodyContains != nil || r.BodyMatches != nil) {
+		return fmt.Errorf("a HEAD request has no body to check")
+	}
+	if err := validExpect("body_contains", r.BodyContains); err != nil {
+		return err
+	}
+	return validPattern("body_matches", r.BodyMatches)
+}
+
+func validPermissionPart(p *PermissionPart) error {
+	if !ownerName.MatchString(p.User) {
+		return fmt.Errorf("invalid user %q", p.User)
+	}
+	if err := validAbsPath(p.Path); err != nil {
+		return err
+	}
+	if p.Read == nil && p.Write == nil && p.Execute == nil {
+		return fmt.Errorf("a permission observation needs read, write or execute")
+	}
+	return nil
+}
+
+// normalizeBuiltin fills the defaults of the built-in observations, so the checker never guesses them.
+func normalizeBuiltin(p *Part) {
+	t := true
+	if pr := p.Process; pr != nil && pr.Running == nil {
+		pr.Running = &t
+	}
+	if po := p.Port; po != nil {
+		if po.Protocol == "" {
+			po.Protocol = "tcp"
+		}
+		if po.Listening == nil {
+			po.Listening = &t
+		}
+	}
+	if r := p.Request; r != nil {
+		if r.Host == "" {
+			r.Host = "127.0.0.1"
+		}
+		if r.Protocol == "http" || r.Protocol == "https" {
+			if r.Method == "" {
+				r.Method = "GET"
+			}
+			if r.Path == "" {
+				r.Path = "/"
+			}
+			if r.Status == nil {
+				ok := int32(200)
+				r.Status = &ok
+			}
+		}
+	}
 }
 
 func validCustomPart(c *CustomPart) error {

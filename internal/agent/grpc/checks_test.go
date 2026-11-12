@@ -132,7 +132,7 @@ func TestBootstrapAndChecksAreSecretsOnly(t *testing.T) {
 		t.Fatalf("checks.json: %v", err)
 	}
 	if len(doc.Checks) != 1 || doc.Checks[0].Mode != "continuous" || doc.Checks[0].TimeLimitSeconds != labchecks.DefaultCheckTimeLimit ||
-		doc.Checks[0].Parts[1].Custom.User != "root" || *doc.Checks[0].Parts[0].File.ContentContains != secretExpected {
+		doc.Checks[0].Parts[1].Custom.User != "nobody" || *doc.Checks[0].Parts[0].File.ContentContains != secretExpected {
 		t.Fatalf("checks document: %+v", doc.Checks)
 	}
 

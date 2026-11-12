@@ -841,7 +841,7 @@ option off nothing of the checker is rendered. The design record is `docs/specs/
 repository, the data model `docs/specs/lab-checks-bootstrap-contract.md`, the component `docs/specs/lab-checker.md`.
 
 What it does: on each lab node it watches the Labs, the device pods **of its own node** (a field selector the API server applies) and, by name,
-the Secret `<lab>-checks`; for the checks whose device runs on its node it makes two observations, `file` and `custom`, and writes the result into
+the Secret `<lab>-checks`; for the checks whose device runs on its node it makes the observations of the check (`file`, `custom`, and the built-in `directory`, `process`, `port`, `kernel_param`, `request`, `permission`), and writes the result into
 `Lab.status.checks[id]` (only when the state, the value or the detail changed) and the token of a manual run into `status.checksRunAck`.
 A device whose pod is not Ready, or whose bootstrap is not `done`, is not checked at all and its previous result stays.
 
@@ -880,8 +880,10 @@ itself (volumes, `/etc/hosts`) are not part of it; a path below `/proc`, `/sys` 
 micro-VM device (Kata) the root is inside the guest, so the file is read by the in-device tool (`/.cib/probe/probe check-file`) run through the
 runtime's exec, as the user of the container.
 
+**Built-in observations.** `directory`, `process`, `port`, `kernel_param`, `request` and `permission` run `/.cib/probe/probe check-observe` in the device. The program reads `/proc`, `/proc/sys`, `/etc` and the file system itself and executes nothing of the device; it is asked where to look and returns facts, and the checker compares them with the expected values (which never reach the device). A `request` is made by the program (TCP connect, or HTTP(S) GET/HEAD; redirects not followed, https not verified, body up to 64 KiB). A `permission` is asked of the kernel with `faccessat(AT_EACCESS)` in a child that runs as the user, opening nothing for writing. The bounds and keys are in `docs/specs/lab-checks-bootstrap-contract.md`, section 10.
+
 **Commands.** A `custom` observation runs `/.cib/probe/probe check-exec` in the device through the runtime's exec (the static tool every device
-mounts read-only). The tool switches to the requested user, runs the command or the script (a memory file, nothing written to the device) under
+mounts read-only). The tool switches to the requested user (`nobody` unless the author chose another; uid 65534 when the image has no such name), gives the command a clean environment and a fixed system `PATH`, runs the command or the script (a memory file, nothing written to the device) under
 the time limit, kills the whole process group at the limit and returns the exit code and at most 64 KiB of output as one JSON document. It can
 switch user only when the container's own user is root. The output is judged by the checker and never leaves it.
 
@@ -1727,7 +1729,7 @@ Every long-running component says when it really serves, and a rollout waits for
 
 A device used to be Ready as soon as its container ran, even while the application inside was still starting (a participant then met the proxy's "unavailable" page). Now a container device has a **readiness probe** in two cases:
 
-- **A published web port** (`exposure.web`): the device is Ready once the application answers on that port. `http` (the default) and `https` ports get an HTTP `GET /` (any answer below 500 counts, so a page behind a login or a 404 on `/` is fine; a 5xx or a refused connection is not; the certificate is not verified); any other protocol gets a TCP connect. Nothing to configure.
+- **A published web port** (the `http` entry of `access` in the device spec): the device is Ready once the application answers on that port. `http` (the default) and `https` ports get an HTTP `GET /` (any answer below 500 counts, so a page behind a login or a 404 on `/` is fine; a 5xx or a refused connection is not; the certificate is not verified); any other protocol gets a TCP connect. Nothing to configure.
 - **`waitReadyFile: true`** on a device template (exercise device editor: "Wait for the /run/ready file"): the device is Ready once the file `/run/ready` exists inside the container. With both, both must hold.
 
 A device with neither is Ready when it runs, as before. A lab is Ready only when all its devices are (this was already so; the probe makes "Ready" mean the application is up), so the L7 proxy's starting page shows until then.

@@ -5,6 +5,8 @@ package checker
 import (
 	"context"
 	"path/filepath"
+
+	"github.com/cybericebox/laboratory/internal/probe"
 )
 
 // NodeBackend gives access to the devices of this node.
@@ -68,4 +70,9 @@ func (o *nodeObserver) ReadFile(ctx context.Context, path string, wantContent bo
 
 func (o *nodeObserver) Exec(ctx context.Context, s ExecSpec) (ExecResult, error) {
 	return o.exec.Exec(ctx, s)
+}
+
+// Probe delegates the built-in observations to the in-device program (they read the state inside the device, not its files).
+func (o *nodeObserver) Probe(ctx context.Context, req probe.ObserveRequest) (probe.ObserveResponse, error) {
+	return o.exec.Probe(ctx, req)
 }

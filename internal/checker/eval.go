@@ -98,8 +98,26 @@ func evalFile(p *labchecks.FilePart, f FileFacts) partVerdict {
 	if !f.Exists {
 		return partVerdict{NotPassed, []string{"exists: the file is missing"}}
 	}
+	if p.Type != nil {
+		switch {
+		case f.Type == "":
+			return partVerdict{Failed, []string{"type: the reader cannot tell what the path is"}}
+		case f.Type != *p.Type:
+			return partVerdict{NotPassed, []string{"type: is " + f.Type}}
+		}
+	}
 	var fails []string
 	undecided := false
+	if p.Checksum != nil {
+		switch {
+		case !f.Regular:
+			fails = append(fails, "checksum: not a regular file")
+		case f.Truncated:
+			return partVerdict{Failed, []string{"checksum: the file is larger than the part that is read"}}
+		case sha256Of(f.Content) != strings.ToLower(*p.Checksum):
+			fails = append(fails, "checksum: differs")
+		}
+	}
 	if p.ContentContains != nil || p.ContentMatches != nil {
 		switch {
 		case !f.Regular:
