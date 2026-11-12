@@ -33,7 +33,7 @@ func fileFailure(w http.ResponseWriter, code string) {
 	switch code {
 	case wire.CodeNotFound:
 		status = http.StatusNotFound
-	case wire.CodeDenied:
+	case wire.CodeDenied, wire.CodeFilesOff:
 		status = http.StatusForbidden
 	case wire.CodeNotRegular, wire.CodeBadRequest:
 		status = http.StatusUnprocessableEntity
@@ -55,6 +55,11 @@ func (h *Handler) terminalFile(w http.ResponseWriter, r *http.Request, base stri
 	// The token is the capability; the session behind it must also be the caller's own, so a token read by someone else is useless.
 	if sess == nil || sess.group != claims.GroupID || sess.client != client || sess.tenant != claims.Tenant || sess.namespace != group.Namespace || sess.host != base {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return
+	}
+	if !sess.files {
+		// The author did not switch file transfer on for this device. Refused here, before any call to the device access service.
+		fileFailure(w, wire.CodeFilesOff)
 		return
 	}
 	switch r.Method {

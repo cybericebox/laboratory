@@ -1023,10 +1023,11 @@ func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv
 func (r *LabReconciler) terminalAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
 	var out []laboratoryv1alpha1.AccessEntry
 	for _, d := range lab.Spec.Devices {
-		if laboratoryv1alpha1.AccessOf(d.Access, laboratoryv1alpha1.AccessTerminal) == nil {
+		term := laboratoryv1alpha1.AccessOf(d.Access, laboratoryv1alpha1.AccessTerminal)
+		if term == nil {
 			continue
 		}
-		entry := laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"}
+		entry := laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal", Files: term.Files}
 		if r.BaseDomain != "" {
 			if dev, err := devices.Get(ctx, r.reader(), lab.Namespace, lab.Name, d.Name); err == nil && dev.Spec.Code != "" {
 				if label, ok := names.AccessHostLabel(d.Name, dev.Spec.Code, names.AccessKindTerminal); ok {

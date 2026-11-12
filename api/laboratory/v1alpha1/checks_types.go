@@ -50,6 +50,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' ? (!has(self.port) && !has(self.protocol)) : (has(self.port) && self.port > 0 && self.port <= 65535)",message="http, vnc and rdp need a port from 1 to 65535, terminal takes none"
 // +kubebuilder:validation:XValidation:rule="self.kind == 'http' || !has(self.protocol)",message="only an http access has a protocol"
 // +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' || (!has(self.command) && !has(self.user))",message="only a terminal access has a command and a user"
+// +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' || !has(self.files)",message="only a terminal access has files"
 type DeviceAccess struct {
 	Kind AccessKind `json:"kind"`
 	// Port of the device (http, vnc, rdp).
@@ -70,6 +71,10 @@ type DeviceAccess struct {
 	// +kubebuilder:validation:MaxLength=128
 	// +optional
 	User string `json:"user,omitempty"`
+	// Files switches file transfer through the console on (upload to and download from the device). Off by default. Terminal only; a
+	// device whose profile cannot run the probe inside (vm) is refused.
+	// +optional
+	Files bool `json:"files,omitempty"`
 }
 
 // AccessOf returns the access of a kind, or nil.

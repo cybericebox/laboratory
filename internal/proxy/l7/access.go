@@ -85,7 +85,7 @@ func (a *AccessReader) Device(ctx context.Context, namespace, device, code strin
 		if !enabled {
 			break
 		}
-		return DeviceInfo{Lab: d.Spec.LabRef, Device: d.Spec.Name, Node: d.Status.NodeName, Command: command, User: user}, nil
+		return DeviceInfo{Lab: d.Spec.LabRef, Device: d.Spec.Name, Node: d.Status.NodeName, Command: command, User: user, Files: d.TerminalFiles()}, nil
 	}
 	return DeviceInfo{}, ErrNoConsole
 }
