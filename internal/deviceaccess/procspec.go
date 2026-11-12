@@ -109,12 +109,24 @@ func ProcessFor(c *specs.Process, a ExecArgs) (*specs.Process, error) {
 		if u.Home != "" {
 			p.Env = setVar(p.Env, "HOME", u.Home)
 		}
-		// What runc, the CRI plugin and Docker do for a user that is not root: the container's capability sets are root's, and an
-		// ordinary user keeps none of them (only the bounding set stays, as the limit of what a setuid program could regain). Without
-		// this a console opened as an ordinary user would be a shell with root's effective capabilities. A root exec keeps the sets of
-		// the container, and the kernel never gives it more than the bounding set.
-		if u.UID != 0 && p.Capabilities != nil {
-			p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Ambient, p.Capabilities.Inheritable = nil, nil, nil, nil
+		// What the runtimes do (runc with a process in the spec, `docker exec -u`): the sets follow the user the process runs as.
+		//   - not root: the container's sets are root's, and an ordinary user keeps none of them; only the bounding set stays (the limit of
+		//     what a setuid program could regain). Without this a console opened as an ordinary user would be a shell with root's capabilities.
+		//   - root, in a container that itself runs as an ordinary user: its effective and permitted sets are empty while the bounding set holds
+		//     what the device may have, and a root process with empty sets could not drop to another user (CAP_SETUID), read a file of another
+		//     user (CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH) or do anything a root is for. So effective and permitted become the bounding set,
+		//     inheritable and ambient stay empty. Nothing outside the bounding set is ever given, so the security profile of the device (its
+		//     dropped capabilities, seccomp, AppArmor, no_new_privs) still limits it.
+		//   - root, in a container that runs as root: the container's own sets, unchanged.
+		if p.Capabilities != nil {
+			switch {
+			case u.UID != 0:
+				p.Capabilities.Effective, p.Capabilities.Permitted, p.Capabilities.Ambient, p.Capabilities.Inheritable = nil, nil, nil, nil
+			case c.User.UID != 0:
+				p.Capabilities.Effective = append([]string(nil), p.Capabilities.Bounding...)
+				p.Capabilities.Permitted = append([]string(nil), p.Capabilities.Bounding...)
+				p.Capabilities.Ambient, p.Capabilities.Inheritable = nil, nil
+			}
 		}
 	}
 	return &p, nil

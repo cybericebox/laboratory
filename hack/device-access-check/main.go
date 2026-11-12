@@ -189,6 +189,24 @@ func main() {
 	}
 	who, _ := s.run(ctx, "id")
 	fmt.Println("INFO  id:", strings.TrimSpace(who))
+	// A root console (-user root) in a device whose image runs as an ordinary user: effective and permitted must be the bounding set (a root with
+	// empty sets could not drop to another user or read a file of another user). On runc the service writes that into the exec spec; on Kata the shim
+	// does not pass capabilities from the spec at all and the agent gives the exec the sets of the container's init, so a failure THERE is the finding
+	// to report, not a mistake of this check.
+	if *user == "root" || *user == "0" {
+		st, err := s.run(ctx, "grep -E '^(Uid|CapInh|CapPrm|CapEff|CapBnd|CapAmb):' /proc/self/status; grep -E '^Uid:' /proc/1/status | sed 's/^/init /'")
+		if err == nil {
+			fmt.Println("INFO  /proc/self/status of the root console (capsh --print equivalent):\n" + st)
+			c := caps(st)
+			initUID := regexp.MustCompile(`init Uid:\s+(\d+)`).FindStringSubmatch(st)
+			if len(initUID) == 2 && initUID[1] != "0" {
+				check("root console in a non-root image: effective == permitted == bounding", c["CapEff"] == c["CapBnd"] && c["CapPrm"] == c["CapBnd"] && c["CapBnd"] != 0 && c["CapInh"] == 0 && c["CapAmb"] == 0,
+					fmt.Sprintf("eff %x prm %x bnd %x inh %x amb %x", c["CapEff"], c["CapPrm"], c["CapBnd"], c["CapInh"], c["CapAmb"]))
+			} else {
+				fmt.Println("INFO  the image runs as root: the sets are the container's own (unchanged)")
+			}
+		}
+	}
 
 	// 4. a process left running is killed when the connection drops
 	_, _ = s.run(ctx, "sleep 7331 &")
@@ -373,6 +391,21 @@ func checkerPath() {
 	var e probe.ExecResponse
 	err = ask(probe.CommandCheckExec, probe.ExecRequest{Argv: []string{"/bin/sh", "-c", "sleep 30"}, TimeoutMs: 1000}, &e)
 	check("custom over its limit is killed and reported", err == nil && e.TimedOut, fmt.Sprint(err, e.TimedOut))
+
+	// A file of another user with mode 0600, read by the probe (root in the device): needs CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, which a root of
+	// a non-root image only has if its sets are the bounding set. The file is made by a custom check as nobody (the probe drops to nobody itself,
+	// which needs CAP_SETUID).
+	var mk probe.ExecResponse
+	err = ask(probe.CommandCheckExec, probe.ExecRequest{Argv: []string{"/bin/sh", "-c", "umask 077; echo cib-0600 > /tmp/cib-0600; id -un"}, User: "nobody", TimeoutMs: 10000}, &mk)
+	check("custom as nobody makes a 0600 file", err == nil && mk.Started && strings.TrimSpace(string(mk.Output)) == "nobody", fmt.Sprint(err, " ", mk.Error, " ", string(mk.Output)))
+	f = probe.FileResponse{}
+	err = ask(probe.CommandCheckFile, probe.FileRequest{Path: "/tmp/cib-0600", WantContent: true}, &f)
+	check("file: a 0600 file of another user is read (no false 'cannot read')", err == nil && f.Exists && strings.TrimSpace(string(f.Content)) == "cib-0600", fmt.Sprint(err, f.Exists, string(f.Content)))
+	var capsOut probe.ExecResponse
+	if err = ask(probe.CommandCheckExec, probe.ExecRequest{Argv: []string{"/bin/sh", "-c", "grep -E '^(Uid|CapInh|CapPrm|CapEff|CapBnd|CapAmb):' /proc/self/status"}, User: "root", TimeoutMs: 10000}, &capsOut); err == nil {
+		fmt.Println("INFO  /proc/self/status of the probe as root (capsh --print equivalent):\n" + string(capsOut.Output))
+	}
+	_ = ask(probe.CommandCheckExec, probe.ExecRequest{Argv: []string{"/bin/rm", "-f", "/tmp/cib-0600"}, User: "root", TimeoutMs: 5000}, &mk)
 
 	// what the socket must refuse
 	for name, c := range map[string]struct {
