@@ -525,11 +525,10 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Profile:        tmpl.Profile,
 				SecurityPreset: tmpl.SecurityPreset,
 				Interfaces:     resolvedInterfaces[tmpl.Name],
-				Exposure:       tmpl.Exposure,
+				Access:         tmpl.Access,
 				Resources:      tmpl.Resources,
 				WaitReadyFile:  tmpl.WaitReadyFile,
 				Service:        tmpl.Service,
-				Terminal:       tmpl.Terminal,
 				Bootstrap:      tmpl.Bootstrap,
 				State:          r.deviceStateSpec(ten, tmpl),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
@@ -1018,11 +1017,11 @@ func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv
 	return append(r.buildWebAccessEntries(ctx, lab, snapshots...), terminalAccessEntries(lab)...)
 }
 
-// terminalAccessEntries is one entry per device with spec.terminal.enabled.
+// terminalAccessEntries is one entry per device with a terminal access.
 func terminalAccessEntries(lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
 	var out []laboratoryv1alpha1.AccessEntry
 	for _, d := range lab.Spec.Devices {
-		if d.Terminal != nil && d.Terminal.Enabled {
+		if laboratoryv1alpha1.AccessOf(d.Access, laboratoryv1alpha1.AccessTerminal) != nil {
 			out = append(out, laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"})
 		}
 	}
@@ -1036,10 +1035,11 @@ func (r *LabReconciler) buildWebAccessEntries(ctx context.Context, lab *laborato
 	var out []laboratoryv1alpha1.AccessEntry
 	services := r.serviceSnapshot(lab, snapshots...)
 	for _, d := range lab.Spec.Devices {
-		if d.Exposure == nil || d.Exposure.Web == nil {
+		web := laboratoryv1alpha1.HTTPAccess(d.Access)
+		if web == nil {
 			continue
 		}
-		proto := d.Exposure.Web.Protocol
+		proto := web.Protocol
 		if proto == "" {
 			proto = "http"
 		}
@@ -1050,7 +1050,7 @@ func (r *LabReconciler) buildWebAccessEntries(ctx context.Context, lab *laborato
 		out = append(
 			out, laboratoryv1alpha1.AccessEntry{
 				Device:   d.Name,
-				Port:     d.Exposure.Web.Port,
+				Port:     web.Port,
 				Protocol: proto,
 				URL:      fmt.Sprintf("https://%s.%s", svc.Name, r.BaseDomain),
 			},
@@ -1460,10 +1460,10 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 	services := r.serviceSnapshot(lab, snapshots...)
 	codes := r.newCodeAllocator(lab, services)
 	for _, d := range lab.Spec.Devices {
-		if d.Exposure == nil || d.Exposure.Web == nil {
+		web := laboratoryv1alpha1.HTTPAccess(d.Access)
+		if web == nil {
 			continue
 		}
-		web := d.Exposure.Web
 		// The Service name is the host label <device>-<code>. The labels let the
 		// proxy attribute a request to the lab and the device.
 		fill := func(svc *corev1.Service) error {

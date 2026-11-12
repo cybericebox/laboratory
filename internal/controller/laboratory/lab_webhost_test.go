@@ -22,7 +22,7 @@ func webLab(name, uid string) *laboratoryv1alpha1.Lab {
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-alpha", UID: types.UID(uid)}}
 	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{{
 		Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer,
-		Exposure: &laboratoryv1alpha1.ExposureSpec{Web: &laboratoryv1alpha1.WebExposure{Port: 80}},
+		Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80}},
 	}}
 	return lab
 }

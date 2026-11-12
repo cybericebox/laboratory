@@ -156,7 +156,52 @@ func validateCheckSet(set *checkSet, spec *laboratoryv1alpha1.LabSpec) error {
 	return nil
 }
 
-// validateDeviceExtras checks the non-secret service and terminal fields of every device of a spec.
+// validateAccess checks the access list of a device: known kinds, at most one entry of each, the fields each kind takes (the CRD says
+// the same; this gives the caller the reason in the call itself). vnc and rdp are stored and served by nothing yet.
+func validateAccess(d *laboratoryv1alpha1.DeviceTemplate) error {
+	seen := map[laboratoryv1alpha1.AccessKind]bool{}
+	for _, a := range d.Access {
+		if seen[a.Kind] {
+			return fmt.Errorf("device %q: more than one %q access", d.Name, a.Kind)
+		}
+		seen[a.Kind] = true
+		switch a.Kind {
+		case laboratoryv1alpha1.AccessHTTP, laboratoryv1alpha1.AccessVNC, laboratoryv1alpha1.AccessRDP:
+			if a.Port < 1 || a.Port > 65535 {
+				return fmt.Errorf("device %q: the %s access needs a port from 1 to 65535", d.Name, a.Kind)
+			}
+			if len(a.Command) > 0 || a.User != "" {
+				return fmt.Errorf("device %q: a %s access has no command or user", d.Name, a.Kind)
+			}
+			if a.Protocol != "" && (a.Kind != laboratoryv1alpha1.AccessHTTP || (a.Protocol != "http" && a.Protocol != "https")) {
+				return fmt.Errorf("device %q: only an http access has a protocol, http or https", d.Name)
+			}
+		case laboratoryv1alpha1.AccessTerminal:
+			if a.Port != 0 || a.Protocol != "" {
+				return fmt.Errorf("device %q: a terminal access has no port or protocol", d.Name)
+			}
+			if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
+				return fmt.Errorf("device %q: only a container device can have a terminal", d.Name)
+			}
+			if len(a.Command) > maxTerminalCommandItems {
+				return fmt.Errorf("device %q: the terminal command has more than %d items", d.Name, maxTerminalCommandItems)
+			}
+			for j, item := range a.Command {
+				if (j == 0 && item == "") || len(item) > maxServiceItemBytes || strings.ContainsRune(item, 0) {
+					return fmt.Errorf("device %q: invalid terminal command", d.Name)
+				}
+			}
+			if len(a.User) > 128 || strings.ContainsAny(a.User, "\x00\n") {
+				return fmt.Errorf("device %q: invalid terminal user", d.Name)
+			}
+		default:
+			return fmt.Errorf("device %q: unknown access kind %q", d.Name, a.Kind)
+		}
+	}
+	return nil
+}
+
+// validateDeviceExtras checks the non-secret service and access fields of every device of a spec.
 func validateDeviceExtras(spec *laboratoryv1alpha1.LabSpec) error {
 	for i := range spec.Devices {
 		d := &spec.Devices[i]
@@ -182,21 +227,8 @@ func validateDeviceExtras(spec *laboratoryv1alpha1.LabSpec) error {
 				return fmt.Errorf("device %q: invalid service user", d.Name)
 			}
 		}
-		if t := d.Terminal; t != nil && t.Enabled {
-			if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
-				return fmt.Errorf("device %q: only a container device can have a terminal", d.Name)
-			}
-			if len(t.Command) > maxTerminalCommandItems {
-				return fmt.Errorf("device %q: the terminal command has more than %d items", d.Name, maxTerminalCommandItems)
-			}
-			for j, item := range t.Command {
-				if (j == 0 && item == "") || len(item) > maxServiceItemBytes || strings.ContainsRune(item, 0) {
-					return fmt.Errorf("device %q: invalid terminal command", d.Name)
-				}
-			}
-			if len(t.User) > 128 || strings.ContainsAny(t.User, "\x00\n") {
-				return fmt.Errorf("device %q: invalid terminal user", d.Name)
-			}
+		if err := validateAccess(d); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -208,7 +240,7 @@ func (h *Handler) requireTerminal(spec *laboratoryv1alpha1.LabSpec) error {
 		return nil
 	}
 	for i := range spec.Devices {
-		if t := spec.Devices[i].Terminal; t != nil && t.Enabled {
+		if laboratoryv1alpha1.AccessOf(spec.Devices[i].Access, laboratoryv1alpha1.AccessTerminal) != nil {
 			return fmt.Errorf("device %q asks for a terminal, but the terminal option is off on this laboratory (features.terminal.enabled is false)", spec.Devices[i].Name)
 		}
 	}

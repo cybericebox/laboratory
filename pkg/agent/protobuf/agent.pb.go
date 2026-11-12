@@ -7090,12 +7090,14 @@ type FeaturesResponse struct {
 	// Optional parts of the laboratory (contract 1.5). A lab with checks is refused when checks.enabled is false, a lab with a terminal
 	// device when terminal.enabled is false. Absent = an agent older than the fields (nothing of it).
 	Checks    *ChecksFeature    `protobuf:"bytes,17,opt,name=checks,proto3" json:"checks,omitempty"`
-	Terminal  *TerminalFeature  `protobuf:"bytes,18,opt,name=terminal,proto3" json:"terminal,omitempty"`
 	Bootstrap *BootstrapFeature `protobuf:"bytes,19,opt,name=bootstrap,proto3" json:"bootstrap,omitempty"`
 	// How the VPN gateway treats connections started by a lab (contract 1.5). Absent = an agent older than the field: it does not
 	// enforce the default, so a daemon must not send spec.vpn.reverseConnections to it and must not promise the participant that
 	// the lab cannot connect to the participant's machine.
-	Vpn           *VPNFeature `protobuf:"bytes,20,opt,name=vpn,proto3" json:"vpn,omitempty"`
+	Vpn *VPNFeature `protobuf:"bytes,20,opt,name=vpn,proto3" json:"vpn,omitempty"`
+	// Which device access kinds this laboratory serves (contract 1.5; docs/specs/2026-11-12-device-access-and-checks.md). Absent = an
+	// agent older than the field: only http.
+	Access        *AccessFeature `protobuf:"bytes,21,opt,name=access,proto3" json:"access,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7249,13 +7251,6 @@ func (x *FeaturesResponse) GetChecks() *ChecksFeature {
 	return nil
 }
 
-func (x *FeaturesResponse) GetTerminal() *TerminalFeature {
-	if x != nil {
-		return x.Terminal
-	}
-	return nil
-}
-
 func (x *FeaturesResponse) GetBootstrap() *BootstrapFeature {
 	if x != nil {
 		return x.Bootstrap
@@ -7266,6 +7261,13 @@ func (x *FeaturesResponse) GetBootstrap() *BootstrapFeature {
 func (x *FeaturesResponse) GetVpn() *VPNFeature {
 	if x != nil {
 		return x.Vpn
+	}
+	return nil
+}
+
+func (x *FeaturesResponse) GetAccess() *AccessFeature {
+	if x != nil {
+		return x.Access
 	}
 	return nil
 }
@@ -7326,8 +7328,11 @@ type ChecksFeature struct {
 	MaxTimeLimitSeconds int32                  `protobuf:"varint,4,opt,name=max_time_limit_seconds,json=maxTimeLimitSeconds,proto3" json:"max_time_limit_seconds,omitempty"`
 	MaxScheduleSeconds  int32                  `protobuf:"varint,5,opt,name=max_schedule_seconds,json=maxScheduleSeconds,proto3" json:"max_schedule_seconds,omitempty"`
 	MaxDetailBytes      int32                  `protobuf:"varint,6,opt,name=max_detail_bytes,json=maxDetailBytes,proto3" json:"max_detail_bytes,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The kinds of observation this laboratory's checker runs: file, custom, and the built-in ones (directory, process, port,
+	// kernel_param, request, permission). A check with a kind that is not listed is refused.
+	Observations  []string `protobuf:"bytes,7,rep,name=observations,proto3" json:"observations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChecksFeature) Reset() {
@@ -7402,27 +7407,39 @@ func (x *ChecksFeature) GetMaxDetailBytes() int32 {
 	return 0
 }
 
-type TerminalFeature struct {
+func (x *ChecksFeature) GetObservations() []string {
+	if x != nil {
+		return x.Observations
+	}
+	return nil
+}
+
+// AccessFeature: http is always served (the L7 proxy). terminal is true only when its option is on AND the component that serves
+// it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
+type AccessFeature struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Http          bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
+	Terminal      bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
+	Vnc           bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
+	Rdp           bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *TerminalFeature) Reset() {
-	*x = TerminalFeature{}
+func (x *AccessFeature) Reset() {
+	*x = AccessFeature{}
 	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TerminalFeature) String() string {
+func (x *AccessFeature) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TerminalFeature) ProtoMessage() {}
+func (*AccessFeature) ProtoMessage() {}
 
-func (x *TerminalFeature) ProtoReflect() protoreflect.Message {
+func (x *AccessFeature) ProtoReflect() protoreflect.Message {
 	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -7434,14 +7451,35 @@ func (x *TerminalFeature) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TerminalFeature.ProtoReflect.Descriptor instead.
-func (*TerminalFeature) Descriptor() ([]byte, []int) {
+// Deprecated: Use AccessFeature.ProtoReflect.Descriptor instead.
+func (*AccessFeature) Descriptor() ([]byte, []int) {
 	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{84}
 }
 
-func (x *TerminalFeature) GetEnabled() bool {
+func (x *AccessFeature) GetHttp() bool {
 	if x != nil {
-		return x.Enabled
+		return x.Http
+	}
+	return false
+}
+
+func (x *AccessFeature) GetTerminal() bool {
+	if x != nil {
+		return x.Terminal
+	}
+	return false
+}
+
+func (x *AccessFeature) GetVnc() bool {
+	if x != nil {
+		return x.Vnc
+	}
+	return false
+}
+
+func (x *AccessFeature) GetRdp() bool {
+	if x != nil {
+		return x.Rdp
 	}
 	return false
 }
@@ -12494,7 +12532,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x0escale_up_known\x18\x03 \x01(\bR\fscaleUpKnown\x127\n" +
 	"\x18available_after_scale_up\x18\x04 \x01(\bR\x15availableAfterScaleUp\x126\n" +
 	"\x17overhead_cpu_millicores\x18\x05 \x01(\x03R\x15overheadCpuMillicores\x122\n" +
-	"\x15overhead_memory_bytes\x18\x06 \x01(\x03R\x13overheadMemoryBytes\"\xfe\b\n" +
+	"\x15overhead_memory_bytes\x18\x06 \x01(\x03R\x13overheadMemoryBytes\"\x88\t\n" +
 	"\x10FeaturesResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12P\n" +
 	"\x11state_persistence\x18\x02 \x01(\v2#.labmanager.StatePersistenceFeatureR\x10statePersistence\x12>\n" +
@@ -12515,22 +12553,26 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\freservations\x18\x0e \x01(\v2\x1f.labmanager.ReservationsFeatureR\freservations\x12)\n" +
 	"\x10contract_version\x18\x0f \x01(\tR\x0fcontractVersion\x12A\n" +
 	"\fgroup_limits\x18\x10 \x01(\v2\x1e.labmanager.GroupLimitsFeatureR\vgroupLimits\x121\n" +
-	"\x06checks\x18\x11 \x01(\v2\x19.labmanager.ChecksFeatureR\x06checks\x127\n" +
-	"\bterminal\x18\x12 \x01(\v2\x1b.labmanager.TerminalFeatureR\bterminal\x12:\n" +
+	"\x06checks\x18\x11 \x01(\v2\x19.labmanager.ChecksFeatureR\x06checks\x12:\n" +
 	"\tbootstrap\x18\x13 \x01(\v2\x1c.labmanager.BootstrapFeatureR\tbootstrap\x12(\n" +
-	"\x03vpn\x18\x14 \x01(\v2\x16.labmanager.VPNFeatureR\x03vpn\"=\n" +
+	"\x03vpn\x18\x14 \x01(\v2\x16.labmanager.VPNFeatureR\x03vpn\x121\n" +
+	"\x06access\x18\x15 \x01(\v2\x19.labmanager.AccessFeatureR\x06accessJ\x04\b\x12\x10\x13R\bterminal\"=\n" +
 	"\n" +
 	"VPNFeature\x12/\n" +
-	"\x13reverse_connections\x18\x01 \x01(\bR\x12reverseConnections\"\x96\x02\n" +
+	"\x13reverse_connections\x18\x01 \x01(\bR\x12reverseConnections\"\xba\x02\n" +
 	"\rChecksFeature\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12+\n" +
 	"\x12max_checks_per_lab\x18\x02 \x01(\x05R\x0fmaxChecksPerLab\x12-\n" +
 	"\x13max_parts_per_check\x18\x03 \x01(\x05R\x10maxPartsPerCheck\x123\n" +
 	"\x16max_time_limit_seconds\x18\x04 \x01(\x05R\x13maxTimeLimitSeconds\x120\n" +
 	"\x14max_schedule_seconds\x18\x05 \x01(\x05R\x12maxScheduleSeconds\x12(\n" +
-	"\x10max_detail_bytes\x18\x06 \x01(\x05R\x0emaxDetailBytes\"+\n" +
-	"\x0fTerminalFeature\x12\x18\n" +
-	"\aenabled\x18\x01 \x01(\bR\aenabled\"\xff\x01\n" +
+	"\x10max_detail_bytes\x18\x06 \x01(\x05R\x0emaxDetailBytes\x12\"\n" +
+	"\fobservations\x18\a \x03(\tR\fobservations\"c\n" +
+	"\rAccessFeature\x12\x12\n" +
+	"\x04http\x18\x01 \x01(\bR\x04http\x12\x1a\n" +
+	"\bterminal\x18\x02 \x01(\bR\bterminal\x12\x10\n" +
+	"\x03vnc\x18\x03 \x01(\bR\x03vnc\x12\x10\n" +
+	"\x03rdp\x18\x04 \x01(\bR\x03rdp\"\xff\x01\n" +
 	"\x10BootstrapFeature\x12(\n" +
 	"\x10max_script_bytes\x18\x01 \x01(\x05R\x0emaxScriptBytes\x12\x1b\n" +
 	"\tmax_files\x18\x02 \x01(\x05R\bmaxFiles\x12$\n" +
@@ -13077,7 +13119,7 @@ var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(*FeaturesResponse)(nil),              // 90: labmanager.FeaturesResponse
 	(*VPNFeature)(nil),                    // 91: labmanager.VPNFeature
 	(*ChecksFeature)(nil),                 // 92: labmanager.ChecksFeature
-	(*TerminalFeature)(nil),               // 93: labmanager.TerminalFeature
+	(*AccessFeature)(nil),                 // 93: labmanager.AccessFeature
 	(*BootstrapFeature)(nil),              // 94: labmanager.BootstrapFeature
 	(*GroupLimitsFeature)(nil),            // 95: labmanager.GroupLimitsFeature
 	(*ReservationsFeature)(nil),           // 96: labmanager.ReservationsFeature
@@ -13299,9 +13341,9 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	96,  // 138: labmanager.FeaturesResponse.reservations:type_name -> labmanager.ReservationsFeature
 	95,  // 139: labmanager.FeaturesResponse.group_limits:type_name -> labmanager.GroupLimitsFeature
 	92,  // 140: labmanager.FeaturesResponse.checks:type_name -> labmanager.ChecksFeature
-	93,  // 141: labmanager.FeaturesResponse.terminal:type_name -> labmanager.TerminalFeature
-	94,  // 142: labmanager.FeaturesResponse.bootstrap:type_name -> labmanager.BootstrapFeature
-	91,  // 143: labmanager.FeaturesResponse.vpn:type_name -> labmanager.VPNFeature
+	94,  // 141: labmanager.FeaturesResponse.bootstrap:type_name -> labmanager.BootstrapFeature
+	91,  // 142: labmanager.FeaturesResponse.vpn:type_name -> labmanager.VPNFeature
+	93,  // 143: labmanager.FeaturesResponse.access:type_name -> labmanager.AccessFeature
 	97,  // 144: labmanager.GroupPodsFeature.vpn:type_name -> labmanager.PodSizing
 	97,  // 145: labmanager.GroupPodsFeature.gateway:type_name -> labmanager.PodSizing
 	19,  // 146: labmanager.GroupPodsFeature.default_vpn:type_name -> labmanager.PodSize

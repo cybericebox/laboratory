@@ -141,6 +141,15 @@ func RunCheckCommand(cmd string, args []string) int {
 			return 2
 		}
 		return writeJSON(runCheckExec(req))
+	case CommandCheckObserve:
+		var req ObserveRequest
+		if err := json.Unmarshal([]byte(args[0]), &req); err != nil {
+			_, _ = os.Stderr.WriteString("bad request\n")
+			return 2
+		}
+		return writeJSON(Observe(req))
+	case CommandCheckPerm:
+		return RunPermChild(args[0])
 	case CommandCheckFile:
 		var req FileRequest
 		if err := json.Unmarshal([]byte(args[0]), &req); err != nil {

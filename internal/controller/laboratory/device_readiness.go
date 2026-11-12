@@ -62,11 +62,8 @@ func readinessCommandFor(device *laboratoryv1alpha1.Device, bootstrapped bool) [
 	return append([]string{names.ProbeBinary, "ready"}, args...)
 }
 
-func webPort(device *laboratoryv1alpha1.Device) *laboratoryv1alpha1.WebExposure {
-	if device.Spec.Exposure == nil || device.Spec.Exposure.Web == nil || device.Spec.Exposure.Web.Port <= 0 {
-		return nil
-	}
-	return device.Spec.Exposure.Web
+func webPort(device *laboratoryv1alpha1.Device) *laboratoryv1alpha1.DeviceAccess {
+	return laboratoryv1alpha1.HTTPAccess(device.Spec.Access)
 }
 
 // withReadiness adds the readiness probe to the device container (the first), with what it needs: the emptyDir, the init

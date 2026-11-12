@@ -5,6 +5,7 @@ package probe
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,3 +127,70 @@ func waitFor(t *testing.T, ms int, cond func() bool, want bool) {
 }
 
 func sleep50() { time.Sleep(50 * time.Millisecond) }
+
+func TestResolveUser(t *testing.T) {
+	etc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(etc, "passwd"), []byte("root:x:0:0:root:/root:/bin/sh\nweb:x:1000:1001::/srv/web:/bin/sh\nnobody:x:65534:65533::/nonexistent:/bin/false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		in   string
+		want account
+		err  string
+	}{
+		{"root", account{0, 0, "root", "/root"}, ""},
+		{"web", account{1000, 1001, "web", "/srv/web"}, ""},
+		{"1000", account{1000, 1001, "web", "/srv/web"}, ""},
+		{"1000:50", account{1000, 50, "web", "/srv/web"}, ""},
+		{"4242", account{4242, 4242, "", "/"}, ""},
+		{"nobody", account{65534, 65533, "nobody", "/nonexistent"}, ""},
+		{"ghost", account{}, "no such user"},
+		{"web:x", account{}, "bad group"},
+	} {
+		got, err := resolveUser(etc, c.in)
+		if c.err != "" {
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Errorf("%s: %v", c.in, err)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%s: %+v %v, want %+v", c.in, got, err, c.want)
+		}
+	}
+	// An image with no passwd file at all still has nobody.
+	if got, err := resolveUser(t.TempDir(), "nobody"); err != nil || got.uid != 65534 || got.gid != 65534 {
+		t.Errorf("nobody without a passwd file: %+v %v", got, err)
+	}
+}
+
+func TestCleanEnvironment(t *testing.T) {
+	t.Setenv("SECRET_FROM_THE_IMAGE", "flag")
+	t.Setenv("PATH", "/image/bin")
+	r := runCheckExec(ExecRequest{Argv: []string{"env"}, TimeoutMs: 5000})
+	out := string(r.Output)
+	if !r.Started || strings.Contains(out, "SECRET_FROM_THE_IMAGE") || strings.Contains(out, "/image/bin") || !strings.Contains(out, "PATH="+checkPath) {
+		t.Fatalf("got %+v", r)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if !strings.HasPrefix(line, "PATH=") && !strings.HasPrefix(line, "HOME=") && !strings.HasPrefix(line, "LC_ALL=") && !strings.HasPrefix(line, "USER=") && !strings.HasPrefix(line, "LOGNAME=") && !strings.HasPrefix(line, "PWD=") && !strings.HasPrefix(line, "SHLVL=") && !strings.HasPrefix(line, "_=") {
+			t.Errorf("an unexpected variable: %q", line)
+		}
+	}
+}
+
+// A check for nobody: when the tool is not root it cannot switch, and says so rather than run as somebody else.
+func TestNobodyNeedsARootTool(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can switch")
+	}
+	r := runCheckExec(ExecRequest{Argv: []string{"true"}, User: "nobody", TimeoutMs: 5000})
+	if r.Started || !strings.Contains(r.Error, "does not run as root") {
+		t.Fatalf("got %+v", r)
+	}
+	// Asking for the user the tool runs as is fine.
+	me := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
+	if r := runCheckExec(ExecRequest{Argv: []string{"true"}, User: me, TimeoutMs: 5000}); !r.Started || r.Exit != 0 {
+		t.Fatalf("own user: %+v", r)
+	}
+}

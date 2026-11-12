@@ -361,9 +361,27 @@ func TestContractValidationAtTheAgent(t *testing.T) {
 		{"schedule shorter than the time limit", nil, nil, []*protobuf.Check{fastSchedule}, "shorter than the time limit"},
 		{"mode missing", nil, nil, []*protobuf.Check{noMode}, "neither once nor continuous"},
 		{"too many checks", nil, nil, tooMany, "the limit is"},
+		{"two http accesses", func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80}, {Kind: laboratoryv1alpha1.AccessHTTP, Port: 81}}
+		}, nil, nil, "more than one"},
+		{"http without a port", func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessHTTP}}
+		}, nil, nil, "needs a port"},
+		{"vnc with a protocol", func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessVNC, Port: 5900, Protocol: "https"}}
+		}, nil, nil, "only an http access has a protocol"},
+		{"terminal with a port", func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal, Port: 22}}
+		}, nil, nil, "no port or protocol"},
+		{"http with a command", func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80, Command: []string{"sh"}}}
+		}, nil, nil, "no command or user"},
+		{"unknown kind", func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: "ssh", Port: 22}}
+		}, nil, nil, "unknown access kind"},
 		{"terminal on a hub", func(s *laboratoryv1alpha1.LabSpec) {
 			hub(s)
-			s.Devices[1].Terminal = &laboratoryv1alpha1.DeviceTerminal{Enabled: true}
+			s.Devices[1].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}
 		}, nil, nil, "only a container device can have a terminal"},
 		{"service on a hub", func(s *laboratoryv1alpha1.LabSpec) {
 			hub(s)
@@ -391,7 +409,7 @@ func TestChecksAndTerminalAreRefusedWhileOff(t *testing.T) {
 	ctx := context.Background()
 	terminalSpec := func(t *testing.T) []byte {
 		return contractSpecJSON(t, func(s *laboratoryv1alpha1.LabSpec) {
-			s.Devices[0].Terminal = &laboratoryv1alpha1.DeviceTerminal{Enabled: true}
+			s.Devices[0].Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}
 		}, "web")
 	}
 	checks := &protobuf.LabChecks{Items: []*protobuf.Check{fileCheck("cfg", "web")}}
@@ -426,7 +444,7 @@ func TestChecksAndTerminalAreRefusedWhileOff(t *testing.T) {
 	res, err = send(terminalOnly, terminalSpec(t), nil, "f")
 	wantStates(t, res, err, stCreated)
 	lab, _ := terminalOnly.cs.LaboratoryV1alpha1().Labs("team-lab").Get(ctx, "f", metav1.GetOptions{})
-	if tm := lab.Spec.Devices[0].Terminal; tm == nil || !tm.Enabled {
+	if tm := laboratoryv1alpha1.AccessOf(lab.Spec.Devices[0].Access, laboratoryv1alpha1.AccessTerminal); tm == nil {
 		t.Fatalf("the terminal request must reach the spec: %+v", lab.Spec.Devices[0])
 	}
 }
@@ -543,17 +561,18 @@ func TestRunChecksIsRefusedWhileChecksAreOff(t *testing.T) {
 }
 
 // The features report carries both switches, independent, and the limits.
-func TestFeaturesReportChecksAndTerminal(t *testing.T) {
-	for _, c := range []struct{ checks, terminal bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+func TestFeaturesReportChecksAndAccess(t *testing.T) {
+	for _, c := range []struct{ checks, terminal, served bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false}, {true, true, true}, {false, false, true}} {
 		f := testFeatures
-		f.ChecksEnabled, f.TerminalEnabled = c.checks, c.terminal
+		f.ChecksEnabled, f.TerminalEnabled, f.TerminalServed = c.checks, c.terminal, c.served
 		h := featuresHandler(t, f, newTenantTenant("a", true, nil))
 		got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.GetChecks().GetEnabled() != c.checks || got.GetTerminal().GetEnabled() != c.terminal {
-			t.Errorf("checks=%v terminal=%v: reported %v / %v", c.checks, c.terminal, got.GetChecks().GetEnabled(), got.GetTerminal().GetEnabled())
+		acc := got.GetAccess()
+		if got.GetChecks().GetEnabled() != c.checks || acc.GetTerminal() != (c.terminal && c.served) || !acc.GetHttp() || acc.GetVnc() || acc.GetRdp() {
+			t.Errorf("%+v: reported checks %v, access %+v (only http is always served, terminal needs the option and the component, vnc and rdp never)", c, got.GetChecks().GetEnabled(), acc)
 		}
 		if ch := got.GetChecks(); ch.GetMaxChecksPerLab() != labchecks.MaxChecksPerLab || ch.GetMaxTimeLimitSeconds() != labchecks.MaxCheckTimeLimit || ch.GetMaxDetailBytes() != labchecks.MaxResultDetailBytes {
 			t.Errorf("checks limits: %+v", ch)
@@ -569,7 +588,7 @@ func TestFeaturesReportChecksAndTerminal(t *testing.T) {
 func TestLabProjectionCarriesChecksBootstrapAndTerminal(t *testing.T) {
 	long := strings.Repeat("é", labchecks.MaxResultDetailBytes) // two bytes per rune
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l", Namespace: "ns"}}
-	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Terminal: &laboratoryv1alpha1.DeviceTerminal{Enabled: true}}}
+	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal}}}}
 	lab.Status.Devices = []laboratoryv1alpha1.DeviceRef{{Name: "web", Bootstrap: &laboratoryv1alpha1.DeviceBootstrapStatus{Phase: laboratoryv1alpha1.BootstrapFailed, Attempts: 3, Reason: "script exited 2"}}}
 	lab.Status.Access = []laboratoryv1alpha1.AccessEntry{{Device: "web", Port: 8080, Protocol: "https", URL: "https://web.example"}, {Device: "web", Protocol: "terminal"}}
 	lab.Status.ChecksRunAck = 7
