@@ -1,0 +1,18 @@
+{{- if .Values.terminal.enabled }}
+{{- /* Headless: it exists for its EndpointSlices, which tell the L7 proxy the address of the service pod on the node of a device. Nothing connects to it by name. */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: laboratory-device-access
+  namespace: {{ include "laboratory.deviceAccess.namespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: stream
+      port: {{ .Values.terminal.port }}
+      targetPort: stream
+{{- end }}

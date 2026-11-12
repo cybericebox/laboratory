@@ -34,8 +34,8 @@ type Config struct {
 
 	// KeyFile and KeyFileAccept are the files of the shared key with the L7 proxy (a mounted Secret, never an environment variable): the
 	// current key, and one more accepted key while a key is rotated. The service does not start without the current one.
-	KeyFile       string `env:"KEY_FILE" envDefault:"/etc/device-access/key/current"`
-	KeyFileAccept string `env:"KEY_FILE_ACCEPT" envDefault:"/etc/device-access/key/accept"`
+	KeyFile       string `env:"KEY_FILE" envDefault:"/etc/device-access/auth/current"`
+	KeyFileAccept string `env:"KEY_FILE_ACCEPT" envDefault:"/etc/device-access/auth/accept"`
 
 	PerClient          int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
 	PerLab             int           `env:"LIMIT_PER_LAB" envDefault:"10"`

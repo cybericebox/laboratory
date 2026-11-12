@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: laboratory-device-access
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "laboratory.deviceAccess.namespace" . }}
   labels:
     {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 4 }}
     {{- include "laboratory.labels" . | nindent 4 }}
@@ -67,10 +67,15 @@ spec:
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/node", "device-access" ]
           env:
+            # The listener is bound to the pod IP only, not to every interface.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: LISTEN
-              value: {{ printf ":%d" (int .Values.terminal.port) | quote }}
+              value: {{ printf "$(POD_IP):%d" (int .Values.terminal.port) | quote }}
             - name: METRICS_LISTEN
-              value: {{ printf ":%d" (int .Values.terminal.metricsPort) | quote }}
+              value: {{ printf "$(POD_IP):%d" (int .Values.terminal.metricsPort) | quote }}
             - name: CONTAINERD_SOCK
               value: {{ $socket | quote }}
             - name: CONTAINERD_NAMESPACE
@@ -99,8 +104,12 @@ spec:
             - name: metrics
               containerPort: {{ .Values.terminal.metricsPort }}
           securityContext:
-            # No privilege and no capability: the rights are those of the socket (root:root 0660 on k0s), which a root user without
-            # capabilities may use. Nothing is writable except the two host directories below.
+            # No privilege and no capability. Root, because the runtime socket is root:root 0660 on k0s and the FIFO directory is made by
+            # this user for the root shim to open: a root user without capabilities may use both, since it owns them. A non-root user works
+            # where the group of the socket is known (terminal.securityContext: runAsUser, runAsGroup, the socket's group in
+            # supplementalGroups, the FIFO directory writable by that user); that group differs per installation, so it is a value and not
+            # the default. DEPLOY.md and hack/device-access-check.sh say how to find it and test it. Nothing is writable except the two
+            # host directories below and /tmp.
             privileged: false
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -134,6 +143,10 @@ spec:
               mountPath: {{ .Values.terminal.fifoDir | quote }}
             - name: tmp
               mountPath: /tmp
+            # The secret shared with the L7 proxy, as files (current, and accept during a rotation). The service does not start without it.
+            - name: auth
+              mountPath: /etc/device-access/auth
+              readOnly: true
           {{- with .Values.terminal.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -152,4 +165,8 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 8Mi
+        - name: auth
+          secret:
+            secretName: laboratory-device-access-auth
+            defaultMode: 0440
 {{- end }}

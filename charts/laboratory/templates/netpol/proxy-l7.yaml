@@ -118,7 +118,7 @@ spec:
     - toEndpoints:
         - matchLabels:
             app: laboratory-device-access
-            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            k8s:io.kubernetes.pod.namespace: {{ include "laboratory.deviceAccess.namespace" . }}
       toPorts:
         - ports:
             - port: {{ .Values.terminal.port | quote }}

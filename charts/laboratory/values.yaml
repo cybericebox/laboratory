@@ -146,6 +146,24 @@ terminal:
   enabled: false
   # The first label of the console's host under operator.baseDomain. Reserved: no device Service is looked up under it.
   host: terminal
+  # The namespace of the device access service. Its own: the pod needs the privileged Pod Security level (hostPath), and the one Role the L7
+  # proxy gets there (EndpointSlices of the service) then covers nothing else. Create the imagePullSecrets there too, as for the proxy.
+  namespace: laboratory-device-access
+  # The secret shared by the L7 proxy and the service, in addition to the network policy: every open request is signed with it (HMAC-SHA256 with a
+  # timestamp and a nonce). The chart makes it (at least 32 random characters) and keeps it across upgrades by finding it in the cluster. Where the
+  # chart is rendered without a cluster (helm template, dry runs, GitOps), set value from a sealed secret: otherwise each render makes a new one.
+  # accept is a second secret the service accepts, for a rotation (DEPLOY.md, "Device console"). At least 32 characters each.
+  sharedSecret:
+    value: ""
+    accept: ""
+  # Which sites may show the console page in a frame (the platform's pages). Two lists decide and nothing is implied: an origin that matches
+  # an allow entry and no deny entry (deny wins) may; empty allow = no embedding. An entry is https://host[:port] or https://*.base[:port], where *
+  # is exactly one label, leftmost only. Prefer exact entries (the catalog site, the Academy site); with a wildcard, list in deny every host that
+  # must not embed (the landing, the controller, the VPN host, the labs base domain). The session cookie is SameSite=Lax: in a frame it is sent
+  # only when the embedding site shares the registrable domain with the labs' domain, so on another domain the console opens in a tab (DEPLOY.md).
+  embedding:
+    allow: []
+    deny: []
   # The device access service runs the image of the node-agent (/node device-access).
   port: 8080
   metricsPort: 9102
