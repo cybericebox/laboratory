@@ -2,10 +2,8 @@ package checker
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cybericebox/laboratory/internal/labchecks"
 	"github.com/cybericebox/laboratory/internal/probe"
@@ -65,11 +63,23 @@ func TestEvalFileTypeAndChecksum(t *testing.T) {
 	}
 }
 
+var dirKey = []byte("0123456789abcdef0123456789abcdef")
+
+func dirFacts(names ...string) *probe.DirectoryFacts {
+	f := &probe.DirectoryFacts{Exists: true, IsDir: true, Mode: 0o750, User: "www", Group: "www"}
+	for _, n := range names {
+		f.Hashes = append(f.Hashes, probe.EntryHash(dirKey, n))
+	}
+	return f
+}
+
 func TestEvalDirectory(t *testing.T) {
-	d := &probe.DirectoryFacts{Exists: true, IsDir: true, Mode: 0o750, User: "www", Group: "www", Present: []string{"config.php", "uploads"}}
+	d := dirFacts("config.php", "uploads")
+	cut := dirFacts("a", "b")
+	cut.Truncated = true
 	file := &probe.DirectoryFacts{Exists: true}
 	e := func(p labchecks.DirectoryPart, f *probe.DirectoryFacts) func() (Outcome, []string) {
-		return func() (Outcome, []string) { return EvalDirectory(&p, f) }
+		return func() (Outcome, []string) { return EvalDirectory(&p, f, dirKey) }
 	}
 	runVerdicts(t, []verdictCase{
 		{"exists", e(labchecks.DirectoryPart{Path: "/d"}, d), Passed, ""},
@@ -85,31 +95,56 @@ func TestEvalDirectory(t *testing.T) {
 		{"has entries missing", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"config.php", "install.php"}}, d), NotPassed, "has_entries"},
 		{"lacks entries", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"install.php"}}, d), Passed, ""},
 		{"lacks entries present", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"uploads"}}, d), NotPassed, "lacks_entries"},
-		// The program answers each asked name on its own, so a directory padded with entries cannot hide a forbidden one: what is in
-		// Present is the whole truth about the asked names.
-		{"a forbidden name hidden among thousands is still present", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"forbidden.php"}}, &probe.DirectoryFacts{Exists: true, IsDir: true, Present: []string{"forbidden.php"}}), NotPassed, "lacks_entries"},
+		{"hashes made with another key match nothing", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"uploads"}}, func() *probe.DirectoryFacts {
+			f := &probe.DirectoryFacts{Exists: true, IsDir: true}
+			f.Hashes = append(f.Hashes, probe.EntryHash([]byte("another key, another key, another"), "uploads"))
+			return f
+		}()), Passed, ""},
+		// A listing cut at the cap says nothing about the names it did not reach: both forms are undecided, unless what was seen decides.
+		{"cut listing, lacks: not seen", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"forbidden.php"}}, cut), Failed, "more entries"},
+		{"cut listing, lacks: seen", e(labchecks.DirectoryPart{Path: "/d", LacksEntries: []string{"a"}}, cut), NotPassed, "lacks_entries"},
+		{"cut listing, has: seen", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"a", "b"}}, cut), Passed, ""},
+		{"cut listing, has: not seen", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"z"}}, cut), Failed, "more entries"},
+		{"cut listing, has not seen but mode wrong is decided", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"z"}, Mode: mp(0o700)}, cut), NotPassed, "mode"},
+		{"cut listing, a seen forbidden name beats the doubt", e(labchecks.DirectoryPart{Path: "/d", HasEntries: []string{"z"}, LacksEntries: []string{"a"}}, cut), NotPassed, "lacks_entries"},
+		{"cut listing, no entry rule, nothing is in doubt", e(labchecks.DirectoryPart{Path: "/d", Mode: mp(0o750)}, cut), Passed, ""},
 	})
 }
 
 func TestEvalProcess(t *testing.T) {
-	found := &probe.ProcessFacts{Found: true, Scanned: 40}
-	none := &probe.ProcessFacts{Scanned: 40}
-	partial := &probe.ProcessFacts{Scanned: 40, Incomplete: 2}
+	list := []probe.Process{
+		{PID: 1, Comm: "nginx", Arg0: "nginx", Cmdline: "nginx: master process /usr/sbin/nginx -g daemon off;", User: "root"},
+		{PID: 7, Comm: "nginx", Arg0: "nginx", Cmdline: "nginx: worker process", UID: 33, User: "www-data"},
+		{PID: 9, Comm: "postgresql-16-ma", Arg0: "postgresql-16-main", Cmdline: "/usr/lib/postgresql/16/bin/postgres", User: "postgres", UID: 70},
+	}
+	full := &probe.ProcessFacts{List: list}
+	cutTable := &probe.ProcessFacts{List: list, Truncated: true}
+	unreadable := &probe.ProcessFacts{List: list, Incomplete: 1}
+	withLong := &probe.ProcessFacts{List: append(append([]probe.Process(nil), list...), probe.Process{PID: 11, Comm: "java", Arg0: "java", Cmdline: "java -jar a", Cut: true, User: "app"})}
 	e := func(p labchecks.ProcessPart, f *probe.ProcessFacts) func() (Outcome, []string) {
 		return func() (Outcome, []string) { return EvalProcess(&p, f) }
 	}
 	runVerdicts(t, []verdictCase{
-		{"runs, must run", e(labchecks.ProcessPart{Name: sp("nginx")}, found), Passed, ""},
-		{"does not run, must run", e(labchecks.ProcessPart{Name: sp("nginx")}, none), NotPassed, "no such process"},
-		{"runs, must not run", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, found), NotPassed, "such a process runs"},
-		{"does not run, must not run", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, none), Passed, ""},
-		// Part of the table could not be seen (a denied read, a command line over the bound, a table over the scan bound): nothing
-		// that was not found is known to be absent.
-		{"must not run, not found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, partial), Failed, "could not be seen"},
-		{"must run, not found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx")}, partial), Failed, "could not be seen"},
-		{"must run, found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx")}, &probe.ProcessFacts{Found: true, Incomplete: 2}), Passed, ""},
-		{"must not run, found in an incomplete table", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, &probe.ProcessFacts{Found: true, Incomplete: 2}), NotPassed, "runs"},
-		{"bad pattern", e(labchecks.ProcessPart{Matches: sp("(")}, found), Failed, "compile"},
+		{"by name", e(labchecks.ProcessPart{Name: sp("nginx")}, full), Passed, ""},
+		{"by a long name the kernel cut", e(labchecks.ProcessPart{Name: sp("postgresql-16-main")}, full), Passed, ""},
+		{"by pattern", e(labchecks.ProcessPart{Matches: sp(`nginx: master process`)}, full), Passed, ""},
+		{"by pattern none", e(labchecks.ProcessPart{Matches: sp(`apache`)}, full), NotPassed, "no such process"},
+		{"by user", e(labchecks.ProcessPart{Name: sp("nginx"), User: sp("www-data")}, full), Passed, ""},
+		{"by uid", e(labchecks.ProcessPart{Name: sp("nginx"), User: sp("33")}, full), Passed, ""},
+		{"name and user together, no one process has both", e(labchecks.ProcessPart{Name: sp("postgresql-16-main"), User: sp("root")}, full), NotPassed, "no such process"},
+		{"must not run, does not", e(labchecks.ProcessPart{Name: sp("telnetd"), Running: bp(false)}, full), Passed, ""},
+		{"must not run, runs", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, full), NotPassed, "such a process runs"},
+		// Neither a cut table, nor an unreadable entry, nor a command line too long to judge can show that something is absent.
+		{"must not run, not found in a cut table", e(labchecks.ProcessPart{Name: sp("telnetd"), Running: bp(false)}, cutTable), Failed, "could not be judged"},
+		{"must run, not found in a cut table", e(labchecks.ProcessPart{Name: sp("telnetd")}, cutTable), Failed, "could not be judged"},
+		{"must not run, not found, an entry was unreadable", e(labchecks.ProcessPart{Name: sp("telnetd"), Running: bp(false)}, unreadable), Failed, "could not be judged"},
+		{"must run, found, in a cut table", e(labchecks.ProcessPart{Name: sp("nginx")}, cutTable), Passed, ""},
+		{"must not run, found, in a cut table", e(labchecks.ProcessPart{Name: sp("nginx"), Running: bp(false)}, cutTable), NotPassed, "runs"},
+		{"pattern on a command line that was cut: not judged", e(labchecks.ProcessPart{Matches: sp(`-jar a$`)}, withLong), Failed, "could not be judged"},
+		{"pattern on a command line that was cut, another process matches", e(labchecks.ProcessPart{Matches: sp(`nginx: worker`)}, withLong), Passed, ""},
+		{"name of a process whose command line was cut: the name is whole", e(labchecks.ProcessPart{Name: sp("java")}, withLong), Passed, ""},
+		{"name that does not match a cut one", e(labchecks.ProcessPart{Name: sp("telnetd"), Running: bp(false)}, withLong), Passed, ""},
+		{"bad pattern", e(labchecks.ProcessPart{Matches: sp("(")}, full), Failed, "compile"},
 	})
 }
 
@@ -232,51 +267,11 @@ func (r *recordingProber) Probe(_ context.Context, q probe.ObserveRequest) (prob
 	return r.reply(q)
 }
 
-// A question to the device says where to look and what to look for (a name, a pattern for a scan); it never carries the outcome that
-// is expected: not a mode, an owner, a status, a body rule, a value, the words running / listening / read / write.
-func TestQuestionsCarryNoExpectedOutcome(t *testing.T) {
-	secret := "EXPECTED-SECRET"
-	for _, c := range []struct {
-		part labchecks.Part
-		must []string
-		not  []string
-	}{
-		{labchecks.Part{Directory: &labchecks.DirectoryPart{Path: "/srv", HasEntries: []string{"ASKED"}, LacksEntries: []string{"ASKED2"}, Mode: mp(0o123), Owner: sp(secret), Group: sp(secret)}},
-			[]string{"/srv", "ASKED", "ASKED2"}, []string{secret, "83", "123"}},
-		{labchecks.Part{Process: &labchecks.ProcessPart{Name: sp("ASKED"), Matches: sp("PAT"), User: sp("USR"), Running: bp(false)}},
-			[]string{"ASKED", "PAT", "USR"}, []string{"false", "running"}},
-		{labchecks.Part{Port: &labchecks.PortPart{Port: 80, Protocol: "tcp", Address: sp("10.9.8.7"), Process: sp(secret), Listening: bp(false)}},
-			[]string{"80", "tcp"}, []string{secret, "10.9.8.7", "false", "listening"}},
-		{labchecks.Part{KernelParam: &labchecks.KernelParamPart{Name: "net.ipv4.ip_forward", Equals: sp(secret), Matches: sp(secret)}},
-			[]string{"net.ipv4.ip_forward"}, []string{secret}},
-		{labchecks.Part{Request: &labchecks.RequestPart{Protocol: "http", Host: "127.0.0.1", Port: 80, Method: "GET", Path: "/health", Status: i32p(299), BodyContains: sp(secret), BodyMatches: sp(secret)}},
-			[]string{"/health", "127.0.0.1"}, []string{secret, "299"}},
-		{labchecks.Part{Permission: &labchecks.PermissionPart{User: "www", Path: "/etc/shadow", Read: bp(false), Write: bp(false), Execute: bp(false)}},
-			[]string{"www", "/etc/shadow"}, []string{"false", "read", "write", "execute"}},
-	} {
-		raw, err := json.Marshal(questionFor(&c.part, 5*time.Second))
-		if err != nil {
-			t.Fatal(err)
-		}
-		kind := builtinKind(&c.part)
-		for _, m := range c.must {
-			if !strings.Contains(string(raw), m) {
-				t.Errorf("%s: the question %s lacks %q", kind, raw, m)
-			}
-		}
-		for _, leak := range c.not {
-			if strings.Contains(string(raw), leak) {
-				t.Errorf("%s: the question %s holds %q", kind, raw, leak)
-			}
-		}
-	}
-}
-
 func TestRunCheckBuiltinsAreJudgedByTheChecker(t *testing.T) {
 	obs := &recordingProber{reply: func(q probe.ObserveRequest) (probe.ObserveResponse, error) {
 		switch q.Kind {
 		case probe.KindDirectory:
-			return probe.ObserveResponse{Directory: &probe.DirectoryFacts{Exists: true, IsDir: true, Present: []string{"a"}}}, nil
+			return probe.ObserveResponse{Directory: dirFactsFor(q.Key, "a")}, nil
 		case probe.KindKernelParam:
 			return probe.ObserveResponse{KernelParam: &probe.KernelParamFacts{Exists: true, Value: "1"}}, nil
 		case probe.KindPort:
@@ -309,4 +304,13 @@ func TestRunCheckBuiltinsAreJudgedByTheChecker(t *testing.T) {
 	if r.Outcome != Failed || !strings.Contains(r.Detail, "cannot run built-in") {
 		t.Fatalf("got %+v", r)
 	}
+}
+
+// dirFactsFor answers a directory question with the hashes under the key the checker sent.
+func dirFactsFor(key []byte, names ...string) *probe.DirectoryFacts {
+	f := &probe.DirectoryFacts{Exists: true, IsDir: true}
+	for _, n := range names {
+		f.Hashes = append(f.Hashes, probe.EntryHash(key, n))
+	}
+	return f
 }

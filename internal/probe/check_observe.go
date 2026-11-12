@@ -1,5 +1,10 @@
 package probe
 
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+)
+
 // The built-in observations of a lab check (docs/specs/2026-11-12-device-access-and-checks.md, section 4.1): directory, process, port,
 // kernel_param, request and permission. The probe reads the state of the device ITSELF: it executes nothing of the device (no shell,
 // no tool, no library of the image), it only reads /proc, /proc/sys, /etc and the file system, makes one connection (request), or
@@ -27,10 +32,13 @@ const (
 	KindPermission  = "permission"
 
 	// The bounds on what comes back.
-	MaxDirNames       = 256      // names asked of one directory
-	MaxDirNameBytes   = 255      // one name
+	MaxDirHashes      = 32768    // entry names of a directory, as keyed hashes
+	DirHashBytes      = 16       // length of one keyed hash
+	MinDirKeyBytes    = 16       // the key the checker sends
 	MaxProcessScan    = 1 << 20  // entries of the process table looked at
-	MaxCmdlineBytes   = 32 << 10 // command line looked at (a longer one makes the process incomplete)
+	MaxProcesses      = 2048     // processes returned
+	MaxCmdlineBytes   = 512      // command line returned per process
+	maxCmdlineRead    = 32 << 10 // command line read to find the first word
 	MaxListeners      = 256      // sockets listed for one port
 	MaxParamBytes     = 4096     // value of a sysctl
 	MaxRequestBody    = 64 << 10 // body of an HTTP answer
@@ -45,23 +53,19 @@ type ObserveRequest struct {
 	Kind string `json:"kind"`
 	// directory, permission
 	Path string `json:"path,omitempty"`
-	// directory: the entry names to look for directly in the directory (each is answered by lstat, so the answer never depends on
-	// the size of the directory)
-	Names []string `json:"names,omitempty"`
+	// directory: a random key for the keyed hashes of the entry names (see EntryHash). The names that the author expects are never sent.
+	Key []byte `json:"key,omitempty"`
 	// port, request
 	Port     int    `json:"port,omitempty"`
 	Protocol string `json:"protocol,omitempty"` // port: tcp | udp; request: tcp | http | https
-	// kernel_param: the sysctl name with dots. process: the command name to look for.
+	// kernel_param: the sysctl name with dots
 	Name string `json:"name,omitempty"`
-	// process: a regular expression on the command line; the user (name or number) the process must belong to. A process is a match
-	// when every given key holds; the whole process table is scanned and only the result comes back.
-	Matches string `json:"matches,omitempty"`
 	// request
 	Host      string `json:"host,omitempty"`
 	Method    string `json:"method,omitempty"`
 	URLPath   string `json:"urlPath,omitempty"`
 	TimeoutMs int64  `json:"timeoutMs,omitempty"`
-	// permission, process: a user name of the device, or a number
+	// permission: a user name of the device, or a number
 	User string `json:"user,omitempty"`
 }
 
@@ -77,37 +81,40 @@ type ObserveResponse struct {
 	Permission  *PermissionFacts  `json:"permission,omitempty"`
 }
 
-// DirectoryFacts: Exists is false when the path is missing; IsDir false when it is something else. Present are the asked names that
-// exist directly in the directory (by lstat).
+// DirectoryFacts: Exists is false when the path is missing; IsDir false when it is something else. Hashes are the keyed hashes
+// (EntryHash, with the key of the question) of the names directly in the directory; Truncated says there were more than
+// MaxDirHashes, so the set is not the whole directory. The checker hashes the names it expects with the same key and compares: the
+// names the author expects never reach the device.
 type DirectoryFacts struct {
-	Exists  bool     `json:"exists"`
-	IsDir   bool     `json:"isDir,omitempty"`
-	Mode    uint32   `json:"mode,omitempty"`
-	UID     uint32   `json:"uid,omitempty"`
-	GID     uint32   `json:"gid,omitempty"`
-	User    string   `json:"user,omitempty"`
-	Group   string   `json:"group,omitempty"`
-	Present []string `json:"present,omitempty"`
+	Exists    bool     `json:"exists"`
+	IsDir     bool     `json:"isDir,omitempty"`
+	Mode      uint32   `json:"mode,omitempty"`
+	UID       uint32   `json:"uid,omitempty"`
+	GID       uint32   `json:"gid,omitempty"`
+	User      string   `json:"user,omitempty"`
+	Group     string   `json:"group,omitempty"`
+	Hashes    [][]byte `json:"hashes,omitempty"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
-// Process is one process of the device as the matcher sees it. Comm is the kernel's name (at most 15 characters); Arg0 the first word of
-// the command line without its directory; Cmdline the command line, words joined by a space.
+// Process is one process of the device. Comm is the kernel's name (at most 15 characters); Arg0 the first word of the command line
+// without its directory; Cmdline the command line, words joined by a space, cut at MaxCmdlineBytes (Cut says it was longer).
 type Process struct {
 	PID     int    `json:"pid"`
 	Comm    string `json:"comm"`
 	Arg0    string `json:"arg0,omitempty"`
 	Cmdline string `json:"cmdline,omitempty"`
+	Cut     bool   `json:"cut,omitempty"`
 	UID     uint32 `json:"uid"`
 	User    string `json:"user,omitempty"`
 }
 
-// ProcessFacts: the program scanned the process table (except itself) and Found says that a process matched. Incomplete counts what it
-// could not see completely (an entry it was not allowed to read, a command line longer than MaxCmdlineBytes, a table over
-// MaxProcessScan): when nothing matched and Incomplete is not zero, the absence is not known.
+// ProcessFacts is the process table of the device (except the probe itself), at most MaxProcesses entries; Truncated says there were
+// more. Incomplete counts the entries that could not be read (a denied read, a table over MaxProcessScan): they may be what is looked for.
 type ProcessFacts struct {
-	Found      bool `json:"found"`
-	Scanned    int  `json:"scanned"`
-	Incomplete int  `json:"incomplete,omitempty"`
+	List       []Process `json:"list"`
+	Truncated  bool      `json:"truncated,omitempty"`
+	Incomplete int       `json:"incomplete,omitempty"`
 }
 
 // Listener is a socket that waits for connections (tcp: LISTEN; udp: bound and not connected) on the asked port. Addr is the local
@@ -154,4 +161,12 @@ type PermissionFacts struct {
 	Execute   bool `json:"execute"`
 	// Error is set by the child of the test when the kernel gave an answer that is not a yes or a no.
 	Error string `json:"error,omitempty"`
+}
+
+// EntryHash is the keyed hash of a directory entry name: HMAC-SHA256 truncated to DirHashBytes. The key is random per question, so the
+// hash tells the device nothing about a name it did not already have, and the checker alone can say which hash is which name.
+func EntryHash(key []byte, name string) []byte {
+	m := hmac.New(sha256.New, key)
+	_, _ = m.Write([]byte(name))
+	return m.Sum(nil)[:DirHashBytes]
 }
