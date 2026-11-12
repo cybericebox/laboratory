@@ -6,6 +6,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -25,7 +26,7 @@ func TestDeviceAccessIsNotRenderedWhileTheOptionIsOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, bad := range []string{"laboratory-device-access", "device-access", "TERMINAL_HOST", "TERMINAL_SERVICE_NAMESPACE", "laboratory-proxy-device-access"} {
+	for _, bad := range []string{"laboratory-device-access", "device-access", "TERMINAL_SERVICE_NAMESPACE", "laboratory-proxy-device-access"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("terminal.enabled=false, but the chart renders %q", bad)
 		}
@@ -454,5 +455,106 @@ func TestProxyGetsTheConsoleSettings(t *testing.T) {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q", k, env[k], want)
 		}
+	}
+}
+
+// The service is rendered for the checker alone (no console): without a way for the network in, and with the checker socket.
+func TestDeviceAccessServesTheCheckerWithoutTheConsole(t *testing.T) {
+	var ds appsv1.DaemonSet
+	render(t, "templates/deviceaccess/daemonset.yaml", &ds, append(append([]string{}, agentSet...), "--set", "checks.enabled=true")...)
+	spec := ds.Spec.Template.Spec
+	env := map[string]string{}
+	for _, e := range spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["CHECKER_SOCKET"] != "/run/cib-checker/checker.sock" || env["CHECKER_UID"] != "65532" || env["CHECKER_GID"] != "65532" || env["CHECKER_MAX_SECONDS"] != "120" {
+		t.Errorf("env %v", env)
+	}
+	if len(spec.SecurityContext.SupplementalGroups) != 1 || spec.SecurityContext.SupplementalGroups[0] != 65532 {
+		t.Errorf("the service must be a member of the checker's group (to hand it the socket without CAP_CHOWN): %v", spec.SecurityContext.SupplementalGroups)
+	}
+	var sock string
+	for _, v := range spec.Volumes {
+		if v.Name == "checker-socket" && v.HostPath != nil {
+			sock = v.HostPath.Path
+		}
+	}
+	if sock != "/run/cib-checker" {
+		t.Errorf("the socket directory: %q", sock)
+	}
+	// with the console off: no proxy secret, no ingress, no Role for the proxy
+	out, err := helmTemplate(t, append(append([]string{}, agentSet...), "--set", "checks.enabled=true")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "laboratory-proxy-device-access") || strings.Contains(out, "TERMINAL_SERVICE_NAMESPACE") {
+		t.Error("the console's pieces are rendered with the console off")
+	}
+	pol, err := helmTemplate(t, append(append([]string{}, agentSet...), "--set", "checks.enabled=true", "-s", "templates/deviceaccess/netpol.yaml")...)
+	if err != nil || strings.Contains(pol, "fromEndpoints") || !strings.Contains(pol, "ingress:") {
+		t.Errorf("the policy of a service used by the checker alone admits nobody over the network: %v\n%s", err, pol)
+	}
+	// without the checker the socket is not there
+	ds2 := deviceAccessDaemonSet(t)
+	for _, e := range ds2.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "CHECKER_SOCKET" {
+			t.Error("a checker socket without the checker")
+		}
+	}
+}
+
+// The checker is refused without its policies, and the console host cannot be the shape of a device host.
+func TestCheckerRefusalsAndTheReservedConsoleHost(t *testing.T) {
+	on := append(append([]string{}, agentSet...), "--set", "checks.enabled=true")
+	for _, tc := range []struct{ set, want string }{
+		{"checks.networkPolicy.enabled=false", "checks.networkPolicy.enabled=false"},
+		{"operator.admissionPolicy.enabled=false", "operator.admissionPolicy.enabled=false"},
+		{"terminal.networkPolicy.enabled=false", "device access service"},
+		{"checks.maxTimeLimitSeconds=601", "maxTimeLimitSeconds"},
+		{"checks.maxTimeLimitSeconds=0", "maxTimeLimitSeconds"},
+		{"checks.socketUid=0", "not root"},
+		{"checks.socketGid=0", "not root"},
+		{"checks.socketDir=run/x", "absolute"},
+		{"terminal.host=vpn", "collides with a reserved host"},
+		{"terminal.host=gateway", "collides with a reserved host"},
+		{"terminal.host=my-abc", "collides with a reserved host"},
+		{"terminal.host=shell-9z9z", "collides with a reserved host"},
+	} {
+		out, err := helmTemplate(t, append(append([]string{}, on...), "--set", tc.set)...)
+		if err == nil || !strings.Contains(out+err.Error(), tc.want) {
+			t.Errorf("%s must be refused (%q): %v\n%s", tc.set, tc.want, err, out)
+		}
+	}
+	for _, ok := range []string{"terminal.host=terminal", "terminal.host=shell", "terminal.host=console", "terminal.host=my-terminal"} {
+		if out, err := helmTemplate(t, append(append([]string{}, on...), "--set", ok)...); err != nil {
+			t.Errorf("%s refused: %v\n%s", ok, err, out)
+		}
+	}
+	// the policies may be off while the checker is off
+	if out, err := helmTemplate(t, append(append([]string{}, agentSet...), "--set", "checks.networkPolicy.enabled=false")...); err != nil {
+		t.Errorf("checker off, its policy off: %v\n%s", err, out)
+	}
+}
+
+func TestCheckerSecretsRoleAndTheOperatorsBinding(t *testing.T) {
+	var found bool
+	for _, d := range decodeDocs(t, "templates/checker/rbac.yaml", checksOn...) {
+		if strings.Contains(d, "name: laboratory-checker-secrets\n") && strings.Contains(d, "kind: ClusterRole\n") {
+			found = true
+			var role rbacv1.ClusterRole
+			if err := yaml.Unmarshal([]byte(d), &role); err != nil {
+				t.Fatal(err)
+			}
+			if len(role.Rules) != 1 || strings.Join(role.Rules[0].Resources, ",") != "secrets" || strings.Join(role.Rules[0].Verbs, ",") != "get" {
+				t.Errorf("the secrets role: %+v", role.Rules)
+			}
+		}
+		// no binding of it in the chart: the operator makes one per group namespace
+		if strings.Contains(d, "kind: ClusterRoleBinding") && strings.Contains(d, "laboratory-checker-secrets") {
+			t.Error("the secrets role is bound cluster-wide")
+		}
+	}
+	if !found {
+		t.Error("no ClusterRole laboratory-checker-secrets")
 	}
 }

@@ -25,26 +25,27 @@ list and one template of its own, without rewriting this one. The pod-level sett
           fieldPath: metadata.namespace
     - name: CHECKER_VERSION
       value: {{ include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
-    - name: CRI_SOCK
-      value: {{ .Values.nodeAgent.criSocket | quote }}
-    - name: CONTAINERD_STATE
-      value: {{ .Values.checks.containerdState | quote }}
-    - name: CONTAINERD_NAMESPACE
-      value: {{ .Values.checks.containerdNamespace | quote }}
+    # The one way to a device: the checker socket of the device access service of this node.
+    - name: DEVICE_ACCESS_SOCKET
+      value: {{ printf "%s/checker.sock" (trimSuffix "/" .Values.checks.socketDir) | quote }}
     - name: CHECKER_MAX_CONCURRENT
       value: {{ .Values.checks.maxConcurrent | quote }}
+    - name: CHECKER_MAX_TIME_LIMIT_SECONDS
+      value: {{ .Values.checks.maxTimeLimitSeconds | quote }}
     - name: CHECKER_RUN_DIR
       value: /run/checker
   securityContext:
-    # Not privileged, no host namespace, nothing writable. The one capability reads files the participant made unreadable (a
-    # 0600 file of a user the container maps to another host user); it grants no write, no mount, no ptrace, no network.
+    # A plain user with nothing: not privileged, every capability dropped, no escalation, nothing writable, no host namespace. The checker
+    # reads no file of a container and holds no runtime socket (the device access service does the exec for it), so it needs neither a
+    # root user nor a capability.
     privileged: false
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
-    runAsUser: 0
+    runAsNonRoot: true
+    runAsUser: {{ .Values.checks.socketUid }}
+    runAsGroup: {{ .Values.checks.socketGid }}
     capabilities:
       drop: [ ALL ]
-      add: [ DAC_READ_SEARCH ]
   # No port, no probe endpoint: the kubelet runs a command that looks at two files the checker keeps.
   startupProbe:
     exec:
@@ -62,14 +63,10 @@ list and one template of its own, without rewriting this one. The pod-level sett
     failureThreshold: 3
     timeoutSeconds: 5
   volumeMounts:
-    - name: cri-sock
-      mountPath: {{ .Values.nodeAgent.criSocket | quote }}
-    # The containerd state directory at the same path as on the host, read-only. HostToContainer: the root file system of a container is
-    # mounted by the runtime on the host after this pod started, and must show up here.
-    - name: containerd-state
-      mountPath: {{ .Values.checks.containerdState | quote }}
+    # The directory of the checker socket, read-only: connecting to a socket needs no write on the mount, and the checker can make nothing in it.
+    - name: device-socket
+      mountPath: {{ .Values.checks.socketDir | quote }}
       readOnly: true
-      mountPropagation: HostToContainer
     - name: run
       mountPath: /run/checker
     - name: tmp
@@ -85,16 +82,11 @@ list and one template of its own, without rewriting this one. The pod-level sett
 
 {{- /* The volumes of the checker container. */ -}}
 {{- define "laboratory.checker.volumes" -}}
-- name: cri-sock
+- name: device-socket
   hostPath:
-    path: {{ .Values.nodeAgent.criSocket | quote }}
-    type: Socket
-- name: containerd-state
-  hostPath:
-    path: {{ .Values.checks.containerdState | quote }}
-    # No type check on purpose: a wrong path must reach the checker's own start-up check (which says so on its Lease) and not leave
-    # the pod waiting for a volume.
-    type: ""
+    path: {{ .Values.checks.socketDir | quote }}
+    # Made by the kubelet when the checker starts first; the device access service puts its socket in it.
+    type: DirectoryOrCreate
 - name: run
   emptyDir:
     medium: Memory

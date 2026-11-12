@@ -102,5 +102,5 @@ rules:
 # permission they grant: the agent, VPN pod and proxy report roles, and its own working role in a namespace.
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles]
-  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-operator-namespaced, laboratory-proxy-reports]
+  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-operator-namespaced, laboratory-proxy-reports, laboratory-checker-secrets]
   verbs: [bind]

@@ -847,45 +847,53 @@ A device whose pod is not Ready, or whose bootstrap is not `done`, is not checke
 
 | Setting | Meaning |
 |---|---|
-| `checks.enabled` | the option; renders the DaemonSet, its RBAC, the Cilium policy and the admission policies |
-| `checks.maxConcurrent` (4) | runs at once on one node |
-| `checks.containerdState` (`/run/k0s/containerd`) | the containerd **state** directory of the nodes (not the root of `devices.statePersistence.containerdRoot`), where the runtime keeps `io.containerd.runtime.v2.task/<namespace>/<container id>/rootfs`; mounted read-only at the same path |
-| `checks.containerdNamespace` (`k8s.io`) | containerd namespace of the kubelet's CRI |
-| `checks.networkPolicy.enabled` (true) | CiliumNetworkPolicy: no ingress, egress to the API server only |
+| `checks.enabled` | the option; renders the checker DaemonSet, its RBAC, its Cilium policy and the admission policies, **and the device access service** on the same nodes (the checker's only way to a device) |
+| `checks.maxConcurrent` (4) | runs at once on one node; the service holds the same number. At most **one run of a lab at a time** on a node whatever this is |
+| `checks.maxTimeLimitSeconds` (120) | the ceiling of the time limit of one run (the contract's own maximum is 600): a lab with a check that asks for more is refused by the agent, the checker runs nothing longer and the service kills a probe at it |
+| `checks.manualCooldown` (10s) | the least time between two manual runs of one lab; `RunChecks` inside it fails with RESOURCE_EXHAUSTED |
+| `checks.socketDir` (`/run/cib-checker`), `checks.socketUid`, `checks.socketGid` (65532) | the node directory the service makes its checker socket in and the checker mounts (read-only); the user and group the checker runs as |
+| `checks.networkPolicy.enabled` (true) | CiliumNetworkPolicy: no ingress, egress to the API server only. **The chart refuses to render with the checker on and this off**, and likewise with `operator.admissionPolicy.enabled=false` or `terminal.networkPolicy.enabled=false` |
 | `checks.resources` | requests and limits of the checker (a trimmed copy of every Lab of the cluster and the pods of its node are cached) |
 
-The runtime socket is `nodeAgent.criSocket`; the placement is that of the node-agent (`labWorkloads`); the image is the node image (`/node checker`).
+The placement is that of the node-agent (`labWorkloads`); the image is the node image (`/node checker`).
 
-**What it needs on the node, and why** (all in the one container `checker`; nothing is privileged):
+**How a check reaches a device.** The checker holds **no container runtime socket** and reads **no file of a container from the node**. Every observation of every
+device (container or micro-VM) is one run of the in-device probe (`/.cib/probe/probe check-file|check-exec|check-observe`, the static program every device mounts read-only)
+that the **device access service** of the node makes in the device when the checker asks over a unix socket (`<socketDir>/checker.sock`). The request names where to look
+(namespace, lab, device) and one subcommand with its one JSON argument; nothing the author expects is sent. The service, not the checker, decides what may run:
 
-| Privilege | Why |
+- the program is the platform's probe, the subcommand one of the three check ones: there is no field for another binary, an argument vector, an environment, a user or a
+  container id (a request with an unknown field is refused, a subcommand like `put`, `launch` or `install` is refused);
+- the container is found with the same white list as the console (a sandbox with both UIDs of the operator and no component label, then the running container of that pod
+  named like the device): never the VPN, the gateway or a system pod; unlike the console it does not need the console label;
+- the probe always runs **as root in the device** (the checker cannot ask for another user); for a `custom` check the probe itself drops to the check's user (default
+  `nobody`). The capability sets are the container's, never wider (see "The exec" below);
+- one run per lab at a time and `checks.maxConcurrent` per node (`busy` otherwise), a ceiling on the time limit, the output cut at 4 MiB.
+
+The protection of the socket is **file permissions**, not the HMAC key of the console: it is mode 0660, group `checks.socketGid`, and the service closes at once a
+connection whose peer (read with `SO_PEERCRED`) is not user `checks.socketUid` with that group. The service pod is a member of the group (`supplementalGroups`), which is
+what lets a user without capabilities hand the socket to it.
+
+**What the checker pod holds** (one container `checker`):
+
+| What | Why |
 |---|---|
-| hostPath socket `nodeAgent.criSocket` | the container runtime's exec and list calls, on the node, never through the API server. **This is the widest right of the pod**: a CRI socket controls every container of the node. No narrower mount exists; do not widen the pod beyond what is listed here |
-| hostPath `checks.containerdState`, read-only, `HostToContainer` | the root file system of a container is read from the node without running anything in the container. The mount shows the root directories of **all** containers of the node; the checker reads only the container it resolved from the pod of a checked device |
-| capability `DAC_READ_SEARCH` (all others dropped) | read a file the participant made unreadable, and the host users of a user namespace (a 0600 file of a user that maps to another host user). No write, no mount, no ptrace |
-| runs as uid 0 | the runtime socket is root-only; the root file system is read-only; no privilege escalation; seccomp `RuntimeDefault` |
-| no host network, PID or IPC; no port, no probe port | it accepts no inbound connection (exec probes look at two files; metrics are off; the Cilium policy denies ingress) |
+| a plain user (`runAsNonRoot`, uid/gid 65532), **every capability dropped, none added**, no privilege escalation, read-only root file system, seccomp `RuntimeDefault` | it needs nothing else: it reads no container file (no `DAC_READ_SEARCH`, no uid 0) and runs nothing itself |
+| one hostPath: `checks.socketDir`, read-only | the checker socket. Connecting to a unix socket needs no write on the mount. **No runtime socket, no containerd state directory** |
+| no host network, PID or IPC; no port, no probe port | it accepts no inbound connection (exec probes look at two files; the Cilium policy denies ingress and allows the API server only) |
 | ClusterRole: `labs` get/list/watch | the checks (names, devices), the `run-checks` annotation, bootstrap state, results. A Lab cannot be selected by node, so all are cached as stubs |
 | ClusterRole: `labs/status` patch | server-side apply of `status.checks` and `status.checksRunAck` only (the admission policy `laboratory-checker-status` refuses any other status field) |
 | ClusterRole: `pods` get/list/watch | readiness of the device pods of its node |
-| ClusterRole: `secrets` get | the checks document of a lab, one GET when the lab has a pod on the node and again after the agent rewrote it. No list, no watch. RBAC cannot narrow it to a Secret name; the reach is that of any Secret |
 | Role (release namespace): `leases` get/create/update/patch | the keepalive; the admission policy `laboratory-checker-lease` limits it to the Lease of the node of the token |
+| **no Secret right of its own** | the checks document of a lab (`<lab>-checks`) is read through the ClusterRole `laboratory-checker-secrets` (`secrets` get, nothing more), which the **operator binds with a RoleBinding in each lab group namespace**, made with the namespace and gone with it, and removed again when `checks.enabled` is turned off. Those namespaces hold only lab-level Secrets (checks, device environment, VPN keys, the tenant pull secret). The operator may create these bindings through the `bind` verb on that one ClusterRole name. After an upgrade the operator makes the binding in every existing group namespace on its first reconcile of the group |
 
-**Files.** A file observation of a container device is read from the node: the path is resolved strictly inside the container's root by
-the checker itself, one component at a time with descriptor-relative no-follow calls, with its own handling of symbolic links (an absolute
-link means the container's root) and of `..` (never above the root), so a link planted by the participant cannot reach a file of the node.
-The tree seen is the root file system of the container (image and writable layer): `/proc`, `/sys`, `/dev` and the mounts the container makes for
-itself (volumes, `/etc/hosts`) are not part of it; a path below `/proc`, `/sys` or `/dev` gives the result `error`, and a check of such a state is a
-`custom` check. At most 1 MiB of a file is read; an expectation that is not found in a file larger than that is an `error`, not a failure. For a
-micro-VM device (Kata) the root is inside the guest, so the file is read by the in-device tool (`/.cib/probe/probe check-file`) run through the
-runtime's exec, as the user of the container.
+**Security picture: what a compromise gives.**
 
-**Built-in observations.** `directory`, `process`, `port`, `kernel_param`, `request` and `permission` run `/.cib/probe/probe check-observe` in the device. The program reads `/proc`, `/proc/sys`, `/etc` and the file system itself and executes nothing of the device; it is asked where to look and returns facts, and the checker compares them with the expected values (which never reach the device). A `request` is made by the program (TCP connect, or HTTP(S) GET/HEAD; redirects not followed, https not verified, body up to 64 KiB). A `permission` is asked of the kernel with `faccessat(AT_EACCESS)` in a child that runs as the user, opening nothing for writing. The bounds and keys are in `docs/specs/lab-checks-bootstrap-contract.md`, section 10.
-
-**Commands.** A `custom` observation runs `/.cib/probe/probe check-exec` in the device through the runtime's exec (the static tool every device
-mounts read-only). The tool switches to the requested user (`nobody` unless the author chose another; uid 65534 when the image has no such name), gives the command a clean environment and a fixed system `PATH`, runs the command or the script (a memory file, nothing written to the device) under
-the time limit, kills the whole process group at the limit and returns the exit code and at most 64 KiB of output as one JSON document. It can
-switch user only when the container's own user is root. The output is judged by the checker and never leaves it.
+| Component | Holds | A compromise gives |
+|---|---|---|
+| lab checker pod | the checks of labs and what the probe printed (never published), `get` on Secrets of the group namespaces, status patch of Labs, its Lease; the checker socket | a root probe run in any lab device through the socket (one lab at a time, the probe only), and reading the lab-level Secrets of the groups. It gives **no node, no runtime, no other pod, no file outside a device**: the labs and their checks, which is the owner's accepted ceiling |
+| device access service pod | the container runtime socket (uid 0, no capability), the FIFO and socket directories, the shared secret, no Kubernetes API token, reachable only from the L7 proxy pods and the checker socket | **the node** (the runtime socket is root on it). It is small Go code with no cluster rights and two narrow entrances; its network policy admits the L7 proxy only |
+| L7 proxy pod | the session key, the HMAC secret, `devices` read, EndpointSlices of the service's namespace | a shell in every device that has a console (the same class as its reach to every web port) and the participants' sessions; not the node |
 
 **What is written.** `passed`, `not_passed`, `error`. `detail` names the part and the kind of expectation that did not hold, never an expected
 value, an output or file content. A failed run (`error`: the container is not running, the command did not start or ran over its limit, a file
@@ -894,11 +902,11 @@ too large to decide) does not replace a published `passed`/`not_passed` until th
 
 **Keepalive.** One Lease per node, `laboratory-checker-<node>` in the release namespace, label `laboratory.cybericebox.com/checker=true`,
 renewed every 20 s for 60 s, with the annotations `laboratory.cybericebox.com/checker-state` (`ready` or `unavailable: <CODE>: <detail>`, the start-up
-check of the node: a missing state directory is `STATE_DIR_MISSING`) and `.../checker-version`. A fresh Lease means that silence of a check is
+check of the node: a missing checker socket is `DEVICE_SOCKET_MISSING`) and `.../checker-version`. A fresh Lease means that silence of a check is
 "no change". Nothing reads the Leases yet; see `docs/specs/lab-checker.md`.
 
 Check it: `kubectl -n laboratory-system get ds laboratory-checker`, `kubectl -n laboratory-system get lease -l laboratory.cybericebox.com/checker=true -o yaml`.
-A node where the files of containers cannot be read still runs custom checks and micro-VM devices; its Lease says why.
+A node whose device access service does not answer fails its checks with a reason (a check that never ran publishes `error`, and the Lease says why).
 
 ## Device console (the device access service)
 
@@ -906,6 +914,9 @@ A node where the files of containers cannot be read still runs custom checks and
 (`features.terminal.enabled`), so the backend can refuse or hide a console of a lab, and the chart renders the **device access service**: a
 DaemonSet of its own, `laboratory-device-access`, on the lab nodes. With the option off nothing of it is rendered and the proxy has no console
 setting and no extra right. The decisions are in `docs/specs/2026-11-12-device-access-and-checks.md` (sections 1, 3 and 5) in the platform repository.
+
+The same service also carries the lab checker's way to the devices (see "Lab checks"): with `checks.enabled` it is rendered even if `terminal.enabled` is off, then with no
+network ingress at all (the checker uses a unix socket), no proxy secret and no proxy Role.
 
 Path of a console: participant, L7 proxy (authorization), the service on the node of the device, a shell in the device. The browser opens
 `https://<terminal.host>.<operator.baseDomain>/?lab=<lab>&device=<device>` (default host `terminal`; the platform issues the handoff link for
@@ -920,7 +931,7 @@ the binary, no CDN; no clipboard write, links only `http(s)` on a click, the tit
 | `terminal.namespace` (`laboratory-device-access`) | the namespace of the service: its own (privileged Pod Security level for the hostPath; the proxy's one Role covers only it). Create the `imagePullSecrets` there too, as for the proxy. It must not be the release or the proxy namespace |
 | `terminal.sharedSecret.value`, `.accept` | the secret shared by the proxy and the service (see "Shared secret and rotation"); empty `value` = made by the chart and kept in the cluster |
 | `terminal.embedding.allow`, `.deny` | the sites that may show the console page in a frame (see "Embedding"); empty = none |
-| `terminal.host` (`terminal`) | first label of the console host, reserved: it is never looked up as the Service of a device |
+| `terminal.host` (`terminal`) | first label of the console host, reserved: it is never looked up as the Service of a device, no new device may be named like it (the agent refuses the name, `terminal` is in the reserved names of `pkg/names`), and the chart refuses a host that is `vpn`, `gateway` or `internet` or that ends in a hyphen and three or four letters or digits (the shape of the host `<device>-<code>` of a device) |
 | `terminal.port` (8080), `terminal.metricsPort` (9102) | stream and metrics ports of the service pod (plain HTTP on the pod network) |
 | `terminal.containerdSocket` (empty = `nodeAgent.criSocket`), `terminal.containerdNamespace` (`k8s.io`) | the runtime socket of the node and the kubelet's containerd namespace |
 | `terminal.fifoDir` (`/run/containerd/fifo`) | host directory for the FIFOs of the execs, mounted at the **same path**; create it on every lab node first. The service owns the subdirectory `cib-device-access` |

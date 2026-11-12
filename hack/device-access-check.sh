@@ -14,6 +14,12 @@
 #   REFUSE=<ns>/<vpn-lab>/vpn,<ns>/<lab>/gateway hack/device-access-check.sh ...   # also check that these are refused
 #   SERVICE_NS=<namespace of the service>   (default laboratory-device-access)
 #
+# The checker path (when checks.enabled): the second part copies the same program into the CHECKER pod of the node and runs it there with -checker, as the
+# checker's own user, through the checker socket: one check of each kind (file, directory, process, port, kernel_param, request, permission, custom as root
+# and as nobody), the refusals (another subcommand, a user field, a program field, a pod of kube-system, a device that is not there), and that the checker
+# runs as a plain user. Run it for a runc device, for a Kata (micro-VM) device, and for a device whose IMAGE user is not root (every check, custom as
+# root and as nobody included, must still pass there). CHECKER_NS (default laboratory-system) is the namespace of the checker.
+#
 # Non-root run (chart values terminal.securityContext): the default is uid 0 with every capability dropped, because the runtime socket is root:root
 # 0660. To find out whether it also works non-root where the group of the socket is known, this script prints the owner and group of the socket and
 # the user the service runs as. Then: helm upgrade with terminal.securityContext.runAsUser=<uid> runAsGroup=<gid> supplementalGroups={<socket gid>},
@@ -56,6 +62,21 @@ kubectl -n "$service_ns" exec -i "$pod" -- sh -c 'cat > /tmp/device-access-check
 
 rc=0
 kubectl -n "$service_ns" exec "$pod" -- /tmp/device-access-check -namespace "$ns" -lab "$lab" -device "$device" -user "$user" -refuse "${REFUSE:-}" || rc=$?
+
+if kubectl -n "${CHECKER_NS:-laboratory-system}" get ds laboratory-checker >/dev/null 2>&1; then
+  echo "--- the checker path"
+  cpod=$(kubectl -n "${CHECKER_NS:-laboratory-system}" get pods -l app=checker --field-selector spec.nodeName="$node" -o jsonpath='{.items[0].metadata.name}')
+  if [ -z "$cpod" ]; then echo "no checker pod on $node" >&2; rc=1; else
+    echo "checker pod: $cpod"
+    kubectl -n "${CHECKER_NS:-laboratory-system}" get pod "$cpod" -o jsonpath='{.spec.containers[0].securityContext}{"\n"}'
+    kubectl -n "${CHECKER_NS:-laboratory-system}" exec -i "$cpod" -- sh -c 'cat > /tmp/device-access-check && chmod +x /tmp/device-access-check' < "$tmp/device-access-check" ||
+      { echo "(no sh/cat in the node image: copy the binary with kubectl debug, see the header)" >&2; rc=1; }
+    kubectl -n "${CHECKER_NS:-laboratory-system}" exec "$cpod" -- /tmp/device-access-check -checker -namespace "$ns" -lab "$lab" -device "$device" -refuse "${REFUSE:-}" || rc=$?
+    kubectl -n "${CHECKER_NS:-laboratory-system}" exec "$cpod" -- rm -f /tmp/device-access-check || true
+    echo "--- the checker Lease and a result (the checker's own keepalive says whether it reaches the socket)"
+    kubectl -n "${CHECKER_NS:-laboratory-system}" get lease "laboratory-checker-$node" -o jsonpath='{.metadata.annotations}{"\n"}' || true
+  fi
+fi
 
 echo "--- leftovers in the service pod (must be empty once the checks have ended)"
 sleep 3

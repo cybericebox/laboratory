@@ -28,13 +28,14 @@ spec:
     spec:
       serviceAccountName: laboratory-checker
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
-      # The cluster network, not the host's: the checker only calls out (the API server and the container runtime socket), and no
-      # port of the node is opened for it. No host PID, no host IPC.
+      # The cluster network, not the host's: the checker only calls out (the API server; the devices are reached through a socket in a
+      # node directory), and no port of the node is opened for it. No host PID, no host IPC.
       hostNetwork: false
       hostPID: false
       hostIPC: false
       terminationGracePeriodSeconds: 30
       securityContext:
+        runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       # Where the node-agent runs: the lab nodes (labWorkloads), with the same tolerations for the startup taints.

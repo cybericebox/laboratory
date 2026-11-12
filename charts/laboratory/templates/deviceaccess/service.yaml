@@ -1,4 +1,4 @@
-{{- if .Values.terminal.enabled }}
+{{- if include "laboratory.deviceAccess.enabled" . }}
 {{- /* Headless: it exists for its EndpointSlices, which tell the L7 proxy the address of the service pod on the node of a device. Nothing connects to it by name. */ -}}
 apiVersion: v1
 kind: Service
