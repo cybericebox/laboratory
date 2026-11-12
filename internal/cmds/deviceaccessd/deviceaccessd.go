@@ -37,6 +37,14 @@ type Config struct {
 	KeyFile       string `env:"KEY_FILE" envDefault:"/etc/device-access/auth/current"`
 	KeyFileAccept string `env:"KEY_FILE_ACCEPT" envDefault:"/etc/device-access/auth/accept"`
 
+	// The checker socket (empty path: none). The lab checker of the node asks the service over it to run the probe in a device; its
+	// protection is the file permissions (group CheckerGID) and the peer credentials (user CheckerUID, group CheckerGID).
+	CheckerSocket        string `env:"CHECKER_SOCKET"`
+	CheckerGID           int    `env:"CHECKER_GID" envDefault:"65532"`
+	CheckerUID           int    `env:"CHECKER_UID" envDefault:"65532"`
+	CheckerMaxSeconds    int    `env:"CHECKER_MAX_SECONDS" envDefault:"120"`
+	CheckerMaxConcurrent int    `env:"CHECKER_MAX_CONCURRENT" envDefault:"8"`
+
 	PerClient          int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
 	PerLab             int           `env:"LIMIT_PER_LAB" envDefault:"10"`
 	PerNode            int           `env:"LIMIT_PER_NODE" envDefault:"200"`
@@ -116,7 +124,22 @@ func run(cfg Config) error {
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	servers := []*http.Server{api, metrics}
+	if cfg.CheckerSocket != "" {
+		ln, err := deviceaccess.ListenChecker(cfg.CheckerSocket, cfg.CheckerGID, cfg.CheckerUID)
+		if err != nil {
+			return fmt.Errorf("the checker socket: %w", err)
+		}
+		checker := deviceaccess.NewHTTPServer("", svc.CheckerHandler(deviceaccess.CheckerLimits{MaxSeconds: cfg.CheckerMaxSeconds, MaxConcurrent: cfg.CheckerMaxConcurrent}))
+		servers = append(servers, checker)
+		go func() {
+			if err := checker.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+		log.Info("checker socket", "path", cfg.CheckerSocket)
+	}
 	for _, srv := range []*http.Server{api, metrics} {
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -133,7 +156,8 @@ func run(cfg Config) error {
 	// Stop accepting, end the running streams and remove their execs before the process goes.
 	sctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	_ = api.Shutdown(sctx)
-	_ = metrics.Shutdown(sctx)
+	for _, srv := range servers {
+		_ = srv.Shutdown(sctx)
+	}
 	return svc.Shutdown(sctx)
 }

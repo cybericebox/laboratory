@@ -34,12 +34,12 @@ type Config struct {
 	// Namespace is where the keepalive Lease is made (the release namespace).
 	Namespace string `env:"POD_NAMESPACE,required"`
 	Version   string `env:"CHECKER_VERSION"`
-	CRISock   string `env:"CRI_SOCK" envDefault:"/run/k0s/containerd.sock"`
-	// ContainerdState is the containerd state directory of the node, mounted read-only at the same path; ContainerdNamespace is the
-	// namespace of the kubelet's CRI.
-	ContainerdState     string `env:"CONTAINERD_STATE" envDefault:"/run/k0s/containerd"`
-	ContainerdNamespace string `env:"CONTAINERD_NAMESPACE" envDefault:"k8s.io"`
-	MaxConcurrent       int    `env:"CHECKER_MAX_CONCURRENT" envDefault:"4"`
+	// DeviceSocket is the checker socket of the device access service on this node (in a node directory the two pods share): the only way
+	// the checker reaches a device. The checker holds no container runtime socket and reads no file of a container from the node.
+	DeviceSocket  string `env:"DEVICE_ACCESS_SOCKET" envDefault:"/run/cib-checker/checker.sock"`
+	MaxConcurrent int    `env:"CHECKER_MAX_CONCURRENT" envDefault:"4"`
+	// MaxTimeLimitSeconds is the ceiling of the time limit of one run (0: the contract's).
+	MaxTimeLimitSeconds int `env:"CHECKER_MAX_TIME_LIMIT_SECONDS" envDefault:"0"`
 	// RunDir holds the two files the probes look at.
 	RunDir string `env:"CHECKER_RUN_DIR" envDefault:"/run/checker"`
 }
@@ -125,17 +125,13 @@ func run(cfg Config) error {
 		return fmt.Errorf("cache: %w", err)
 	}
 
-	cri, err := checker.DialCRI(cfg.CRISock)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = cri.Close() }()
-	backend := &checker.NodeBackend{CRI: cri, StateDir: cfg.ContainerdState, Namespace: cfg.ContainerdNamespace}
-	state := preflight(ctx, cfg, cri)
+	backend := &checker.SocketBackend{Runner: checker.NewSocketRunner(cfg.DeviceSocket)}
+	state := preflight(cfg)
 	log.Info("start-up check", "state", state)
 
 	engine := checker.NewEngine(checker.Config{
 		Backend: backend, Writer: &checker.StatusWriter{Client: direct}, MaxConcurrent: cfg.MaxConcurrent, Log: log,
+		MaxTimeLimit: time.Duration(cfg.MaxTimeLimitSeconds) * time.Second,
 	})
 	watcher := &checker.Watcher{Engine: engine, Reader: direct, Log: log}
 	go func() {
@@ -167,12 +163,13 @@ func run(cfg Config) error {
 	return nil
 }
 
-// preflight tells whether the node can read the files of its containers: "ready", or "unavailable: <CODE>: <detail>" (the form the
-// node-agent uses on the Node). The checker runs either way: custom checks and micro-VM devices do not need the state directory.
-func preflight(_ context.Context, cfg Config, _ checker.CRI) string {
-	dir := filepath.Join(cfg.ContainerdState, "io.containerd.runtime.v2.task", cfg.ContainerdNamespace)
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return "unavailable: STATE_DIR_MISSING: " + dir + " is not a directory; check checks.containerdState and the mount"
+// preflight tells whether the checker can reach the device access service of its node: "ready", or "unavailable: <CODE>: <detail>" (the form
+// the node-agent uses on the Node). The checker runs either way: the service may start after it, and a check made before then fails with a
+// reason and is repeated.
+func preflight(cfg Config) string {
+	st, err := os.Stat(cfg.DeviceSocket)
+	if err != nil || st.Mode()&os.ModeSocket == 0 {
+		return "unavailable: DEVICE_SOCKET_MISSING: " + cfg.DeviceSocket + " is not a socket; check that the device access service runs on this node and shares the directory"
 	}
 	return "ready"
 }

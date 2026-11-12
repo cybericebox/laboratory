@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -250,7 +251,19 @@ func (h *Handler) requireTerminal(spec *laboratoryv1alpha1.LabSpec) error {
 
 // requireChecks refuses checks when the laboratory's checks option is off.
 func (h *Handler) requireChecks(set *checkSet) error {
-	if set.empty() || !h.capabilitiesEnforced || h.checksAvailable() {
+	if set.empty() {
+		return nil
+	}
+	// The ceiling of the time limit of one run (the chart's checks.maxTimeLimitSeconds): a check that asks for more is refused here, and
+	// the checker runs nothing longer either.
+	if ceiling := h.features.CheckMaxTimeLimit; ceiling > 0 {
+		for i := range set.checks {
+			if set.checks[i].TimeLimitSeconds > ceiling {
+				return fmt.Errorf("check %q: the time limit %ds is above the ceiling of this laboratory (%ds)", set.checks[i].ID, set.checks[i].TimeLimitSeconds, ceiling)
+			}
+		}
+	}
+	if !h.capabilitiesEnforced || h.checksAvailable() {
 		return nil
 	}
 	return fmt.Errorf("the lab carries checks, but %s", h.checksUnavailableText())
@@ -415,11 +428,30 @@ func checkUpdateTargets(lab *laboratoryv1alpha1.Lab, lists bootstrapLists, set *
 // ---- RunChecks -------------------------------------------------------------------------------------------------------
 
 // runChecksRequest is the value of the annotation names.AnnotationRunChecks.
+// maxCheckTimeLimit is the ceiling of a check's time limit that GetFeatures reports: the contract's, lowered by the chart value.
+func (h *Handler) maxCheckTimeLimit() int32 {
+	if c := h.features.CheckMaxTimeLimit; c > 0 && c < labchecks.MaxCheckTimeLimit {
+		return c
+	}
+	return labchecks.MaxCheckTimeLimit
+}
+
+// cooldownWait is how much longer a manual run of a lab must wait: the cooldown counted from the last accepted request (prevAt, unix
+// seconds, 0 for none).
+func cooldownWait(cooldown time.Duration, prevAt int64, now time.Time) time.Duration {
+	if cooldown <= 0 || prevAt <= 0 {
+		return 0
+	}
+	return max(cooldown-now.Sub(time.Unix(prevAt, 0)), 0)
+}
+
 type runChecksRequest struct {
 	// Token grows by one with every accepted request; the checker acknowledges it in status.checksRunAck.
 	Token int64 `json:"token"`
 	// IDs are the checks to run; empty = every check that allows a manual run.
 	IDs []string `json:"ids,omitempty"`
+	// At is when the agent accepted the request (unix seconds): the cooldown between manual runs is counted from it.
+	At int64 `json:"at,omitempty"`
 }
 
 // RunChecks records a manual run of checks. Acceptance only: the result of a check comes in LabStatus.checks.
@@ -485,6 +517,13 @@ func (h *Handler) recordRunChecks(ctx context.Context, resolver *groupResolver, 
 		if raw := cur.Annotations[names.AnnotationRunChecks]; raw != "" {
 			_ = json.Unmarshal([]byte(raw), &prev)
 		}
+		// A cooldown between manual runs of one lab (the chart's checks.manualCooldown), counted from the last request the agent accepted:
+		// a button pressed in a loop cannot keep the checker, the device access service and the devices busy.
+		now := h.now()
+		if wait := cooldownWait(h.features.ManualCooldown, prev.At, now); wait > 0 {
+			return status.Errorf(codes.ResourceExhausted, "wait %d seconds before the next manual run of this lab", int(wait/time.Second)+1)
+		}
+		next.At = now.Unix()
 		next.Token = max(prev.Token, cur.Status.ChecksRunAck) + 1
 		if prev.Token > cur.Status.ChecksRunAck {
 			// the checker has not taken the previous request: do not lose it
@@ -602,7 +641,7 @@ func checkResultsToProto(in []laboratoryv1alpha1.CheckResult) []*protobuf.CheckR
 func (h *Handler) checksFeature() *protobuf.ChecksFeature {
 	return &protobuf.ChecksFeature{
 		Enabled: h.checksAvailable(), MaxChecksPerLab: labchecks.MaxChecksPerLab, MaxPartsPerCheck: labchecks.MaxPartsPerCheck,
-		MaxTimeLimitSeconds: labchecks.MaxCheckTimeLimit, Observations: append([]string(nil), labchecks.Observations...), MaxScheduleSeconds: labchecks.MaxScheduleSeconds, MaxDetailBytes: labchecks.MaxResultDetailBytes,
+		MaxTimeLimitSeconds: h.maxCheckTimeLimit(), Observations: append([]string(nil), labchecks.Observations...), MaxScheduleSeconds: labchecks.MaxScheduleSeconds, MaxDetailBytes: labchecks.MaxResultDetailBytes,
 	}
 }
 

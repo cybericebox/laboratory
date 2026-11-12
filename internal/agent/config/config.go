@@ -124,6 +124,10 @@ type Config struct {
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
 	// TerminalServed says the device access service and the proxy's console route are deployed (the chart renders both with terminal.enabled).
 	TerminalServed bool `env:"TERMINAL_SERVED" envDefault:"false"`
+	// ChecksMaxTimeLimit is the ceiling of the time limit of one check run in seconds, ChecksManualCooldown the least time between two manual
+	// runs of one lab (the chart's checks.maxTimeLimitSeconds and checks.manualCooldown).
+	ChecksMaxTimeLimit   int           `env:"CHECKS_MAX_TIME_LIMIT_SECONDS" envDefault:"120"`
+	ChecksManualCooldown time.Duration `env:"CHECKS_MANUAL_COOLDOWN" envDefault:"10s"`
 	// AdmissionStaleAfter is how long a pending child admission of another lab that wrote nothing blocks its group before the
 	// next claim clears it (ADMISSION_STALE_AFTER).
 	AdmissionStaleAfter time.Duration `env:"ADMISSION_STALE_AFTER" envDefault:"10m"`

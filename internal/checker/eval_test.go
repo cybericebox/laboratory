@@ -110,6 +110,8 @@ type fakeObserver struct {
 	files map[string]FileFacts
 	exec  func(ExecSpec) (ExecResult, error)
 	calls []string
+	// onRead, when set, sees the context of every file read.
+	onRead func(context.Context)
 }
 
 func (f *fakeObserver) set(path string, facts FileFacts) {
@@ -118,7 +120,10 @@ func (f *fakeObserver) set(path string, facts FileFacts) {
 	f.files[path] = facts
 }
 
-func (f *fakeObserver) ReadFile(_ context.Context, p string, _ bool) (FileFacts, error) {
+func (f *fakeObserver) ReadFile(ctx context.Context, p string, _ bool) (FileFacts, error) {
+	if f.onRead != nil {
+		f.onRead(ctx)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "file "+p)
@@ -198,8 +203,6 @@ func TestObserverErrorsBecomeSafeReasons(t *testing.T) {
 		err  error
 		want string
 	}{
-		{ErrPseudoPath, "pseudo file system"},
-		{ErrTooManyLinks, "too many symbolic links"},
 		{&ObserveError{Reason: "the container is not running", Err: errors.New("rpc: /run/containerd/x.sock secret path")}, "the container is not running"},
 		{errors.New("open /run/containerd/io.containerd/abc: permission denied"), "could not be observed"},
 	} {

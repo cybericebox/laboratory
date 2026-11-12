@@ -70,6 +70,10 @@ type Features struct {
 	// TerminalServed: the component that serves terminals exists in this installation. features.access.terminal is true only with both
 	// this and the option (a lab with a terminal device is refused by the option alone).
 	TerminalServed bool
+	// CheckMaxTimeLimit is the ceiling of the time limit of one check run in seconds (0: the contract's); ManualCooldown is the least time
+	// between two manual runs of one lab (0: none). Both are chart values (checks.maxTimeLimitSeconds, checks.manualCooldown).
+	CheckMaxTimeLimit int32
+	ManualCooldown    time.Duration
 	// CheckerRequired: checks count as available only while the checker DaemonSet exists (production sets it with ChecksEnabled).
 	CheckerRequired bool
 }

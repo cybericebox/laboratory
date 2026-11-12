@@ -51,6 +51,17 @@ type Device struct {
 // The device container is then the running container of the same pod (the same pod UID) whose name is the device name; the other
 // containers of the pod (init containers, a helper) never match.
 func Resolve(ctx context.Context, rt Runtime, t Target) (Device, error) {
+	return resolve(ctx, rt, t, true)
+}
+
+// ResolveLabDevice is Resolve for a caller that needs no console on the device: the checker socket runs the probe in any lab device. It is
+// the same white list (a sandbox with both UIDs of the operator and no component label, then the running container of that pod named
+// like the device) without the console label.
+func ResolveLabDevice(ctx context.Context, rt Runtime, t Target) (Device, error) {
+	return resolve(ctx, rt, t, false)
+}
+
+func resolve(ctx context.Context, rt Runtime, t Target, needConsole bool) (Device, error) {
 	if t.Namespace == "" || t.Lab == "" || t.Device == "" {
 		return Device{}, ErrNotFound
 	}
@@ -77,7 +88,7 @@ func Resolve(ctx context.Context, rt Runtime, t Target) (Device, error) {
 		if l[labelPodNamespace] != t.Namespace || l[names.LabelLab] != t.Lab || l[names.LabelDevice] != t.Device {
 			continue
 		}
-		if l[names.LabelTerminal] != "true" {
+		if needConsole && l[names.LabelTerminal] != "true" {
 			disabled = true
 			continue
 		}

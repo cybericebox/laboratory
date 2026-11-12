@@ -344,14 +344,17 @@ func TestAFailedRunAtTheMomentTheDeviceLeavesTheBarrierCountsForNothing(t *testi
 	}
 }
 
+// The node runs at most MaxConcurrent checks at once, and at most one of each lab: five labs with one check each go two by two.
 func TestConcurrencyCapPerNode(t *testing.T) {
-	var cs []labchecks.Check
+	r := newRig(t, 2)
+	r.e.cfg.FirstRunWindow = time.Nanosecond // everything is due at the first look
 	for i := 0; i < 5; i++ {
-		cs = append(cs, fileCheck(fmt.Sprintf("c%d", i), "web", "continuous", 100, false))
+		key := LabKey{Namespace: "ns", Name: fmt.Sprintf("lab%d", i)}
+		c := fileCheck("c", "web", "continuous", 100, false)
+		r.e.SetLab(LabInfo{Key: key, UID: "u" + key.Name, Refs: []CheckRef{{ID: "c", Device: "web"}}, Results: map[string]Published{}})
+		r.e.SetDefinitions(key, "u"+key.Name, []labchecks.Check{c})
+		r.e.SetPod(PodInfo{Lab: key, Device: "web", Name: "p", UID: "pu", Ready: true})
 	}
-	r := newRig(t, 2, cs...)
-	r.e.cfg.FirstRunWindow = time.Nanosecond // all five are due at the first look
-	r.pod("web", true)
 	first := r.e.Tick(r.now)
 	if len(first) != 2 {
 		t.Fatalf("cap 2, got %d runs", len(first))
@@ -363,13 +366,58 @@ func TestConcurrencyCapPerNode(t *testing.T) {
 		r.e.Execute(context.Background(), j)
 	}
 	second := r.e.Tick(r.now)
-	third := 0
 	for _, j := range second {
 		r.e.Execute(context.Background(), j)
 	}
-	third = len(r.e.Tick(r.now))
+	third := len(r.e.Tick(r.now))
 	if len(second) != 2 || third != 1 {
 		t.Fatalf("the rest follows two by two: %d then %d", len(second), third)
+	}
+}
+
+// Five checks of one lab run one after another on a node, whatever the node's room: a lab cannot take the room of the others.
+func TestOneRunPerLabAtATime(t *testing.T) {
+	var cs []labchecks.Check
+	for i := 0; i < 5; i++ {
+		cs = append(cs, fileCheck(fmt.Sprintf("c%d", i), "web", "continuous", 100, false))
+	}
+	r := newRig(t, 8, cs...)
+	r.e.cfg.FirstRunWindow = time.Nanosecond
+	r.pod("web", true)
+	for i := 0; i < 5; i++ {
+		jobs := r.e.Tick(r.now)
+		if len(jobs) != 1 {
+			t.Fatalf("round %d: %d runs of one lab at once", i, len(jobs))
+		}
+		if more := r.e.Tick(r.now); len(more) != 0 {
+			t.Fatalf("round %d: a second run of the lab started while the first goes on: %d", i, len(more))
+		}
+		r.e.Execute(context.Background(), jobs[0])
+	}
+}
+
+// A check that asks for more time than the ceiling is run with the ceiling.
+func TestTimeLimitCeiling(t *testing.T) {
+	c := fileCheck("c", "web", "continuous", 100, false)
+	c.TimeLimitSeconds = 600
+	r := newRig(t, 4, c)
+	r.e.cfg.MaxTimeLimit = 20 * time.Second
+	r.e.cfg.FirstRunWindow = time.Nanosecond
+	r.pod("web", true)
+	jobs := r.e.Tick(r.now)
+	if len(jobs) != 1 {
+		t.Fatal(len(jobs))
+	}
+	var deadline time.Duration
+	r.b.obs = &fakeObserver{files: map[string]FileFacts{}, onRead: func(ctx context.Context) {
+		if d, ok := ctx.Deadline(); ok {
+			deadline = time.Until(d)
+		}
+	}}
+	r.setContent("ok")
+	r.e.Execute(context.Background(), jobs[0])
+	if deadline <= 0 || deadline > 21*time.Second {
+		t.Fatalf("the run had %v, the ceiling is 20 s", deadline)
 	}
 }
 
