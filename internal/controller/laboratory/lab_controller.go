@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -824,6 +825,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	var refs []laboratoryv1alpha1.DeviceRef
+	deviceNodes := nodesOfDevices(deviceList.Items)
 	allReady := len(deviceList.Items) > 0 || len(lab.Spec.Devices) == 0 && len(lab.Spec.Connections) == 0
 	pods, queuedPods := 0, 0
 	for _, d := range deviceList.Items {
@@ -962,6 +964,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		labInitiatedBlocked == lab.Status.VPN.LabInitiatedBlocked &&
 		inetReady == lab.Status.Internet.Ready &&
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
+		slices.Equal(deviceNodes, lab.Status.DeviceNodes) &&
 		sameRefsByName(connRefs, lab.Status.Connections, func(ref laboratoryv1alpha1.ConnectionRef) string { return ref.Name }) &&
 		reflect.DeepEqual(access, lab.Status.Access) &&
 		wasReady == allReady {
@@ -979,6 +982,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	lab.Status.VPN.LabInitiatedBlocked = labInitiatedBlocked
 	lab.Status.Internet.Ready = inetReady
 	lab.Status.Devices = refs
+	lab.Status.DeviceNodes = deviceNodes
 	lab.Status.Connections = connRefs
 	lab.Status.Phase = newPhase
 	lab.Status.Access = access
