@@ -143,8 +143,10 @@ func TestWGDemuxUserspaceIsUnprivileged(t *testing.T) {
 			t.Errorf("no hostPath in userspace: %+v", v)
 		}
 	}
-	if len(c.VolumeMounts) != 0 {
-		t.Errorf("no mounts: %+v", c.VolumeMounts)
+	for _, m := range c.VolumeMounts { // only the read-only bandwidth limits (a ConfigMap, on by default)
+		if m.Name != "bandwidth" || !m.ReadOnly {
+			t.Errorf("no mounts but the bandwidth limits: %+v", c.VolumeMounts)
+		}
 	}
 	if envOf(c)["DEMUX_MODE"].Value != "userspace" {
 		t.Errorf("DEMUX_MODE = %q", envOf(c)["DEMUX_MODE"].Value)

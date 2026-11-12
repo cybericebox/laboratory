@@ -123,7 +123,7 @@ func has(list []string, s string) bool {
 }
 
 func TestChartBandwidthOffChangesNoPod(t *testing.T) {
-	objs := renderAll(t)
+	objs := renderAll(t, "--set", "bandwidth.enabled=false")
 	if objs["ConfigMap/laboratory-config"]["data"].(map[string]any)["BANDWIDTH_ENABLED"] != "false" {
 		t.Fatal("the operator is told the protection is off")
 	}
