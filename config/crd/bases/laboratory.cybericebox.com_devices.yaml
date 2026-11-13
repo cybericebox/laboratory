@@ -148,9 +148,16 @@ spec:
                       properties:
                         addressRef:
                           description: |-
-                            NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                            NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+                            gateway a declared one (spec.gateways). Exactly one of the two.
                             The lab reconciler resolves it before creating a Device.
                           properties:
+                            gateway:
+                              description: Gateway is the name of a gateway declared
+                                in spec.gateways.
+                              maxLength: 35
+                              pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                              type: string
                             host:
                               format: int32
                               maximum: 254
@@ -163,15 +170,24 @@ spec:
                               type: string
                           required:
                           - host
-                          - network
                           type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of network and gateway
+                            rule: has(self.network) != has(self.gateway)
                         gateway:
                           type: string
                         gatewayRef:
                           description: |-
-                            NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                            NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+                            gateway a declared one (spec.gateways). Exactly one of the two.
                             The lab reconciler resolves it before creating a Device.
                           properties:
+                            gateway:
+                              description: Gateway is the name of a gateway declared
+                                in spec.gateways.
+                              maxLength: 35
+                              pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                              type: string
                             host:
                               format: int32
                               maximum: 254
@@ -184,8 +200,10 @@ spec:
                               type: string
                           required:
                           - host
-                          - network
                           type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of network and gateway
+                            rule: has(self.network) != has(self.gateway)
                         ip:
                           type: string
                         routes:
@@ -195,24 +213,38 @@ spec:
                               dst:
                                 type: string
                               dstRef:
-                                description: NetworkSubnetRef selects the full lab-allocated
-                                  VPN or Internet /24.
+                                description: NetworkSubnetRef selects the full /24
+                                  of a gateway of the lab (see NetworkIPRef).
                                 properties:
+                                  gateway:
+                                    description: Gateway is the name of a gateway
+                                      declared in spec.gateways.
+                                    maxLength: 35
+                                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                    type: string
                                   network:
                                     enum:
                                     - vpn
                                     - internet
                                     type: string
-                                required:
-                                - network
                                 type: object
+                                x-kubernetes-validations:
+                                - message: exactly one of network and gateway
+                                  rule: has(self.network) != has(self.gateway)
                               via:
                                 type: string
                               viaRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+                                  gateway a declared one (spec.gateways). Exactly one of the two.
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
+                                  gateway:
+                                    description: Gateway is the name of a gateway
+                                      declared in spec.gateways.
+                                    maxLength: 35
+                                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                    type: string
                                   host:
                                     format: int32
                                     maximum: 254
@@ -225,8 +257,10 @@ spec:
                                     type: string
                                 required:
                                 - host
-                                - network
                                 type: object
+                                x-kubernetes-validations:
+                                - message: exactly one of network and gateway
+                                  rule: has(self.network) != has(self.gateway)
                             type: object
                           type: array
                         type:
