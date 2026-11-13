@@ -151,6 +151,9 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 		if err := policy.Check(img); err != nil {
 			return protobuf.PrewarmState_PREWARM_STATE_FAILED, err.Error()
 		}
+		if policy.IsPlatform(img) {
+			return protobuf.PrewarmState_PREWARM_STATE_SKIPPED, "platform images are in the platform registry already: there is nothing to prewarm"
+		}
 		if own {
 			return protobuf.PrewarmState_PREWARM_STATE_SKIPPED, "the tenant has its own registry credentials: nodes pull its images directly"
 		}

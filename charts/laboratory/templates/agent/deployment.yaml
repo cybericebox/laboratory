@@ -154,6 +154,11 @@ spec:
             - name: AGENT_IMAGE_DENY
               value: {{ join "," . | quote }}
           {{- end }}
+          {{- if .Values.images.platformOnly }}
+            # Every tenant runs only platform images pinned by digest (platform:<name>@sha256:<hex>).
+            - name: AGENT_IMAGE_PLATFORM_ONLY
+              value: "true"
+          {{- end }}
             - name: AGENT_DEVICE_PROFILES
               value: {{ join "," .Values.devices.security.profiles | quote }}
             - name: AGENT_LIMIT_LAB_MAX_DEVICES

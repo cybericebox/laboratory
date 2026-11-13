@@ -45,6 +45,11 @@ type TenantImages struct {
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:validation:items:MaxLength=255
 	Allow []string `json:"allow,omitempty"`
+	// PlatformOnly lets the tenant's devices run only the images of the platform's own registry, pinned by digest
+	// (platform:<name>@sha256:<hex>); every other reference is refused at deploy. The platform can set it for all tenants
+	// (chart images.platformOnly); a tenant is platform-only when either says so.
+	// +optional
+	PlatformOnly bool `json:"platformOnly,omitempty"`
 }
 
 // TenantPersistence is the persistence policy of a tenant. The platform switch

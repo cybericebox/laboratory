@@ -2792,6 +2792,20 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
   address the node's runtime pulls from), and not to a path with `..` or `//`.
 - `images.tenantDeny` still defaults to empty: the chart cannot know which repositories of an installation are private. Set it to the
   platform's private organizations.
+- **Platform images.** A device image written `platform:<name>@sha256:<64 hex>` is an image of the platform's own registry
+  (`registry.platform`, "Platform images" above): the agent checks the form (a name of lowercase letters, digits, `.`, `_`, `-`, at most 64 characters,
+  one path element; the digest is required, a tag is not a platform reference), skips the tenant's allow list and the platform deny list for it (the
+  platform chose the image), and writes the Lab with the node address `localhost:5035/platform/<name>@sha256:<hex>`. The nodes pull it through the
+  node-agent forwarder, which adds the reader account: **no pull credentials are sent or created for platform images**. A reference that starts with
+  `platform:` is never read as a Docker Hub image; one of the wrong form is refused. The node form itself is accepted only where only platform
+  images run (below); elsewhere it stays refused like every reference that names the platform registry. The image cache and its digest pinning leave a
+  platform image alone, and the pre-pull (`PrewarmImages`) skips it.
+- **Platform-only.** `images.platformOnly: true` (agent variable `AGENT_IMAGE_PLATFORM_ONLY`) or `tenants.<name>.images.platformOnly: true` for one
+  tenant makes a device image valid only as `platform:<name>@sha256:<hex>` or `localhost:5035/platform/<name>@sha256:<hex>`: exactly the repositories
+  `platform/**`, by digest. Anything else (a public image, a tag, `lab/**`, `base`, the cache, another host) is refused on CreateLabs with
+  `PermissionDenied`, the ErrorInfo reason `IMAGE_NOT_PLATFORM` (`client.IsImageNotPlatform`) and a message that names the variant, the device and the
+  image. A tenant is platform-only when either the platform or its own object says so. Both are off by default. The registry address the nodes pull from
+  is the constant `localhost:5035` of the images; there is nothing to configure.
 
 ### Names and system pods (R-19)
 

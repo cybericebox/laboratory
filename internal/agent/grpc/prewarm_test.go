@@ -531,3 +531,21 @@ func TestPrewarmEvictsOldestFinishedEntry(t *testing.T) {
 		t.Fatal("nothing finished to forget")
 	}
 }
+
+// A platform image is in the platform registry already: a prewarm skips it and says why; a malformed one is refused.
+func TestPrewarmSkipsPlatformImages(t *testing.T) {
+	z := newFakeZot(t)
+	ten := &laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	h := tenantPolicyHandler(t, z, &fakeResolver{}, ten, nil)
+	const dig = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"platform:tools@" + dig, "platform:tools:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Images[0].State != protobuf.PrewarmState_PREWARM_STATE_SKIPPED || !strings.Contains(r.Images[0].Error, "platform") {
+		t.Errorf("a platform image is skipped: %+v", r.Images[0])
+	}
+	if r.Images[1].State != protobuf.PrewarmState_PREWARM_STATE_FAILED {
+		t.Errorf("a malformed platform reference is refused: %+v", r.Images[1])
+	}
+}

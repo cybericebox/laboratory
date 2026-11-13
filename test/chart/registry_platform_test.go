@@ -250,3 +250,25 @@ func TestPlatformRegistryRefusesNamesThatBelongToTheRegistry(t *testing.T) {
 		t.Errorf("an invalid namespace must be refused: %v\n%s", err, out)
 	}
 }
+
+// images.platformOnly reaches the agent; off, the agent gets no variable at all.
+func TestPlatformOnlyReachesTheAgent(t *testing.T) {
+	if _, set := agentEnv(t)["AGENT_IMAGE_PLATFORM_ONLY"]; set {
+		t.Error("platform-only is off by default: no variable")
+	}
+	if got := agentEnv(t, "--set", "images.platformOnly=true")["AGENT_IMAGE_PLATFORM_ONLY"]; got != "true" {
+		t.Errorf("AGENT_IMAGE_PLATFORM_ONLY = %q", got)
+	}
+}
+
+// A tenant can be platform-only on its own: the field passes through to its Tenant object.
+func TestTenantPlatformOnlyPassesThrough(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/tenants.yaml", "--set", "tenants.acme.images.platformOnly=true")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	img := ofKind(docs(t, out), "Tenant")["acme"]["spec"].(map[string]any)["images"].(map[string]any)
+	if img["platformOnly"] != true {
+		t.Errorf("tenant images: %v", img)
+	}
+}

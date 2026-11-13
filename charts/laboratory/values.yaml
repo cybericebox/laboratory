@@ -1353,6 +1353,10 @@ images:
   # image would otherwise get it). Enforced by the management agent on CreateLabs and
   # PrewarmImages. A tenant's own images.allow narrows the rest.
   tenantDeny: []
+  # true: every tenant runs ONLY images of the platform registry (registry.platform), pinned by digest and named platform:<name>@sha256:<hex>;
+  # any other reference is refused at deploy with the reason IMAGE_NOT_PLATFORM. A tenant can set the same for itself with
+  # tenants.<name>.images.platformOnly. Off by default. The platform images themselves are prepared by registry.platform.
+  platformOnly: false
 
 # ============================================================
 # Common
@@ -1403,6 +1407,7 @@ cert-manager:
 #         pullSecret: acme-registry   # a dockerconfigjson Secret in laboratory-tenants: the tenant's
 #                                     #   own registry credentials for its devices and prepull. A tenant
 #                                     #   with one pulls straight from its registries (no shared cache).
+#         platformOnly: true          # optional; only platform images (platform:<name>@sha256:<hex>) run for this tenant
 #         allow:                      # optional; absent = any image `images.tenantDeny` does not exclude
 #           - ghcr.io/acme/           # registry/repository prefixes; a reference equal to an entry
 #           - docker.io/library       #   or under it is allowed
