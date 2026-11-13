@@ -844,7 +844,7 @@ spec:
                 description: Gateways is the state of every gateway of the lab.
                 items:
                   description: GatewayStatus is the observed state of one gateway
-                    of a lab, the shorthand ones included (named vpn and internet).
+                    of a lab.
                   properties:
                     cidr:
                       description: CIDR is the /24 of the gateway, taken once from
