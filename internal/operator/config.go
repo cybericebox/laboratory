@@ -84,7 +84,7 @@ type Config struct {
 	// LabBaseNetwork is the one address space of the lab networks (LAB_BASE_NETWORK, default 10.128.0.0/9): /24 number 0 is the VPN
 	// clients, every other /24 goes to a gateway of a lab, VPN or Internet, first free number.
 	LabBaseNetwork string `env:"LAB_BASE_NETWORK"`
-	// MaxLabGateways is the most gateways (VPN entries and Internet exits together, the shorthand ones included) one lab may have
+	// MaxLabGateways is the most gateways (VPN entries and Internet exits together) one lab may have
 	// (MAX_LAB_GATEWAYS, chart operator.maxLabGateways). The agent refuses a lab with more when it is created; the operator checks again.
 	MaxLabGateways int `env:"MAX_LAB_GATEWAYS" envDefault:"10"`
 	// VPNImage is the container image for per-LabGroup VPN pods. Required, no default: the chart passes

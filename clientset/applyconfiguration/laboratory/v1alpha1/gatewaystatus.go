@@ -24,7 +24,7 @@ import (
 // GatewayStatusApplyConfiguration represents a declarative configuration of the GatewayStatus type for use
 // with apply.
 //
-// GatewayStatus is the observed state of one gateway of a lab, the shorthand ones included (named vpn and internet).
+// GatewayStatus is the observed state of one gateway of a lab.
 type GatewayStatusApplyConfiguration struct {
 	Name *string                         `json:"name,omitempty"`
 	Kind *laboratoryv1alpha1.GatewayKind `json:"kind,omitempty"`

@@ -64,7 +64,7 @@ type GatewayTemplate struct {
 	ReverseConnections bool `json:"reverseConnections,omitempty"`
 }
 
-// GatewayStatus is the observed state of one gateway of a lab, the shorthand ones included (named vpn and internet).
+// GatewayStatus is the observed state of one gateway of a lab.
 type GatewayStatus struct {
 	Name string      `json:"name"`
 	Kind GatewayKind `json:"kind"`
