@@ -8,7 +8,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-// vpnClientSubnet is the subnet of the participants' WireGuard clients: the first /24 of the VPN base network. Empty base: none
+// vpnClientSubnet is the subnet of the participants' WireGuard clients: /24 number 0 of the lab base network. Empty base: none
 // (the lab then gets no return route).
 func vpnClientSubnet(base string) (netip.Prefix, error) {
 	if base == "" {
@@ -29,11 +29,8 @@ func addVPNReturnRoutes(lab *laboratoryv1alpha1.Lab, resolved map[string][]labor
 	if !clients.IsValid() {
 		return
 	}
-	for _, g := range lab.Spec.AllGateways() {
-		if g.Kind != laboratoryv1alpha1.GatewayKindVPN {
-			continue
-		}
-		vpn, err := resolveNetworkPrefix(lab, "", g.Name)
+	for _, g := range lab.Spec.GatewaysOfKind(laboratoryv1alpha1.GatewayKindVPN) {
+		vpn, err := resolveNetworkPrefix(lab, g.Name)
 		if err != nil {
 			continue
 		}

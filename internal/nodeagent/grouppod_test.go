@@ -44,10 +44,10 @@ func TestGroupPodAttachmentsFollowTheLabObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	vpn := func(ns, lab string, n uint) *laboratoryv1alpha1.LabVPN {
-		return &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName(lab), Namespace: ns}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: lab, NetworkIndex: n}}
+		return &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName(lab, "vpn"), Namespace: ns}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: lab, Device: "vpn", NetworkIndex: n}}
 	}
 	gw := func(ns, lab string, n uint) *laboratoryv1alpha1.LabGateway {
-		return &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName(lab), Namespace: ns}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: lab, NetworkIndex: n}}
+		return &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName(lab, "internet"), Namespace: ns}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: lab, Device: "internet", NetworkIndex: n}}
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		&laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l1", Namespace: "ns-a"}}, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l2", Namespace: "ns-a"}}, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l9", Namespace: "ns-b"}},

@@ -41,7 +41,8 @@ spec:
             properties:
               device:
                 description: Device is the name of the gateway of the lab this object
-                  serves; empty for the gateway of the shorthand spec.vpn.
+                  serves (spec.gateways[].name).
+                minLength: 1
                 type: string
               labName:
                 description: LabName is the name of the parent Lab.
@@ -52,6 +53,7 @@ spec:
                   it: it is in the parent Lab status (status.gateways). Immutable after FinalizerController is set.
                 type: integer
             required:
+            - device
             - labName
             type: object
           status:
@@ -170,7 +172,7 @@ spec:
               labInitiatedBlocked:
                 description: |-
                   LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
-                  starts towards a VPN client, has applied it to this lab (the lab's spec.vpn.reverseConnections is false). Written only by a program
+                  starts towards a VPN client, has applied it to this lab (reverseConnections of the gateway is false). Written only by a program
                   that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
                 type: boolean
               labInitiatedDropped:

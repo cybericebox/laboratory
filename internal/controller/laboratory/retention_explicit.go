@@ -86,7 +86,7 @@ func retirementReady(l *lab.Lab) bool {
 	if i == nil || !i.IsStopped() || o == nil || a == nil {
 		return false
 	}
-	return o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == runtimeStateReleased && nonzeroTime(a.ReleasedAt) && nonzeroTime(a.ObservedAt) && a.AllocatedRequests == (lab.ResourceAmounts{}) && (i.SnapshotMode != snapshotModeRequired || o.SnapshotComplete && o.Error == "") && (!l.Spec.VPN.Enabled || o.AccessFenced && nonzeroTime(o.AccessFencedAt) && o.AccessFenceVPNBootID != "")
+	return o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == runtimeStateReleased && nonzeroTime(a.ReleasedAt) && nonzeroTime(a.ObservedAt) && a.AllocatedRequests == (lab.ResourceAmounts{}) && (i.SnapshotMode != snapshotModeRequired || o.SnapshotComplete && o.Error == "") && (!l.Spec.HasVPN() || o.AccessFenced && nonzeroTime(o.AccessFencedAt) && o.AccessFenceVPNBootID != "")
 }
 func (s *RetentionSweeper) writeRetirement(ctx context.Context, l *lab.Lab, f lab.SnapshotRetirementFence) error {
 	raw, err := json.Marshal(f)

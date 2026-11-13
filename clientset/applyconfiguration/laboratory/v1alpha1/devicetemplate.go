@@ -31,18 +31,30 @@ type DeviceTemplateApplyConfiguration struct {
 	Name  *string                        `json:"name,omitempty"`
 	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
 	Image *string                        `json:"image,omitempty"`
-	// SecurityPreset names a device security profile (standard or extended; the old names basic, service,
-	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+	// Profile is how the device runs: container (the default when empty) or microvm. vm is reserved and refused.
+	Profile *laboratoryv1alpha1.DeviceProfile `json:"profile,omitempty"`
+	// SecurityPreset names a device security profile (standard or extended). Only the name is exposed here; the concrete Linux capabilities behind it
 	// are an internal platform decision. Empty means standard.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
 	Interfaces []InterfaceSpecApplyConfiguration `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpecApplyConfiguration   `json:"exposure,omitempty"`
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
+	Access []DeviceAccessApplyConfiguration `json:"access,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 	// Persistence is the optional state-persistence policy of this device, set at
 	// creation and immutable. The excluded paths and the quota are platform settings.
 	Persistence *DevicePersistenceApplyConfiguration `json:"persistence,omitempty"`
+	// WaitReadyFile makes the device Ready only once the application has created /run/ready inside the container.
+	// A port published through the http access is checked in any case, whatever this says. Container devices only.
+	WaitReadyFile *bool `json:"waitReadyFile,omitempty"`
+	// Service is the service command of a container device, set by the platform from the image configuration. Empty fields
+	// mean "not provided": the image decides.
+	Service *DeviceServiceApplyConfiguration `json:"service,omitempty"`
+	// Bootstrap is set by the management agent when it received a bootstrap list for the device; a value sent in the spec is
+	// replaced. The list is in the Secret <device>-bootstrap, never here.
+	Bootstrap *DeviceBootstrapSpecApplyConfiguration `json:"bootstrap,omitempty"`
 }
 
 // DeviceTemplateApplyConfiguration constructs a declarative configuration of the DeviceTemplate type for use with
@@ -75,6 +87,14 @@ func (b *DeviceTemplateApplyConfiguration) WithImage(value string) *DeviceTempla
 	return b
 }
 
+// WithProfile sets the Profile field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Profile field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithProfile(value laboratoryv1alpha1.DeviceProfile) *DeviceTemplateApplyConfiguration {
+	b.Profile = &value
+	return b
+}
+
 // WithSecurityPreset sets the SecurityPreset field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the SecurityPreset field is set to the value of the last call.
@@ -96,11 +116,16 @@ func (b *DeviceTemplateApplyConfiguration) WithInterfaces(values ...*InterfaceSp
 	return b
 }
 
-// WithExposure sets the Exposure field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Exposure field is set to the value of the last call.
-func (b *DeviceTemplateApplyConfiguration) WithExposure(value *ExposureSpecApplyConfiguration) *DeviceTemplateApplyConfiguration {
-	b.Exposure = value
+// WithAccess adds the given value to the Access field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Access field.
+func (b *DeviceTemplateApplyConfiguration) WithAccess(values ...*DeviceAccessApplyConfiguration) *DeviceTemplateApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithAccess")
+		}
+		b.Access = append(b.Access, *values[i])
+	}
 	return b
 }
 
@@ -117,5 +142,29 @@ func (b *DeviceTemplateApplyConfiguration) WithResources(value *DeviceResourcesA
 // If called multiple times, the Persistence field is set to the value of the last call.
 func (b *DeviceTemplateApplyConfiguration) WithPersistence(value *DevicePersistenceApplyConfiguration) *DeviceTemplateApplyConfiguration {
 	b.Persistence = value
+	return b
+}
+
+// WithWaitReadyFile sets the WaitReadyFile field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the WaitReadyFile field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithWaitReadyFile(value bool) *DeviceTemplateApplyConfiguration {
+	b.WaitReadyFile = &value
+	return b
+}
+
+// WithService sets the Service field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Service field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithService(value *DeviceServiceApplyConfiguration) *DeviceTemplateApplyConfiguration {
+	b.Service = value
+	return b
+}
+
+// WithBootstrap sets the Bootstrap field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Bootstrap field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithBootstrap(value *DeviceBootstrapSpecApplyConfiguration) *DeviceTemplateApplyConfiguration {
+	b.Bootstrap = value
 	return b
 }

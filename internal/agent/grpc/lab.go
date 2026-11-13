@@ -93,7 +93,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	for id, v := range variants {
-		if err := gatewayspec.Validate(&v.spec, h.features.MaxLabGateways); err != nil {
+		if err := gatewayspec.Validate(&v.spec, h.maxLabGateways()); err != nil {
 			return nil, invalid("variant %q: %v", id, err)
 		}
 	}

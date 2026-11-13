@@ -37,8 +37,8 @@ func TestLabVPNDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 			_ = clientgoscheme.AddToScheme(s)
 			_ = laboratoryv1alpha1.AddToScheme(s)
 			parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
-			parent.Spec.VPN.Enabled = true
-			vpn := &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerVPN}}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "a"}}
+			parent.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN}}
+			vpn := &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a", "vpn"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerVPN}}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "a", Device: "vpn"}}
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(tc.objects(), parent, vpn)...).Build()
 			r := &LabReconciler{Client: c, Reader: c, Scheme: s}
 			ctx := context.Background()
@@ -122,8 +122,8 @@ func TestLabGatewayDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 			_ = clientgoscheme.AddToScheme(s)
 			_ = laboratoryv1alpha1.AddToScheme(s)
 			parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
-			parent.Spec.Internet.Enabled = true
-			gw := &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: "a"}}
+			parent.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "internet", Kind: laboratoryv1alpha1.GatewayKindInternet}}
+			gw := &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName("a", "internet"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: "a", Device: "internet"}}
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(tc.objects, parent, gw)...).Build()
 			r := &LabReconciler{Client: c, Reader: c, Scheme: s}
 			ctx := context.Background()

@@ -20,9 +20,10 @@ package v1alpha1
 // NetworkSubnetRefApplyConfiguration represents a declarative configuration of the NetworkSubnetRef type for use
 // with apply.
 //
-// NetworkSubnetRef selects the full lab-allocated VPN or Internet /24.
+// NetworkSubnetRef selects the full /24 of a gateway of the lab (see NetworkIPRef).
 type NetworkSubnetRefApplyConfiguration struct {
-	Network *string `json:"network,omitempty"`
+	// Gateway is the name of a gateway declared in spec.gateways.
+	Gateway *string `json:"gateway,omitempty"`
 }
 
 // NetworkSubnetRefApplyConfiguration constructs a declarative configuration of the NetworkSubnetRef type for use with
@@ -31,10 +32,10 @@ func NetworkSubnetRef() *NetworkSubnetRefApplyConfiguration {
 	return &NetworkSubnetRefApplyConfiguration{}
 }
 
-// WithNetwork sets the Network field in the declarative configuration to the given value
+// WithGateway sets the Gateway field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Network field is set to the value of the last call.
-func (b *NetworkSubnetRefApplyConfiguration) WithNetwork(value string) *NetworkSubnetRefApplyConfiguration {
-	b.Network = &value
+// If called multiple times, the Gateway field is set to the value of the last call.
+func (b *NetworkSubnetRefApplyConfiguration) WithGateway(value string) *NetworkSubnetRefApplyConfiguration {
+	b.Gateway = &value
 	return b
 }

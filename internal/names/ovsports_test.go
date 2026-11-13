@@ -69,3 +69,29 @@ func TestHostPortKeysAreUniquePerGroupAndLeg(t *testing.T) {
 
 // VethPeerNameForTest mirrors nodeagent.VethPeerName ("v" + key).
 func VethPeerNameForTest(key string) string { return "v" + key }
+
+// The object names of a gateway cannot be the names of another lab's gateway, even when lab and gateway names contain "-".
+func TestGatewayObjectNamesAreUnambiguous(t *testing.T) {
+	if LabVPNObjectName("a", "b-c") == LabVPNObjectName("a-b", "c") || LabGatewayObjectName("a", "b-c") == LabGatewayObjectName("a-b", "c") ||
+		DHCPPoolName("a", "b-c") == DHCPPoolName("a-b", "c") {
+		t.Fatal("two gateways share an object name")
+	}
+	if LabVPNObjectName("lab", "attack") != "labvpn-lab.attack" || LabGatewayObjectName("lab", "out") != "labgw-lab.out" || DHCPPoolName("lab", "out") != "dhcp-lab.out-0" {
+		t.Fatal("names changed")
+	}
+}
+
+func TestDHCPPoolOwner(t *testing.T) {
+	for _, tc := range []struct{ pool, lab, want string }{
+		{"dhcp-lab.out-0", "lab", "out"},
+		{"dhcp-lab.b-c-0", "lab", "b-c"},
+		{"dhcp-lab-x.out-0", "lab", ""},
+		{"dhcp-other.out-0", "lab", ""},
+		{"dhcp-lab.out", "lab", ""},
+		{"dhcp-lab.-0", "lab", ""},
+	} {
+		if got := DHCPPoolOwner(tc.pool, tc.lab); got != tc.want {
+			t.Errorf("%s/%s: %q, want %q", tc.pool, tc.lab, got, tc.want)
+		}
+	}
+}

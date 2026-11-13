@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -90,8 +91,7 @@ func TestEveryGatewayGetsItsOwnNumber(t *testing.T) {
 	f := newGatewayFixture(t)
 	ctx := context.Background()
 	l := f.lab(t, "a", func(l *laboratoryv1alpha1.Lab) {
-		l.Spec.VPN.Enabled, l.Spec.Internet.Enabled = true, true
-		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{vpnGateway("attack"), internetGateway("out")}
+		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{vpnGateway("attack"), internetGateway("out"), vpnGateway("user"), internetGateway("east")}
 	})
 	if updated, err := f.r.ensureSubnetAllocation(ctx, l); err != nil || !updated {
 		t.Fatalf("%v %v", updated, err)
@@ -104,8 +104,8 @@ func TestEveryGatewayGetsItsOwnNumber(t *testing.T) {
 		kind laboratoryv1alpha1.GatewayKind
 		n    uint
 	}{
-		"vpn": {laboratoryv1alpha1.GatewayKindVPN, 1}, "internet": {laboratoryv1alpha1.GatewayKindInternet, 2},
-		"attack": {laboratoryv1alpha1.GatewayKindVPN, 3}, "out": {laboratoryv1alpha1.GatewayKindInternet, 4},
+		"attack": {laboratoryv1alpha1.GatewayKindVPN, 1}, "out": {laboratoryv1alpha1.GatewayKindInternet, 2},
+		"user": {laboratoryv1alpha1.GatewayKindVPN, 3}, "east": {laboratoryv1alpha1.GatewayKindInternet, 4},
 	}
 	if len(got.Status.Gateways) != len(want) {
 		t.Fatalf("gateways: %+v", got.Status.Gateways)
@@ -119,9 +119,6 @@ func TestEveryGatewayGetsItsOwnNumber(t *testing.T) {
 		if cidr.Addr().As4() != [4]byte{10, 128, byte(w.n), 0} || cidr.Bits() != 24 {
 			t.Errorf("%s: CIDR %s for number %d", g.Name, g.CIDR, w.n)
 		}
-	}
-	if got.Status.VPN.CIDR != "10.128.1.0/24" || got.Status.Internet.CIDR != "10.128.2.0/24" {
-		t.Errorf("the mirror fields: %q %q", got.Status.VPN.CIDR, got.Status.Internet.CIDR)
 	}
 	if updated, err := f.r.ensureSubnetAllocation(ctx, &got); err != nil || updated {
 		t.Fatalf("a second pass must change nothing: %v %v", updated, err)
@@ -138,57 +135,46 @@ func TestEveryGatewayGetsItsOwnNumber(t *testing.T) {
 	}
 }
 
-// A lab made before the one pool keeps its networks and its numbers; what is new is taken from the free numbers.
-func TestALabFromBeforeTheOnePoolKeepsItsNetworks(t *testing.T) {
+// The numbers go on past the 254 of the old pool, and a number that something refers to is never handed out again.
+func TestNumbersGoPastTheOldPool(t *testing.T) {
 	f := newGatewayFixture(t)
 	ctx := context.Background()
-	old := f.lab(t, "old", func(l *laboratoryv1alpha1.Lab) {
-		l.Spec.VPN.Enabled, l.Spec.Internet.Enabled = true, true
-		l.Status.VPN.CIDR, l.Status.Internet.CIDR = "10.128.1.0/24", "10.192.1.0/24"
-		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{vpnGateway("extra")}
-	})
-	if _, err := f.r.ensureSubnetAllocation(ctx, old); err != nil {
-		t.Fatal(err)
+	var gws []laboratoryv1alpha1.GatewayTemplate
+	for i := 0; i < 10; i++ {
+		gws = append(gws, vpnGateway(fmt.Sprintf("g%d", i)))
 	}
-	for name, want := range map[string]struct {
-		cidr string
-		n    uint
-	}{"vpn": {"10.128.1.0/24", 1}, "internet": {"10.192.1.0/24", 1}} {
-		g := old.Status.GatewayStatus(name)
-		if g == nil || g.CIDR != want.cidr || g.NetworkIndex != want.n {
-			t.Errorf("%s: %+v, want %+v", name, g, want)
+	for i := 0; i < 26; i++ { // 260 gateways in all
+		l := f.lab(t, fmt.Sprintf("l%d", i), func(l *laboratoryv1alpha1.Lab) { l.Spec.Gateways = gws })
+		if _, err := f.r.ensureSubnetAllocation(ctx, l); err != nil {
+			t.Fatalf("lab %d: %v", i, err)
 		}
-	}
-	extra := old.Status.GatewayStatus("extra")
-	if extra == nil || extra.NetworkIndex < 2 || extra.CIDR == "" {
-		t.Fatalf("a new gateway takes a free number: %+v", extra)
-	}
-	if old.Status.VPN.CIDR != "10.128.1.0/24" || old.Status.Internet.CIDR != "10.192.1.0/24" {
-		t.Fatal("the old fields are untouched")
+		if i == 25 {
+			g := l.Status.GatewayStatus("g9")
+			if g == nil || g.NetworkIndex != 260 || g.CIDR != "10.129.4.0/24" {
+				t.Fatalf("the 260th gateway: %+v", g)
+			}
+		}
 	}
 }
 
-// What is in use is the position of every /24 and the number of every leg: for an old Internet gateway they differ.
+// What is in use is the position of every /24 and the number of every leg.
 func TestSubnetsInUseCountsPositionsAndLegNumbers(t *testing.T) {
 	f := newGatewayFixture(t)
 	ctx := context.Background()
-	f.lab(t, "old", func(l *laboratoryv1alpha1.Lab) {
-		l.Status.VPN.CIDR, l.Status.Internet.CIDR = "10.128.5.0/24", "10.192.5.0/24"
-	})
 	f.lab(t, "new", func(l *laboratoryv1alpha1.Lab) {
 		l.Status.Gateways = []laboratoryv1alpha1.GatewayStatus{{Name: "attack", Kind: laboratoryv1alpha1.GatewayKindVPN, CIDR: "10.128.9.0/24", NetworkIndex: 9}}
 	})
-	if err := f.c.Create(ctx, &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: "labgw-old", Namespace: "g"}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: "old", NetworkIndex: 5}}); err != nil {
+	if err := f.c.Create(ctx, &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: "labgw-x.out", Namespace: "g"}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: "x", Device: "out", NetworkIndex: 5}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.c.Create(ctx, &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-x", Namespace: "g"}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "x", NetworkIndex: 77}}); err != nil {
+	if err := f.c.Create(ctx, &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-x.in", Namespace: "g"}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "x", Device: "in", NetworkIndex: 77}}); err != nil {
 		t.Fatal(err)
 	}
 	used, err := f.r.subnetsInUse("g")(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []uint{5, 16384 + 5, 9, 77} {
+	for _, n := range []uint{5, 9, 77} {
 		if !used[n] {
 			t.Errorf("%d must be in use: %v", n, used)
 		}
@@ -203,8 +189,8 @@ func TestObjectsAndDHCPPoolsPerGateway(t *testing.T) {
 	ctx := context.Background()
 	dhcp := &laboratoryv1alpha1.DHCPServer{Enabled: true, Ranges: []laboratoryv1alpha1.DHCPRange{{Start: 2, End: 9}}}
 	l := f.lab(t, "a", func(l *laboratoryv1alpha1.Lab) {
-		l.Spec.VPN = laboratoryv1alpha1.LabNetworkSpec{Enabled: true, DHCPServer: dhcp}
 		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{
+			{Name: "main", Kind: laboratoryv1alpha1.GatewayKindVPN, DHCPServer: dhcp},
 			{Name: "attack", Kind: laboratoryv1alpha1.GatewayKindVPN, DHCPServer: dhcp},
 			internetGateway("out"),
 		}
@@ -224,25 +210,25 @@ func TestObjectsAndDHCPPoolsPerGateway(t *testing.T) {
 	if len(vpns.Items) != 2 || len(gws.Items) != 1 {
 		t.Fatalf("objects: %d LabVPN, %d LabGateway", len(vpns.Items), len(gws.Items))
 	}
-	var shorthand, declared laboratoryv1alpha1.LabVPN
-	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "labvpn-a"}, &shorthand); err != nil || shorthand.Spec.Device != "" || shorthand.Spec.NetworkIndex != 1 {
-		t.Fatalf("the shorthand gateway keeps its name: %+v %v", shorthand.Spec, err)
+	var first, second laboratoryv1alpha1.LabVPN
+	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "labvpn-a.main"}, &first); err != nil || first.Spec.Device != "main" || first.Spec.LabName != "a" || first.Spec.NetworkIndex != 1 {
+		t.Fatalf("the first gateway: %+v %v", first.Spec, err)
 	}
-	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "labvpn-a.attack"}, &declared); err != nil || declared.Spec.Device != "attack" || declared.Spec.LabName != "a" || declared.Spec.NetworkIndex != 2 {
-		t.Fatalf("a declared gateway: %+v %v", declared.Spec, err)
+	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "labvpn-a.attack"}, &second); err != nil || second.Spec.Device != "attack" || second.Spec.NetworkIndex != 2 {
+		t.Fatalf("a second gateway: %+v %v", second.Spec, err)
 	}
 	var out laboratoryv1alpha1.LabGateway
 	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "labgw-a.out"}, &out); err != nil || out.Spec.Device != "out" || out.Spec.NetworkIndex != 3 {
 		t.Fatalf("a declared Internet gateway: %+v %v", out.Spec, err)
 	}
-	for _, pool := range []string{"dhcp-vpn-a-0", "dhcp-vpn-a.attack-0"} {
+	for _, pool := range []string{"dhcp-a.main-0", "dhcp-a.attack-0"} {
 		var p allocationv1alpha1.Pool
 		if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: pool}, &p); err != nil {
 			t.Errorf("pool %s: %v", pool, err)
 		}
 	}
 	var none allocationv1alpha1.Pool
-	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "dhcp-inet-a.out-0"}, &none); err == nil {
+	if err := f.c.Get(ctx, types.NamespacedName{Namespace: "g", Name: "dhcp-a.out-0"}, &none); err == nil {
 		t.Error("a gateway without DHCP gets no pool")
 	}
 }
@@ -251,7 +237,6 @@ func TestGatewayObjectsAreDeletedWithTheLab(t *testing.T) {
 	f := newGatewayFixture(t)
 	ctx := context.Background()
 	l := f.lab(t, "a", func(l *laboratoryv1alpha1.Lab) {
-		l.Spec.VPN.Enabled = true
 		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{vpnGateway("attack"), internetGateway("out")}
 	})
 	other := f.lab(t, "b", func(l *laboratoryv1alpha1.Lab) {
@@ -287,8 +272,7 @@ func TestGatewayReadinessIsPerGateway(t *testing.T) {
 	f := newGatewayFixture(t)
 	ctx := context.Background()
 	l := f.lab(t, "a", func(l *laboratoryv1alpha1.Lab) {
-		l.Spec.VPN.Enabled = true
-		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{vpnGateway("attack"), internetGateway("out")}
+		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{vpnGateway("main"), vpnGateway("attack"), internetGateway("out")}
 	})
 	if _, err := f.r.ensureSubnetAllocation(ctx, l); err != nil {
 		t.Fatal(err)
@@ -300,7 +284,7 @@ func TestGatewayReadinessIsPerGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AllReady || got.VPNReady || len(got.Status) != 3 || got.Status[1].CIDR == "" || got.Status[1].NetworkIndex != 2 {
+	if got.AllReady || len(got.Status) != 3 || got.Status[1].CIDR == "" || got.Status[1].NetworkIndex != 2 {
 		t.Fatalf("nothing is ready yet: %+v", got)
 	}
 	ready := func(name string) {
@@ -316,13 +300,13 @@ func TestGatewayReadinessIsPerGateway(t *testing.T) {
 	}
 	ready("labvpn-a.attack")
 	got, _ = f.r.readGatewayReadiness(ctx, l)
-	if got.AllReady || got.VPNReady || !got.Status[1].Ready || !got.Status[1].LabInitiatedBlocked || got.Dropped != 4 || !got.Blocked {
-		t.Fatalf("the declared VPN gateway alone: %+v", got)
+	if got.AllReady || got.Status[0].Ready || !got.Status[1].Ready || !got.Status[1].LabInitiatedBlocked || got.Dropped != 4 || !got.Blocked {
+		t.Fatalf("one VPN gateway alone: %+v", got)
 	}
-	ready("labvpn-a")
+	ready("labvpn-a.main")
 	got, _ = f.r.readGatewayReadiness(ctx, l)
-	if !got.VPNReady || !got.LabInitiatedBlocked || got.Dropped != 8 || got.AllReady {
-		t.Fatalf("the shorthand mirror follows the shorthand gateway: %+v", got)
+	if got.Dropped != 8 || got.AllReady || got.Status[2].Ready {
+		t.Fatalf("both VPN gateways, not the Internet one: %+v", got)
 	}
 }
 
@@ -401,28 +385,25 @@ func TestAddressRefsNameDeclaredGateways(t *testing.T) {
 	l.Status.Gateways = []laboratoryv1alpha1.GatewayStatus{
 		{Name: "attack", CIDR: "10.128.3.0/24"}, {Name: "user", CIDR: "10.128.4.0/24"}, {Name: "out", CIDR: "10.128.5.0/24"},
 	}
-	ip := func(network, gateway string, host int32) (string, error) {
-		return resolveNetworkIP(l, laboratoryv1alpha1.NetworkIPRef{Network: network, Gateway: gateway, Host: host}, true)
+	ip := func(gateway string, host int32) (string, error) {
+		return resolveNetworkIP(l, laboratoryv1alpha1.NetworkIPRef{Gateway: gateway, Host: host}, true)
 	}
-	if got, err := ip("", "attack", 10); err != nil || got != "10.128.3.10" {
+	if got, err := ip("attack", 10); err != nil || got != "10.128.3.10" {
 		t.Fatalf("%q %v", got, err)
 	}
-	if got, err := ip("", "user", 10); err != nil || got != "10.128.4.10" {
+	if got, err := ip("user", 10); err != nil || got != "10.128.4.10" {
 		t.Fatalf("each gateway has its own network: %q %v", got, err)
 	}
-	if _, err := ip("", "ghost", 10); err == nil || !strings.Contains(err.Error(), "unknown gateway") {
+	if _, err := ip("ghost", 10); err == nil || !strings.Contains(err.Error(), "unknown gateway") {
 		t.Fatalf("%v", err)
 	}
-	if _, err := ip("vpn", "", 10); err == nil || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("spec.vpn is off: %v", err)
+	if _, err := ip("vpn", 10); err == nil {
+		t.Fatal("there is no implicit gateway named vpn")
 	}
-	if _, err := ip("vpn", "attack", 10); err == nil {
-		t.Fatal("both is refused")
+	if _, err := ip("", 10); err == nil {
+		t.Fatal("no gateway is refused")
 	}
-	if _, err := ip("", "", 10); err == nil {
-		t.Fatal("neither is refused")
-	}
-	prefix, err := resolveNetworkPrefix(l, "", "out")
+	prefix, err := resolveNetworkPrefix(l, "out")
 	if err != nil || prefix.String() != "10.128.5.0/24" {
 		t.Fatalf("%v %v", prefix, err)
 	}

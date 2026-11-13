@@ -111,9 +111,6 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 		return spec, fmt.Errorf("lifecycle intent must use UID-fenced StopLabs/StartLabs; only fenced initial Running revision1 is a birth")
 	}
 	clearStamped(&spec)
-	if err := validateReverseConnections(&spec); err != nil {
-		return spec, fmt.Errorf("spec_json: %w", err)
-	}
 	if err := validateDeviceExtras(&spec); err != nil {
 		return spec, fmt.Errorf("spec_json: %w", err)
 	}
@@ -216,16 +213,4 @@ func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha
 		return err
 	}
 	return h.finishVariableWrite(ctx, lab, token)
-}
-
-// validateReverseConnections: the switch that lets a lab start connections towards VPN clients belongs to the VPN segment and needs
-// the VPN (a lab without one has no client to connect to, so the key would be a mistake of the caller).
-func validateReverseConnections(spec *laboratoryv1alpha1.LabSpec) error {
-	if spec.Internet.ReverseConnections {
-		return fmt.Errorf("internet.reverseConnections: the switch belongs to the vpn segment")
-	}
-	if spec.VPN.ReverseConnections && !spec.VPN.Enabled {
-		return fmt.Errorf("vpn.reverseConnections needs vpn.enabled")
-	}
-	return nil
 }

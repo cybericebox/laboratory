@@ -1599,7 +1599,7 @@ Check on a node: `ovs-vsctl get bridge br-ovs fail_mode` is `secure`, and `ovs-o
 
 ### Connections started by a lab towards a participant
 
-By default a device of a lab cannot **start** a connection to a VPN client (a participant's machine): from the lab to a client the VPN pod forwards only replies to connections the client started. Connections from a participant to the devices, and between devices, are not affected. A lab opts out with `spec.vpn.reverseConnections: true` (exercise key `topology.vpn.reverse_connections`), for a reverse shell or an out-of-band callback; it needs `vpn.enabled`. `GetFeatures.vpn.reverse_connections` tells a caller that this agent enforces the default.
+By default a device of a lab cannot **start** a connection to a VPN client (a participant's machine): from the lab to a client the VPN pod forwards only replies to connections the client started. Connections from a participant to the devices, and between devices, are not affected. A VPN gateway of a lab opts out with `reverseConnections: true` in its entry of `spec.gateways` (exercise key `reverse_connections` of the VPN gateway), for a reverse shell or an out-of-band callback; an Internet gateway has no such switch. `GetFeatures.vpn.reverse_connections` tells a caller that this agent enforces the default.
 
 - **Where.** In the VPN pod's own network namespace, in the access chain of FORWARD (`internal/vpn`). A device cannot reach that namespace and has no other route to a client address, so it cannot change or bypass the rule.
 - **Rule (`VPN_FIREWALL=iptables`, the default).** The lab-to-client rule of a pair is `-i labN -o wg0 -d <client> -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j <relation chain>`. A packet that is not an established or related one in the reply direction falls to the final DROP of the chain: new connections, and also packets of a connection a device started earlier (they go in the original direction). TCP, UDP and ICMP are covered, ICMP errors that belong to a client-started flow (fragmentation needed, port unreachable) pass as RELATED. Conntrack helpers are off in the pod, so a payload (FTP active mode) cannot create a related connection: such a data connection from a device is lab-started and is blocked. With the switch on the rule has no conntrack match.
@@ -1608,8 +1608,8 @@ By default a device of a lab cannot **start** a connection to a VPN client (a pa
 - **Changing it.** The VPN pod reads the Lab and rebuilds the access chain in one `iptables-restore`: the relation chains, counters and conntrack entries stay, devices are not restarted, and sessions the client started keep running. Turning the switch off also deletes, through ctnetlink, the connections the lab had started towards clients (same mechanism as revoking access). The lab spec is not changed by the API after creation, so in practice the value is the one given at creation.
 - **Labs that exist when this is installed.** They have no value, which is `false`: blocked as soon as their group's VPN pod runs the new program (the operator rolls VPN pods one group at a time). A lab that relied on a reverse shell stops working until it is recreated with the switch on; its devices are not restarted by the change itself.
 - **Cost.** With iptables no new conntrack entries (these flows are tracked already for the accounting) and one extra match on packets from the lab to a client. With nft the no-conntrack benefit applies only to labs that allow reverse connections; every other lab is tracked.
-- **What is reported.** `LabStatus.vpn_lab_initiated_blocked` (agent API) is true only when the lab's switch is off AND the VPN gateway of its group confirmed the block on the lab's `LabVPN` (`status.labInitiatedBlocked`, written after the rules are in the kernel). A group whose VPN pod still runs an older program never writes it, so after an upgrade a lab is reported as not blocked until its group's VPN pod has been rolled; it is never reported blocked on the strength of the spec alone. `FeaturesResponse.vpn.reverse_connections` is computed from the rules both gates generate (`vpn.LabInitiatedBlockEnforced`), not set by hand.
-- **Dropped packets (administrator only).** One counting rule per lab without the switch (iptables: `cibblk:<labN>` in the access chain; nft: set `blocked_labs`) counts what it sent towards the clients and nothing accepted: new connections and anything that is not a reply. The VPN pod writes the count on the lab's `LabVPN` (`status.labInitiatedDropped`, at most every 30 s, since the VPN process started) and the operator exposes it as `laboratory_vpn_lab_initiated_dropped_packets{namespace,lab}` on its metrics endpoint (off by default, `--metrics-bind-address`). It is not in the agent API: the platform backend never sees it.
+- **What is reported.** `LabStatus.gateways[].lab_initiated_blocked` (agent API, contract 2.0) is true only when the gateway's switch is off AND the VPN gateway program of its group confirmed the block on the gateway's `LabVPN` (`status.labInitiatedBlocked`, written after the rules are in the kernel). A group whose VPN pod still runs an older program never writes it, so after an upgrade a lab is reported as not blocked until its group's VPN pod has been rolled; it is never reported blocked on the strength of the spec alone. `FeaturesResponse.vpn.reverse_connections` is computed from the rules both gates generate (`vpn.LabInitiatedBlockEnforced`), not set by hand.
+- **Dropped packets (administrator only).** One counting rule per VPN gateway of a lab without the switch (iptables: `cibblk:<labN>` in the access chain; nft: set `blocked_labs`) counts what it sent towards the clients and nothing accepted: new connections and anything that is not a reply. The VPN pod writes the count on the lab's `LabVPN` (`status.labInitiatedDropped`, at most every 30 s, since the VPN process started) and the operator exposes it as `laboratory_vpn_lab_initiated_dropped_packets{namespace,lab}` on its metrics endpoint (off by default, `--metrics-bind-address`). It is not in the agent API: the platform backend never sees it.
 - **Not affected.** DHCP and the ping of the pod's own lab address are INPUT/OUTPUT of the VPN pod, not forwarding. IPv6 is not forwarded by the pod at all.
 
 ### Revoking access cuts live sessions
@@ -1644,7 +1644,7 @@ entry.
 
 ### What a lab can reach through its internet gateway
 
-A lab with `internet.enabled` leaves through the gateway pod of its group, and **only through services inside that pod** (design:
+A lab with an Internet gateway leaves through the gateway pod of its group, and **only through services inside that pod** (design:
 `docs/specs/LAB-INTERNET-EGRESS.md` of the platform repository):
 
 - The lab's TCP 80 and 443 end in a transparent **web proxy** (the name comes from the TLS server name or the HTTP `Host`, the address the
@@ -1687,7 +1687,7 @@ What the gateway may reach itself, and what the proxy connects to, is limited to
   runs on, so the ports are what limits it). The VPN pod's policy has the same port limit. The labs themselves can reach the API server
   neither directly (default-deny) nor through the gateway (the filter above).
 - A gateway that already runs is restarted by the operator with the new image; the old `GATEWAY_EGRESS_*` environment variables are removed from
-  it. Verify from a lab device with `internet.enabled`: the metadata address, a node address and the API server are unreachable, a public address is
+  it. Verify from a lab device behind an Internet gateway: the metadata address, a node address and the API server are unreachable, a public address is
   reachable.
 
 ### Hardening of the lab pods
@@ -2667,11 +2667,9 @@ ceiling of 64 devices per lab; the chart's `limits.lab.maxDevices`, 32 by defaul
 | Client subnet          | `10.128.0.0/24` | /24 number 0; VPN gateway at .1, clients at .2-.254                                      |
 | Subnet of a gateway    | `10.128.N.0/24` | N >= 1: the first free number of the group's pool, for a VPN entry or an Internet exit   |
 
-A lab has one or more gateways (`spec.vpn` and `spec.internet` stand for one of each kind, `spec.gateways` declares more); each takes its
-own number, and the numbers of the gateways of one lab are unrelated. At most `maxLabGateways` (10) gateways per lab. The pool of a group is as
-big as the network (32767 numbers for a /9) and only moves forward. A lab made before the one pool keeps its networks: the Internet
-`10.192.N.0/24` of such a lab is still where it was. `vpnBaseNetwork` and `inetBaseNetwork` are replaced by `labBaseNetwork`; the
-operator still reads the old two when the new one is unset, and only when they are the two halves of one network.
+A lab declares its gateways in `spec.gateways` (VPN entries and Internet exits); each takes its own number, and the numbers of the gateways
+of one lab are unrelated. At most `maxLabGateways` (10) gateways per lab. The pool of a group is as big as the network (32767 numbers for a
+/9) and only moves forward. `vpnBaseNetwork` and `inetBaseNetwork` do not exist any more: `labBaseNetwork` is the only setting.
 
 ### The return route to the participants
 

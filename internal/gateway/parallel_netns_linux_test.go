@@ -59,8 +59,8 @@ func TestNetnsLabsOpenedInParallelEqualLabsOpenedOneByOne(t *testing.T) {
 		nstest.Run(t, "", "ip", "link", "set", iface, "up")
 		t.Cleanup(func() { _, _ = nstest.Try("", "ip", "link", "del", iface) })
 		name := fmt.Sprintf("a%d", i)
-		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true}}, Status: lab.LabStatus{Internet: lab.LabNetworkStatus{CIDR: fmt.Sprintf("10.9.%d.0/24", i)}}}
-		gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: name, NetworkIndex: uint(i)}}
+		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "internet", Kind: lab.GatewayKindInternet}}}, Status: lab.LabStatus{Gateways: []lab.GatewayStatus{{Name: "internet", Kind: lab.GatewayKindInternet, CIDR: fmt.Sprintf("10.9.%d.0/24", i), NetworkIndex: uint(i)}}}}
+		gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: name, Device: "internet", NetworkIndex: uint(i)}}
 		if err := c.Create(context.Background(), l); err != nil {
 			t.Fatal(err)
 		}

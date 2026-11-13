@@ -47,6 +47,8 @@ type DeviceStatusApplyConfiguration struct {
 	// CPUThrottle is how much the CPU limit holds the device back. The node-agent of the pod's node keeps it; absent means
 	// not throttled (or no data yet).
 	CPUThrottle *DeviceCPUThrottleApplyConfiguration `json:"cpuThrottle,omitempty"`
+	// Bootstrap is the observed bootstrap of the device; absent for a device without one. Written by the launcher side (not yet built).
+	Bootstrap *DeviceBootstrapStatusApplyConfiguration `json:"bootstrap,omitempty"`
 }
 
 // DeviceStatusApplyConfiguration constructs a declarative configuration of the DeviceStatus type for use with
@@ -166,5 +168,13 @@ func (b *DeviceStatusApplyConfiguration) WithScheduling(value *PodScheduleApplyC
 // If called multiple times, the CPUThrottle field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithCPUThrottle(value *DeviceCPUThrottleApplyConfiguration) *DeviceStatusApplyConfiguration {
 	b.CPUThrottle = value
+	return b
+}
+
+// WithBootstrap sets the Bootstrap field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Bootstrap field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithBootstrap(value *DeviceBootstrapStatusApplyConfiguration) *DeviceStatusApplyConfiguration {
+	b.Bootstrap = value
 	return b
 }

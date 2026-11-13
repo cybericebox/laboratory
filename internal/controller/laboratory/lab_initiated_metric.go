@@ -6,7 +6,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-// vpnLabInitiatedDropped is the packets that the VPN gateway dropped because a lab without spec.vpn.reverseConnections sent them towards a
+// vpnLabInitiatedDropped is the packets that the VPN gateway dropped because a VPN gateway without reverseConnections sent them towards a
 // VPN client (new connections and anything that was not a reply). It is for the cluster administrator: the gateway writes the count on the
 // lab's LabVPN, the operator exposes it here, and it is not part of the agent API, so the platform backend never sees it. The count restarts
 // when the VPN process of the group restarts.

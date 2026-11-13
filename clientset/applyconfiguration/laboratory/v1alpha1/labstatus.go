@@ -30,15 +30,18 @@ type LabStatusApplyConfiguration struct {
 	ScopeInventory []OwnedRuntimeIdentityApplyConfiguration `json:"scopeInventory,omitempty"`
 	ScopeReports   []OwnedRuntimeReportApplyConfiguration   `json:"scopeReports,omitempty"`
 	// Retirement is a fresh acknowledgement distinct from the original stop.
-	Retirement  *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
-	Lifecycle   *LabLifecycleStatusApplyConfiguration        `json:"lifecycle,omitempty"`
-	Resources   *RuntimeAllocationApplyConfiguration         `json:"resources,omitempty"`
-	Phase       *laboratoryv1alpha1.Phase                    `json:"phase,omitempty"`
-	VPN         *LabNetworkStatusApplyConfiguration          `json:"vpn,omitempty"`
-	Internet    *LabNetworkStatusApplyConfiguration          `json:"internet,omitempty"`
-	Devices     []DeviceRefApplyConfiguration                `json:"devices,omitempty"`
-	Connections []ConnectionRefApplyConfiguration            `json:"connections,omitempty"`
-	Access      []AccessEntryApplyConfiguration              `json:"access,omitempty"`
+	Retirement *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
+	Lifecycle  *LabLifecycleStatusApplyConfiguration        `json:"lifecycle,omitempty"`
+	Resources  *RuntimeAllocationApplyConfiguration         `json:"resources,omitempty"`
+	Phase      *laboratoryv1alpha1.Phase                    `json:"phase,omitempty"`
+	// Gateways is the state of every gateway of the lab.
+	Gateways []GatewayStatusApplyConfiguration `json:"gateways,omitempty"`
+	Devices  []DeviceRefApplyConfiguration     `json:"devices,omitempty"`
+	// DeviceNodes are the nodes the devices of the lab run on now (the sorted, distinct Device.status.nodeName). Written by the operator
+	// only: the admission policy lets the lab checker of a node write the results of a lab only when its own node is listed here.
+	DeviceNodes []string                          `json:"deviceNodes,omitempty"`
+	Connections []ConnectionRefApplyConfiguration `json:"connections,omitempty"`
+	Access      []AccessEntryApplyConfiguration   `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
 	// ImageCache records whether this lab pulls its images through the platform
@@ -54,6 +57,10 @@ type LabStatusApplyConfiguration struct {
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	// Checks are the results of the lab checks, one entry per check that has a result; the checker writes only changes.
+	Checks []CheckResultApplyConfiguration `json:"checks,omitempty"`
+	// ChecksRunAck is the RunChecks request token the checker has taken (see the annotation names.AnnotationRunChecks).
+	ChecksRunAck *int64 `json:"checksRunAck,omitempty"`
 }
 
 // LabStatusApplyConfiguration constructs a declarative configuration of the LabStatus type for use with
@@ -120,19 +127,16 @@ func (b *LabStatusApplyConfiguration) WithPhase(value laboratoryv1alpha1.Phase) 
 	return b
 }
 
-// WithVPN sets the VPN field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the VPN field is set to the value of the last call.
-func (b *LabStatusApplyConfiguration) WithVPN(value *LabNetworkStatusApplyConfiguration) *LabStatusApplyConfiguration {
-	b.VPN = value
-	return b
-}
-
-// WithInternet sets the Internet field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Internet field is set to the value of the last call.
-func (b *LabStatusApplyConfiguration) WithInternet(value *LabNetworkStatusApplyConfiguration) *LabStatusApplyConfiguration {
-	b.Internet = value
+// WithGateways adds the given value to the Gateways field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Gateways field.
+func (b *LabStatusApplyConfiguration) WithGateways(values ...*GatewayStatusApplyConfiguration) *LabStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithGateways")
+		}
+		b.Gateways = append(b.Gateways, *values[i])
+	}
 	return b
 }
 
@@ -145,6 +149,16 @@ func (b *LabStatusApplyConfiguration) WithDevices(values ...*DeviceRefApplyConfi
 			panic("nil value passed to WithDevices")
 		}
 		b.Devices = append(b.Devices, *values[i])
+	}
+	return b
+}
+
+// WithDeviceNodes adds the given value to the DeviceNodes field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the DeviceNodes field.
+func (b *LabStatusApplyConfiguration) WithDeviceNodes(values ...string) *LabStatusApplyConfiguration {
+	for i := range values {
+		b.DeviceNodes = append(b.DeviceNodes, values[i])
 	}
 	return b
 }
@@ -223,5 +237,26 @@ func (b *LabStatusApplyConfiguration) WithConditions(values ...*v1.ConditionAppl
 		}
 		b.Conditions = append(b.Conditions, *values[i])
 	}
+	return b
+}
+
+// WithChecks adds the given value to the Checks field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Checks field.
+func (b *LabStatusApplyConfiguration) WithChecks(values ...*CheckResultApplyConfiguration) *LabStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithChecks")
+		}
+		b.Checks = append(b.Checks, *values[i])
+	}
+	return b
+}
+
+// WithChecksRunAck sets the ChecksRunAck field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ChecksRunAck field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithChecksRunAck(value int64) *LabStatusApplyConfiguration {
+	b.ChecksRunAck = &value
 	return b
 }

@@ -33,6 +33,13 @@ type LabVPNStatusApplyConfiguration struct {
 	Phase       *laboratoryv1alpha1.LabVPNPhase       `json:"phase,omitempty"`
 	DHCPEnabled *bool                                 `json:"dhcpEnabled,omitempty"`
 	DHCPReady   *bool                                 `json:"dhcpReady,omitempty"`
+	// LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
+	// starts towards a VPN client, has applied it to this lab (the lab's spec.vpn.reverseConnections is false). Written only by a program
+	// that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
+	LabInitiatedBlocked *bool `json:"labInitiatedBlocked,omitempty"`
+	// LabInitiatedDropped counts the packets the block dropped for this lab since the VPN process started. For the cluster
+	// administrator's metrics; it is not part of the agent API.
+	LabInitiatedDropped *int64 `json:"labInitiatedDropped,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -81,6 +88,22 @@ func (b *LabVPNStatusApplyConfiguration) WithDHCPEnabled(value bool) *LabVPNStat
 // If called multiple times, the DHCPReady field is set to the value of the last call.
 func (b *LabVPNStatusApplyConfiguration) WithDHCPReady(value bool) *LabVPNStatusApplyConfiguration {
 	b.DHCPReady = &value
+	return b
+}
+
+// WithLabInitiatedBlocked sets the LabInitiatedBlocked field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LabInitiatedBlocked field is set to the value of the last call.
+func (b *LabVPNStatusApplyConfiguration) WithLabInitiatedBlocked(value bool) *LabVPNStatusApplyConfiguration {
+	b.LabInitiatedBlocked = &value
+	return b
+}
+
+// WithLabInitiatedDropped sets the LabInitiatedDropped field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LabInitiatedDropped field is set to the value of the last call.
+func (b *LabVPNStatusApplyConfiguration) WithLabInitiatedDropped(value int64) *LabVPNStatusApplyConfiguration {
+	b.LabInitiatedDropped = &value
 	return b
 }
 

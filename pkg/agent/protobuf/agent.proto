@@ -740,12 +740,10 @@ message RunChecksItem {
 message RunChecksRequest {repeated RunChecksItem items = 1;}
 message LabStatus {
   string phase = 1;
-  string vpn_cidr = 2;
-  string internet_cidr = 3;
+  reserved 2, 3, 6, 7, 46;   // were vpn_cidr, internet_cidr, vpn_ready, internet_ready, vpn_lab_initiated_blocked (contract 2.0: see gateways)
+  reserved "vpn_cidr", "internet_cidr", "vpn_ready", "internet_ready", "vpn_lab_initiated_blocked";
   bool ready = 4;
   repeated string access_urls = 5;          // flat list of exposed URLs (kept for convenience)
-  bool vpn_ready = 6;
-  bool internet_ready = 7;
   repeated LabDeviceStatus devices = 8;      // per-device readiness
   repeated LabConnectionStatus connections = 9;  // per-connection readiness
   repeated LabAccessEntry access = 10;       // structured web-exposure entries
@@ -762,10 +760,19 @@ message LabStatus {
   repeated CheckResult checks = 44;
   // The RunChecks token the checker has taken (the annotation token it has seen).
   int64 checks_run_ack = 45;
-  // True only when the VPN gateway of the lab's group has confirmed that it blocks connections the lab's devices start towards VPN
-  // clients (spec.vpn.reverseConnections is false and the gateway program enforces it). False in every other case: the switch is on,
-  // the lab has no VPN, or the group's VPN pod still runs an older program (after an upgrade) or has not applied the lab yet.
-  bool vpn_lab_initiated_blocked = 46;
+  // The gateways of the lab (contract 2.0), one entry per entry of spec.gateways, in spec order.
+  repeated LabGatewayStatus gateways = 47;
+}
+// LabGatewayStatus is the state of one gateway of a lab: a VPN entry or an Internet exit.
+message LabGatewayStatus {
+  string name = 1;
+  string kind = 2;      // "vpn" or "internet"
+  string cidr = 3;      // the /24 of the gateway; empty until it has one
+  bool ready = 4;
+  // vpn gateways only: true only when the VPN gateway of the lab's group has confirmed that it blocks connections the lab's devices start
+  // towards VPN clients (reverse_connections of the gateway is false and the gateway program enforces it). False in every other case: the
+  // switch is on, or the group's VPN pod still runs an older program or has not applied the gateway yet.
+  bool lab_initiated_blocked = 5;
 }
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
 // refreshes it at a limited rate, so position can lag by seconds.
@@ -1160,9 +1167,12 @@ message FeaturesResponse {
 
 // VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
 // a lab starts towards a VPN client (only replies to connections the client started pass from the lab to the client), and accept
-// the per-lab switch spec.vpn.reverseConnections that allows them (fixed at creation, like the rest of the lab spec). The switch is refused
-// when the lab has no VPN.
-message VPNFeature {bool reverse_connections = 1;}
+// the per-gateway switch reverseConnections that allows them (fixed at creation, like the rest of the lab spec). The switch is refused
+// on an Internet gateway. max_gateways is the most gateways (VPN and Internet together) one lab may have; a lab with more is refused.
+message VPNFeature {
+  bool reverse_connections = 1;
+  int32 max_gateways = 2;
+}
 
 message ChecksFeature {
   bool enabled = 1;

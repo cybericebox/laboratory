@@ -105,7 +105,7 @@ func TestStatusWriteCoexistsWithTheController(t *testing.T) {
 	// The controller writes its fields.
 	cur := getLab(t, c, lab)
 	cur.Status.Phase = laboratoryv1alpha1.PhaseReady
-	cur.Status.VPN.Ready = true
+	cur.Status.Gateways = []laboratoryv1alpha1.GatewayStatus{{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN, Ready: true}}
 	cur.Status.Devices = []laboratoryv1alpha1.DeviceRef{{Name: "web", Ready: true}}
 	if err := c.Status().Update(ctx, cur); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestStatusWriteCoexistsWithTheController(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := getLab(t, c, lab)
-	if got.Status.Phase != laboratoryv1alpha1.PhaseReady || !got.Status.VPN.Ready || len(got.Status.Devices) != 1 {
+	if got.Status.Phase != laboratoryv1alpha1.PhaseReady || len(got.Status.Gateways) != 1 || !got.Status.Gateways[0].Ready || len(got.Status.Devices) != 1 {
 		t.Fatalf("the checker's apply touched the controller's fields: %+v", got.Status)
 	}
 	if r := results(got); len(r) != 2 || r["a"].State != laboratoryv1alpha1.CheckPassed || r["a"].FirstPassedMs != 100 || r["b"].Detail == "" {

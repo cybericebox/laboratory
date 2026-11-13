@@ -148,14 +148,14 @@ spec:
                       properties:
                         addressRef:
                           description: |-
-                            NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
-                            gateway a declared one (spec.gateways). Exactly one of the two.
+                            NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                             The lab reconciler resolves it before creating a Device.
                           properties:
                             gateway:
                               description: Gateway is the name of a gateway declared
                                 in spec.gateways.
                               maxLength: 35
+                              minLength: 1
                               pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                               type: string
                             host:
@@ -163,29 +163,22 @@ spec:
                               maximum: 254
                               minimum: 1
                               type: integer
-                            network:
-                              enum:
-                              - vpn
-                              - internet
-                              type: string
                           required:
+                          - gateway
                           - host
                           type: object
-                          x-kubernetes-validations:
-                          - message: exactly one of network and gateway
-                            rule: has(self.network) != has(self.gateway)
                         gateway:
                           type: string
                         gatewayRef:
                           description: |-
-                            NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
-                            gateway a declared one (spec.gateways). Exactly one of the two.
+                            NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                             The lab reconciler resolves it before creating a Device.
                           properties:
                             gateway:
                               description: Gateway is the name of a gateway declared
                                 in spec.gateways.
                               maxLength: 35
+                              minLength: 1
                               pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                               type: string
                             host:
@@ -193,17 +186,10 @@ spec:
                               maximum: 254
                               minimum: 1
                               type: integer
-                            network:
-                              enum:
-                              - vpn
-                              - internet
-                              type: string
                           required:
+                          - gateway
                           - host
                           type: object
-                          x-kubernetes-validations:
-                          - message: exactly one of network and gateway
-                            rule: has(self.network) != has(self.gateway)
                         ip:
                           type: string
                         routes:
@@ -220,29 +206,24 @@ spec:
                                     description: Gateway is the name of a gateway
                                       declared in spec.gateways.
                                     maxLength: 35
+                                    minLength: 1
                                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                     type: string
-                                  network:
-                                    enum:
-                                    - vpn
-                                    - internet
-                                    type: string
+                                required:
+                                - gateway
                                 type: object
-                                x-kubernetes-validations:
-                                - message: exactly one of network and gateway
-                                  rule: has(self.network) != has(self.gateway)
                               via:
                                 type: string
                               viaRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
-                                  gateway a declared one (spec.gateways). Exactly one of the two.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
                                   gateway:
                                     description: Gateway is the name of a gateway
                                       declared in spec.gateways.
                                     maxLength: 35
+                                    minLength: 1
                                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                     type: string
                                   host:
@@ -250,17 +231,10 @@ spec:
                                     maximum: 254
                                     minimum: 1
                                     type: integer
-                                  network:
-                                    enum:
-                                    - vpn
-                                    - internet
-                                    type: string
                                 required:
+                                - gateway
                                 - host
                                 type: object
-                                x-kubernetes-validations:
-                                - message: exactly one of network and gateway
-                                  rule: has(self.network) != has(self.gateway)
                             type: object
                           type: array
                         type:

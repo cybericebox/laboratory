@@ -69,7 +69,7 @@ func readyGroup(t *testing.T, h *Handler, k8s kubernetes.Interface, name, ns str
 
 func specJSON(devices ...string) []byte {
 	spec := laboratoryv1alpha1.LabSpec{}
-	spec.VPN.Enabled = true
+	spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 	for _, d := range devices {
 		spec.Devices = append(spec.Devices, laboratoryv1alpha1.DeviceTemplate{Name: d, Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"})
 	}

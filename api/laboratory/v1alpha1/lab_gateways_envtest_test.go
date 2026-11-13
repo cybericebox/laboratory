@@ -62,17 +62,13 @@ func TestGatewayDeclarationValidation(t *testing.T) {
 		"a vpn and an internet gateway": {withGateways("a", GatewayTemplate{Name: "attack", Kind: GatewayKindVPN}, GatewayTemplate{Name: "out", Kind: GatewayKindInternet}), ""},
 		"reverse connections on vpn":    {withGateways("b", GatewayTemplate{Name: "attack", Kind: GatewayKindVPN, ReverseConnections: true}), ""},
 		"reverse connections on inet":   {withGateways("c", GatewayTemplate{Name: "out", Kind: GatewayKindInternet, ReverseConnections: true}), "reverseConnections belongs to a vpn gateway only"},
-		"reserved name vpn":             {withGateways("d", GatewayTemplate{Name: "vpn", Kind: GatewayKindVPN}), "reserved by the platform"},
-		"reserved name internet":        {withGateways("e", GatewayTemplate{Name: "internet", Kind: GatewayKindInternet}), "reserved by the platform"},
 		"upper case":                    {withGateways("f", GatewayTemplate{Name: "Attack", Kind: GatewayKindVPN}), "Invalid value"},
 		"unknown kind":                  {withGateways("g", GatewayTemplate{Name: "attack", Kind: "tunnel"}), "Unsupported value"},
 		"same name twice":               {withGateways("h", GatewayTemplate{Name: "a", Kind: GatewayKindVPN}, GatewayTemplate{Name: "a", Kind: GatewayKindInternet}), "Duplicate value"},
 		"a name of 36 characters":       {withGateways("i", GatewayTemplate{Name: strings.Repeat("a", 36), Kind: GatewayKindVPN}), "Too long"},
-		"reference by network":          {withRef("j", NetworkIPRef{Network: "vpn", Host: 10}), ""},
+		"a gateway may be named vpn":    {withGateways("n", GatewayTemplate{Name: "vpn", Kind: GatewayKindVPN}), ""},
 		"reference by gateway":          {withRef("k", NetworkIPRef{Gateway: "attack", Host: 10}), ""},
-		"reference by both":             {withRef("l", NetworkIPRef{Network: "vpn", Gateway: "attack", Host: 10}), "exactly one of network and gateway"},
-		"reference by neither":          {withRef("m", NetworkIPRef{Host: 10}), "exactly one of network and gateway"},
-		"network other than the two":    {withRef("n", NetworkIPRef{Network: "lan", Host: 10}), "Unsupported value"},
+		"reference without a gateway":   {withRef("m", NetworkIPRef{Host: 10}), "should be at least 1 chars"},
 	} {
 		err := c.Create(ctx, tc.lab)
 		switch {

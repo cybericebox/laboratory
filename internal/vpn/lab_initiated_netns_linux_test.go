@@ -53,7 +53,7 @@ func labInitiatedScenario(t *testing.T, useNFT bool) {
 	apply := func(labInitiated bool) {
 		t.Helper()
 		plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
-			map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}}, []AccessPolicyRule{{Action: AccessAllow}})
+			map[string]LabAccessSnapshot{"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}}, []AccessPolicyRule{{Action: AccessAllow}})
 		if err != nil {
 			t.Fatal(err)
 		}

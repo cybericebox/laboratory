@@ -65,11 +65,11 @@ func TestNetnsGatewayControlOneTenTwentyLabs(t *testing.T) {
 					nstest.Run(t, "", "ip", "link", "add", iface, "type", "dummy")
 					defer nstest.Try("", "ip", "link", "del", iface)
 					name := fmt.Sprintf("a%d", i)
-					l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true}}, Status: lab.LabStatus{Internet: lab.LabNetworkStatus{CIDR: fmt.Sprintf("10.9.%d.0/24", i)}}}
+					l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "internet", Kind: lab.GatewayKindInternet}}}, Status: lab.LabStatus{Gateways: []lab.GatewayStatus{{Name: "internet", Kind: lab.GatewayKindInternet, CIDR: fmt.Sprintf("10.9.%d.0/24", i), NetworkIndex: uint(i)}}}}
 					if enabled {
-						l.Spec.Internet.DHCPServer = &lab.DHCPServer{Enabled: true, DNS: "1.1.1.1", Ranges: []lab.DHCPRange{{Start: 2, End: 20}}}
+						l.Spec.Gateways[0].DHCPServer = &lab.DHCPServer{Enabled: true, DNS: "1.1.1.1", Ranges: []lab.DHCPRange{{Start: 2, End: 20}}}
 					}
-					gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: name, NetworkIndex: uint(i)}}
+					gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: name, Device: "internet", NetworkIndex: uint(i)}}
 					if err := c.Create(context.Background(), l); err != nil {
 						t.Fatal(err)
 					}
@@ -77,7 +77,7 @@ func TestNetnsGatewayControlOneTenTwentyLabs(t *testing.T) {
 						t.Fatal(err)
 					}
 					if enabled {
-						pool := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: "dhcp-inet-" + name + "-0", Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: name, UID: l.UID}}}}
+						pool := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: names.DHCPPoolName(name, "internet"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: name, UID: l.UID}}}}
 						if err := c.Create(context.Background(), pool); err != nil {
 							t.Fatal(err)
 						}

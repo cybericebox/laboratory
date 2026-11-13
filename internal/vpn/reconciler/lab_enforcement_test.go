@@ -17,9 +17,9 @@ import (
 
 func TestLabEnforcementConfirmsOnlyAppliedLabsWithTheSwitchOff(t *testing.T) {
 	labs := map[string]vpn.LabAccessSnapshot{
-		"a": {Interface: "lab1"},
-		"b": {Interface: "lab2", LabInitiated: true},
-		"c": {}, // no interface yet
+		"a": {LabName: "a", Interface: "lab1"},
+		"b": {LabName: "b", Interface: "lab2", LabInitiated: true},
+		"c": {LabName: "c"}, // no interface yet
 	}
 	got := labEnforcement(true, labs, map[string]uint64{"lab1": 7, "lab2": 9})
 	if !got["a"].blocked || got["a"].dropped != 7 || got["b"].blocked || got["b"].dropped != 0 || got["c"].blocked {
@@ -38,10 +38,10 @@ func (d dropsApplier) LabDropCounts(context.Context) (map[string]uint64, error) 
 
 func TestPublishLabEnforcementWritesTheConfirmationAndThrottlesTheCount(t *testing.T) {
 	s := schemeForTest(t)
-	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-a", Namespace: "g"}, Spec: lab.LabVPNSpec{LabName: "a", NetworkIndex: 1}}
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-a.vpn", Namespace: "g"}, Spec: lab.LabVPNSpec{LabName: "a", Device: "vpn", NetworkIndex: 1}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(leg).WithStatusSubresource(leg).Build()
 	r := &AccessReconciler{Client: c, applied: true, IPT: dropsApplier{map[string]uint64{"lab1": 5}}}
-	labs := map[string]vpn.LabAccessSnapshot{"a": {Interface: "lab1"}}
+	labs := map[string]vpn.LabAccessSnapshot{leg.Name: {LabName: "a", Gateway: "vpn", Interface: "lab1"}}
 	get := func() lab.LabVPNStatus {
 		t.Helper()
 		var got lab.LabVPN
@@ -72,7 +72,7 @@ func TestPublishLabEnforcementWritesTheConfirmationAndThrottlesTheCount(t *testi
 		t.Fatalf("the count was written again at once: %+v", st)
 	}
 	// the switch is turned on: the confirmation goes away at once
-	labs["a"] = vpn.LabAccessSnapshot{Interface: "lab1", LabInitiated: true}
+	labs[leg.Name] = vpn.LabAccessSnapshot{LabName: "a", Gateway: "vpn", Interface: "lab1", LabInitiated: true}
 	if err := r.publishLabEnforcement(context.Background(), labs, legs()); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestPublishLabEnforcementWritesTheConfirmationAndThrottlesTheCount(t *testi
 	}
 	// rules not applied (or a program that never reaches this code): never confirmed
 	r.applied = false
-	labs["a"] = vpn.LabAccessSnapshot{Interface: "lab1"}
+	labs[leg.Name] = vpn.LabAccessSnapshot{LabName: "a", Gateway: "vpn", Interface: "lab1"}
 	if err := r.publishLabEnforcement(context.Background(), labs, legs()); err != nil {
 		t.Fatal(err)
 	}

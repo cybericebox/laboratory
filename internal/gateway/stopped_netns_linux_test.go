@@ -31,20 +31,20 @@ func TestNetnsStoppedGatewayRemovesOnlyOwnedDHCPAddressAndNAT(t *testing.T) {
 	_ = lab.AddToScheme(scheme)
 	_ = allocation.AddToScheme(scheme)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&lab.LabGateway{}).Build()
-	a := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "lab-a"}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 4}}}}}}
-	a.Status.Internet.CIDR = "10.9.1.0/24"
+	a := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "lab-a"}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "internet", Kind: lab.GatewayKindInternet, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 4}}}}}}}
+	a.Status.Gateways = []lab.GatewayStatus{{Name: "internet", Kind: lab.GatewayKindInternet, CIDR: "10.9.1.0/24", NetworkIndex: 1}}
 	b := a.DeepCopy()
 	b.Name = "b"
 	b.UID = "lab-b"
-	b.Status.Internet.CIDR = "10.9.2.0/24"
+	b.Status.Gateways = []lab.GatewayStatus{{Name: "internet", Kind: lab.GatewayKindInternet, CIDR: "10.9.2.0/24", NetworkIndex: 2}}
 	for i, l := range []*lab.Lab{a, b} {
 		if err := c.Create(ctx, l); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.Create(ctx, &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: "dhcp-inet-" + l.Name + "-0", Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: l.Name, UID: l.UID}}}}); err != nil {
+		if err := c.Create(ctx, &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: names.DHCPPoolName(l.Name, "internet"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: l.Name, UID: l.UID}}}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.Create(ctx, &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: l.Name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: l.Name, NetworkIndex: uint(i + 1)}}); err != nil {
+		if err := c.Create(ctx, &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: l.Name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: l.Name, Device: "internet", NetworkIndex: uint(i + 1)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -64,7 +64,7 @@ func TestNetnsStoppedGatewayRemovesOnlyOwnedDHCPAddressAndNAT(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !dhcpMgr.Healthy("a") || !dhcpMgr.Healthy("b") {
+	if !dhcpMgr.Healthy("a-gw") || !dhcpMgr.Healthy("b-gw") {
 		t.Fatal("real DHCP socket control failed")
 	}
 	a.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
@@ -76,7 +76,7 @@ func TestNetnsStoppedGatewayRemovesOnlyOwnedDHCPAddressAndNAT(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if dhcpMgr.Healthy("a") || !dhcpMgr.Healthy("b") {
+	if dhcpMgr.Healthy("a-gw") || !dhcpMgr.Healthy("b-gw") {
 		t.Fatal("stopped DHCP survived or sibling socket was stopped")
 	}
 	if strings.Contains(nstest.Run(t, "", "ip", "-4", "addr", "show", "dev", "lab1"), "10.9.1.1/24") || !strings.Contains(nstest.Run(t, "", "ip", "-4", "addr", "show", "dev", "lab2"), "10.9.2.1/24") {
@@ -94,7 +94,7 @@ func TestNetnsStoppedGatewayRemovesOnlyOwnedDHCPAddressAndNAT(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(a), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Spec.Internet.Enabled || !got.Spec.Internet.DHCPServer.Enabled {
+	if len(got.Spec.Gateways) != 1 || !got.Spec.Gateways[0].DHCPServer.Enabled {
 		t.Fatal("stop discarded retained network configuration")
 	}
 }

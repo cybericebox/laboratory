@@ -10,15 +10,15 @@ import (
 
 func TestAddressReferenceApplyConfigurationJSON(t *testing.T) {
 	config := AddrSpec().WithType(laboratoryv1alpha1.AddrTypeStatic).
-		WithAddressRef(NetworkIPRef().WithNetwork("vpn").WithHost(10)).
-		WithGatewayRef(NetworkIPRef().WithNetwork("vpn").WithHost(1)).
-		WithRoutes(Route().WithDstRef(NetworkSubnetRef().WithNetwork("internet")).
-			WithViaRef(NetworkIPRef().WithNetwork("vpn").WithHost(1)))
+		WithAddressRef(NetworkIPRef().WithGateway("vpn").WithHost(10)).
+		WithGatewayRef(NetworkIPRef().WithGateway("vpn").WithHost(1)).
+		WithRoutes(Route().WithDstRef(NetworkSubnetRef().WithGateway("internet")).
+			WithViaRef(NetworkIPRef().WithGateway("vpn").WithHost(1)))
 	body, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"addressRef":{"network":"vpn","host":10}`, `"gatewayRef":{"network":"vpn","host":1}`, `"dstRef":{"network":"internet"}`, `"viaRef":{"network":"vpn","host":1}`} {
+	for _, field := range []string{`"addressRef":{"gateway":"vpn","host":10}`, `"gatewayRef":{"gateway":"vpn","host":1}`, `"dstRef":{"gateway":"internet"}`, `"viaRef":{"gateway":"vpn","host":1}`} {
 		if !strings.Contains(string(body), field) {
 			t.Fatalf("missing %s in %s", field, body)
 		}

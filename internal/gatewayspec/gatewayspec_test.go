@@ -26,16 +26,11 @@ func TestValidate(t *testing.T) {
 		want  string // empty: valid
 	}{
 		"no gateways":                 {},
-		"shorthand only":              {spec: laboratoryv1alpha1.LabSpec{VPN: laboratoryv1alpha1.LabNetworkSpec{Enabled: true}, Internet: laboratoryv1alpha1.LabNetworkSpec{Enabled: true}}},
 		"declared":                    {spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{gw("attack", vpn), gw("out", inet)}}},
 		"ten is the default limit":    {spec: laboratoryv1alpha1.LabSpec{Gateways: many(10)}},
 		"eleven is over it":           {spec: laboratoryv1alpha1.LabSpec{Gateways: many(11)}, want: "TooManyGateways"},
-		"shorthand counts":            {spec: laboratoryv1alpha1.LabSpec{VPN: laboratoryv1alpha1.LabNetworkSpec{Enabled: true}, Internet: laboratoryv1alpha1.LabNetworkSpec{Enabled: true}, Gateways: many(9)}, want: "TooManyGateways"},
 		"a chart may raise the limit": {spec: laboratoryv1alpha1.LabSpec{Gateways: many(11)}, limit: 12},
 		"a chart may lower it":        {spec: laboratoryv1alpha1.LabSpec{Gateways: many(3)}, limit: 2, want: "TooManyGateways"},
-		"reserved vpn":                {spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{gw("vpn", vpn)}}, want: "InvalidGatewayName"},
-		"reserved internet":           {spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{gw("internet", inet)}}, want: "InvalidGatewayName"},
-		"reserved gateway":            {spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{gw("gateway", inet)}}, want: "InvalidGatewayName"},
 		"bad characters":              {spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{gw("Attack_1", vpn)}}, want: "InvalidGatewayName"},
 		"too long":                    {spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{gw(strings.Repeat("a", 36), vpn)}}, want: "InvalidGatewayName"},
 		"name of a device": {spec: laboratoryv1alpha1.LabSpec{

@@ -8,22 +8,18 @@ import (
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 )
 
-// Settings extracts one lab-facing DHCP interface's ranges and optional DNS.
+// Settings extracts the ranges and the optional DNS of the DHCP server of one gateway of the lab.
 // VPN DHCP deliberately does not advertise DNS.
-func Settings(lab *laboratoryv1alpha1.Lab, network string) ([]dhcp.Range, string, error) {
-	var server *laboratoryv1alpha1.DHCPServer
-	switch network {
-	case networkVPN:
-		server = lab.Spec.VPN.DHCPServer
-	case "internet":
-		server = lab.Spec.Internet.DHCPServer
-	default:
-		return nil, "", fmt.Errorf("unknown DHCP network %q", network)
+func Settings(lab *laboratoryv1alpha1.Lab, gateway string) ([]dhcp.Range, string, error) {
+	g, ok := lab.Spec.Gateway(gateway)
+	if !ok {
+		return nil, "", fmt.Errorf("unknown gateway %q", gateway)
 	}
+	server := g.DHCPServer
 	if server == nil || !server.Enabled {
-		return nil, "", fmt.Errorf("%s DHCP is disabled", network)
+		return nil, "", fmt.Errorf("DHCP of gateway %q is disabled", gateway)
 	}
-	if network == networkVPN && server.DNS != "" {
+	if g.Kind == laboratoryv1alpha1.GatewayKindVPN && server.DNS != "" {
 		return nil, "", fmt.Errorf("VPN DHCP cannot advertise DNS")
 	}
 	ranges := make([]dhcp.Range, 0, len(server.Ranges))

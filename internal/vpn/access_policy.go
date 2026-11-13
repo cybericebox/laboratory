@@ -15,10 +15,14 @@ type ClientAccessSnapshot struct {
 // LabAccessSnapshot is the minimum observed state needed to safely permit a
 // VPN route. A not-ready laboratory must never receive an allow rule.
 type LabAccessSnapshot struct {
+	// LabName and Gateway name the VPN gateway of the lab this snapshot is for: a lab has one snapshot per VPN gateway (the map of
+	// snapshots is keyed by the name of the LabVPN object, which is unique per gateway).
+	LabName   string
+	Gateway   string
 	VPNCIDR   string
 	Ready     bool
 	Interface string
-	// LabInitiated: the lab allows its devices to START connections towards a client (Lab.spec.vpn.reverseConnections). False, the
+	// LabInitiated: the lab allows its devices to START connections towards a client (reverseConnections of the VPN gateway). False, the
 	// default: from the lab to a client only replies to connections the client started pass.
 	LabInitiated bool
 }
@@ -26,7 +30,9 @@ type LabAccessSnapshot struct {
 // AccessRule permits packets from one WireGuard client to one lab VPN CIDR.
 // Response traffic is handled by the established-connection firewall rule.
 type AccessRule struct {
-	ClientName      string
+	ClientName string
+	// GatewayName is the VPN gateway of the lab the rule is for: a client reaches every VPN gateway of a lab it may reach.
+	GatewayName     string
 	LabName         string
 	SourceCIDR      string
 	DestinationCIDR string
@@ -38,7 +44,8 @@ type AccessRule struct {
 }
 
 // Identifier is stable across reconciles and short enough for an iptables
-// comment. It deliberately excludes network addresses, which can be reissued.
+// comment. It deliberately excludes network addresses, which can be reissued. It names the access of a client to a LAB: the counters and
+// the traffic ledger are kept per client and lab, so the rules for the several VPN gateways of one lab share it.
 func (r AccessRule) Identifier() string {
 	sum := sha256.Sum256([]byte(string(r.Action) + "\x00" + r.ClientName + "\x00" + r.LabName))
 	return hex.EncodeToString(sum[:8])
@@ -67,7 +74,13 @@ type AccessStatistics struct {
 // an explicit reset when iptables was recreated.
 func ProjectAccessStatistics(rules []AccessRule, current map[string]TrafficCounter, previous map[string]TrafficCounter) []AccessStatistics {
 	stats := make([]AccessStatistics, 0, len(rules))
+	seen := map[string]bool{}
 	for _, rule := range rules {
+		// The rows are per client and lab: the rules for the several VPN gateways of a lab are one row.
+		if seen[rule.Identifier()] {
+			continue
+		}
+		seen[rule.Identifier()] = true
 		counter := current[rule.Identifier()]
 		previousCounter := previous[rule.Identifier()]
 		stats = append(stats, AccessStatistics{
@@ -108,11 +121,12 @@ func BuildAccessRules(clients []ClientAccessSnapshot, labs map[string]LabAccessS
 		if client.AssignedIP == "" {
 			continue
 		}
-		for labName, lab := range labs {
+		for _, lab := range labs {
+			labName := lab.LabName
 			if !lab.Ready || lab.VPNCIDR == "" {
 				continue
 			}
-			rule := AccessRule{ClientName: client.Name, LabName: labName, SourceCIDR: client.AssignedIP, DestinationCIDR: lab.VPNCIDR, LabInterface: lab.Interface, Action: AccessDeny, LabInitiated: lab.LabInitiated}
+			rule := AccessRule{ClientName: client.Name, LabName: labName, GatewayName: lab.Gateway, SourceCIDR: client.AssignedIP, DestinationCIDR: lab.VPNCIDR, LabInterface: lab.Interface, Action: AccessDeny, LabInitiated: lab.LabInitiated}
 			allowed := false
 			denied := false
 			for _, policyRule := range policy {
@@ -129,7 +143,7 @@ func BuildAccessRules(clients []ClientAccessSnapshot, labs map[string]LabAccessS
 			if allowed && !denied {
 				rule.Action = AccessAllow
 			}
-			rulesByRelation[rule.Identifier()] = rule
+			rulesByRelation[rule.Identifier()+"/"+rule.GatewayName] = rule
 		}
 	}
 	rules := make([]AccessRule, 0, len(rulesByRelation))
@@ -140,7 +154,10 @@ func BuildAccessRules(clients []ClientAccessSnapshot, labs map[string]LabAccessS
 		if rules[i].ClientName != rules[j].ClientName {
 			return rules[i].ClientName < rules[j].ClientName
 		}
-		return rules[i].LabName < rules[j].LabName
+		if rules[i].LabName != rules[j].LabName {
+			return rules[i].LabName < rules[j].LabName
+		}
+		return rules[i].GatewayName < rules[j].GatewayName
 	})
 	return rules
 }
