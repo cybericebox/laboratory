@@ -81,11 +81,16 @@ type Config struct {
 	// WGDemuxMode is the mode of the WireGuard demux (userspace, tc or xdp; the chart value proxy.wg.mode). In tc and xdp the demux runs on the
 	// host network, so its packets reach the VPN pods with a node address, and the VPN pods' policy admits the nodes on the WireGuard port.
 	WGDemuxMode string `env:"WG_DEMUX_MODE" envDefault:"userspace"`
-	// VPNBaseNetwork is the base address space for per-lab VPN subnets, VPN half of 10.128.0.0/9 (e.g. "10.128.0.0/10").
-	// Each lab is assigned a /24 child subnet by adding its index to the base address.
-	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.128.0.0/10"`
-	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets, internet half (e.g. "10.192.0.0/10").
-	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.192.0.0/10"`
+	// LabBaseNetwork is the one address space of the lab networks (LAB_BASE_NETWORK, default 10.128.0.0/9): /24 number 0 is the VPN
+	// clients, every other /24 goes to a gateway of a lab, VPN or Internet, first free number.
+	LabBaseNetwork string `env:"LAB_BASE_NETWORK"`
+	// VPNBaseNetwork and InetBaseNetwork are the two settings LAB_BASE_NETWORK replaced. They are read only while it is unset, and
+	// only when together they are the two halves of one network (ResolveLabBaseNetwork). Drop them from the configuration.
+	VPNBaseNetwork  string `env:"VPN_BASE_NETWORK"`
+	InetBaseNetwork string `env:"INET_BASE_NETWORK"`
+	// MaxLabGateways is the most gateways (VPN entries and Internet exits together, the shorthand ones included) one lab may have
+	// (MAX_LAB_GATEWAYS, chart operator.maxLabGateways). The agent refuses a lab with more when it is created; the operator checks again.
+	MaxLabGateways int `env:"MAX_LAB_GATEWAYS" envDefault:"10"`
 	// VPNImage is the container image for per-LabGroup VPN pods. Required, no default: the chart passes
 	// repository:tag (the tag is the release tag: image.tag, else the chart appVersion).
 	VPNImage string `env:"VPN_IMAGE,notEmpty"`
@@ -342,6 +347,31 @@ func (cfg *Config) applyDefaults() {
 	}
 }
 
+// validateQuantities checks that the quotas of the state persistence settings are quantities.
+func (c StateConfig) validateQuantities() error {
+	if _, err := c.TenantQuotaBytes(); err != nil {
+		return err
+	}
+	if _, err := c.WriteQuotaBytes(); err != nil {
+		return err
+	}
+	_, err := c.MaxFileBytes()
+	return err
+}
+
+// resolveLabNetwork settles the one lab base network and checks the limit of gateways per lab.
+func (cfg *Config) resolveLabNetwork() error {
+	base, err := ResolveLabBaseNetwork(cfg.LabBaseNetwork, cfg.VPNBaseNetwork, cfg.InetBaseNetwork)
+	if err != nil {
+		return err
+	}
+	cfg.LabBaseNetwork = base
+	if cfg.MaxLabGateways < 1 || cfg.MaxLabGateways > 64 {
+		return fmt.Errorf("MAX_LAB_GATEWAYS must be between 1 and 64")
+	}
+	return nil
+}
+
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 	if err := config.Load(cfg); err != nil {
@@ -354,6 +384,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("WG_DEMUX_MODE %q is not userspace, tc or xdp", cfg.WGDemuxMode)
 	}
 	cfg.applyDefaults()
+	if err := cfg.resolveLabNetwork(); err != nil {
+		return nil, err
+	}
 	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
 		if err := checkExactImage(image); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", name, image, err)
@@ -403,16 +436,10 @@ func LoadConfig() (*Config, error) {
 	if cfg.State.MaxEntries <= 0 {
 		return nil, fmt.Errorf("STATE_MAX_ENTRIES must be positive")
 	}
-	if _, err := cfg.State.TenantQuotaBytes(); err != nil {
+	if err := cfg.State.validateQuantities(); err != nil {
 		return nil, err
 	}
 	if err := cfg.GroupPods.Validate(); err != nil {
-		return nil, err
-	}
-	if _, err := cfg.State.WriteQuotaBytes(); err != nil {
-		return nil, err
-	}
-	if _, err := cfg.State.MaxFileBytes(); err != nil {
 		return nil, err
 	}
 	return cfg, nil

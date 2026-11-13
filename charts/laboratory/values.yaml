@@ -35,13 +35,15 @@ operator:
   # BASE_DOMAIN and the session cookie domain). Example: "lab.example.com"
   baseDomain: ""
 
-  # Global lab network 10.128.0.0/9 is split into two non-overlapping /10 halves:
-  # VPN = 10.128.0.0/10 (10.128.0.0-10.191.255.255), internet = 10.192.0.0/10.
-  # Client subnet = first /24 (10.128.0.0/24); per-lab VPN subnets = 10.128.N.0/24, N >= 1.
-  vpnBaseNetwork: "10.128.0.0/10"
+  # The one address space of the lab networks. /24 number 0 (10.128.0.0/24) is the VPN clients; every other /24 goes to a gateway of a lab,
+  # VPN entry or Internet exit alike, first free number (a gateway takes 10.128.N.0/24, N >= 1). The WireGuard clients get the whole
+  # network as AllowedIPs. A /8 to /18 network; the pool of a group is as big as the network (a /9 holds 32767 gateway networks).
+  # Replaces vpnBaseNetwork and inetBaseNetwork, which are no longer read.
+  labBaseNetwork: "10.128.0.0/9"
 
-  # Internet-gateway half of the global network (per-lab = 10.192.N.0/24).
-  inetBaseNetwork: "10.192.0.0/10"
+  # The most gateways one lab may have, VPN entries and Internet exits together (the shorthand vpn and internet of a lab count too).
+  # A lab with more is refused when it is created. The backend and the catalog hold the rule 10 for task authors and do not ask.
+  maxLabGateways: 10
 
   # Comma-separated CIDRs of proxy source IPs for hostNetwork proxy (e.g. Kind).
   # Leave empty in standard clusters.

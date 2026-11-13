@@ -2661,13 +2661,17 @@ ceiling of 64 devices per lab; the chart's `limits.lab.maxDevices`, 32 by defaul
 
 ## Network Layout
 
-| Network             | Default       | Usage                                                              |
-|---------------------|---------------|--------------------------------------------------------------------|
-| `vpnBaseNetwork`    | `10.128.0.0/10` | Full VPN supernet; advertised as AllowedIPs to WireGuard clients   |
-| Client subnet       | `10.128.0.0/24` | First /24 of vpnBaseNetwork; VPN gateway at .1, clients at .2–.254 |
-| Per-lab VPN subnet  | `10.128.N.0/24` | N>=1 carved from vpnBaseNetwork                                |
-| `inetBaseNetwork`   | `10.192.0.0/10` | Internet-gateway subnets                                           |
-| Per-lab inet subnet | `10.192.N.0/24` | Mirrors VPN lab index                                              |
+| Network                | Default         | Usage                                                                                   |
+|------------------------|-----------------|-----------------------------------------------------------------------------------------|
+| `labBaseNetwork`       | `10.128.0.0/9`  | The one address space of the lab networks; advertised as AllowedIPs to WireGuard clients |
+| Client subnet          | `10.128.0.0/24` | /24 number 0; VPN gateway at .1, clients at .2-.254                                      |
+| Subnet of a gateway    | `10.128.N.0/24` | N >= 1: the first free number of the group's pool, for a VPN entry or an Internet exit   |
+
+A lab has one or more gateways (`spec.vpn` and `spec.internet` stand for one of each kind, `spec.gateways` declares more); each takes its
+own number, and the numbers of the gateways of one lab are unrelated. At most `maxLabGateways` (10) gateways per lab. The pool of a group is as
+big as the network (32767 numbers for a /9) and only moves forward. A lab made before the one pool keeps its networks: the Internet
+`10.192.N.0/24` of such a lab is still where it was. `vpnBaseNetwork` and `inetBaseNetwork` are replaced by `labBaseNetwork`; the
+operator still reads the old two when the new one is unset, and only when they are the two halves of one network.
 
 ### The return route to the participants
 
@@ -2676,7 +2680,7 @@ connected to the VPN network (directly or through switches and hubs) needs a rou
 operator adds it, the author writes nothing:
 
 - **static addresses**: the operator adds `<client subnet> via <lab VPN .1>` to the interface routes it renders (the Lab template is
-  not changed). The client subnet is the first /24 of `vpnBaseNetwork` (`10.128.0.0/24`), where the WireGuard clients live. Nothing
+  not changed). The client subnet is /24 number 0 of `labBaseNetwork` (`10.128.0.0/24`), where the WireGuard clients live. Nothing
   is added when the interface already has a route that covers the client subnet or already uses the VPN gateway as its default
   gateway. An existing lab gets the route (and its device pods restart) at the first reconcile after the operator upgrade.
 - **`dhcp-preset`**: the lab VPN DHCP server sends the route as a classless static route (option 121), together with the default
