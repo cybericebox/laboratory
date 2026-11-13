@@ -3,7 +3,6 @@ package laboratory
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -186,7 +185,7 @@ func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alp
 			Labels: map[string]string{
 				poolpkg.PoolTypeLabel:   prefix,
 				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
-				poolpkg.PoolGroupLabel:  strings.TrimSuffix(poolName, "-0"),
+				poolpkg.PoolGroupLabel:  names.DHCPPoolGroup(lab.Name, g.Name),
 				poolpkg.LatestPoolLabel: valueTrue,
 			},
 		},

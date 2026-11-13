@@ -44,6 +44,14 @@ func LabGatewayObjectName(labName, device string) string { return "labgw-" + lab
 // DHCPPoolName is the name of the DHCP pool of a gateway of a lab: the enable-signal and lease ledger of the gateway's DHCP server.
 func DHCPPoolName(labName, device string) string { return "dhcp-" + labName + "." + device + "-0" }
 
+// DHCPPoolGroup is the label value (allocation.cybericebox.com/group) of the DHCP pool of a gateway: the pool name without its "-0". A label
+// value is at most 63 characters, and a lab name (up to 63) plus a gateway name (up to 35) is longer than that, so a value that does not fit
+// is the hash form (DeployKey: "h" + base36 of SHA-256), never a cut name. Nothing reads the value back to find the gateway: the pool is
+// found by DHCPPoolName and owned by its owner reference.
+func DHCPPoolGroup(labName, device string) string {
+	return DeployKey(strings.TrimSuffix(DHCPPoolName(labName, device), "-0"))
+}
+
 // DHCPPoolOwner reads a DHCP pool name made by DHCPPoolName for the lab: the gateway it is for, or "" when the name is not that of a pool
 // of this lab.
 func DHCPPoolOwner(poolName, labName string) string {
