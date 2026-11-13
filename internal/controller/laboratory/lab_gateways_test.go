@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -443,4 +444,66 @@ func TestReturnRoutePerVPNGateway(t *testing.T) {
 	check("r1", "eth0", "10.128.3.1")
 	check("r2", "eth0", "10.128.4.1")
 	check("r1", "eth1", "") // the network of the Internet gateway needs no way back to clients
+}
+
+// A lab named with 63 characters and gateways named with 35: every object the operator makes for the pair has a valid name, and every
+// label value on it fits 63 characters (the DHCP pool group is the hash form when the readable one is too long).
+func TestObjectsOfTheLongestNamesAreValid(t *testing.T) {
+	f := newGatewayFixture(t)
+	ctx := context.Background()
+	lab := strings.Repeat("l", 63)
+	long := func(c string) string { return strings.Repeat(c, names.MaxDeviceNameLen) }
+	dhcp := &laboratoryv1alpha1.DHCPServer{Enabled: true, Ranges: []laboratoryv1alpha1.DHCPRange{{Start: 2, End: 9}}}
+	l := f.lab(t, lab, func(l *laboratoryv1alpha1.Lab) {
+		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{
+			{Name: long("a"), Kind: laboratoryv1alpha1.GatewayKindVPN, DHCPServer: dhcp},
+			{Name: long("b"), Kind: laboratoryv1alpha1.GatewayKindVPN, DHCPServer: dhcp},
+			{Name: long("c"), Kind: laboratoryv1alpha1.GatewayKindInternet, DHCPServer: dhcp},
+		}
+	})
+	if _, err := f.r.ensureSubnetAllocation(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.r.ensureLabNetworkObjects(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	var pools allocationv1alpha1.PoolList
+	if err := f.c.List(ctx, &pools, client.MatchingLabels{poolpkg.PoolTypeLabel: "dhcp-vpn"}); err != nil {
+		t.Fatal(err)
+	}
+	var inet allocationv1alpha1.PoolList
+	if err := f.c.List(ctx, &inet, client.MatchingLabels{poolpkg.PoolTypeLabel: "dhcp-inet"}); err != nil {
+		t.Fatal(err)
+	}
+	pools.Items = append(pools.Items, inet.Items...)
+	if len(pools.Items) != 3 {
+		t.Fatalf("%d DHCP pools for 3 gateways", len(pools.Items))
+	}
+	groups := map[string]bool{}
+	for _, p := range pools.Items {
+		if errs := validation.IsDNS1123Subdomain(p.Name); len(errs) != 0 {
+			t.Errorf("pool name %q: %v", p.Name, errs)
+		}
+		for k, v := range p.Labels {
+			if errs := validation.IsValidLabelValue(v); len(errs) != 0 {
+				t.Errorf("pool %q label %s=%q (%d characters): %v", p.Name, k, v, len(v), errs)
+			}
+		}
+		groups[p.Labels[poolpkg.PoolGroupLabel]] = true
+	}
+	if len(groups) != 3 {
+		t.Errorf("the three gateways share pool groups: %v", groups)
+	}
+	var vpns laboratoryv1alpha1.LabVPNList
+	var gws laboratoryv1alpha1.LabGatewayList
+	_ = f.c.List(ctx, &vpns)
+	_ = f.c.List(ctx, &gws)
+	if len(vpns.Items) != 2 || len(gws.Items) != 1 {
+		t.Fatalf("objects: %d LabVPN, %d LabGateway", len(vpns.Items), len(gws.Items))
+	}
+	for _, n := range []string{vpns.Items[0].Name, vpns.Items[1].Name, gws.Items[0].Name} {
+		if errs := validation.IsDNS1123Subdomain(n); len(errs) != 0 {
+			t.Errorf("object name %q (%d characters): %v", n, len(n), errs)
+		}
+	}
 }
