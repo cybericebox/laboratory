@@ -40,7 +40,7 @@ operator:
   # network as AllowedIPs. A /8 to /18 network; the pool of a group is as big as the network (a /9 holds 32767 gateway networks).
   labBaseNetwork: "10.128.0.0/9"
 
-  # The most gateways one lab may have, VPN entries and Internet exits together (the shorthand vpn and internet of a lab count too).
+  # The most gateways one lab may have, VPN entries and Internet exits together.
   # A lab with more is refused when it is created. The backend and the catalog hold the rule 10 for task authors and do not ask.
   maxLabGateways: 10
 
