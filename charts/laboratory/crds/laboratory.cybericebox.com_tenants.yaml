@@ -63,6 +63,12 @@ spec:
                       type: string
                     maxItems: 64
                     type: array
+                  platformOnly:
+                    description: |-
+                      PlatformOnly lets the tenant's devices run only the images of the platform's own registry, pinned by digest
+                      (platform:<name>@sha256:<hex>); every other reference is refused at deploy. The platform can set it for all tenants
+                      (chart images.platformOnly); a tenant is platform-only when either says so.
+                    type: boolean
                   pullSecret:
                     description: |-
                       PullSecret names a kubernetes.io/dockerconfigjson Secret of the tenants namespace

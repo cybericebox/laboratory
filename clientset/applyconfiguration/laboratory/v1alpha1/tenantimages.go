@@ -34,6 +34,10 @@ type TenantImagesApplyConfiguration struct {
 	// reference is allowed when it equals an entry or lies under it. Absent: any image that
 	// the platform deny list (agent AGENT_IMAGE_DENY) does not exclude.
 	Allow []string `json:"allow,omitempty"`
+	// PlatformOnly lets the tenant's devices run only the images of the platform's own registry, pinned by digest
+	// (platform:<name>@sha256:<hex>); every other reference is refused at deploy. The platform can set it for all tenants
+	// (chart images.platformOnly); a tenant is platform-only when either says so.
+	PlatformOnly *bool `json:"platformOnly,omitempty"`
 }
 
 // TenantImagesApplyConfiguration constructs a declarative configuration of the TenantImages type for use with
@@ -57,5 +61,13 @@ func (b *TenantImagesApplyConfiguration) WithAllow(values ...string) *TenantImag
 	for i := range values {
 		b.Allow = append(b.Allow, values[i])
 	}
+	return b
+}
+
+// WithPlatformOnly sets the PlatformOnly field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PlatformOnly field is set to the value of the last call.
+func (b *TenantImagesApplyConfiguration) WithPlatformOnly(value bool) *TenantImagesApplyConfiguration {
+	b.PlatformOnly = &value
 	return b
 }

@@ -91,6 +91,7 @@ func Run() {
 	h.SetRegistryAddr(cfg.RegistryAddr)
 	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
+	h.SetPlatformImages(cfg.Cache.NodePrefix, cfg.ImagePlatformOnly)
 	var labSelector map[string]string
 	var labTolerations []corev1.Toleration
 	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &labSelector); err != nil {

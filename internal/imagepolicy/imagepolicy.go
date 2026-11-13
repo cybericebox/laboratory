@@ -4,8 +4,10 @@
 package imagepolicy
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -21,6 +23,91 @@ type Policy struct {
 	// tenant names the original image; the operator routes it through the cache, so a
 	// reference that already points at the cache would reach what it holds for other users.
 	CachePrefixes []string
+	// PlatformOnly: the only images are those of the platform registry, pinned by digest (see PlatformRef). Everything else is
+	// refused with ErrNotPlatform.
+	PlatformOnly bool
+	// PlatformPrefix is host:port of the platform registry as the nodes see it (names.RegistryNodePrefix). It is where Map sends a
+	// platform reference, and the only host a node-form platform reference may name.
+	PlatformPrefix string
+}
+
+// ErrNotPlatform is what Check wraps when PlatformOnly is on and the image is not a platform image by digest.
+var ErrNotPlatform = errors.New("image is not a platform image")
+
+// PlatformScheme opens a platform reference: platform:<name>@sha256:<hex>.
+const PlatformScheme = "platform:"
+
+var (
+	platformNameRe   = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	platformDigestRe = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+)
+
+const maxPlatformNameLen = 64
+
+// PlatformRef is an image of the platform registry: repository platform/<Name>, pinned by Digest ("sha256:<hex>").
+type PlatformRef struct{ Name, Digest string }
+
+func newPlatformRef(name, digest string) (PlatformRef, bool) {
+	if len(name) > maxPlatformNameLen || !platformNameRe.MatchString(name) || !platformDigestRe.MatchString(digest) {
+		return PlatformRef{}, false
+	}
+	return PlatformRef{Name: name, Digest: digest}, true
+}
+
+// ParsePlatform reads the logical form platform:<name>@sha256:<hex> that the platform sends. A tag is not a platform reference:
+// the image is always pinned.
+func ParsePlatform(ref string) (PlatformRef, bool) {
+	rest, ok := strings.CutPrefix(ref, PlatformScheme)
+	if !ok {
+		return PlatformRef{}, false
+	}
+	name, digest, ok := strings.Cut(rest, "@")
+	if !ok {
+		return PlatformRef{}, false
+	}
+	return newPlatformRef(name, digest)
+}
+
+// IsPlatformScheme says the reference starts with "platform:", valid or not. Such a reference is never read as a Docker Hub image.
+func IsPlatformScheme(ref string) bool { return strings.HasPrefix(ref, PlatformScheme) }
+
+// Node returns the reference the node's runtime pulls: <prefix>/platform/<name>@<digest>.
+func (r PlatformRef) Node(prefix string) string {
+	return prefix + "/platform/" + r.Name + "@" + r.Digest
+}
+
+// ParseNode reads <prefix>/platform/<name>@sha256:<hex> (the prefix as the nodes see the registry, case and default ports as written).
+func ParseNode(ref, prefix string) (PlatformRef, bool) {
+	if prefix == "" {
+		return PlatformRef{}, false
+	}
+	rest, ok := strings.CutPrefix(ref, prefix+"/platform/")
+	if !ok {
+		return PlatformRef{}, false
+	}
+	name, digest, ok := strings.Cut(rest, "@")
+	if !ok {
+		return PlatformRef{}, false
+	}
+	return newPlatformRef(name, digest)
+}
+
+// IsPlatform says the reference names an image of the platform registry by digest, in either form.
+func (p Policy) IsPlatform(ref string) bool {
+	if _, ok := ParsePlatform(ref); ok {
+		return true
+	}
+	_, ok := ParseNode(ref, p.PlatformPrefix)
+	return ok
+}
+
+// Map returns the reference to run for ref: a platform reference becomes its node form, anything else is returned as it is. Check
+// the reference first; Map does no admission.
+func (p Policy) Map(ref string) string {
+	if r, ok := ParsePlatform(ref); ok && p.PlatformPrefix != "" {
+		return r.Node(p.PlatformPrefix)
+	}
+	return ref
 }
 
 // dockerHubHosts are the spellings of Docker Hub a reference may use; all of them are docker.io.
@@ -172,7 +259,23 @@ func under(repo, entry string) bool {
 }
 
 // Check returns an error when the tenant may not use the image.
+//
+// A platform reference (platform:<name>@sha256:<hex>) is the platform's own image, picked by the platform, and passes. With PlatformOnly
+// nothing else does, but the same image in node form (<PlatformPrefix>/platform/<name>@sha256:<hex>): exactly the repositories platform/**,
+// by digest, never lab/**, base/** or the cache.
 func (p Policy) Check(ref string) error {
+	if IsPlatformScheme(ref) {
+		if _, ok := ParsePlatform(ref); !ok {
+			return fmt.Errorf("%w: %q must be platform:<name>@sha256:<64 hex>", ErrNotPlatform, ref)
+		}
+		return nil
+	}
+	if p.PlatformOnly {
+		if _, ok := ParseNode(ref, p.PlatformPrefix); ok {
+			return nil
+		}
+		return fmt.Errorf("%w: image %q must be platform:<name>@sha256:<64 hex>", ErrNotPlatform, ref)
+	}
 	repo, bare, err := normalize(ref)
 	if err != nil {
 		return err

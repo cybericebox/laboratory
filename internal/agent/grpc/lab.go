@@ -105,6 +105,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if err := h.admitVariant(v, policy); err != nil {
 			return nil, err
 		}
+		mapSpecImages(policy, &v.spec)
 	}
 	refs := make([]*protobuf.ItemRef, len(items))
 	envs := make([]deviceVars, len(items))
@@ -246,7 +247,7 @@ func (h *Handler) admitVariant(v *labVariant, policy imagepolicy.Policy) error {
 		return invalid("variant %q: %v", v.id, err)
 	}
 	if err := checkSpecImages(policy, &v.spec); err != nil {
-		return status.Errorf(codes.PermissionDenied, "variant %q: %v", v.id, err)
+		return imageRefusal(fmt.Sprintf("variant %q: ", v.id), err)
 	}
 	if err := h.requireTerminal(&v.spec); err != nil {
 		return invalid("variant %q: %v", v.id, err)

@@ -83,3 +83,23 @@ func TestRewritePinned(t *testing.T) {
 		t.Fatalf("no digest, plain rewrite: %s", got)
 	}
 }
+
+// A platform image arrives from the agent in node form (localhost:<port>/platform/<name>@sha256:...): the cache leaves it alone, pinned or
+// not, because it already points at the registry and its first path element is not an upstream registry.
+func TestPlatformImagesAreNeverRewritten(t *testing.T) {
+	r := Rewriter{Prefix: "localhost:5035", Registries: DefaultRegistries}
+	const digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	ref := "localhost:5035/platform/tools@" + digest
+	if got := r.Rewrite(ref); got != ref {
+		t.Errorf("Rewrite = %q", got)
+	}
+	if got := r.RewritePinned(ref, ""); got != ref {
+		t.Errorf("RewritePinned with no digest = %q", got)
+	}
+	if got := r.RewritePinned(ref, digest); got != ref {
+		t.Errorf("RewritePinned = %q", got)
+	}
+	if DigestOf(ref) != digest {
+		t.Errorf("the digest of a platform image is read from the reference: %q", DigestOf(ref))
+	}
+}
