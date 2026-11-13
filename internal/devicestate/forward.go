@@ -108,7 +108,7 @@ func needsReader(method, path string) bool {
 	if strings.Contains(path, "..") || strings.Contains(path, "//") {
 		return false
 	}
-	return strings.HasPrefix(path, "/v2/lab/") || strings.HasPrefix(path, "/v2/base/")
+	return strings.HasPrefix(path, "/v2/lab/") || strings.HasPrefix(path, "/v2/base/") || strings.HasPrefix(path, "/v2/platform/")
 }
 
 // readerHandler relays registry requests to target, adding the reader account where needsReader says so.

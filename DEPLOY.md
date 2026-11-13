@@ -2098,9 +2098,46 @@ denied to everyone but the writer):
   everything. Both live in the Secret `laboratory-registry` (generated once and kept across upgrades). The node-agent forwarder (`127.0.0.1:5035`) adds the reader to the node runtime's **GET and HEAD** requests of those repositories
   that carry no credentials of their own, so pulling a snapshot needs no host configuration; writes are never given the reader. The agent exports a snapshot
   with the reader too (the Secret `laboratory-registry-reader` in the agent namespace).
+- **The platform images (`platform/**`), only with `registry.platform.enabled`:** private like the snapshots, see "Platform images" below.
 - The network policy still lets the node-agents and the platform pods reach zot; the accounts are what keeps another team's snapshots (which can hold
   solutions) from any other process that can reach it. A process on a node can still reach the forwarder on that node's loopback: the node-agent is the
   trusted path.
+
+### Platform images (`registry.platform`)
+
+The images a lab runs can live in the registry itself, in the repository namespace `platform/**`, instead of on a public or private registry outside the
+cluster. A component of the platform (the backend that uploads or copies a task image) writes them; the labs pull them by digest as
+`localhost:5035/platform/<name>@sha256:<digest>`, with no credentials of their own. This chart only prepares the registry; nothing in the laboratory
+writes or reads `platform/**` by itself. It is **off by default** and then changes nothing: no pattern, no account, no Secret.
+
+```yaml
+registry:
+  platform:
+    enabled: true
+    writerNamespaces: [platform]     # the namespace of the writer; it must exist when the chart is installed
+    writerPodLabels: {}              # optional: only pods with these labels may reach the registry
+```
+
+What it adds:
+
+- **Access control.** The pattern `platform/**` is private: the `reader` account reads, the account `platform-writer` reads, writes and deletes. The snapshot
+  `writer` (the account of the operator and of every node-agent) has **no** right there, and `platform-writer` has none in `lab/**`, `base` or the cache, so a
+  compromised node cannot alter a platform image and the writer of platform images cannot touch a snapshot.
+- **The pull on the nodes.** The node-agent forwarder adds the `reader` account to GET and HEAD requests of `/v2/platform/...` that carry no credentials, like
+  for `lab/**` and `base`, only for the exact `Host` `localhost:5035` and never for a path with `..` or `//`. As with the snapshots, a process that can open the
+  node's loopback can read the platform images: the node-agent is the trusted path.
+- **The writer's Secret.** `laboratory-registry-platform` (keys `username`, `password`, `host`; the host is the in-cluster address
+  `laboratory-registry.<release namespace>.svc:5000`, plain http) in the release namespace and a copy in each namespace of `writerNamespaces`. The password
+  is generated once and kept across upgrades (read back with `lookup`, like the other accounts); it stays when the feature is switched off, so that switching it on
+  again changes nothing. Rotating it is not done by the chart yet (the other accounts have the same limit): delete the registry Secrets and the platform Secrets, then upgrade and restart the consumers.
+- **The network.** With `registry.networkPolicy.enabled`, the pods of `writerNamespaces` (narrowed by `writerPodLabels`) may reach the registry Service on port
+  5000. Nothing else is let in. The policy is a CiliumNetworkPolicy like the rest of the registry's.
+- **The cache does not touch it.** The retention of the pull-through cache and its on-demand sync name only the cache's own registries. An upstream
+  registry named `platform`, `lab` or `base` is refused by the chart, because those names belong to the registry itself. zot's garbage collection removes only blobs that no
+  manifest references.
+
+Plan the volume: `platform/**` shares the registry volume (`registry.size`, 20Gi by default) with the snapshots and the cache, and the volume is the only
+copy of what is pushed there. Use a `Retain` class (`registry.retainClass`), take volume snapshots, and size it for the task images, not only for the snapshots.
 
 ### The laboratory's error journal
 

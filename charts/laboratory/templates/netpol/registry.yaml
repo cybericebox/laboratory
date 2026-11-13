@@ -30,6 +30,21 @@ spec:
         - ports:
             - port: "5000"
               protocol: TCP
+{{- if .Values.registry.platform.enabled }}
+{{- range $ns := uniq .Values.registry.platform.writerNamespaces }}
+    # The writer of the platform images (registry.platform.writerNamespaces): the backend reaches the Service on port 5000.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $ns }}
+            {{- with $.Values.registry.platform.writerPodLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+{{- end }}
+{{- end }}
 {{- if .Values.agent.enabled }}
     # The management agent: snapshot export, and PrewarmImages with the cache.
     - fromEndpoints:

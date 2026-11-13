@@ -195,6 +195,17 @@ at install time instead of shipping a broken deployment.
 {{- if not .Values.registry.size }}
 {{- fail "registry.size is required (volume size of the platform registry)" }}
 {{- end }}
+{{- /* A cache upstream is a repository namespace of its own; these belong to snapshots, the base image and the platform images. */}}
+{{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}
+{{- if has .name (list "lab" "base" "platform") }}
+{{- fail (printf "registry.cache: an upstream registry cannot be named %q (the repository namespaces lab, base and platform belong to the registry itself)" .name) }}
+{{- end }}
+{{- end }}
+{{- range .Values.registry.platform.writerNamespaces }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString .)) }}
+{{- fail (printf "registry.platform.writerNamespaces: %q is not a namespace name" (toString .)) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.devices.statePersistence.enabled (not (hasPrefix "/" .Values.devices.statePersistence.containerdRoot)) }}
 {{- fail "devices.statePersistence.containerdRoot must be an absolute host path (the containerd root directory)" }}
