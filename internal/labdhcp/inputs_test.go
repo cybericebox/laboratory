@@ -77,3 +77,41 @@ func TestStoppedIntentDisablesDHCPAndWakesTheGateways(t *testing.T) {
 		t.Fatal("stopped DHCP still enabled", err)
 	}
 }
+
+// Two gateways of one lab each get their own DHCP: the settings of that gateway, the pool of that gateway; a gateway whose DHCP is off gets
+// none even when a pool of its name exists.
+func TestEachGatewayOfALabGetsItsOwnDHCP(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = lab.AddToScheme(scheme)
+	_ = allocation.AddToScheme(scheme)
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "uid"}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{
+		{Name: "attack", Kind: lab.GatewayKindVPN, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 10}}}},
+		{Name: "user", Kind: lab.GatewayKindVPN, DHCPServer: &lab.DHCPServer{Enabled: false, Ranges: []lab.DHCPRange{{Start: 20, End: 30}}}},
+		{Name: "out", Kind: lab.GatewayKindInternet, DHCPServer: &lab.DHCPServer{Enabled: true, DNS: "9.9.9.9", Ranges: []lab.DHCPRange{{Start: 50, End: 60}}}},
+		{Name: "plain", Kind: lab.GatewayKindVPN},
+	}}}
+	pool := func(gateway string) *allocation.Pool {
+		return &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: names.DHCPPoolName("a", gateway), Namespace: "g",
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: "a", UID: l.UID}}}}
+	}
+	// a pool for "user" exists although its DHCP is off; "plain" has no pool
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(l, pool("attack"), pool("user"), pool("out")).Build()
+	ctx := context.Background()
+
+	on, ranges, dns, err := Desired(ctx, c, "g", "a", "attack")
+	if err != nil || !on || len(ranges) != 1 || ranges[0].Start != 2 || ranges[0].End != 10 || dns != "" {
+		t.Fatalf("attack: %v %v %q %v", on, ranges, dns, err)
+	}
+	on, ranges, dns, err = Desired(ctx, c, "g", "a", "out")
+	if err != nil || !on || len(ranges) != 1 || ranges[0].Start != 50 || dns != "9.9.9.9" {
+		t.Fatalf("out: %v %v %q %v", on, ranges, dns, err)
+	}
+	for _, gateway := range []string{"user", "plain", "missing"} {
+		if on, _, _, err := Desired(ctx, c, "g", "a", gateway); err != nil || on {
+			t.Fatalf("%s must have no DHCP: %v %v", gateway, on, err)
+		}
+	}
+	if pool("attack").Name == pool("out").Name {
+		t.Fatal("two gateways share a pool")
+	}
+}

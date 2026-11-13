@@ -1106,6 +1106,10 @@ groupLimits:
   maxLabs: 50
   defaultUsers: 1
   defaultLabs: 5
+  # How many VPN and Internet gateways a lab is expected to have. The VPN pod is sized for labs x vpnGatewaysPerLab (a leg and an access
+  # rule per client for each), the gateway pod for labs x internetGatewaysPerLab. A lab may have up to operator.maxLabGateways in all.
+  vpnGatewaysPerLab: 2
+  internetGatewaysPerLab: 1
 
 # ============================================================
 # VNI pool: retirement, quarantine, sweep
