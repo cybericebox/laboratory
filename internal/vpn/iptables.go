@@ -5,7 +5,6 @@ package vpn
 import (
 	"context"
 	"fmt"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -217,12 +216,7 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 		if err != nil {
 			return nil, err
 		}
-		result := map[string]TrafficCounter{}
-		for _, row := range snapshot.Rows {
-			id := AccessRule{ClientName: row.Subject, LabName: row.Lab, Action: AccessAllow}.Identifier()
-			result[id] = TrafficCounter{Packets: counterInt64(row.PacketsOut), Bytes: counterInt64(row.BytesOut)}
-		}
-		return result, nil
+		return sumPairCounters(snapshot.Rows), nil
 	}
 	lines, err := m.ipt.ListWithCounters("filter", accessChain)
 	if err != nil {
@@ -250,7 +244,7 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 		if packetErr != nil || bytesErr != nil {
 			continue
 		}
-		counters[id] = TrafficCounter{Packets: packets, Bytes: bytes}
+		addTrafficCounter(counters, id, TrafficCounter{Packets: packets, Bytes: bytes})
 	}
 	return counters, nil
 }
@@ -294,13 +288,6 @@ func (m *IPTablesManager) cleanupGuards() {
 			podinput.Remove(m.ipt6)
 		}
 	}
-}
-
-func counterInt64(n uint64) int64 {
-	if n > math.MaxInt64 {
-		return math.MaxInt64
-	}
-	return int64(n)
 }
 
 // foldDrops adds counts read before a rewrite to the total. The caller holds forwardMu.
