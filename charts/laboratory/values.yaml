@@ -848,6 +848,27 @@ registry:
   # containerd treats localhost registries as plain HTTP, so the nodes need no
   # configuration. The port 5035 must be free on the node; it is a constant of the images.
 
+  # Platform images: the repository namespace platform/** of this registry, for the images a lab runs (task images that the platform
+  # uploaded or copied, pinned by digest). Off: the registry has no such namespace, no account for it, and nothing changes.
+  # On, it adds to the registry:
+  #  - the repository pattern platform/**, private like the snapshots: the reader account reads it (the node-agent adds that account to
+  #    the pulls of the node runtime, so a lab pulls localhost:5035/platform/<name>@sha256:<digest> with no credentials of its own);
+  #  - an account of its own, platform-writer, that reads, writes and deletes ONLY platform/**. The writer account of the snapshots sits on
+  #    every node and has no right in platform/**; platform-writer has none in the snapshots, the base repository or the cache;
+  #  - the Secret laboratory-registry-platform (username, password, host) in the release namespace, made once and kept across
+  #    upgrades, and a copy of it in each namespace of writerNamespaces.
+  # The cache never touches platform/**: its retention and its on-demand sync match only the repositories of its own upstream registries
+  # (an upstream named platform, lab or base is refused). zot's blob garbage collection removes only what no manifest references.
+  platform:
+    enabled: false
+    # Namespaces of the components that write platform images (the backend of the platform): each gets a copy of the Secret
+    # laboratory-registry-platform and its pods may reach the registry Service (port 5000) through the network policy
+    # (registry.networkPolicy.enabled). The namespace must exist when the chart is installed. Empty: only the release namespace has the
+    # Secret and no namespace is let in.
+    writerNamespaces: []
+    # Narrows the network policy to the pods of those namespaces that carry all of these labels. Empty: every pod of the namespace.
+    writerPodLabels: {}
+
   # Pull-through cache of the lab images. The operator rewrites REG/repo:tag of the
   # devices, VPN and gateway pods of labs created while the cache is on into
   # localhost:5035/REG/repo:tag; zot fetches each image from REG on the first

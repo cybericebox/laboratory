@@ -12,6 +12,14 @@ to everyone.
 */}}
 {{- $private := dict "policies" (list (dict "users" (list "reader") "actions" (list "read")) (dict "users" (list "writer") "actions" $all)) }}
 {{- $repos := dict "lab/**" $private "base" $private "base/**" $private }}
+{{- if $r.platform.enabled }}
+{{- /*
+platform/** holds the images a lab runs (registry.platform): private like the snapshots, the reader reads it, and an account of its own,
+platform-writer, reads, writes and deletes it. The snapshot writer is not listed, so it has no right here, and platform-writer is listed
+nowhere else, so it has none in lab/**, base or the cache. The cache retention below names only the cache globs, never this one.
+*/}}
+{{- $_ := set $repos "platform/**" (dict "policies" (list (dict "users" (list "reader") "actions" (list "read")) (dict "users" (list "platform-writer") "actions" $all))) }}
+{{- end }}
 {{- $public := dict "anonymousPolicy" (list "read") "policies" (list (dict "users" (list "writer") "actions" (list "read"))) }}
 {{- if $cache.enabled }}
 {{- range $u := (include "laboratory.cacheUpstreams" . | fromJsonArray) }}

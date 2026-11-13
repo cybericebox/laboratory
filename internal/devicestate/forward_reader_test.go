@@ -30,7 +30,7 @@ func TestReaderHandlerAddsTheReaderOnlyWhereItBelongs(t *testing.T) {
 		return gotAuth
 	}
 	reader := "Basic cmVhZGVyOnB3" // reader:pw
-	for _, p := range []string{"/v2/lab/ns/lab/dev/manifests/sha256:abc", "/v2/lab/ns/lab/dev/blobs/sha256:abc", "/v2/base/manifests/latest", "/v2/base/blobs/sha256:x"} {
+	for _, p := range []string{"/v2/lab/ns/lab/dev/manifests/sha256:abc", "/v2/lab/ns/lab/dev/blobs/sha256:abc", "/v2/base/manifests/latest", "/v2/base/blobs/sha256:x", "/v2/platform/tools/manifests/sha256:abc", "/v2/platform/tools/blobs/sha256:abc"} {
 		for _, m := range []string{"GET", "HEAD"} {
 			if got := do(m, p, ""); got != reader {
 				t.Errorf("%s %s: Authorization = %q, want the reader", m, p, got)
@@ -45,8 +45,10 @@ func TestReaderHandlerAddsTheReaderOnlyWhereItBelongs(t *testing.T) {
 	}
 	// writes never get the reader, and credentials the caller brought are left alone (the snapshot pusher is the writer)
 	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
-		if got := do(m, "/v2/lab/ns/lab/dev/blobs/uploads/", ""); got != "" {
-			t.Errorf("%s must not get the reader: %q", m, got)
+		for _, p := range []string{"/v2/lab/ns/lab/dev/blobs/uploads/", "/v2/platform/tools/blobs/uploads/", "/v2/platform/tools/manifests/sha256:abc"} {
+			if got := do(m, p, ""); got != "" {
+				t.Errorf("%s %s must not get the reader: %q", m, p, got)
+			}
 		}
 	}
 	if got := do("GET", "/v2/lab/ns/lab/dev/manifests/x", "Basic d3JpdGVyOnc="); got != "Basic d3JpdGVyOnc=" {
@@ -55,6 +57,9 @@ func TestReaderHandlerAddsTheReaderOnlyWhereItBelongs(t *testing.T) {
 	// a path that only starts like a snapshot repository is not one
 	if got := do("GET", "/v2/labx/y/manifests/1", ""); got != "" {
 		t.Errorf("labx is not lab: %q", got)
+	}
+	if got := do("GET", "/v2/platformx/y/manifests/1", ""); got != "" {
+		t.Errorf("platformx is not platform: %q", got)
 	}
 }
 
