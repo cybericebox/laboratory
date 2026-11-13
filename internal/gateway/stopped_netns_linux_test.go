@@ -32,9 +32,11 @@ func TestNetnsStoppedGatewayRemovesOnlyOwnedDHCPAddressAndNAT(t *testing.T) {
 	_ = allocation.AddToScheme(scheme)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&lab.LabGateway{}).Build()
 	a := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "lab-a"}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 4}}}}}}
+	a.Status.Internet.CIDR = "10.9.1.0/24"
 	b := a.DeepCopy()
 	b.Name = "b"
 	b.UID = "lab-b"
+	b.Status.Internet.CIDR = "10.9.2.0/24"
 	for i, l := range []*lab.Lab{a, b} {
 		if err := c.Create(ctx, l); err != nil {
 			t.Fatal(err)
@@ -56,7 +58,7 @@ func TestNetnsStoppedGatewayRemovesOnlyOwnedDHCPAddressAndNAT(t *testing.T) {
 	t.Cleanup(ipt.RemoveInput)
 	dhcpMgr := dhcp.NewManager()
 	defer dhcpMgr.Close()
-	r := &LabGatewayReconciler{Client: c, IPT: ipt, DHCP: dhcpMgr, Cfg: &Config{Namespace: "g", InetBaseNetwork: "10.9.0.0/16"}}
+	r := &LabGatewayReconciler{Client: c, IPT: ipt, DHCP: dhcpMgr, Cfg: &Config{Namespace: "g"}}
 	for _, name := range []string{"a-gw", "b-gw"} {
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: name, Namespace: "g"}}); err != nil {
 			t.Fatal(err)

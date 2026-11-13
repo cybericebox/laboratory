@@ -38,7 +38,7 @@ func TestLabVPNDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 			_ = laboratoryv1alpha1.AddToScheme(s)
 			parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
 			parent.Spec.VPN.Enabled = true
-			vpn := &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerVPN}}}
+			vpn := &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerVPN}}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "a"}}
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(tc.objects(), parent, vpn)...).Build()
 			r := &LabReconciler{Client: c, Reader: c, Scheme: s}
 			ctx := context.Background()
@@ -46,7 +46,7 @@ func TestLabVPNDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i := 0; i < 3; i++ {
-				if _, err := r.ensureLabVPNDeleted(ctx, parent); err != nil {
+				if _, err := r.ensureGatewaysDeleted(ctx, parent); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -123,7 +123,7 @@ func TestLabGatewayDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 			_ = laboratoryv1alpha1.AddToScheme(s)
 			parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
 			parent.Spec.Internet.Enabled = true
-			gw := &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}}
+			gw := &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: "a"}}
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(tc.objects, parent, gw)...).Build()
 			r := &LabReconciler{Client: c, Reader: c, Scheme: s}
 			ctx := context.Background()
@@ -131,7 +131,7 @@ func TestLabGatewayDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i := 0; i < 3; i++ {
-				if _, err := r.ensureLabGatewayDeleted(ctx, parent); err != nil {
+				if _, err := r.ensureGatewaysDeleted(ctx, parent); err != nil {
 					t.Fatal(err)
 				}
 			}

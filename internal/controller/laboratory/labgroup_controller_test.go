@@ -20,7 +20,7 @@ import (
 var _ = Describe("LabGroup suspension", func() {
 	It("passes the configured support address to the VPN server", func() {
 		const namespace = "default"
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test", SupportEmail: "help@example.org"}
+		r := &LabGroupReconciler{Client: k8sClient, LabBaseNetwork: "10.8.0.0/10", VPNImage: "test", SupportEmail: "help@example.org"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
 		DeferCleanup(func() {
 			var dep appsv1.Deployment
@@ -47,7 +47,7 @@ var _ = Describe("LabGroup suspension", func() {
 
 	It("gives the VPN and gateway pods Guaranteed resources, and a changed value never reaches an existing group", func() {
 		const namespace = "default"
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", InetBaseNetwork: "10.9.0.0/10", VPNImage: "test", GatewayImage: "test",
+		r := &LabGroupReconciler{Client: k8sClient, LabBaseNetwork: "10.8.0.0/10", VPNImage: "test", GatewayImage: "test",
 			GroupPods: grouppods.Config{VPNCPU: "120m", VPNMemory: "80Mi", GatewayCPU: "60m", GatewayMemory: "40Mi"}}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
 		Expect(r.ensureGatewayDeployment(ctx, namespace, false, nil)).To(Succeed())
@@ -201,7 +201,7 @@ var _ = Describe("LabGroup suspension", func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, dep) })
 		}
 
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
+		r := &LabGroupReconciler{Client: k8sClient, LabBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, true, nil)).To(Succeed())
 		Expect(r.ensureGatewayDeployment(ctx, namespace, true, nil)).To(Succeed())
 

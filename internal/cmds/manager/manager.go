@@ -239,11 +239,10 @@ func Run() {
 		Recorder:                    mgr.GetEventRecorderFor("labgroup"),
 		PublicVPNEndpoint:           cfg.PublicVPNEndpoint,
 		WGDemuxMode:                 cfg.WGDemuxMode,
-		VPNBaseNetwork:              cfg.VPNBaseNetwork,
+		LabBaseNetwork:              cfg.LabBaseNetwork,
 		VPNFirewall:                 cfg.VPNFirewall,
 		GatewayMaxConnectionsPerLab: cfg.GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab: cfg.GatewayNewConnectionsPerSecondPerLab,
 		GatewayEgressEnv:        gatewayEgressEnv(cfg),
-		InetBaseNetwork:         cfg.InetBaseNetwork,
 		VPNImage:                cfg.VPNImage,
 		Mirror:                  mirror,
 		Resolver:                resolver,
@@ -274,7 +273,7 @@ func Run() {
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
 		Reader:         mgr.GetAPIReader(),
-		VPNBaseNetwork: cfg.VPNBaseNetwork,
+		LabBaseNetwork: cfg.LabBaseNetwork,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
@@ -309,8 +308,8 @@ func Run() {
 		Recorder:                  mgr.GetEventRecorderFor("lab"),
 		BaseDomain:                cfg.BaseDomain,
 		ProxySourceCIDRs:          cfg.ProxySourceCIDRs,
-		VPNBaseNetwork:            cfg.VPNBaseNetwork,
-		InetBaseNetwork:           cfg.InetBaseNetwork,
+		LabBaseNetwork:            cfg.LabBaseNetwork,
+		MaxLabGateways:            cfg.MaxLabGateways,
 		State:                     statePolicy,
 		Mirror:                    mirror,
 		Resolver:                  resolver,

@@ -16,7 +16,7 @@ import (
 func TestPodsCarryTheirPriorityClass(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
-	r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", PriorityClass: "laboratory-group"}
+	r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", PriorityClass: "laboratory-group"}
 	if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestPodsCarryTheLabSchedulerName(t *testing.T) {
 	ctx := context.Background()
 	for _, name := range []string{"laboratory-binpack", ""} {
 		c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
-		r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SchedulerName: name}
+		r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SchedulerName: name}
 		if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
 			t.Fatal(err)
 		}

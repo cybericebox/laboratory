@@ -76,7 +76,7 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		r.DHCP.Stop(labvpn.Spec.LabName)
 		iface := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 		r.IPT.DenyDHCP(iface)
-		if cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex); err == nil {
+		if cidr := parent.Status.GatewayCIDR(laboratoryv1alpha1.GatewayKindVPN, labvpn.Spec.Device); cidr != "" {
 			r.IPT.DenyPing(iface, firstHostIP(cidr))
 		}
 		if old, ok := r.applied[labvpn.Name]; ok {
@@ -100,7 +100,7 @@ func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laborato
 	r.DHCP.Drop(labvpn.Spec.LabName)
 	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 	r.IPT.DenyDHCP(ifaceName)
-	if cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex); err == nil {
+	if cidr, err := r.gatewayCIDR(ctx, labvpn); err == nil {
 		r.IPT.DenyPing(ifaceName, firstHostIP(cidr))
 	}
 	if old, ok := r.applied[labvpn.Name]; ok {
@@ -164,6 +164,21 @@ func (r *LabVPNReconciler) dhcpFailure(ctx context.Context, labvpn *laboratoryv1
 	return ctrl.Result{}, err
 }
 
+// gatewayCIDR is the /24 of the gateway this object serves, from the status of the parent Lab (where the operator wrote it when it took the
+// number from the pool): not computed from the number, because the Internet /24 of a lab made before the one address pool keeps the old
+// place of its number.
+func (r *LabVPNReconciler) gatewayCIDR(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (string, error) {
+	var parent laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, client.ObjectKey{Name: labvpn.Spec.LabName, Namespace: labvpn.Namespace}, &parent); err != nil {
+		return "", fmt.Errorf("read the lab of the VPN gateway: %w", err)
+	}
+	cidr := parent.Status.GatewayCIDR(laboratoryv1alpha1.GatewayKindVPN, labvpn.Spec.Device)
+	if cidr == "" {
+		return "", fmt.Errorf("the lab has no CIDR for VPN gateway %q yet", labvpn.Spec.Device)
+	}
+	return cidr, nil
+}
+
 func firstHostIP(cidr string) string {
 	ip, _, _ := net.ParseCIDR(cidr)
 	return netutil.NextIP(ip).String()
@@ -223,9 +238,9 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex)
+	cidr, err := r.gatewayCIDR(ctx, labvpn)
 	if err != nil {
-		return r.networkFailure(ctx, labvpn, fmt.Errorf("compute VPN CIDR: %w", err))
+		return r.networkFailure(ctx, labvpn, err)
 	}
 
 	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
@@ -253,10 +268,10 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 		gwIP := firstHostIP(cidr)
 		// The way back to the participants (the WireGuard clients) goes through this pod: the leases carry it as a classless
 		// static route, so a DHCP device needs no route set by hand.
-		clientSubnet, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, 0)
-		if err != nil {
-			return r.networkFailure(ctx, labvpn, fmt.Errorf("compute VPN client subnet: %w", err))
+		if r.Cfg == nil || r.Cfg.ClientSubnet == nil {
+			return r.networkFailure(ctx, labvpn, fmt.Errorf("the VPN client subnet is not configured"))
 		}
+		clientSubnet := r.Cfg.ClientSubnet.String()
 		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
 		if !state.DHCPKnown || !state.DHCP {
 			if err := r.IPT.AllowDHCP(ifaceName); err != nil {

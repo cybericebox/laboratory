@@ -14,7 +14,7 @@ import (
 // annotation only with its next template change, never through a rollout of its own.
 func TestGroupPodsSafeToEvictFalse(t *testing.T) {
 	f := newSchedFixture(t, schedCfg())
-	r := &LabGroupReconciler{Client: f.c, VPNBaseNetwork: "10.8.0.0/10", InetBaseNetwork: "10.9.0.0/10", VPNImage: "img:1", GatewayImage: "img:1"}
+	r := &LabGroupReconciler{Client: f.c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "img:1", GatewayImage: "img:1"}
 	ctx := context.Background()
 	if err := r.ensureVPNDeployment(ctx, "lg-a", false, nil); err != nil {
 		t.Fatal(err)

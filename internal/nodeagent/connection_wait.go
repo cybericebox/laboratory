@@ -22,7 +22,7 @@ const (
 	WaitEndpointNode      = "WaitingForEndpointNode"  // an endpoint device has no node yet (its pod is not placed or not started)
 	WaitVNI               = "WaitingForVNI"           // the connection or the switch has no VNI yet
 	WaitNetworkObject     = "WaitingForNetworkObject" // the LabVPN or LabGateway of the lab is not there yet
-	WaitInvalidNetworkIdx = "InvalidNetworkIndex"     // the lab network index is 0 or out of 1..254: the pod has no interface for it
+	WaitInvalidNetworkIdx = "InvalidNetworkIndex"     // the lab network index is 0 or out of 1..65535: the pod has no interface for it
 	WaitDevicePod         = "WaitingForDevicePod"     // the device's pod is not published yet
 	WaitOVSPort           = "WaitingForOVSPort"       // the port of an endpoint does not exist on this node yet
 	WaitPortOwner         = "WaitingForPortOwner"     // the port of an endpoint still belongs to the pod that was replaced (its new pod is being wired)
@@ -52,7 +52,7 @@ func markWired(ctx context.Context, c client.Client, log logr.Logger, conn *labo
 	return c.Status().Update(ctx, conn)
 }
 
-// validLabIndex says n is a lab network index that the VPN and gateway pods have an interface for (lab1..lab254; 0 is not one).
+// validLabIndex says n is a lab network index that the VPN and gateway pods have an interface for (lab1..lab65535; 0 is not one).
 func validLabIndex(n uint) bool { return n >= 1 && n <= maxLabIndex }
 
 // waitMessage is the text of a reason, for the message of the condition.

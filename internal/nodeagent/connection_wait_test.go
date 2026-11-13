@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 type countedLog struct {
@@ -79,9 +80,9 @@ func TestMarkWiredMakesTheWaitVisible(t *testing.T) {
 	}
 }
 
-// Lab network 0 (and anything above 254) has no interface in the VPN or gateway pod: it is a named reason, not a silent wait.
+// Lab network 0 (and anything above names.MaxLabNetworkIndex) has no interface in the VPN or gateway pod: it is a named reason, not a silent wait.
 func TestLabNetworkIndexRange(t *testing.T) {
-	for n, want := range map[uint]bool{0: false, 1: true, 254: true, 255: false} {
+	for n, want := range map[uint]bool{0: false, 1: true, 254: true, 255: true, 32767: true, names.MaxLabNetworkIndex: true, names.MaxLabNetworkIndex + 1: false} {
 		if validLabIndex(n) != want {
 			t.Errorf("validLabIndex(%d) = %v", n, !want)
 		}

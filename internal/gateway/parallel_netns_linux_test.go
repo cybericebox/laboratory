@@ -51,7 +51,7 @@ func TestNetnsLabsOpenedInParallelEqualLabsOpenedOneByOne(t *testing.T) {
 	dhcpMgr := dhcp.NewManager()
 	defer dhcpMgr.Close()
 	labs := egressproxy.NewLabMap()
-	r := &LabGatewayReconciler{Client: c, IPT: m, DHCP: dhcpMgr, Labs: labs, Shaper: NewShaper(), Cfg: &Config{Namespace: "g", InetBaseNetwork: "10.9.0.0/16"}}
+	r := &LabGatewayReconciler{Client: c, IPT: m, DHCP: dhcpMgr, Labs: labs, Shaper: NewShaper(), Cfg: &Config{Namespace: "g"}}
 
 	for i := 1; i <= 2*perGroup; i++ {
 		iface := fmt.Sprintf("lab%d", i)
@@ -59,7 +59,7 @@ func TestNetnsLabsOpenedInParallelEqualLabsOpenedOneByOne(t *testing.T) {
 		nstest.Run(t, "", "ip", "link", "set", iface, "up")
 		t.Cleanup(func() { _, _ = nstest.Try("", "ip", "link", "del", iface) })
 		name := fmt.Sprintf("a%d", i)
-		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true}}}
+		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true}}, Status: lab.LabStatus{Internet: lab.LabNetworkStatus{CIDR: fmt.Sprintf("10.9.%d.0/24", i)}}}
 		gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: name + "-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: name, NetworkIndex: uint(i)}}
 		if err := c.Create(context.Background(), l); err != nil {
 			t.Fatal(err)

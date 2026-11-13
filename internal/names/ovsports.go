@@ -5,8 +5,12 @@ import (
 	"fmt"
 )
 
+// MaxLabNetworkIndex is the highest number of a gateway leg (interface lab<N>): the one lab address pool is at most a /8, 65535 numbers
+// after number 0, which belongs to the VPN clients. lab65535 is 8 characters, far under the 15 of a Linux interface name.
+const MaxLabNetworkIndex = 65535
+
 // LabIfaceNameByIndex returns the in-netns interface name for lab N inside VPN
-// and Gateway pods (e.g. lab1 … lab254). Safe to share between the two pod
+// and Gateway pods (e.g. lab1 … lab32767). Safe to share between the two pod
 // types because each pod has its own network namespace. It is never a
 // host-side name: see VPNHostPortKey / GWHostPortKey.
 func LabIfaceNameByIndex(n uint) string {
@@ -34,6 +38,24 @@ func LabVPNObjectName(labName string) string { return "labvpn-" + labName }
 
 // LabGatewayObjectName returns the Kubernetes object name for the LabGateway belonging to lab.
 func LabGatewayObjectName(labName string) string { return "labgw-" + labName }
+
+// LabVPNGatewayObjectName is the name of the LabVPN of the VPN gateway named device in the lab; empty device = the gateway of the shorthand
+// spec.vpn, whose object keeps LabVPNObjectName. A lab name is a DNS label and never contains ".", so "<lab>.<device>" is never the name
+// of another lab's object.
+func LabVPNGatewayObjectName(labName, device string) string {
+	if device == "" {
+		return LabVPNObjectName(labName)
+	}
+	return LabVPNObjectName(labName) + "." + device
+}
+
+// LabInternetGatewayObjectName is LabVPNGatewayObjectName for the LabGateway of an Internet gateway.
+func LabInternetGatewayObjectName(labName, device string) string {
+	if device == "" {
+		return LabGatewayObjectName(labName)
+	}
+	return LabGatewayObjectName(labName) + "." + device
+}
 
 // DevicePortKey computes a stable OVS port name (≤15 chars) for a device interface.
 // Keyed by namespace + pod name + interface name — stable across reconciles and

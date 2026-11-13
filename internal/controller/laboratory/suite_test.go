@@ -109,13 +109,12 @@ var _ = BeforeSuite(
 		Expect(err).NotTo(HaveOccurred())
 
 		err = (&LabGroupReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorderFor("labgroup"),
-			VPNBaseNetwork:  "10.8.0.0/10",
-			InetBaseNetwork: "10.9.0.0/10",
-			VPNImage:        "cybericebox/laboratory-lab:v0.0.0-test",
-			GatewayImage:    "cybericebox/laboratory-lab:v0.0.0-test",
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			Recorder:       mgr.GetEventRecorderFor("labgroup"),
+			LabBaseNetwork: "10.8.0.0/10",
+			VPNImage:       "cybericebox/laboratory-lab:v0.0.0-test",
+			GatewayImage:   "cybericebox/laboratory-lab:v0.0.0-test",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -123,16 +122,15 @@ var _ = BeforeSuite(
 			Client:         mgr.GetClient(),
 			Scheme:         mgr.GetScheme(),
 			Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
-			VPNBaseNetwork: "10.8.0.0/10",
+			LabBaseNetwork: "10.8.0.0/10",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 
 		err = (&LabReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorderFor("lab"),
-			VPNBaseNetwork:  "10.8.0.0/10",
-			InetBaseNetwork: "10.9.0.0/10",
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			Recorder:       mgr.GetEventRecorderFor("lab"),
+			LabBaseNetwork: "10.8.0.0/10",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 
