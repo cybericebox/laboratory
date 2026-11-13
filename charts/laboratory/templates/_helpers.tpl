@@ -235,6 +235,7 @@ EGRESS_MAX_CONN_SECONDS: {{ .Values.internetEgress.proxy.maxConnSeconds | quote 
 EGRESS_TUNNEL_SUFFIXES: {{ .Values.internetEgress.proxy.tunnelSuffixes | quote }}
 EGRESS_ICMP_PER_SECOND: {{ .Values.internetEgress.icmpPerSecond | quote }}
 VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
+MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
 TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
 TERMINAL_SERVED: {{ .Values.terminal.enabled | quote }}

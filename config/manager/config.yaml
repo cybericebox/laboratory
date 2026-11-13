@@ -15,13 +15,9 @@ data:
   # This kustomize deploy applies no admission policies (the Helm chart does), so the operator is told not to require them.
   OPERATOR_REQUIRE_ADMISSION_POLICY: "false"
 
-  # Base address space for VPN subnets.
-  # Client subnet = first /24 (e.g. 10.8.0.0/24).
-  # Per-lab VPN subnets = subsequent /24 blocks (10.8.N.0/24, N >= 1).
-  VPN_BASE_NETWORK: "10.8.0.0/10"
-
-  # Base address space for internet-gateway subnets.
-  INET_BASE_NETWORK: "10.9.0.0/10"
+  # The one address space of the lab networks: /24 number 0 is the VPN clients, every other /24 goes to a gateway of a lab
+  # (10.8.N.0/24, N >= 1). The whole network is what the WireGuard clients get as AllowedIPs.
+  LAB_BASE_NETWORK: "10.8.0.0/9"
 
   # Comma-separated CIDR list of proxy source IPs (hostNetwork proxy, e.g. Kind).
   # Leave empty in standard clusters.

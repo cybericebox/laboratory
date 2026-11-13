@@ -31,3 +31,45 @@ func SubnetForIndex(baseCIDR string, childBits int, n uint) (string, error) {
 	}
 	return fmt.Sprintf("%s/%d", result, childBits), nil
 }
+
+// SubnetCount is the number of child subnets of childBits that SubnetForIndex can give from
+// baseCIDR (numbers 0 .. count-1). It counts from the literal host address of the base, like
+// SubnetForIndex: "10.8.0.0/10" has the subnets from 10.8.0.0 to the end of its /10.
+func SubnetCount(baseCIDR string, childBits int) (uint, error) {
+	ip, ipNet, err := net.ParseCIDR(baseCIDR)
+	if err != nil || ip.To4() == nil {
+		return 0, fmt.Errorf("parse base CIDR %q: %w", baseCIDR, err)
+	}
+	ones, bits := ipNet.Mask.Size()
+	if bits != 32 || childBits < ones || childBits > 32 {
+		return 0, fmt.Errorf("child /%d does not fit base network %s", childBits, baseCIDR)
+	}
+	end := uint64(binary.BigEndian.Uint32(ipNet.IP.To4())) + uint64(1)<<uint(32-ones)
+	start := uint64(binary.BigEndian.Uint32(ip.To4()))
+	block := uint64(1) << uint(32-childBits)
+	return uint((end - start) / block), nil
+}
+
+// SubnetIndex is the number of cidr among the child subnets of baseCIDR: the inverse of
+// SubnetForIndex. The cidr must be a canonical subnet of childBits inside the base.
+func SubnetIndex(baseCIDR string, childBits int, cidr string) (uint, error) {
+	baseIP, baseNet, err := net.ParseCIDR(baseCIDR)
+	if err != nil {
+		return 0, fmt.Errorf("parse base CIDR %q: %w", baseCIDR, err)
+	}
+	ip, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return 0, fmt.Errorf("parse CIDR %q: %w", cidr, err)
+	}
+	ones, _ := ipNet.Mask.Size()
+	if ones != childBits || !ip.Equal(ipNet.IP) || !baseNet.Contains(ipNet.IP) || ip.To4() == nil {
+		return 0, fmt.Errorf("%q is not a /%d subnet of %s", cidr, childBits, baseCIDR)
+	}
+	block := uint64(1) << uint(32-childBits)
+	start := uint64(binary.BigEndian.Uint32(baseIP.To4()))
+	at := uint64(binary.BigEndian.Uint32(ip.To4()))
+	if at < start || (at-start)%block != 0 {
+		return 0, fmt.Errorf("%q is not aligned to the subnets of %s", cidr, baseCIDR)
+	}
+	return uint((at - start) / block), nil
+}

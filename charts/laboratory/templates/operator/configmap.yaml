@@ -22,8 +22,7 @@ data:
   # The namespaces whose pods read the limits of their node from the operator's ConfigMap: the demux, the L7 proxy and the node-agent.
   BANDWIDTH_ENTRY_NAMESPACES: {{ without (list .Release.Namespace (ternary .Values.proxy.namespace "" .Values.proxy.enabled) (ternary (include "laboratory.wgNamespace" .) "" (and .Values.proxy.enabled .Values.proxy.wg.enabled))) "" | uniq | join "," | quote }}
   {{- end }}
-  VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
-  INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
+  LAB_BASE_NETWORK: {{ .Values.operator.labBaseNetwork | quote }}
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
   VPN_IMAGE: {{ include "laboratory.imageRef" (dict "image" .Values.vpn.image "root" $) | quote }}
   {{- /* The gateway is the VPN image (one image, two commands): the operator takes it from VPN_IMAGE unless the chart is told another. */}}

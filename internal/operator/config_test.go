@@ -284,3 +284,37 @@ func TestParseCapacityRejectsNegative(t *testing.T) {
 		})
 	}
 }
+
+// The lab address space is one network, a /9 unless set; the two settings it replaced still work while they are the two halves of one network.
+func TestLoadConfigLabNetwork(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.LabBaseNetwork != "10.128.0.0/9" || cfg.MaxLabGateways != 10 {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	t.Setenv("VPN_BASE_NETWORK", "10.128.0.0/10")
+	t.Setenv("INET_BASE_NETWORK", "10.192.0.0/10")
+	if cfg, err = LoadConfig(); err != nil || cfg.LabBaseNetwork != "10.128.0.0/9" {
+		t.Fatalf("the old two settings as halves of the /9: %+v %v", cfg, err)
+	}
+	t.Setenv("INET_BASE_NETWORK", "10.9.0.0/10")
+	if _, err = LoadConfig(); err == nil {
+		t.Fatal("old settings that are not the halves of one network must stop the start")
+	}
+	t.Setenv("LAB_BASE_NETWORK", "10.0.0.0/8")
+	if cfg, err = LoadConfig(); err != nil || cfg.LabBaseNetwork != "10.0.0.0/8" {
+		t.Fatalf("the new setting wins: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"0", "65", "-1"} {
+		t.Setenv("MAX_LAB_GATEWAYS", bad)
+		if _, err = LoadConfig(); err == nil {
+			t.Errorf("MAX_LAB_GATEWAYS=%s must be refused", bad)
+		}
+	}
+	t.Setenv("MAX_LAB_GATEWAYS", "12")
+	if cfg, err = LoadConfig(); err != nil || cfg.MaxLabGateways != 12 {
+		t.Fatalf("raised: %+v %v", cfg, err)
+	}
+}
