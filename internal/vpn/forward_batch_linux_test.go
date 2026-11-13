@@ -26,7 +26,7 @@ func (r *recordingRuleCommand) Restore(_ context.Context, body []byte) error {
 func TestForwardBatchAppliesOnlyChangedOwnedRules(t *testing.T) {
 	commands := &recordingRuleCommand{saved: []byte("*filter\n:FORWARD DROP [0:0]\n:UNRELATED - [0:0]\n-A UNRELATED -j ACCEPT\nCOMMIT\n")}
 	m := &IPTablesManager{wgIface: "wg0", commands: commands}
-	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestForwardBatchCarriesTheLabInitiatedSwitch(t *testing.T) {
 	apply := func(labInitiated bool) string {
 		t.Helper()
 		plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
-			map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}}, []AccessPolicyRule{{Action: AccessAllow}})
+			map[string]LabAccessSnapshot{"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}}, []AccessPolicyRule{{Action: AccessAllow}})
 		if err != nil {
 			t.Fatal(err)
 		}

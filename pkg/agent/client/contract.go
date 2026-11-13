@@ -14,8 +14,8 @@ import "fmt"
 // the version in GetFeatures (contract_version) and the agent image carries it as the label
 // com.cybericebox.laboratory.api-contract.
 const (
-	ContractMajor = 1
-	ContractMinor = 8
+	ContractMajor = 2
+	ContractMinor = 0
 )
 
 // ContractVersion is the contract of this build of the SDK.

@@ -18,9 +18,10 @@ type LabVPNSpec struct {
 	// LabName is the name of the parent Lab.
 	// +kubebuilder:validation:Required
 	LabName string `json:"labName"`
-	// Device is the name of the gateway of the lab this object serves; empty for the gateway of the shorthand spec.vpn.
-	// +optional
-	Device string `json:"device,omitempty"`
+	// Device is the name of the gateway of the lab this object serves (spec.gateways[].name).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Device string `json:"device"`
 	// NetworkIndex is the number of the gateway's leg (interface lab<N>), from the lab-subnets pool. The CIDR is not derived from
 	// it: it is in the parent Lab status (status.gateways). Immutable after FinalizerController is set.
 	NetworkIndex uint `json:"networkIndex,omitempty"`
@@ -57,7 +58,7 @@ type LabVPNStatus struct {
 	DHCPEnabled bool                `json:"dhcpEnabled,omitempty"`
 	DHCPReady   bool                `json:"dhcpReady,omitempty"`
 	// LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
-	// starts towards a VPN client, has applied it to this lab (the lab's spec.vpn.reverseConnections is false). Written only by a program
+	// starts towards a VPN client, has applied it to this lab (reverseConnections of the gateway is false). Written only by a program
 	// that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
 	// +optional
 	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`

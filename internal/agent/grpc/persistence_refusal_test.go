@@ -17,7 +17,7 @@ import (
 
 func persistentRequest(persistence bool) *protobuf.CreateLabsRequest {
 	spec := laboratoryv1alpha1.LabSpec{}
-	spec.VPN.Enabled = true
+	spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 	d := laboratoryv1alpha1.DeviceTemplate{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"}
 	if persistence {
 		d.Persistence = &laboratoryv1alpha1.DevicePersistence{Enabled: true}

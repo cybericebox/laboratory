@@ -21,7 +21,7 @@ type dropCounter interface {
 	LabDropCounts(ctx context.Context) (map[string]uint64, error)
 }
 
-// enforcementView says, per lab, whether this gateway program has applied the block, and what it dropped.
+// enforcementView says, per VPN gateway leg, whether this gateway program has applied the block, and what it dropped.
 type enforcementView struct {
 	blocked bool
 	dropped int64
@@ -62,7 +62,7 @@ func (r *AccessReconciler) publishLabEnforcement(ctx context.Context, labs map[s
 		if !leg.DeletionTimestamp.IsZero() {
 			continue
 		}
-		v, ok := views[leg.Spec.LabName]
+		v, ok := views[leg.Name]
 		if !ok {
 			continue
 		}

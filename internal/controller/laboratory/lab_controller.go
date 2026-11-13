@@ -890,13 +890,12 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 
-	// A gateway is ready once its LabVPN / LabGateway reports Ready. The VPN pod admits client traffic to a lab only while
-	// Status.VPN.Ready is true, so the mirror of the shorthand gateways must be kept in sync.
+	// A gateway is ready once its LabVPN / LabGateway reports Ready. The VPN pod admits client traffic to a gateway only while
+	// its status.gateways entry is ready, so this must be kept in sync.
 	gateways, err := r.readGatewayReadiness(ctx, lab)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	vpnReady, inetReady, labInitiatedBlocked := gateways.VPNReady, gateways.InternetReady, gateways.LabInitiatedBlocked
 	publishLabInitiatedDropped(lab.Namespace, lab.Name, gateways.Dropped, gateways.Blocked)
 	if !gateways.AllReady {
 		allReady = false
@@ -948,9 +947,6 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 	if !lifecycleChanged && reflect.DeepEqual(resources, lab.Status.Resources) && newPhase == lab.Status.Phase &&
-		vpnReady == lab.Status.VPN.Ready &&
-		labInitiatedBlocked == lab.Status.VPN.LabInitiatedBlocked &&
-		inetReady == lab.Status.Internet.Ready &&
 		reflect.DeepEqual(gateways.Status, lab.Status.Gateways) &&
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
 		slices.Equal(deviceNodes, lab.Status.DeviceNodes) &&
@@ -967,9 +963,6 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	lab.Status.Resources = resources
-	lab.Status.VPN.Ready = vpnReady
-	lab.Status.VPN.LabInitiatedBlocked = labInitiatedBlocked
-	lab.Status.Internet.Ready = inetReady
 	lab.Status.Gateways = gateways.Status
 	lab.Status.Devices = refs
 	lab.Status.DeviceNodes = deviceNodes

@@ -24,8 +24,11 @@ package v1alpha1
 type LabSpecApplyConfiguration struct {
 	// Lifecycle is absent for legacy running laboratories.
 	Lifecycle *LabLifecycleSpecApplyConfiguration `json:"lifecycle,omitempty"`
-	VPN       *LabNetworkSpecApplyConfiguration   `json:"vpn,omitempty"`
-	Internet  *LabNetworkSpecApplyConfiguration   `json:"internet,omitempty"`
+	// Gateways are the VPN entries and Internet exits of the lab. Each one is a device of its own kind with one port, eth0, attached to a
+	// lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, its DHCP settings and, on a VPN
+	// gateway, its own reverse-connections switch. The names share one space with the devices. The chart value operator.maxLabGateways
+	// (default 10) limits their number; the agent checks it at creation and the operator again.
+	Gateways []GatewayTemplateApplyConfiguration `json:"gateways,omitempty"`
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
@@ -34,6 +37,9 @@ type LabSpecApplyConfiguration struct {
 	// from the credentials the platform sends with the deploy; a value in a client's spec is
 	// ignored.
 	ImagePullSecret *string `json:"imagePullSecret,omitempty"`
+	// Checks lists the checks of the lab without their definitions (those are in the Secret <lab>-checks). Only the
+	// management agent sets it; a value in a client's spec is ignored.
+	Checks *LabChecksSpecApplyConfiguration `json:"checks,omitempty"`
 }
 
 // LabSpecApplyConfiguration constructs a declarative configuration of the LabSpec type for use with
@@ -50,19 +56,16 @@ func (b *LabSpecApplyConfiguration) WithLifecycle(value *LabLifecycleSpecApplyCo
 	return b
 }
 
-// WithVPN sets the VPN field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the VPN field is set to the value of the last call.
-func (b *LabSpecApplyConfiguration) WithVPN(value *LabNetworkSpecApplyConfiguration) *LabSpecApplyConfiguration {
-	b.VPN = value
-	return b
-}
-
-// WithInternet sets the Internet field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Internet field is set to the value of the last call.
-func (b *LabSpecApplyConfiguration) WithInternet(value *LabNetworkSpecApplyConfiguration) *LabSpecApplyConfiguration {
-	b.Internet = value
+// WithGateways adds the given value to the Gateways field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Gateways field.
+func (b *LabSpecApplyConfiguration) WithGateways(values ...*GatewayTemplateApplyConfiguration) *LabSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithGateways")
+		}
+		b.Gateways = append(b.Gateways, *values[i])
+	}
 	return b
 }
 
@@ -97,5 +100,13 @@ func (b *LabSpecApplyConfiguration) WithConnections(values ...*ConnectionTemplat
 // If called multiple times, the ImagePullSecret field is set to the value of the last call.
 func (b *LabSpecApplyConfiguration) WithImagePullSecret(value string) *LabSpecApplyConfiguration {
 	b.ImagePullSecret = &value
+	return b
+}
+
+// WithChecks sets the Checks field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Checks field is set to the value of the last call.
+func (b *LabSpecApplyConfiguration) WithChecks(value *LabChecksSpecApplyConfiguration) *LabSpecApplyConfiguration {
+	b.Checks = value
 	return b
 }

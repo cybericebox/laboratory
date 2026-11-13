@@ -19,6 +19,9 @@ import (
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
+// removedIn2 are the fields of the pre-lifecycle contract that contract 2.0 removed on purpose.
+var removedIn2 = map[string]map[int32]bool{"LabStatus": {2: true, 3: true, 6: true, 7: true}}
+
 // The fixture is protoc output from the pre-lifecycle contract. Every old field,
 // reserved tag, enum value and method must keep its existing wire meaning.
 func TestLifecycleWireCompatibility(t *testing.T) {
@@ -43,6 +46,13 @@ func TestLifecycleWireCompatibility(t *testing.T) {
 		}
 		for j := 0; j < before.Fields().Len(); j++ {
 			f := before.Fields().Get(j)
+			// Contract 2.0 removed these (the gateways of a lab replaced them): their numbers must stay reserved.
+			if removedIn2[string(before.Name())][int32(f.Number())] {
+				if !after.ReservedRanges().Has(f.Number()) || !after.ReservedNames().Has(f.Name()) {
+					t.Fatalf("removed wire field %s.%s (%d) is not reserved", before.Name(), f.Name(), f.Number())
+				}
+				continue
+			}
 			n := after.Fields().ByNumber(f.Number())
 			if n == nil || n.Name() != f.Name() || n.Kind() != f.Kind() || n.Cardinality() != f.Cardinality() || n.IsMap() != f.IsMap() {
 				t.Fatalf("changed wire field %s.%s (%d)", before.Name(), f.Name(), f.Number())
@@ -97,7 +107,7 @@ func TestLifecycleWireCompatibility(t *testing.T) {
 	if err := proto.Unmarshal(wire, &legacy); err != nil {
 		t.Fatal(err)
 	}
-	if legacy.Phase != "Ready" || legacy.VpnCidr != "10" || !legacy.Ready || len(legacy.AccessUrls) != 1 || legacy.AccessUrls[0] != "https" || legacy.ImageWarning != "tag" {
+	if legacy.Phase != "Ready" || !legacy.Ready || len(legacy.AccessUrls) != 1 || legacy.AccessUrls[0] != "https" || legacy.ImageWarning != "tag" {
 		t.Fatalf("legacy decode = %v", &legacy)
 	}
 	round, err := proto.Marshal(&legacy)
@@ -151,8 +161,8 @@ func TestLifecycleAdditiveWireContract(t *testing.T) {
 }
 
 func TestLifecycleProjectionSuppressesStoppedAccess(t *testing.T) {
-	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "work", Namespace: "team", UID: types.UID("uid-1")}, Status: lab.LabStatus{
-		Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.1.0.0/24"}, Internet: lab.LabNetworkStatus{Ready: true},
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "work", Namespace: "team", UID: types.UID("uid-1")}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}, {Name: "internet", Kind: lab.GatewayKindInternet}}}, Status: lab.LabStatus{
+		Phase: lab.PhaseReady, Gateways: []lab.GatewayStatus{{Name: "vpn", Kind: lab.GatewayKindVPN, Ready: true, CIDR: "10.1.0.0/24"}, {Name: "internet", Kind: lab.GatewayKindInternet, Ready: true}},
 		Devices: []lab.DeviceRef{{Name: "web", Ready: true}}, Connections: []lab.ConnectionRef{{Name: "link", Ready: true}},
 		Access: []lab.AccessEntry{{Device: "web", Port: 80, Protocol: "http", URL: "https://web.test"}},
 	}}
@@ -163,10 +173,10 @@ func TestLifecycleProjectionSuppressesStoppedAccess(t *testing.T) {
 	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "stop", Revision: 1, SnapshotMode: "Skip", Terminal: true}
 	for _, got := range []*protobuf.Lab{labToProto(l), labMonitoringToProto(l, "group")} {
 		s := got.Status
-		if got.Uid != "uid-1" || s.Ready || s.VpnReady || s.InternetReady || len(s.Access) != 0 || len(s.AccessUrls) != 0 || s.Devices[0].Ready || s.Connections[0].Ready {
+		if got.Uid != "uid-1" || s.Ready || gatewayReady(s) || len(s.Access) != 0 || len(s.AccessUrls) != 0 || s.Devices[0].Ready || s.Connections[0].Ready {
 			t.Fatalf("stopped intent exposes readiness/access: %v", got)
 		}
-		if s.Phase != "Ready" || s.VpnCidr != "10.1.0.0/24" {
+		if s.Phase != "Ready" || len(s.Gateways) != 2 || s.Gateways[0].Cidr != "10.1.0.0/24" {
 			t.Fatal("legacy phase/CIDR must stay intact")
 		}
 		if s.Lifecycle == nil || s.Lifecycle.DesiredState != "Stopped" || s.Lifecycle.ObservedState != "Unknown" || s.Lifecycle.LabUid != "uid-1" || !s.Lifecycle.Terminal {
@@ -421,4 +431,14 @@ func TestLifecycleMetadataGenerationStaysSeparate(t *testing.T) {
 	if group.Generation != 15 || group.Uid != "group-u" {
 		t.Fatalf("group live identity lost: %v", group)
 	}
+}
+
+// gatewayReady says some gateway of the projected status is reported ready or blocked.
+func gatewayReady(s *protobuf.LabStatus) bool {
+	for _, g := range s.GetGateways() {
+		if g.GetReady() || g.GetLabInitiatedBlocked() {
+			return true
+		}
+	}
+	return false
 }

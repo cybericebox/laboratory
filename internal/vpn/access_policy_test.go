@@ -10,9 +10,9 @@ func TestBuildAccessRulesUsesOnlyAssignedClientsAndReadyVPNLabs(t *testing.T) {
 			{Name: "no-ip"},
 		},
 		map[string]LabAccessSnapshot{
-			"web":      {VPNCIDR: "10.16.0.0/24", Ready: true},
-			"forensic": {VPNCIDR: "10.17.0.0/24", Ready: true},
-			"warming":  {VPNCIDR: "10.17.0.0/24", Ready: false},
+			"web":      {LabName: "web", VPNCIDR: "10.16.0.0/24", Ready: true},
+			"forensic": {LabName: "forensic", VPNCIDR: "10.17.0.0/24", Ready: true},
+			"warming":  {LabName: "warming", VPNCIDR: "10.17.0.0/24", Ready: false},
 		},
 		[]AccessPolicyRule{
 			{Action: AccessAllow, ClientNames: []string{"alice"}, LabNames: []string{"web", "missing"}},
@@ -41,7 +41,7 @@ func TestBuildAccessRulesUsesOnlyAssignedClientsAndReadyVPNLabs(t *testing.T) {
 func TestBuildAccessRulesDefaultsToDenyForEmptyPolicy(t *testing.T) {
 	rules := BuildAccessRules(
 		[]ClientAccessSnapshot{{Name: "alice", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"web": {VPNCIDR: "10.16.0.0/24", Ready: true}},
+		map[string]LabAccessSnapshot{"web": {LabName: "web", VPNCIDR: "10.16.0.0/24", Ready: true}},
 		nil,
 	)
 	if len(rules) != 1 || rules[0].Action != AccessDeny {
@@ -52,7 +52,7 @@ func TestBuildAccessRulesDefaultsToDenyForEmptyPolicy(t *testing.T) {
 func TestAccessStatisticsDenyOverridesAllowAndReportsBlockedCounters(t *testing.T) {
 	rules := BuildAccessRules(
 		[]ClientAccessSnapshot{{Name: "alice", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"web": {VPNCIDR: "10.16.0.0/24", Ready: true}},
+		map[string]LabAccessSnapshot{"web": {LabName: "web", VPNCIDR: "10.16.0.0/24", Ready: true}},
 		[]AccessPolicyRule{
 			{Action: AccessAllow},
 			{Action: AccessDeny, ClientNames: []string{"alice"}, LabNames: []string{"web"}},

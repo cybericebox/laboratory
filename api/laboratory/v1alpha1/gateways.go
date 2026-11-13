@@ -1,21 +1,8 @@
 package v1alpha1
 
-// AllGateways is every gateway of the lab: the one spec.vpn stands for, the one spec.internet stands for (each only when enabled),
-// then the declared ones in spec order. It is the one list the operator works on.
-func (s *LabSpec) AllGateways() []GatewayTemplate {
-	out := make([]GatewayTemplate, 0, 2+len(s.Gateways))
-	if s.VPN.Enabled {
-		out = append(out, GatewayTemplate{Name: GatewayNameVPN, Kind: GatewayKindVPN, DHCPServer: s.VPN.DHCPServer, ReverseConnections: s.VPN.ReverseConnections})
-	}
-	if s.Internet.Enabled {
-		out = append(out, GatewayTemplate{Name: GatewayNameInternet, Kind: GatewayKindInternet, DHCPServer: s.Internet.DHCPServer})
-	}
-	return append(out, s.Gateways...)
-}
-
 // Gateway finds a gateway of the lab by name.
 func (s *LabSpec) Gateway(name string) (GatewayTemplate, bool) {
-	for _, g := range s.AllGateways() {
+	for _, g := range s.Gateways {
 		if g.Name == name {
 			return g, true
 		}
@@ -23,27 +10,22 @@ func (s *LabSpec) Gateway(name string) (GatewayTemplate, bool) {
 	return GatewayTemplate{}, false
 }
 
-// HasGateway says whether the lab has at least one gateway of the kind.
-func (s *LabSpec) HasGateway(kind GatewayKind) bool {
-	for _, g := range s.AllGateways() {
+// GatewaysOfKind lists the gateways of the lab of one kind, in spec order.
+func (s *LabSpec) GatewaysOfKind(kind GatewayKind) []GatewayTemplate {
+	var out []GatewayTemplate
+	for _, g := range s.Gateways {
 		if g.Kind == kind {
-			return true
+			out = append(out, g)
 		}
 	}
-	return false
+	return out
 }
 
 // HasVPN says whether the lab has at least one VPN gateway.
-func (s *LabSpec) HasVPN() bool { return s.HasGateway(GatewayKindVPN) }
+func (s *LabSpec) HasVPN() bool { return len(s.GatewaysOfKind(GatewayKindVPN)) > 0 }
 
 // HasInternet says whether the lab has at least one Internet gateway.
-func (s *LabSpec) HasInternet() bool { return s.HasGateway(GatewayKindInternet) }
-
-// IsShorthand is true for the two gateways spec.vpn and spec.internet stand for. Their objects, statuses and names are the ones
-// labs have always had.
-func (g GatewayTemplate) IsShorthand() bool {
-	return g.Name == GatewayNameVPN || g.Name == GatewayNameInternet
-}
+func (s *LabSpec) HasInternet() bool { return len(s.GatewaysOfKind(GatewayKindInternet)) > 0 }
 
 // GatewayStatus returns the status entry of the gateway, or nil when none was written yet.
 func (s *LabStatus) GatewayStatus(name string) *GatewayStatus {
@@ -55,20 +37,10 @@ func (s *LabStatus) GatewayStatus(name string) *GatewayStatus {
 	return nil
 }
 
-// GatewayCIDR is the /24 of the gateway named name (empty = the shorthand gateway of the kind), or "". A lab written before
-// status.gateways still has its two CIDRs in status.vpn and status.internet; they answer for the shorthand gateways.
-func (s *LabStatus) GatewayCIDR(kind GatewayKind, name string) string {
-	if name == "" {
-		name = string(kind)
-	}
-	if g := s.GatewayStatus(name); g != nil && g.CIDR != "" {
+// GatewayCIDR is the /24 of the gateway named name, or "" while it has none.
+func (s *LabStatus) GatewayCIDR(name string) string {
+	if g := s.GatewayStatus(name); g != nil {
 		return g.CIDR
-	}
-	switch name {
-	case GatewayNameVPN:
-		return s.VPN.CIDR
-	case GatewayNameInternet:
-		return s.Internet.CIDR
 	}
 	return ""
 }

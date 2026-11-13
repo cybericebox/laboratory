@@ -138,7 +138,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 				}
 			}
 			for _, l := range labsOf[ns] {
-				if l.DeletionTimestamp == nil && l.Spec.Internet.Enabled {
+				if l.DeletionTimestamp == nil && l.Spec.HasInternet() {
 					internetLabs++
 				}
 			}

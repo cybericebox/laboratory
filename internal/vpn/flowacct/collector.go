@@ -43,7 +43,7 @@ type Source interface {
 	Dump() ([]Flow, error)
 }
 
-// LabNet is the /24 of one lab as seen from the VPN pod.
+// LabNet is the /24 of one VPN gateway of a lab as seen from the VPN pod; a lab has one per VPN gateway, all under its name.
 type LabNet struct {
 	Name   string
 	Prefix netip.Prefix
@@ -56,13 +56,13 @@ type Topology struct {
 	Labs    []LabNet
 }
 
-func (t Topology) lab(addr netip.Addr) (string, bool) {
+func (t Topology) lab(addr netip.Addr) (LabNet, bool) {
 	for _, lab := range t.Labs {
 		if lab.Prefix.Contains(addr) {
-			return lab.Name, true
+			return lab, true
 		}
 	}
-	return "", false
+	return LabNet{}, false
 }
 
 // Key is the aggregate identity: one VPN client against one lab. Any traffic
@@ -315,18 +315,11 @@ func (c *Collector) Poll(now time.Time) error {
 		if !ok {
 			continue
 		}
-		lab, ok := topo.lab(f.Dst)
-		if !ok {
+		net, ok := topo.lab(f.Dst)
+		if !ok || net.Index != uint16((f.Mark&0x00ffff00)>>8) {
 			continue
 		}
-		for _, l := range topo.Labs {
-			if l.Name == lab && l.Index != uint16((f.Mark&0x00ffff00)>>8) {
-				ok = false
-			}
-		}
-		if !ok {
-			continue
-		}
+		lab := net.Name
 		if !allowedEndpoints[Key{subject, lab}][f.Src] {
 			continue
 		}

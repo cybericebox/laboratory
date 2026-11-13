@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/gatewayspec"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -265,5 +266,13 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 // vpnFeature reports whether the VPN gates enforce the block of connections started by a lab towards a client. The answer comes from the
 // code that generates the rules (vpn.LabInitiatedBlockEnforced), so it cannot say true for a gate that does not install them.
 func (h *Handler) vpnFeature() *protobuf.VPNFeature {
-	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced()}
+	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced(), MaxGateways: int32(h.maxLabGateways())}
+}
+
+// maxLabGateways is the most gateways one lab may have: the configured limit, or the default.
+func (h *Handler) maxLabGateways() int {
+	if h.features.MaxLabGateways > 0 {
+		return h.features.MaxLabGateways
+	}
+	return gatewayspec.DefaultMax
 }

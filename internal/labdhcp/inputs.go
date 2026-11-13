@@ -7,73 +7,68 @@ import (
 
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func InputsChanged(old, next *lab.Lab, network string) bool {
+// InputsChanged says whether what the DHCP servers of a lab depend on changed: its gateways, its lifecycle, its deletion.
+func InputsChanged(old, next *lab.Lab) bool {
 	if old == nil || next == nil {
 		return true
 	}
 	if !reflect.DeepEqual(old.Spec.Lifecycle, next.Spec.Lifecycle) || !reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp) {
 		return true
 	}
-	if network == networkVPN {
-		return !reflect.DeepEqual(old.Spec.VPN, next.Spec.VPN)
-	}
-	return !reflect.DeepEqual(old.Spec.Internet, next.Spec.Internet)
-}
-func poolPrefix(network string) string {
-	if network == networkVPN {
-		return "dhcp-vpn"
-	}
-	return "dhcp-inet"
-}
-func PoolLabName(pool *allocation.Pool, network string) string {
-	for _, owner := range pool.OwnerReferences {
-		if owner.Kind == "Lab" && owner.APIVersion == "laboratory.cybericebox.com/v1alpha1" && pool.Name == fmt.Sprintf("%s-%s-0", poolPrefix(network), owner.Name) {
-			return owner.Name
-		}
-	}
-	return ""
+	return !reflect.DeepEqual(old.Spec.Gateways, next.Spec.Gateways)
 }
 
-// Desired distinguishes an absent optional pool from a failed API read. A pool
-// must belong to this exact Lab incarnation; its bitmap is not a lease ledger.
-func Desired(ctx context.Context, c client.Reader, namespace, name, network string) (bool, []dhcp.Range, string, error) {
+// PoolOwner says which Lab and which of its gateways a DHCP pool is for, or "" and "" when the pool is not one made for a Lab.
+func PoolOwner(pool *allocation.Pool) (labName, gateway string) {
+	for _, owner := range pool.OwnerReferences {
+		if owner.Kind != "Lab" || owner.APIVersion != "laboratory.cybericebox.com/v1alpha1" {
+			continue
+		}
+		if g := names.DHCPPoolOwner(pool.Name, owner.Name); g != "" {
+			return owner.Name, g
+		}
+	}
+	return "", ""
+}
+
+// Desired distinguishes an absent optional pool from a failed API read. A pool must belong to this exact Lab incarnation; its bitmap is
+// not a lease ledger.
+func Desired(ctx context.Context, c client.Reader, namespace, labName, gateway string) (bool, []dhcp.Range, string, error) {
 	var l lab.Lab
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &l); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: labName}, &l); err != nil {
 		return false, nil, "", fmt.Errorf("load lab DHCP settings: %w", err)
 	}
 	var pool allocation.Pool
-	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: fmt.Sprintf("%s-%s-0", poolPrefix(network), name)}, &pool)
+	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: names.DHCPPoolName(labName, gateway)}, &pool)
 	if apierrors.IsNotFound(err) {
 		return false, nil, "", nil
 	}
 	if err != nil {
 		return false, nil, "", fmt.Errorf("load DHCP pool: %w", err)
 	}
-	if PoolLabName(&pool, network) != name {
+	if owner, g := PoolOwner(&pool); owner != labName || g != gateway {
 		return false, nil, "", fmt.Errorf("DHCP pool ownership mismatch")
 	}
 	owned := false
 	for _, owner := range pool.OwnerReferences {
-		if owner.Kind == "Lab" && owner.Name == name && owner.UID == l.UID {
+		if owner.Kind == "Lab" && owner.Name == labName && owner.UID == l.UID {
 			owned = true
 		}
 	}
 	if !owned {
 		return false, nil, "", fmt.Errorf("DHCP pool lab incarnation mismatch")
 	}
-	segment := l.Spec.Internet
-	if network == networkVPN {
-		segment = l.Spec.VPN
-	}
-	if !pool.DeletionTimestamp.IsZero() || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle.IsStopped() || !segment.Enabled || segment.DHCPServer == nil || !segment.DHCPServer.Enabled {
+	g, ok := l.Spec.Gateway(gateway)
+	if !pool.DeletionTimestamp.IsZero() || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle.IsStopped() || !ok || g.DHCPServer == nil || !g.DHCPServer.Enabled {
 		return false, nil, "", nil
 	}
-	ranges, dns, err := Settings(&l, network)
+	ranges, dns, err := Settings(&l, gateway)
 	return err == nil, ranges, dns, err
 }

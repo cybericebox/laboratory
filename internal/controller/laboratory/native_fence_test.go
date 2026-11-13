@@ -24,7 +24,7 @@ func TestNativeStoppedChildFenceSurvivesGroupPauseAndRestart(t *testing.T) {
 		t.Fatal(e)
 	}
 	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "child", Namespace: "group", UID: types.UID("child-uid"), Generation: 5}, Spec: lab.LabSpec{Lifecycle: &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "child-stop", Revision: 2, SnapshotMode: "Required"}}, Status: lab.LabStatus{Lifecycle: &lab.LabLifecycleStatus{LabUID: "child-uid", OperationID: "child-stop", Revision: 2, ObservedGeneration: 5, ObservedState: "Stopped", SnapshotComplete: true, AccessFenced: true, AccessFencedAt: &now, AccessFenceVPNBootID: "original-vpn-boot"}, Resources: &lab.RuntimeAllocation{OperationID: "child-stop", Revision: 2, RuntimeState: "Released", ObservedAt: &now, ReleasedAt: &now}}}
-	l.Spec.VPN.Enabled = true
+	l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
 	r := &LabReconciler{Client: fake.NewClientBuilder().WithScheme(s).Build()}
 	for _, groupState := range []string{"Stopped", "Running"} {
 		t.Run(groupState, func(t *testing.T) {
@@ -67,7 +67,7 @@ func TestStopFenceNeedsNoVPNPodWhenThereIsNoneAndNoneIsWanted(t *testing.T) {
 			_ = corev1.AddToScheme(s)
 			_ = appsv1.AddToScheme(s)
 			l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "child", Namespace: "group", UID: "child-uid", Generation: 5}, Spec: lab.LabSpec{Lifecycle: &lab.LabLifecycleSpec{DesiredState: tc.intent, OperationID: "op", Revision: 2, SnapshotMode: "Skip"}}}
-			l.Spec.VPN.Enabled = true
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
 			r := &LabReconciler{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(tc.objects...).Build()}
 			ok, at, boot, err := r.currentAccessFence(context.Background(), l)
 			if err != nil || ok != tc.fenced {

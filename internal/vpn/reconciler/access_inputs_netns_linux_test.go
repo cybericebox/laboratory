@@ -32,18 +32,13 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: ns},
 		Status:     lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"},
 	}
-	deviceLab := &lab.Lab{
-		ObjectMeta: metav1.ObjectMeta{Name: "l1", Namespace: ns},
-		Status: lab.LabStatus{Phase: lab.PhaseReady,
-			VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}},
-	}
+	deviceLab, leg := vpnLab(ns, "l1", "10.8.1.0/24", 1)
 	policy := &lab.LabGroupAccessPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: ns, Generation: 1},
 		Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{
 			Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"},
 		}}},
 	}
-	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-l1", Namespace: ns}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(peer, deviceLab, policy, leg).
 		WithObjects(peer, deviceLab, policy, leg).Build()

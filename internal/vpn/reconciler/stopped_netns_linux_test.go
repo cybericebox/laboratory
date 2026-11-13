@@ -43,16 +43,18 @@ func TestNetnsStoppedIntentRevokesEstablishedBothDirectionsAndPreservesSibling(t
 	_ = corev1.AddToScheme(scheme)
 	// The labs may start connections towards the participant (the persistent dialogs below do): since de457a5a that is off unless
 	// spec.vpn.reverseConnections says so.
-	a := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "lab-a", Generation: 1}, Spec: lab.LabSpec{VPN: lab.LabNetworkSpec{Enabled: true, ReverseConnections: true}}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
+	a, _ := vpnLab("g", "a", "10.8.1.0/24", 1)
+	a.UID, a.Generation = "lab-a", 1
+	a.Spec.Gateways[0].ReverseConnections = true
 	b := a.DeepCopy()
 	b.Name = "b"
 	b.UID = "lab-b"
-	b.Status.VPN.CIDR = "10.8.2.0/24"
+	b.Status.Gateways[0].CIDR, b.Status.Gateways[0].NetworkIndex = "10.8.2.0/24", 2
 	p := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "g"}, Status: lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "g", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{OperationID: "acl", Revision: 1, ExpectedGroupUID: "group-uid", Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
-	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{Kind: "Lab", UID: a.UID}}}, Spec: lab.LabVPNSpec{LabName: "a", NetworkIndex: 1}}
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a", "vpn"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{Kind: "Lab", UID: a.UID}}}, Spec: lab.LabVPNSpec{LabName: "a", Device: "vpn", NetworkIndex: 1}}
 	second := leg.DeepCopy()
-	second.Name = names.LabVPNObjectName("b")
+	second.Name = names.LabVPNObjectName("b", "vpn")
 	second.Spec.LabName = "b"
 	second.Spec.NetworkIndex = 2
 	second.OwnerReferences[0].UID = b.UID

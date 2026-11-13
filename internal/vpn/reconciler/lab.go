@@ -73,10 +73,10 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.dhcpFailure(ctx, &labvpn, err)
 	}
 	if parent.Spec.Lifecycle.IsStopped() {
-		r.DHCP.Stop(labvpn.Spec.LabName)
+		r.DHCP.Stop(labvpn.Name)
 		iface := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 		r.IPT.DenyDHCP(iface)
-		if cidr := parent.Status.GatewayCIDR(laboratoryv1alpha1.GatewayKindVPN, labvpn.Spec.Device); cidr != "" {
+		if cidr := parent.Status.GatewayCIDR(labvpn.Spec.Device); cidr != "" {
 			r.IPT.DenyPing(iface, firstHostIP(cidr))
 		}
 		if old, ok := r.applied[labvpn.Name]; ok {
@@ -97,7 +97,7 @@ func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laborato
 	ctrl.Result,
 	error,
 ) {
-	r.DHCP.Drop(labvpn.Spec.LabName)
+	r.DHCP.Drop(labvpn.Name)
 	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 	r.IPT.DenyDHCP(ifaceName)
 	if cidr, err := r.gatewayCIDR(ctx, labvpn); err == nil {
@@ -131,7 +131,7 @@ func (r *LabVPNReconciler) patchStatus(
 }
 
 func (r *LabVPNReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	b, err := labdhcp.WatchDHCP(mgr, ctrl.NewControllerManagedBy(mgr).For(&laboratoryv1alpha1.LabVPN{}), r.Client, r.DHCP, r.Cfg.Namespace, "vpn")
+	b, err := labdhcp.WatchDHCP(mgr, ctrl.NewControllerManagedBy(mgr).For(&laboratoryv1alpha1.LabVPN{}), r.Client, r.DHCP, r.Cfg.Namespace, laboratoryv1alpha1.GatewayKindVPN)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (r *LabVPNReconciler) clearNetwork(old appliedNetwork) {
 
 }
 func (r *LabVPNReconciler) dhcpFailure(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN, err error) (ctrl.Result, error) {
-	r.DHCP.Stop(labvpn.Spec.LabName)
+	r.DHCP.Stop(labvpn.Name)
 	iface := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 	if r.IPT != nil {
 		r.IPT.DenyDHCP(iface)
@@ -172,7 +172,7 @@ func (r *LabVPNReconciler) gatewayCIDR(ctx context.Context, labvpn *laboratoryv1
 	if err := r.Get(ctx, client.ObjectKey{Name: labvpn.Spec.LabName, Namespace: labvpn.Namespace}, &parent); err != nil {
 		return "", fmt.Errorf("read the lab of the VPN gateway: %w", err)
 	}
-	cidr := parent.Status.GatewayCIDR(laboratoryv1alpha1.GatewayKindVPN, labvpn.Spec.Device)
+	cidr := parent.Status.GatewayCIDR(labvpn.Spec.Device)
 	if cidr == "" {
 		return "", fmt.Errorf("the lab has no CIDR for VPN gateway %q yet", labvpn.Spec.Device)
 	}
@@ -185,7 +185,7 @@ func firstHostIP(cidr string) string {
 }
 
 func (r *LabVPNReconciler) networkFailure(ctx context.Context, obj *laboratoryv1alpha1.LabVPN, err error) (ctrl.Result, error) {
-	r.DHCP.Stop(obj.Spec.LabName)
+	r.DHCP.Stop(obj.Name)
 	if r.IPT != nil {
 		r.IPT.DenyDHCP(names.LabIfaceNameByIndex(obj.Spec.NetworkIndex))
 	}
@@ -210,7 +210,7 @@ func vpnNetworkNeedsSetup(known bool, previous appliedNetwork, desired appliedNe
 }
 
 func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (ctrl.Result, error) {
-	dhcpEnabled, ranges, _, dhcpErr := labdhcp.Desired(ctx, r.Client, labvpn.Namespace, labvpn.Spec.LabName, "vpn")
+	dhcpEnabled, ranges, _, dhcpErr := labdhcp.Desired(ctx, r.Client, labvpn.Namespace, labvpn.Spec.LabName, labvpn.Spec.Device)
 	if dhcpErr != nil {
 		return r.dhcpFailure(ctx, labvpn, dhcpErr)
 	}
@@ -222,7 +222,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 	link, linkErr := netlink.LinkByName(ifaceName)
 	if linkErr != nil {
-		r.DHCP.Stop(labvpn.Spec.LabName)
+		r.DHCP.Stop(labvpn.Name)
 		if old, ok := r.applied[labvpn.Name]; ok {
 			r.clearNetwork(old)
 			delete(r.applied, labvpn.Name)
@@ -247,7 +247,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 	previous, known := r.applied[labvpn.Name]
 	if vpnNetworkNeedsSetup(known, previous, desired, link, cidr) {
 		if known {
-			r.DHCP.Stop(labvpn.Spec.LabName)
+			r.DHCP.Stop(labvpn.Name)
 			r.clearNetwork(previous)
 			delete(r.applied, labvpn.Name)
 		}
@@ -279,7 +279,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 			}
 		}
 		if err := r.DHCP.Start(
-			labvpn.Spec.LabName, dhcp.Config{
+			labvpn.Name, dhcp.Config{
 				Iface:   ifaceName,
 				Subnet:  cidr,
 				Gateway: gwIP,
@@ -288,10 +288,10 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 				Routes:  []dhcp.Route{{Dst: clientSubnet, Via: gwIP}},
 			},
 		); err != nil {
-			return r.dhcpFailure(ctx, labvpn, fmt.Errorf("start DHCP for lab %s: %w", labvpn.Spec.LabName, err))
+			return r.dhcpFailure(ctx, labvpn, fmt.Errorf("start DHCP for gateway %s: %w", labvpn.Name, err))
 		}
 	} else {
-		r.DHCP.Stop(labvpn.Spec.LabName)
+		r.DHCP.Stop(labvpn.Name)
 		if !state.DHCPKnown || state.DHCP {
 			r.IPT.DenyDHCP(ifaceName)
 		}
@@ -299,7 +299,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 	state.DHCPKnown = true
 	state.DHCP = dhcpEnabled
 	r.applied[labvpn.Name] = state
-	if dhcpEnabled && !r.DHCP.Healthy(labvpn.Spec.LabName) {
+	if dhcpEnabled && !r.DHCP.Healthy(labvpn.Name) {
 		return r.dhcpFailure(ctx, labvpn, fmt.Errorf("DHCP socket is unavailable"))
 	}
 
@@ -312,7 +312,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 	newStatus := laboratoryv1alpha1.LabVPNStatus{
 		Phase:       laboratoryv1alpha1.LabVPNPhaseReady,
 		DHCPEnabled: dhcpEnabled,
-		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(labvpn.Spec.LabName),
+		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(labvpn.Name),
 		Conditions:  slices.Clone(labvpn.Status.Conditions),
 	}
 	labstatus.SetReady(&newStatus.Conditions, labvpn.Generation, true, labstatus.ReasonReady, "lab VPN routing ready")

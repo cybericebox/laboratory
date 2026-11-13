@@ -94,10 +94,22 @@ func TestLifecycleProjectionReleaseRequiresCaptureAndVPNFence(t *testing.T) {
 			l.Spec.Lifecycle.SnapshotMode = "Required"
 			l.Status.Lifecycle.Error = "capture failed"
 		}},
-		{"VPN unfenced", func(l *lab.Lab) { l.Spec.VPN.Enabled = true; l.Status.Lifecycle.AccessFenced = false }},
-		{"VPN fence time missing", func(l *lab.Lab) { l.Spec.VPN.Enabled = true; l.Status.Lifecycle.AccessFencedAt = nil }},
-		{"VPN boot missing", func(l *lab.Lab) { l.Spec.VPN.Enabled = true; l.Status.Lifecycle.AccessFenceVPNBootID = "" }},
-		{"VPN stale fence identity", func(l *lab.Lab) { l.Spec.VPN.Enabled = true; l.Status.Lifecycle.OperationID = "old" }},
+		{"VPN unfenced", func(l *lab.Lab) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+			l.Status.Lifecycle.AccessFenced = false
+		}},
+		{"VPN fence time missing", func(l *lab.Lab) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+			l.Status.Lifecycle.AccessFencedAt = nil
+		}},
+		{"VPN boot missing", func(l *lab.Lab) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+			l.Status.Lifecycle.AccessFenceVPNBootID = ""
+		}},
+		{"VPN stale fence identity", func(l *lab.Lab) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+			l.Status.Lifecycle.OperationID = "old"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := projectionCertificate()
@@ -130,8 +142,14 @@ func TestLifecycleProjectionValidCurrentAndLegacyObservations(t *testing.T) {
 			l.Status.Lifecycle.AccessFencedAt = nil
 			l.Status.Lifecycle.AccessFenceVPNBootID = ""
 		}, "Released", 0, 0, false},
-		{"current VPN required", func(l *lab.Lab) { l.Spec.VPN.Enabled = true; l.Spec.Lifecycle.SnapshotMode = "Required" }, "Released", 0, 0, false},
-		{"current VPN skip", func(l *lab.Lab) { l.Spec.VPN.Enabled = true; l.Status.Lifecycle.SnapshotComplete = false }, "Released", 0, 0, false},
+		{"current VPN required", func(l *lab.Lab) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+			l.Spec.Lifecycle.SnapshotMode = "Required"
+		}, "Released", 0, 0, false},
+		{"current VPN skip", func(l *lab.Lab) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+			l.Status.Lifecycle.SnapshotComplete = false
+		}, "Released", 0, 0, false},
 		{"switch-only no VPN", func(l *lab.Lab) {
 			l.Spec.Devices = []lab.DeviceTemplate{{Name: "switch", Type: lab.DeviceTypeUnmanagedSwitch}}
 			l.Spec.Lifecycle.SnapshotMode = "Required"

@@ -16,11 +16,14 @@ func TestControlTwentyPeersAndLabsIgnoreOneHundredStatsUpdates(t *testing.T) {
 	r, applier, c, req := accessReconcileFixture(t)
 	for i := 2; i <= 20; i++ {
 		p := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Namespace: "group", Name: fmt.Sprintf("p%d", i)}, Status: lab.LabGroupClientStatus{AssignedIP: fmt.Sprintf("10.8.0.%d/32", i+1)}}
-		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Namespace: "group", Name: fmt.Sprintf("l%d", i)}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: fmt.Sprintf("10.8.%d.0/24", i)}}}
+		l, leg := vpnLab("group", fmt.Sprintf("l%d", i), fmt.Sprintf("10.8.%d.0/24", i), uint(i))
 		if err := c.Create(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}
 		if err := c.Create(context.Background(), l); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Create(context.Background(), leg); err != nil {
 			t.Fatal(err)
 		}
 	}

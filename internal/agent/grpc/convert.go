@@ -56,6 +56,21 @@ func labToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.La
 	return p
 }
 
+// gatewaysToProto lists the gateways of the lab in spec order with their state. The block of connections started by the lab is reported
+// only for a gateway whose switch is off.
+func gatewaysToProto(l *laboratoryv1alpha1.Lab) []*protobuf.LabGatewayStatus {
+	out := make([]*protobuf.LabGatewayStatus, 0, len(l.Spec.Gateways))
+	for _, g := range l.Spec.Gateways {
+		item := &protobuf.LabGatewayStatus{Name: g.Name, Kind: string(g.Kind)}
+		if st := l.Status.GatewayStatus(g.Name); st != nil {
+			item.Cidr, item.Ready = st.CIDR, st.Ready
+			item.LabInitiatedBlocked = st.LabInitiatedBlocked && !g.ReverseConnections
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits.Limits) *protobuf.Lab {
 	var specJSON []byte
 	if includeSpec {
@@ -63,14 +78,10 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	}
 	st := l.Status
 	status := &protobuf.LabStatus{
-		Phase:                  string(st.Phase),
-		VpnCidr:                st.VPN.CIDR,
-		InternetCidr:           st.Internet.CIDR,
-		Ready:                  st.Phase == laboratoryv1alpha1.PhaseReady,
-		VpnReady:               st.VPN.Ready,
-		VpnLabInitiatedBlocked: st.VPN.LabInitiatedBlocked && !l.Spec.VPN.ReverseConnections,
-		InternetReady:          st.Internet.Ready,
-		ImageWarning:           st.ImageWarning,
+		Phase:        string(st.Phase),
+		Ready:        st.Phase == laboratoryv1alpha1.PhaseReady,
+		ImageWarning: st.ImageWarning,
+		Gateways:     gatewaysToProto(l),
 	}
 	status.Retirement = retirementToProto(l, l.Status.Retirement)
 	status.Lifecycle = lifecycleToProto(l)
@@ -117,7 +128,10 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	// Retained configuration or an old Ready status must never expose stopped
 	// intent as accessible runtime. Keep phases/CIDRs/snapshot history intact.
 	if l.Spec.Lifecycle != nil && !exactRunningProjection(l) {
-		status.Ready, status.VpnReady, status.InternetReady, status.VpnLabInitiatedBlocked = false, false, false, false
+		status.Ready = false
+		for _, g := range status.Gateways {
+			g.Ready, g.LabInitiatedBlocked = false, false
+		}
 		status.Access, status.AccessUrls = nil, nil
 		for _, d := range status.Devices {
 			d.Ready = false
@@ -466,7 +480,7 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 	observed := l.Status.Lifecycle
 	current := allocationObservationCurrent(a, intent, observed, l)
 	snapshotSucceeded := intent.SnapshotMode != "Required" || observed != nil && observed.SnapshotComplete && observed.Error == ""
-	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
+	accessFenced := !l.Spec.HasVPN() || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
 	released := allocationReleaseComplete(current, intent, observed, a, snapshotSucceeded, accessFenced)
 	if !current {
 		out.StorageState = allocationUnknown

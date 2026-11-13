@@ -57,92 +57,39 @@ func setGatewayStatus(status *laboratoryv1alpha1.LabStatus, entry laboratoryv1al
 	status.Gateways = append(status.Gateways, entry)
 }
 
-// legacyGatewayCIDR is the /24 a lab made before status.gateways has for a shorthand gateway: status.vpn.cidr or status.internet.cidr.
-func legacyGatewayCIDR(lab *laboratoryv1alpha1.Lab, g laboratoryv1alpha1.GatewayTemplate) string {
-	switch g.Name {
-	case laboratoryv1alpha1.GatewayNameVPN:
-		return lab.Status.VPN.CIDR
-	case laboratoryv1alpha1.GatewayNameInternet:
-		return lab.Status.Internet.CIDR
-	}
-	return ""
-}
-
-// legacyIndexFromCIDR is the number a lab made before the one address pool had: the third octet of "10.X.N.0/24". The leg of such a lab
-// (interface lab<N>, the LabVPN / LabGateway object) keeps it; the /24 of its Internet gateway is then NOT at position N of the base network.
-func legacyIndexFromCIDR(cidr string) (uint, bool) {
-	parts := strings.Split(cidr, ".")
-	if len(parts) < 3 {
-		return 0, false
-	}
-	var n uint
-	_, err := fmt.Sscanf(parts[2], "%d", &n)
-	return n, err == nil && n >= 1
-}
-
 // ensureSubnetAllocation gives every gateway of the lab its /24 (status.gateways): the first free number of the one lab-subnets pool of the
-// group, for VPN and Internet gateways alike. A gateway that has its /24 keeps it. A lab made before status.gateways has the two /24 of its
-// shorthand gateways in status.vpn and status.internet: those are copied, with their old numbers, and nothing is allocated for them.
-// status.vpn.cidr and status.internet.cidr stay the mirror of the two shorthand gateways.
+// group, for VPN and Internet gateways alike. A gateway that has its /24 keeps it. The number is recorded at once, one write per gateway,
+// so a failure later does not leave a number taken from the pool unaccounted for.
 func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laboratoryv1alpha1.Lab) (updated bool, err error) {
-	for _, g := range lab.Spec.AllGateways() {
+	for _, g := range lab.Spec.Gateways {
 		if st := lab.Status.GatewayStatus(g.Name); st != nil && st.CIDR != "" {
 			continue
 		}
-		entry := laboratoryv1alpha1.GatewayStatus{Name: g.Name, Kind: g.Kind}
-		if legacy := legacyGatewayCIDR(lab, g); legacy != "" {
-			n, ok := legacyIndexFromCIDR(legacy)
-			if !ok {
-				return updated, fmt.Errorf("invalid CIDR %q of gateway %s", legacy, g.Name)
-			}
-			entry.CIDR, entry.NetworkIndex = legacy, n
-		} else {
-			size, err := labSubnetPoolSize(r.LabBaseNetwork)
-			if err != nil {
-				return updated, fmt.Errorf("size the lab subnet pool: %w", err)
-			}
-			allocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolLabSubnets, Namespace: lab.Namespace, Size: size, InUse: r.subnetsInUse(lab.Namespace)}
-			n, err := allocator.AllocateIndex(ctx)
-			if err != nil {
-				return updated, fmt.Errorf("allocate lab subnet: %w", err)
-			}
-			cidr, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, n)
-			if err != nil {
-				return updated, fmt.Errorf("compute the subnet of gateway %s: %w", g.Name, err)
-			}
-			entry.CIDR, entry.NetworkIndex = cidr, n
+		size, err := labSubnetPoolSize(r.LabBaseNetwork)
+		if err != nil {
+			return updated, fmt.Errorf("size the lab subnet pool: %w", err)
 		}
-		setGatewayStatus(&lab.Status, entry)
-		mirrorShorthandCIDR(&lab.Status)
-		// One write per gateway: a number taken from the pool is recorded at once, so a failure later does not leave it unaccounted for.
+		allocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolLabSubnets, Namespace: lab.Namespace, Size: size, InUse: r.subnetsInUse(lab.Namespace)}
+		n, err := allocator.AllocateIndex(ctx)
+		if err != nil {
+			return updated, fmt.Errorf("allocate lab subnet: %w", err)
+		}
+		cidr, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, n)
+		if err != nil {
+			return updated, fmt.Errorf("compute the subnet of gateway %s: %w", g.Name, err)
+		}
+		setGatewayStatus(&lab.Status, laboratoryv1alpha1.GatewayStatus{Name: g.Name, Kind: g.Kind, CIDR: cidr, NetworkIndex: n})
 		if err := r.Status().Update(ctx, lab); err != nil {
 			return updated, err
 		}
 		updated = true
 	}
-	if mirrorShorthandCIDR(&lab.Status) {
-		return true, r.Status().Update(ctx, lab)
-	}
 	return updated, nil
-}
-
-// mirrorShorthandCIDR copies the /24 of the gateways "vpn" and "internet" into status.vpn.cidr and status.internet.cidr. It says whether
-// it changed anything.
-func mirrorShorthandCIDR(status *laboratoryv1alpha1.LabStatus) bool {
-	changed := false
-	if g := status.GatewayStatus(laboratoryv1alpha1.GatewayNameVPN); g != nil && g.CIDR != "" && status.VPN.CIDR != g.CIDR {
-		status.VPN.CIDR, changed = g.CIDR, true
-	}
-	if g := status.GatewayStatus(laboratoryv1alpha1.GatewayNameInternet); g != nil && g.CIDR != "" && status.Internet.CIDR != g.CIDR {
-		status.Internet.CIDR, changed = g.CIDR, true
-	}
-	return changed
 }
 
 // subnetsInUse is the numbers the labs of a namespace refer to, read straight from the API server (the insurance of the forward-only pool:
 // see poolpkg.ForwardAllocator): the position in the base network of every /24 of a lab, and the number of every LabVPN and LabGateway
-// leg. For a lab made now they are the same; for a lab made before the one address pool the number of its Internet leg is not the position
-// of its /24 (10.192.N.0/24 is position 16384+N), and both must stay out of reach.
+// leg.
 func (r *LabReconciler) subnetsInUse(namespace string) func(context.Context) (map[uint]bool, error) {
 	return func(ctx context.Context) (map[uint]bool, error) {
 		reader := r.lifecycleReader()
@@ -161,8 +108,6 @@ func (r *LabReconciler) subnetsInUse(namespace string) func(context.Context) (ma
 		}
 		for i := range labs.Items {
 			st := &labs.Items[i].Status
-			mark(st.VPN.CIDR)
-			mark(st.Internet.CIDR)
 			for _, g := range st.Gateways {
 				mark(g.CIDR)
 				if g.NetworkIndex != 0 {
@@ -188,19 +133,10 @@ func (r *LabReconciler) subnetsInUse(namespace string) func(context.Context) (ma
 	}
 }
 
-// gatewayDevice is the Device field of the object of a gateway: empty for the two shorthand ones, whose objects keep the names labs have
-// always had.
-func gatewayDevice(g laboratoryv1alpha1.GatewayTemplate) string {
-	if g.IsShorthand() {
-		return ""
-	}
-	return g.Name
-}
-
 // ensureLabNetworkObjects creates the LabVPN or LabGateway of every gateway that has its /24 (and the DHCP pool of one that serves DHCP). The
 // FinalizerController on each object signals the VPN and gateway programs that the spec is complete and they may start reconciling.
 func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	for _, g := range lab.Spec.AllGateways() {
+	for _, g := range lab.Spec.Gateways {
 		st := lab.Status.GatewayStatus(g.Name)
 		if st == nil || st.CIDR == "" {
 			continue
@@ -222,20 +158,6 @@ func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *labora
 	return nil
 }
 
-// dhcpPoolName is the name of the DHCP pool of a gateway: "dhcp-vpn-<lab>-0" or "dhcp-inet-<lab>-0" for a shorthand gateway (as always),
-// with ".<device>" after the lab for a declared one.
-func dhcpPoolName(lab string, g laboratoryv1alpha1.GatewayTemplate) (name, prefix string) {
-	prefix = "dhcp-inet"
-	if g.Kind == laboratoryv1alpha1.GatewayKindVPN {
-		prefix = "dhcp-vpn"
-	}
-	owner := lab
-	if d := gatewayDevice(g); d != "" {
-		owner = lab + "." + d
-	}
-	return fmt.Sprintf("%s-%s-0", prefix, owner), prefix
-}
-
 // ensureDHCPPool creates the DHCP Pool of a gateway that the VPN or gateway program uses as the enable-signal (and the future lease
 // allocator) of its embedded DHCP server. Without this Pool the program silently never starts DHCP. The gateway's DHCPServer.Enabled gates
 // creation. The owner reference ties the Pool's lifecycle to the Lab.
@@ -243,7 +165,10 @@ func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alp
 	if g.DHCPServer == nil || !g.DHCPServer.Enabled {
 		return nil
 	}
-	poolName, prefix := dhcpPoolName(lab.Name, g)
+	poolName, prefix := names.DHCPPoolName(lab.Name, g.Name), "dhcp-inet"
+	if g.Kind == laboratoryv1alpha1.GatewayKindVPN {
+		prefix = "dhcp-vpn"
+	}
 	var existing allocationv1alpha1.Pool
 	if err := r.Get(ctx, types.NamespacedName{Name: poolName, Namespace: lab.Namespace}, &existing); err == nil {
 		return nil
@@ -278,8 +203,7 @@ func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alp
 }
 
 func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha1.Lab, g laboratoryv1alpha1.GatewayTemplate, n uint) error {
-	device := gatewayDevice(g)
-	name := names.LabVPNGatewayObjectName(lab.Name, device)
+	name := names.LabVPNObjectName(lab.Name, g.Name)
 	var existing laboratoryv1alpha1.LabVPN
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
 		return nil
@@ -294,7 +218,7 @@ func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha
 		},
 		Spec: laboratoryv1alpha1.LabVPNSpec{
 			LabName:      lab.Name,
-			Device:       device,
+			Device:       g.Name,
 			NetworkIndex: n,
 		},
 	}
@@ -305,8 +229,7 @@ func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha
 }
 
 func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1alpha1.Lab, g laboratoryv1alpha1.GatewayTemplate, n uint) error {
-	device := gatewayDevice(g)
-	name := names.LabInternetGatewayObjectName(lab.Name, device)
+	name := names.LabGatewayObjectName(lab.Name, g.Name)
 	var existing laboratoryv1alpha1.LabGateway
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
 		return nil
@@ -321,7 +244,7 @@ func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1a
 		},
 		Spec: laboratoryv1alpha1.LabGatewaySpec{
 			LabName:      lab.Name,
-			Device:       device,
+			Device:       g.Name,
 			NetworkIndex: n,
 		},
 	}
@@ -388,29 +311,25 @@ type gatewayReadiness struct {
 	Status []laboratoryv1alpha1.GatewayStatus
 	// AllReady is true when every gateway is ready (and true for a lab without gateways).
 	AllReady bool
-	// VPNReady, InternetReady and LabInitiatedBlocked are the values of the mirror fields status.vpn and status.internet: those of the
-	// shorthand gateways.
-	VPNReady, InternetReady, LabInitiatedBlocked bool
-	// Dropped is the packets the block of connections started by the lab dropped, over the VPN gateways of the lab that confirmed the block;
-	// Blocked says at least one did.
+	// Dropped is the packets the block of connections started by the lab dropped, over the VPN gateways of the lab that confirmed the
+	// block; Blocked says at least one did.
 	Dropped int64
 	Blocked bool
 }
 
 // readGatewayReadiness reads the LabVPN / LabGateway of every gateway of the lab. A gateway whose object is missing, or not Ready, is not
-// ready; a lab that is stopping reports what it finds.
+// ready.
 func (r *LabReconciler) readGatewayReadiness(ctx context.Context, lab *laboratoryv1alpha1.Lab) (gatewayReadiness, error) {
 	out := gatewayReadiness{AllReady: true}
-	for _, g := range lab.Spec.AllGateways() {
+	for _, g := range lab.Spec.Gateways {
 		entry := laboratoryv1alpha1.GatewayStatus{Name: g.Name, Kind: g.Kind}
 		if st := lab.Status.GatewayStatus(g.Name); st != nil {
 			entry.CIDR, entry.NetworkIndex = st.CIDR, st.NetworkIndex
 		}
-		device := gatewayDevice(g)
 		switch g.Kind {
 		case laboratoryv1alpha1.GatewayKindVPN:
 			leg := &laboratoryv1alpha1.LabVPN{}
-			ready, err := r.segmentReady(ctx, lab.Namespace, names.LabVPNGatewayObjectName(lab.Name, device), leg)
+			ready, err := r.segmentReady(ctx, lab.Namespace, names.LabVPNObjectName(lab.Name, g.Name), leg)
 			if err != nil {
 				return out, err
 			}
@@ -422,18 +341,12 @@ func (r *LabReconciler) readGatewayReadiness(ctx context.Context, lab *laborator
 				out.Blocked = true
 				out.Dropped += leg.Status.LabInitiatedDropped
 			}
-			if g.IsShorthand() {
-				out.VPNReady, out.LabInitiatedBlocked = ready, entry.LabInitiatedBlocked
-			}
 		case laboratoryv1alpha1.GatewayKindInternet:
-			ready, err := r.segmentReady(ctx, lab.Namespace, names.LabInternetGatewayObjectName(lab.Name, device), &laboratoryv1alpha1.LabGateway{})
+			ready, err := r.segmentReady(ctx, lab.Namespace, names.LabGatewayObjectName(lab.Name, g.Name), &laboratoryv1alpha1.LabGateway{})
 			if err != nil {
 				return out, err
 			}
 			entry.Ready = ready
-			if g.IsShorthand() {
-				out.InternetReady = ready
-			}
 		}
 		if !entry.Ready {
 			out.AllReady = false

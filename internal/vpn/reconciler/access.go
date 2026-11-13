@@ -124,7 +124,7 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	hasStopped := false
 	for _, l := range labs.Items {
-		hasStopped = hasStopped || l.Spec.VPN.Enabled && l.Spec.Lifecycle.IsStopped()
+		hasStopped = hasStopped || l.Spec.HasVPN() && l.Spec.Lifecycle.IsStopped()
 	}
 	if hasStopped {
 		if err := r.writeStoppedFences(ctx, labs.Items); err != nil {

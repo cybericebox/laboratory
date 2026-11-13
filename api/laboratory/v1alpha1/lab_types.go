@@ -6,20 +6,14 @@ import (
 
 // LabSpec defines the desired state of Lab.
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.lifecycle) || has(self.lifecycle)",message="explicit lifecycle intent cannot be removed"
-// +kubebuilder:validation:XValidation:rule="!has(self.vpn) || !has(self.vpn.reverseConnections) || !self.vpn.reverseConnections || (has(self.vpn.enabled) && self.vpn.enabled)",message="vpn.reverseConnections needs vpn.enabled"
-// +kubebuilder:validation:XValidation:rule="!has(self.internet) || !has(self.internet.reverseConnections) || !self.internet.reverseConnections",message="reverseConnections belongs to the vpn segment only"
 type LabSpec struct {
 	// Lifecycle is absent for legacy running laboratories.
 	// +optional
 	Lifecycle *LabLifecycleSpec `json:"lifecycle,omitempty"`
-	// VPN and Internet are the shorthand for ONE gateway of each kind: a gateway named "vpn" and one named "internet" (see Gateways).
-	VPN      LabNetworkSpec `json:"vpn,omitempty"`
-	Internet LabNetworkSpec `json:"internet,omitempty"`
-	// Gateways are the VPN entries and Internet exits of the lab besides the shorthand above. Each one is a device of its own kind with
-	// one port, eth0, attached to a lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, DHCP
-	// settings and, on a VPN gateway, its own reverse-connections switch. The names share one space with the devices. At most
-	// The chart value operator.maxLabGateways (default 10) limits the gateways in all, shorthand included; the agent checks it at
-	// creation and the operator again.
+	// Gateways are the VPN entries and Internet exits of the lab. Each one is a device of its own kind with one port, eth0, attached to a
+	// lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, its DHCP settings and, on a VPN
+	// gateway, its own reverse-connections switch. The names share one space with the devices. The chart value operator.maxLabGateways
+	// (default 10) limits their number; the agent checks it at creation and the operator again.
 	// +listType=map
 	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=64
@@ -48,29 +42,24 @@ type GatewayKind string
 const (
 	GatewayKindVPN      GatewayKind = "vpn"
 	GatewayKindInternet GatewayKind = "internet"
-
-	// GatewayNameVPN and GatewayNameInternet are the names of the gateways the shorthand spec.vpn and spec.internet stand for. They
-	// are reserved: no device or declared gateway may use them.
-	GatewayNameVPN      = "vpn"
-	GatewayNameInternet = "internet"
 )
 
 // GatewayTemplate declares one VPN entry or Internet exit of a lab.
 // +kubebuilder:validation:XValidation:rule="!has(self.reverseConnections) || !self.reverseConnections || self.kind == 'vpn'",message="reverseConnections belongs to a vpn gateway only"
 type GatewayTemplate struct {
-	// Name is a DNS label of at most 35 characters (names.MaxDeviceNameLen), unique among the devices and gateways of the lab.
+	// Name is a DNS label of at most 35 characters (names.MaxDeviceNameLen), unique among the devices and gateways of the lab. It is
+	// part of the names of the gateway's objects.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=35
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
-	// +kubebuilder:validation:XValidation:rule="!(self in ['vpn', 'gateway', 'internet'])",message="the names vpn, gateway and internet are reserved by the platform"
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
 	Kind GatewayKind `json:"kind"`
 	// DHCPServer is the embedded DHCP server of the gateway's /24 (DNS only on an internet gateway).
 	// +optional
 	DHCPServer *DHCPServer `json:"dhcpServer,omitempty"`
-	// ReverseConnections (vpn gateway only) allows a device of the lab to START connections towards a VPN client; see LabNetworkSpec.
+	// ReverseConnections (vpn gateway only) allows a device of the lab to START connections towards a VPN client; see the VPN client rules of the lab.
 	// +optional
 	ReverseConnections bool `json:"reverseConnections,omitempty"`
 }
@@ -82,24 +71,12 @@ type GatewayStatus struct {
 	// CIDR is the /24 of the gateway, taken once from the one lab address pool of the group and kept for the life of the lab.
 	CIDR string `json:"cidr,omitempty"`
 	// NetworkIndex is the number of the gateway's leg (interface lab<N> in the VPN or gateway pod, and its port): the position of the
-	// /24 in the lab base network, except for a lab made before the one pool, whose Internet /24 keeps the old number.
+	// /24 in the lab base network.
 	NetworkIndex uint `json:"networkIndex,omitempty"`
 	Ready        bool `json:"ready,omitempty"`
-	// LabInitiatedBlocked (vpn gateway only): see LabNetworkStatus.
+	// LabInitiatedBlocked (vpn gateway only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards VPN clients. False while the group's VPN pod runs an older program or has not applied the lab yet.
 	// +optional
 	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`
-}
-
-// LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
-type LabNetworkSpec struct {
-	Enabled    bool        `json:"enabled,omitempty"`
-	DHCPServer *DHCPServer `json:"dhcpServer,omitempty"`
-	// ReverseConnections (VPN segment only) allows a device of the lab to START connections towards a VPN client, the participant's
-	// own machine (a reverse shell, an out-of-band callback). False, the default, blocks them: the VPN gateway passes from the lab to a
-	// client only replies to connections the client started (TCP, UDP, ICMP and the ICMP errors that belong to them). Connections from
-	// a client to the devices, and between devices, are never affected. It needs vpn.enabled and has no meaning on the internet segment.
-	// +optional
-	ReverseConnections bool `json:"reverseConnections,omitempty"`
 }
 
 // DHCPServer enables the embedded DHCP server for a network segment.
@@ -203,10 +180,7 @@ type LabStatus struct {
 	// +optional
 	Resources *RuntimeAllocation `json:"resources,omitempty"`
 	Phase     Phase              `json:"phase,omitempty"`
-	VPN       LabNetworkStatus   `json:"vpn,omitempty"`
-	Internet  LabNetworkStatus   `json:"internet,omitempty"`
-	// Gateways is the state of every gateway of the lab (spec.vpn and spec.internet included, under their names). status.vpn and
-	// status.internet stay as the mirror of those two.
+	// Gateways is the state of every gateway of the lab.
 	// +listType=map
 	// +listMapKey=name
 	// +optional
@@ -250,16 +224,6 @@ type LabStatus struct {
 	// ChecksRunAck is the RunChecks request token the checker has taken (see the annotation names.AnnotationRunChecks).
 	// +optional
 	ChecksRunAck int64 `json:"checksRunAck,omitempty"`
-}
-
-// LabNetworkStatus reports the allocated CIDR for a network segment.
-type LabNetworkStatus struct {
-	Ready bool   `json:"ready,omitempty"`
-	CIDR  string `json:"cidr,omitempty"`
-	// LabInitiatedBlocked (VPN segment only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards
-	// VPN clients. False while the lab's group still has a VPN pod with an older program, or while the lab is not yet applied there.
-	// +optional
-	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`
 }
 
 // DeviceRef summarises a materialised Device's readiness.

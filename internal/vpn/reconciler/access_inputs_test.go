@@ -89,9 +89,9 @@ func accessReconcileFixture(t *testing.T) (*AccessReconciler, *recordingAccessAp
 		t.Fatal(err)
 	}
 	peer := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "group"}, Status: lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"}}
-	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l1", Namespace: "group"}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
+	l, firstLeg := vpnLab("group", "l1", "10.8.1.0/24", 1)
 	p := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "group", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(peer, l, p, &lab.LabVPN{}, &lab.LabTrafficReport{}).WithObjects(peer, l, p).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(peer, l, p, &lab.LabVPN{}, &lab.LabTrafficReport{}).WithObjects(peer, l, p, firstLeg).Build()
 	a := &recordingAccessApplier{}
 	return &AccessReconciler{Client: c, IPT: a}, a, c, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "group", Name: names.LabGroupAccessPolicyName}}
 }
@@ -296,9 +296,12 @@ func TestStoppedFenceWaitsRetirementAndExactCurrentOperation(t *testing.T) {
 	if err := r.initializeCurrentBoot(ctx, req.Namespace); err != nil {
 		t.Fatal(err)
 	}
-	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("l1"), Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
+	leg := &lab.LabVPN{}
+	if err := c.Get(ctx, client.ObjectKey{Name: names.LabVPNObjectName("l1", "vpn"), Namespace: "group"}, leg); err != nil {
+		t.Fatal(err)
+	}
 	leg.OwnerReferences = []metav1.OwnerReference{{Kind: "Lab", UID: "lab-uid", Name: "l1"}}
-	if err := c.Create(ctx, leg); err != nil {
+	if err := c.Update(ctx, leg); err != nil {
 		t.Fatal(err)
 	}
 	revoker := &recordingAccessRevoker{}
@@ -308,7 +311,6 @@ func TestStoppedFenceWaitsRetirementAndExactCurrentOperation(t *testing.T) {
 	_ = c.Get(ctx, client.ObjectKey{Name: "l1", Namespace: "group"}, &l)
 	l.UID = "lab-uid"
 	l.Generation = 2
-	l.Spec.VPN.Enabled = true
 	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "stop", Revision: 2, SnapshotMode: "Required"}
 	if err := c.Update(ctx, &l); err != nil {
 		t.Fatal(err)
@@ -358,7 +360,7 @@ func TestVPNBootPublicationInvalidatesOldFenceForSamePodAndReplacement(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("l1"), Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
+		leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("l1", "vpn"), Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", Device: "vpn", NetworkIndex: 1}}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(leg), leg); err != nil {
 			if err := c.Create(ctx, leg); err != nil {
 				t.Fatal(err)

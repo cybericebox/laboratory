@@ -159,7 +159,9 @@ func TestCommittedRequiredReleaseStillRequiresNativeAndAccessProof(t *testing.T)
 		{"missingFabricReport", func(l *lab.Lab, _ *lab.Device) { l.Status.ScopeReports = nil }},
 		{"unknownFabric", func(l *lab.Lab, _ *lab.Device) { l.Status.ScopeReports[0].RuntimeState = "Unknown" }},
 		{"foreignFabric", func(l *lab.Lab, _ *lab.Device) { l.Status.ScopeReports[0].Identity.NodeBootID = "foreign-boot" }},
-		{"missingAccessFence", func(l *lab.Lab, _ *lab.Device) { l.Spec.VPN.Enabled = true }},
+		{"missingAccessFence", func(l *lab.Lab, _ *lab.Device) {
+			l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, l, devices, c := committedReleasedFixture(t)

@@ -9,16 +9,16 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-func TestReverseConnectionsSwitchOfTheVPNSegment(t *testing.T) {
+// What a lab spec may say about reverse connections, and that the removed vpn and internet keys are refused loudly.
+func TestGatewaySpecsInTheLabSpec(t *testing.T) {
 	for _, tc := range []struct {
 		name, spec, want string
 	}{
-		{"default is off", `{"vpn":{"enabled":true},"devices":[]}`, ""},
-		{"on with a vpn", `{"vpn":{"enabled":true,"reverseConnections":true},"devices":[]}`, ""},
-		{"explicit off without a vpn", `{"vpn":{"reverseConnections":false},"devices":[]}`, ""},
-		{"on without a vpn", `{"vpn":{"reverseConnections":true},"devices":[]}`, "needs vpn.enabled"},
-		{"on with the vpn off", `{"vpn":{"enabled":false,"reverseConnections":true},"devices":[]}`, "needs vpn.enabled"},
-		{"on the internet segment", `{"vpn":{"enabled":true},"internet":{"enabled":true,"reverseConnections":true},"devices":[]}`, "vpn segment"},
+		{"a vpn gateway", `{"gateways":[{"name":"attack","kind":"vpn"}],"devices":[]}`, ""},
+		{"reverse connections on a vpn gateway", `{"gateways":[{"name":"attack","kind":"vpn","reverseConnections":true}],"devices":[]}`, ""},
+		{"the removed vpn key", `{"vpn":{"enabled":true},"devices":[]}`, `unknown field "vpn"`},
+		{"the removed internet key", `{"internet":{"enabled":true},"devices":[]}`, `unknown field "internet"`},
+		{"a reference by network", `{"devices":[{"name":"web","type":"container","image":"nginx","interfaces":[{"name":"eth0","addr":{"type":"static","addressRef":{"network":"vpn","host":10}}}]}]}`, `unknown field "network"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec, err := parseLabSpec([]byte(tc.spec), false)
@@ -26,8 +26,8 @@ func TestReverseConnectionsSwitchOfTheVPNSegment(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if spec.VPN.ReverseConnections != strings.Contains(tc.spec, `"reverseConnections":true`) {
-					t.Fatalf("value lost: %+v", spec.VPN)
+				if spec.Gateways[0].ReverseConnections != strings.Contains(tc.spec, `"reverseConnections":true`) {
+					t.Fatalf("value lost: %+v", spec.Gateways)
 				}
 				return
 			}
@@ -38,24 +38,25 @@ func TestReverseConnectionsSwitchOfTheVPNSegment(t *testing.T) {
 	}
 }
 
-// The agent reports a lab as blocked only when the gateway confirmed it and the switch is off.
+// The agent reports a gateway as blocked only when the gateway program confirmed it and the switch is off.
 func TestLabStatusReportsTheBlockOnlyWhenConfirmed(t *testing.T) {
-	mk := func(enabled, reverse, confirmed bool) *laboratoryv1alpha1.Lab {
+	mk := func(reverse, confirmed bool) *laboratoryv1alpha1.Lab {
 		l := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
-		l.Spec.VPN.Enabled, l.Spec.VPN.ReverseConnections = enabled, reverse
-		l.Status.VPN.LabInitiatedBlocked = confirmed
+		l.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "attack", Kind: laboratoryv1alpha1.GatewayKindVPN, ReverseConnections: reverse}}
+		l.Status.Gateways = []laboratoryv1alpha1.GatewayStatus{{Name: "attack", Kind: laboratoryv1alpha1.GatewayKindVPN, LabInitiatedBlocked: confirmed}}
 		return l
 	}
 	for name, tc := range map[string]struct {
 		lab  *laboratoryv1alpha1.Lab
 		want bool
 	}{
-		"confirmed":                     {mk(true, false, true), true},
-		"old gateway, not confirmed":    {mk(true, false, false), false},
-		"switch on, stale confirmation": {mk(true, true, true), false},
+		"confirmed":                     {mk(false, true), true},
+		"old gateway, not confirmed":    {mk(false, false), false},
+		"switch on, stale confirmation": {mk(true, true), false},
 	} {
-		if got := labToProto(tc.lab).GetStatus().GetVpnLabInitiatedBlocked(); got != tc.want {
-			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		gws := labToProto(tc.lab).GetStatus().GetGateways()
+		if len(gws) != 1 || gws[0].GetLabInitiatedBlocked() != tc.want {
+			t.Errorf("%s: %v, want %v", name, gws, tc.want)
 		}
 	}
 }

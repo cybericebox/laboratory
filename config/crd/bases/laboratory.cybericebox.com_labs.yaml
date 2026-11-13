@@ -199,14 +199,14 @@ spec:
                             properties:
                               addressRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
-                                  gateway a declared one (spec.gateways). Exactly one of the two.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
                                   gateway:
                                     description: Gateway is the name of a gateway
                                       declared in spec.gateways.
                                     maxLength: 35
+                                    minLength: 1
                                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                     type: string
                                   host:
@@ -214,29 +214,22 @@ spec:
                                     maximum: 254
                                     minimum: 1
                                     type: integer
-                                  network:
-                                    enum:
-                                    - vpn
-                                    - internet
-                                    type: string
                                 required:
+                                - gateway
                                 - host
                                 type: object
-                                x-kubernetes-validations:
-                                - message: exactly one of network and gateway
-                                  rule: has(self.network) != has(self.gateway)
                               gateway:
                                 type: string
                               gatewayRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
-                                  gateway a declared one (spec.gateways). Exactly one of the two.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
                                   gateway:
                                     description: Gateway is the name of a gateway
                                       declared in spec.gateways.
                                     maxLength: 35
+                                    minLength: 1
                                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                     type: string
                                   host:
@@ -244,17 +237,10 @@ spec:
                                     maximum: 254
                                     minimum: 1
                                     type: integer
-                                  network:
-                                    enum:
-                                    - vpn
-                                    - internet
-                                    type: string
                                 required:
+                                - gateway
                                 - host
                                 type: object
-                                x-kubernetes-validations:
-                                - message: exactly one of network and gateway
-                                  rule: has(self.network) != has(self.gateway)
                               ip:
                                 type: string
                               routes:
@@ -271,29 +257,24 @@ spec:
                                           description: Gateway is the name of a gateway
                                             declared in spec.gateways.
                                           maxLength: 35
+                                          minLength: 1
                                           pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                           type: string
-                                        network:
-                                          enum:
-                                          - vpn
-                                          - internet
-                                          type: string
+                                      required:
+                                      - gateway
                                       type: object
-                                      x-kubernetes-validations:
-                                      - message: exactly one of network and gateway
-                                        rule: has(self.network) != has(self.gateway)
                                     via:
                                       type: string
                                     viaRef:
                                       description: |-
-                                        NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
-                                        gateway a declared one (spec.gateways). Exactly one of the two.
+                                        NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                                         The lab reconciler resolves it before creating a Device.
                                       properties:
                                         gateway:
                                           description: Gateway is the name of a gateway
                                             declared in spec.gateways.
                                           maxLength: 35
+                                          minLength: 1
                                           pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                           type: string
                                         host:
@@ -301,17 +282,10 @@ spec:
                                           maximum: 254
                                           minimum: 1
                                           type: integer
-                                        network:
-                                          enum:
-                                          - vpn
-                                          - internet
-                                          type: string
                                       required:
+                                      - gateway
                                       - host
                                       type: object
-                                      x-kubernetes-validations:
-                                      - message: exactly one of network and gateway
-                                        rule: has(self.network) != has(self.gateway)
                                   type: object
                                 type: array
                               type:
@@ -475,11 +449,10 @@ spec:
                 type: array
               gateways:
                 description: |-
-                  Gateways are the VPN entries and Internet exits of the lab besides the shorthand above. Each one is a device of its own kind with
-                  one port, eth0, attached to a lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, DHCP
-                  settings and, on a VPN gateway, its own reverse-connections switch. The names share one space with the devices. At most
-                  The chart value operator.maxLabGateways (default 10) limits the gateways in all, shorthand included; the agent checks it at
-                  creation and the operator again.
+                  Gateways are the VPN entries and Internet exits of the lab. Each one is a device of its own kind with one port, eth0, attached to a
+                  lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, its DHCP settings and, on a VPN
+                  gateway, its own reverse-connections switch. The names share one space with the devices. The chart value operator.maxLabGateways
+                  (default 10) limits their number; the agent checks it at creation and the operator again.
                 items:
                   description: GatewayTemplate declares one VPN entry or Internet
                     exit of a lab.
@@ -524,20 +497,17 @@ spec:
                       - internet
                       type: string
                     name:
-                      description: Name is a DNS label of at most 35 characters (names.MaxDeviceNameLen),
-                        unique among the devices and gateways of the lab.
+                      description: |-
+                        Name is a DNS label of at most 35 characters (names.MaxDeviceNameLen), unique among the devices and gateways of the lab. It is
+                        part of the names of the gateway's objects.
                       maxLength: 35
                       minLength: 1
                       pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                       type: string
-                      x-kubernetes-validations:
-                      - message: the names vpn, gateway and internet are reserved
-                          by the platform
-                        rule: '!(self in [''vpn'', ''gateway'', ''internet''])'
                     reverseConnections:
                       description: ReverseConnections (vpn gateway only) allows a
                         device of the lab to START connections towards a VPN client;
-                        see LabNetworkSpec.
+                        see the VPN client rules of the lab.
                       type: boolean
                   required:
                   - kind
@@ -559,53 +529,6 @@ spec:
                   from the credentials the platform sends with the deploy; a value in a client's spec is
                   ignored.
                 type: string
-              internet:
-                description: LabNetworkSpec configures a network segment (VPN or internet)
-                  attached to the lab.
-                properties:
-                  dhcpServer:
-                    description: |-
-                      DHCPServer enables the embedded DHCP server for a network segment.
-                      Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
-                    properties:
-                      dns:
-                        description: DNS is advertised only by the internet gateway's
-                          DHCP server.
-                        type: string
-                      enabled:
-                        type: boolean
-                      ranges:
-                        items:
-                          description: |-
-                            DHCPRange is an inclusive host-offset interval within the lab /24.
-                            An enabled DHCP server must have at least one range.
-                          properties:
-                            end:
-                              format: int32
-                              maximum: 254
-                              minimum: 2
-                              type: integer
-                            start:
-                              format: int32
-                              maximum: 254
-                              minimum: 2
-                              type: integer
-                          required:
-                          - end
-                          - start
-                          type: object
-                        type: array
-                    type: object
-                  enabled:
-                    type: boolean
-                  reverseConnections:
-                    description: |-
-                      ReverseConnections (VPN segment only) allows a device of the lab to START connections towards a VPN client, the participant's
-                      own machine (a reverse shell, an out-of-band callback). False, the default, blocks them: the VPN gateway passes from the lab to a
-                      client only replies to connections the client started (TCP, UDP, ICMP and the ICMP errors that belong to them). Connections from
-                      a client to the devices, and between devices, are never affected. It needs vpn.enabled and has no meaning on the internet segment.
-                    type: boolean
-                type: object
               lifecycle:
                 description: Lifecycle is absent for legacy running laboratories.
                 properties:
@@ -650,63 +573,10 @@ spec:
                 - message: terminal intent cannot be cleared
                   rule: '!has(oldSelf.terminal) || !oldSelf.terminal || (has(self.terminal)
                     && self.terminal)'
-              vpn:
-                description: 'VPN and Internet are the shorthand for ONE gateway of
-                  each kind: a gateway named "vpn" and one named "internet" (see Gateways).'
-                properties:
-                  dhcpServer:
-                    description: |-
-                      DHCPServer enables the embedded DHCP server for a network segment.
-                      Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
-                    properties:
-                      dns:
-                        description: DNS is advertised only by the internet gateway's
-                          DHCP server.
-                        type: string
-                      enabled:
-                        type: boolean
-                      ranges:
-                        items:
-                          description: |-
-                            DHCPRange is an inclusive host-offset interval within the lab /24.
-                            An enabled DHCP server must have at least one range.
-                          properties:
-                            end:
-                              format: int32
-                              maximum: 254
-                              minimum: 2
-                              type: integer
-                            start:
-                              format: int32
-                              maximum: 254
-                              minimum: 2
-                              type: integer
-                          required:
-                          - end
-                          - start
-                          type: object
-                        type: array
-                    type: object
-                  enabled:
-                    type: boolean
-                  reverseConnections:
-                    description: |-
-                      ReverseConnections (VPN segment only) allows a device of the lab to START connections towards a VPN client, the participant's
-                      own machine (a reverse shell, an out-of-band callback). False, the default, blocks them: the VPN gateway passes from the lab to a
-                      client only replies to connections the client started (TCP, UDP, ICMP and the ICMP errors that belong to them). Connections from
-                      a client to the devices, and between devices, are never affected. It needs vpn.enabled and has no meaning on the internet segment.
-                    type: boolean
-                type: object
             type: object
             x-kubernetes-validations:
             - message: explicit lifecycle intent cannot be removed
               rule: '!has(oldSelf.lifecycle) || has(self.lifecycle)'
-            - message: vpn.reverseConnections needs vpn.enabled
-              rule: '!has(self.vpn) || !has(self.vpn.reverseConnections) || !self.vpn.reverseConnections
-                || (has(self.vpn.enabled) && self.vpn.enabled)'
-            - message: reverseConnections belongs to the vpn segment only
-              rule: '!has(self.internet) || !has(self.internet.reverseConnections)
-                || !self.internet.reverseConnections'
           status:
             description: LabStatus defines the observed state of Lab.
             properties:
@@ -971,9 +841,7 @@ spec:
                   type: object
                 type: array
               gateways:
-                description: |-
-                  Gateways is the state of every gateway of the lab (spec.vpn and spec.internet included, under their names). status.vpn and
-                  status.internet stay as the mirror of those two.
+                description: Gateways is the state of every gateway of the lab.
                 items:
                   description: GatewayStatus is the observed state of one gateway
                     of a lab, the shorthand ones included (named vpn and internet).
@@ -991,14 +859,17 @@ spec:
                       - internet
                       type: string
                     labInitiatedBlocked:
-                      description: 'LabInitiatedBlocked (vpn gateway only): see LabNetworkStatus.'
+                      description: 'LabInitiatedBlocked (vpn gateway only): the VPN
+                        gateway confirmed that it blocks connections started by the
+                        lab''s devices towards VPN clients. False while the group''s
+                        VPN pod runs an older program or has not applied the lab yet.'
                       type: boolean
                     name:
                       type: string
                     networkIndex:
                       description: |-
                         NetworkIndex is the number of the gateway's leg (interface lab<N> in the VPN or gateway pod, and its port): the position of the
-                        /24 in the lab base network, except for a lab made before the one pool, whose Internet /24 keeps the old number.
+                        /24 in the lab base network.
                       type: integer
                     ready:
                       type: boolean
@@ -1028,20 +899,6 @@ spec:
                   ImageWarning lists the images that could not be pinned and are pulled by
                   their tag; empty when all were.
                 type: string
-              internet:
-                description: LabNetworkStatus reports the allocated CIDR for a network
-                  segment.
-                properties:
-                  cidr:
-                    type: string
-                  labInitiatedBlocked:
-                    description: |-
-                      LabInitiatedBlocked (VPN segment only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards
-                      VPN clients. False while the lab's group still has a VPN pod with an older program, or while the lab is not yet applied there.
-                    type: boolean
-                  ready:
-                    type: boolean
-                type: object
               lifecycle:
                 description: |-
                   LabLifecycleStatus is an observation owned by the operator. All acknowledgements
@@ -1772,20 +1629,6 @@ spec:
                   - runtimeState
                   type: object
                 type: array
-              vpn:
-                description: LabNetworkStatus reports the allocated CIDR for a network
-                  segment.
-                properties:
-                  cidr:
-                    type: string
-                  labInitiatedBlocked:
-                    description: |-
-                      LabInitiatedBlocked (VPN segment only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards
-                      VPN clients. False while the lab's group still has a VPN pod with an older program, or while the lab is not yet applied there.
-                    type: boolean
-                  ready:
-                    type: boolean
-                type: object
             type: object
         type: object
         x-kubernetes-validations:

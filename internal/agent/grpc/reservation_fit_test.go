@@ -59,7 +59,7 @@ func reservedGroup(t *testing.T, h *Handler, k8s kubernetes.Interface, name, res
 // cpuSpec is a lab spec with one container device that runs with the given cpu (and 64Mi).
 func cpuSpec(cpu string) []byte {
 	spec := laboratoryv1alpha1.LabSpec{}
-	spec.VPN.Enabled = true
+	spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 	spec.Devices = []laboratoryv1alpha1.DeviceTemplate{{Name: "box", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx",
 		Resources: &laboratoryv1alpha1.DeviceResources{CPULimit: cpu, MemoryLimit: "64Mi"}}}
 	raw, _ := json.Marshal(spec)

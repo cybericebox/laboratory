@@ -3,6 +3,7 @@ package names
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 )
 
 // MaxLabNetworkIndex is the highest number of a gateway leg (interface lab<N>): the one lab address pool is at most a /8, 65535 numbers
@@ -33,28 +34,28 @@ func GWHostPortKey(namespace string, n uint) string {
 	return fmt.Sprintf("g%x", h[:6])
 }
 
-// LabVPNObjectName returns the Kubernetes object name for the LabVPN belonging to lab.
-func LabVPNObjectName(labName string) string { return "labvpn-" + labName }
+// LabVPNObjectName is the Kubernetes object name of the LabVPN of the VPN gateway named device in the lab. A lab name is a DNS label and
+// never contains ".", so "<lab>.<device>" is never the name of another lab's object (a "-" would be).
+func LabVPNObjectName(labName, device string) string { return "labvpn-" + labName + "." + device }
 
-// LabGatewayObjectName returns the Kubernetes object name for the LabGateway belonging to lab.
-func LabGatewayObjectName(labName string) string { return "labgw-" + labName }
+// LabGatewayObjectName is LabVPNObjectName for the LabGateway of an Internet gateway.
+func LabGatewayObjectName(labName, device string) string { return "labgw-" + labName + "." + device }
 
-// LabVPNGatewayObjectName is the name of the LabVPN of the VPN gateway named device in the lab; empty device = the gateway of the shorthand
-// spec.vpn, whose object keeps LabVPNObjectName. A lab name is a DNS label and never contains ".", so "<lab>.<device>" is never the name
-// of another lab's object.
-func LabVPNGatewayObjectName(labName, device string) string {
-	if device == "" {
-		return LabVPNObjectName(labName)
+// DHCPPoolName is the name of the DHCP pool of a gateway of a lab: the enable-signal and lease ledger of the gateway's DHCP server.
+func DHCPPoolName(labName, device string) string { return "dhcp-" + labName + "." + device + "-0" }
+
+// DHCPPoolOwner reads a DHCP pool name made by DHCPPoolName for the lab: the gateway it is for, or "" when the name is not that of a pool
+// of this lab.
+func DHCPPoolOwner(poolName, labName string) string {
+	rest, ok := strings.CutPrefix(poolName, "dhcp-"+labName+".")
+	if !ok {
+		return ""
 	}
-	return LabVPNObjectName(labName) + "." + device
-}
-
-// LabInternetGatewayObjectName is LabVPNGatewayObjectName for the LabGateway of an Internet gateway.
-func LabInternetGatewayObjectName(labName, device string) string {
-	if device == "" {
-		return LabGatewayObjectName(labName)
+	device, ok := strings.CutSuffix(rest, "-0")
+	if !ok || device == "" {
+		return ""
 	}
-	return LabGatewayObjectName(labName) + "." + device
+	return device
 }
 
 // DevicePortKey computes a stable OVS port name (≤15 chars) for a device interface.
