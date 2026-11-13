@@ -23,7 +23,6 @@ type Config struct {
 	// ExternalInterface is the uplink of the pod (the pod network), the one interface from which the WireGuard port is reachable:
 	// the proxy delivers the clients' packets there. The lab interfaces (lab<N>) never are.
 	ExternalInterface string `env:"EXTERNAL_INTERFACE" envDefault:"eth0"`
-	VPNBaseNetwork    string `env:"VPN_BASE_NETWORK,required"`
 	SupportEmail      string `env:"SUPPORT_EMAIL,required"`
 }
 

@@ -118,6 +118,9 @@ type Config struct {
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// MaxLabGateways is the most gateways (VPN entries and Internet exits together, the shorthand spec.vpn and spec.internet counted) one lab
+	// may have: a lab with more is refused when it is created (the chart's operator.maxLabGateways, which the operator checks again).
+	MaxLabGateways int `env:"MAX_LAB_GATEWAYS" envDefault:"10"`
 	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled: two independent options, both off by
 	// default. A lab with checks (or a terminal device) is refused while the matching option is off; GetFeatures reports them.
 	ChecksEnabled   bool `env:"CHECKS_ENABLED" envDefault:"false"`

@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/gatewayspec"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/labchecks"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -90,6 +91,11 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	variants, err := parseVariants(in.GetVariants(), persistence)
 	if err != nil {
 		return nil, err
+	}
+	for id, v := range variants {
+		if err := gatewayspec.Validate(&v.spec, h.features.MaxLabGateways); err != nil {
+			return nil, invalid("variant %q: %v", id, err)
+		}
 	}
 	policy, _, err := h.imagePolicy(ctx)
 	if err != nil {

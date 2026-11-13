@@ -59,13 +59,13 @@ func TestNetnsGatewayControlOneTenTwentyLabs(t *testing.T) {
 				ipt.ipt = tracked
 				dhcpMgr := dhcp.NewManager()
 				defer dhcpMgr.Close()
-				r := &LabGatewayReconciler{Client: c, IPT: ipt, DHCP: dhcpMgr, Cfg: &Config{Namespace: "g", InetBaseNetwork: "10.9.0.0/16"}}
+				r := &LabGatewayReconciler{Client: c, IPT: ipt, DHCP: dhcpMgr, Cfg: &Config{Namespace: "g"}}
 				for i := 1; i <= count; i++ {
 					iface := fmt.Sprintf("lab%d", i)
 					nstest.Run(t, "", "ip", "link", "add", iface, "type", "dummy")
 					defer nstest.Try("", "ip", "link", "del", iface)
 					name := fmt.Sprintf("a%d", i)
-					l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true}}}
+					l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "g", UID: types.UID(name + "-uid")}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true}}, Status: lab.LabStatus{Internet: lab.LabNetworkStatus{CIDR: fmt.Sprintf("10.9.%d.0/24", i)}}}
 					if enabled {
 						l.Spec.Internet.DHCPServer = &lab.DHCPServer{Enabled: true, DNS: "1.1.1.1", Ranges: []lab.DHCPRange{{Start: 2, End: 20}}}
 					}

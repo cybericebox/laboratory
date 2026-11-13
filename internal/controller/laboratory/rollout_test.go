@@ -57,7 +57,7 @@ func TestImageUpdateRollsOneGroupAtATime(t *testing.T) {
 		dep("ns-b", "vpn", "lab:v1"), dep("ns-b", "gateway", "lab:v1"),
 		dep("ns-c", "vpn", "lab:v2"), dep("ns-c", "gateway", "lab:v2"), // already current
 	).Build()
-	r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v2", GatewayImage: "lab:v2", GroupPods: grouppods.Config{}}
+	r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v2", GatewayImage: "lab:v2", GroupPods: grouppods.Config{}}
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	r.rollout.now = func() time.Time { return now }
 
@@ -154,7 +154,7 @@ func TestImageUpdateKeepsTheSizeOfAGroup(t *testing.T) {
 		}
 	}
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(dep("vpn"), dep("gateway")).Build()
-	r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v2", GatewayImage: "lab:v2",
+	r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v2", GatewayImage: "lab:v2",
 		GroupPods: grouppods.Config{VPNCPU: "500m", VPNMemory: "1Gi", GatewayCPU: "200m", GatewayMemory: "512Mi"}}
 	if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
 		t.Fatal(err)

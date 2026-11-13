@@ -20,7 +20,7 @@ import (
 )
 
 // maxLabIndex is the largest lab network index of a group (the lab-subnets pool is 1..254).
-const maxLabIndex = 254
+const maxLabIndex = names.MaxLabNetworkIndex
 
 // GroupComponent says which of a group's own pods this is: names.ComponentVPN, names.ComponentGateway, or "" for any other pod
 // (a device pod). A pod made before the component label is told by `app`.

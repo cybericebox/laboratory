@@ -74,6 +74,8 @@ type Features struct {
 	// between two manual runs of one lab (0: none). Both are chart values (checks.maxTimeLimitSeconds, checks.manualCooldown).
 	CheckMaxTimeLimit int32
 	ManualCooldown    time.Duration
+	// MaxLabGateways is the most gateways one lab may have (0: gatewayspec.DefaultMax); CreateLabs refuses a lab with more.
+	MaxLabGateways int
 	// CheckerRequired: checks count as available only while the checker DaemonSet exists (production sets it with ChecksEnabled).
 	CheckerRequired bool
 }

@@ -18,7 +18,7 @@ import (
 func TestGroupPodsAreCreatedAtTheSizeOfTheSpec(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
-	r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1"}
+	r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1"}
 	vpn := &laboratoryv1alpha1.GroupPodSize{CPUMillicores: 140, MemoryBytes: 200 << 20}
 	gw := &laboratoryv1alpha1.GroupPodSize{CPUMillicores: 15, MemoryBytes: 24 << 20}
 	if err := r.ensureVPNDeployment(ctx, "sized", false, vpn); err != nil {

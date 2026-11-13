@@ -21,7 +21,7 @@ func resolveLabDeviceInterfaces(lab *laboratoryv1alpha1.Lab) (map[string][]labor
 			}
 			if ref := iface.Addr.AddressRef; ref != nil {
 				if previous, exists := usedAddresses[*ref]; exists {
-					return nil, fmt.Errorf("duplicate static address %s host %d on %s and %s.%s", ref.Network, ref.Host, previous, tmpl.Name, iface.Name)
+					return nil, fmt.Errorf("duplicate static address %s host %d on %s and %s.%s", refNetworkName(ref.Network, ref.Gateway), ref.Host, previous, tmpl.Name, iface.Name)
 				}
 				usedAddresses[*ref] = tmpl.Name + "." + iface.Name
 			}
@@ -94,7 +94,7 @@ func resolveDeviceInterfaces(tmpl laboratoryv1alpha1.DeviceTemplate, lab *labora
 				return nil, fmt.Errorf("interface %q route %d: require one destination and one next hop", iface.Name, routeIndex)
 			}
 			if route.DstRef != nil {
-				prefix, resolveErr := resolveNetworkPrefix(lab, route.DstRef.Network)
+				prefix, resolveErr := resolveNetworkPrefix(lab, route.DstRef.Network, route.DstRef.Gateway)
 				if resolveErr != nil {
 					return nil, fmt.Errorf("interface %q route %d destination: %w", iface.Name, routeIndex, resolveErr)
 				}
@@ -129,7 +129,7 @@ func resolveNetworkIP(lab *laboratoryv1alpha1.Lab, ref laboratoryv1alpha1.Networ
 	if ref.Host < minimum || ref.Host > 254 {
 		return "", fmt.Errorf("host %d outside %d..254", ref.Host, minimum)
 	}
-	prefix, err := resolveNetworkPrefix(lab, ref.Network)
+	prefix, err := resolveNetworkPrefix(lab, ref.Network, ref.Gateway)
 	if err != nil {
 		return "", err
 	}
@@ -138,23 +138,35 @@ func resolveNetworkIP(lab *laboratoryv1alpha1.Lab, ref laboratoryv1alpha1.Networ
 	return netip.AddrFrom4(ip).String(), nil
 }
 
-func resolveNetworkPrefix(lab *laboratoryv1alpha1.Lab, network string) (netip.Prefix, error) {
-	var enabled bool
-	var cidr string
-	switch network {
-	case names.ComponentVPN:
-		enabled, cidr = lab.Spec.VPN.Enabled, lab.Status.VPN.CIDR
-	case "internet":
-		enabled, cidr = lab.Spec.Internet.Enabled, lab.Status.Internet.CIDR
-	default:
+// refNetworkName is how a reference names the network in a message: the shorthand name or the gateway name.
+func refNetworkName(network, gateway string) string {
+	if gateway != "" {
+		return gateway
+	}
+	return network
+}
+
+// resolveNetworkPrefix is the /24 of the gateway a reference names: network is the shorthand (vpn, internet), gateway a declared
+// gateway; exactly one is set. The /24 is read from the status of the lab, where the operator wrote it when the gateway took its number.
+func resolveNetworkPrefix(lab *laboratoryv1alpha1.Lab, network, gateway string) (netip.Prefix, error) {
+	if (network == "") == (gateway == "") {
+		return netip.Prefix{}, fmt.Errorf("a reference names exactly one of network and gateway")
+	}
+	if network != "" && network != names.ComponentVPN && network != "internet" {
 		return netip.Prefix{}, fmt.Errorf("unknown network %q", network)
 	}
-	if !enabled {
-		return netip.Prefix{}, fmt.Errorf("%s network is disabled", network)
+	label := refNetworkName(network, gateway)
+	g, ok := lab.Spec.Gateway(label)
+	if !ok {
+		if network != "" {
+			return netip.Prefix{}, fmt.Errorf("%s network is disabled", network)
+		}
+		return netip.Prefix{}, fmt.Errorf("unknown gateway %q", gateway)
 	}
+	cidr := lab.Status.GatewayCIDR(g.Kind, g.Name)
 	prefix, err := netip.ParsePrefix(cidr)
 	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 24 || prefix != prefix.Masked() {
-		return netip.Prefix{}, fmt.Errorf("%s allocated CIDR %q is not a canonical IPv4 /24", network, cidr)
+		return netip.Prefix{}, fmt.Errorf("%s allocated CIDR %q is not a canonical IPv4 /24", label, cidr)
 	}
 	return prefix, nil
 }

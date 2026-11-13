@@ -26,6 +26,11 @@ func buildLabAccessSnapshots(labs []lab.Lab, legs []lab.LabVPN) (map[string]vpn.
 		if !leg.DeletionTimestamp.IsZero() {
 			continue
 		}
+		// The access of a client to the lab goes through the VPN gateway of the shorthand spec.vpn; the declared gateways of a lab
+		// are given their own access rules in a later step, and have none until then.
+		if leg.Spec.Device != "" {
+			continue
+		}
 		s, ok := result[leg.Spec.LabName]
 		if !ok {
 			continue

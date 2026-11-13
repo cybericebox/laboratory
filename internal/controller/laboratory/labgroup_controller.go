@@ -47,7 +47,7 @@ import (
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
-// labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within VPNBaseNetwork.
+// labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within LabBaseNetwork.
 const labSubnetPrefixLen = 24
 
 // LabGroupReconciler reconciles a LabGroup object.
@@ -70,10 +70,9 @@ type LabGroupReconciler struct {
 	// WGDemuxMode is the mode of the WireGuard demux (userspace, tc or xdp). tc and xdp run it on the host network, which the VPN pods'
 	// policy must admit.
 	WGDemuxMode string
-	// VPNBaseNetwork is the base address space for all VPN subnets (e.g. "10.8.0.0/10").
-	VPNBaseNetwork string
-	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
-	InetBaseNetwork string
+	// LabBaseNetwork is the one address space of the lab networks (e.g. "10.128.0.0/9"): /24 number 0 is the VPN clients, every other
+	// /24 goes to a gateway of a lab.
+	LabBaseNetwork string
 	// VPNImage is the container image for VPN pods.
 	VPNImage string
 	// GatewayImage is the container image for gateway pods.
@@ -182,7 +181,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 	r.rollout.begin(ns)
-	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	clientSubnet, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("derive VPN client subnet: %w", err)
 	}
@@ -323,7 +322,12 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if err = r.ensurePool(ctx, ns, names.PoolLabSubnets, poolpkg.PoolTypeLabSubnets, 1, 254); err != nil {
+	labSubnets, err := labSubnetPoolSize(r.LabBaseNetwork)
+	if err != nil {
+		logger.Error(err, "size the lab-subnets pool")
+		return ctrl.Result{}, err
+	}
+	if err = r.ensurePool(ctx, ns, names.PoolLabSubnets, poolpkg.PoolTypeLabSubnets, 1, labSubnets); err != nil {
 		logger.Error(err, "ensure lab-subnets pool")
 		return ctrl.Result{}, err
 	}
@@ -781,7 +785,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		return err
 	}
 	vpnImage := r.cachedImage(ctx, ns, r.VPNImage)
-	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	clientSubnet, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return fmt.Errorf("derive VPN client subnet: %w", err)
 	}
@@ -822,7 +826,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							{Name: "NAMESPACE", Value: ns},
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
 							{Name: groupUIDEnvironment, Value: groupUID},
-							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
 							{Name: "SUPPORT_EMAIL", Value: r.SupportEmail},
 						}, r.vpnStatsEnv()...),
@@ -1305,7 +1308,8 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 	poolName := fmt.Sprintf("%s-0", name)
 	var existing allocationv1alpha1.Pool
 	if err := r.Get(ctx, types.NamespacedName{Name: poolName, Namespace: ns}, &existing); err == nil {
-		return nil
+		// A pool made smaller (the 254 numbers of the time before the one lab address pool) grows to the wanted size; it never shrinks.
+		return poolpkg.GrowPool(ctx, r.Client, ns, poolName, size)
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
@@ -1429,7 +1433,6 @@ func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
 func (r *LabGroupReconciler) gatewayEnv(ns string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "NAMESPACE", Value: ns},
-		{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
 	}
 }
 

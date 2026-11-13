@@ -1,10 +1,9 @@
 package laboratory
 
 import (
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
-
-	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 // vpnLabInitiatedDropped is the packets that the VPN gateway dropped because a lab without spec.vpn.reverseConnections sent them towards a
@@ -18,18 +17,19 @@ var vpnLabInitiatedDropped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 
 func init() { metrics.Registry.MustRegister(vpnLabInitiatedDropped) }
 
-// publishLabInitiatedDropped sets the metric of a lab from its LabVPN, or removes it when the lab has none to report.
-func publishLabInitiatedDropped(namespace, lab string, leg *laboratoryv1alpha1.LabVPN, enabled bool) {
-	if !enabled || leg == nil || !leg.Status.LabInitiatedBlocked {
+// publishLabInitiatedDropped sets the metric of a lab: the sum over its VPN gateways that confirmed the block, or removes it when no
+// gateway of the lab has one to report.
+func publishLabInitiatedDropped(namespace, lab string, dropped int64, blocked bool) {
+	if !blocked {
 		vpnLabInitiatedDropped.DeleteLabelValues(namespace, lab)
 		return
 	}
-	vpnLabInitiatedDropped.WithLabelValues(namespace, lab).Set(float64(leg.Status.LabInitiatedDropped))
+	vpnLabInitiatedDropped.WithLabelValues(namespace, lab).Set(float64(dropped))
 }
 
-// labInitiatedBlockedStatus is what the Lab reports about the block of connections its devices start towards VPN clients: true only for a
-// lab with a VPN whose switch is off AND whose gateway has confirmed it on the LabVPN. A group whose VPN pod runs an older program never
-// confirms, so its labs are never reported as blocked.
-func labInitiatedBlockedStatus(lab *laboratoryv1alpha1.Lab, leg *laboratoryv1alpha1.LabVPN) bool {
-	return lab.Spec.VPN.Enabled && !lab.Spec.VPN.ReverseConnections && leg != nil && leg.Status.LabInitiatedBlocked
+// labInitiatedBlockedStatus is what a VPN gateway of a lab reports about the block of connections its devices start towards VPN clients:
+// true only for a VPN gateway whose switch is off AND whose program has confirmed it on the LabVPN. A group whose VPN pod runs an older
+// program never confirms, so its labs are never reported as blocked.
+func labInitiatedBlockedStatus(g laboratoryv1alpha1.GatewayTemplate, leg *laboratoryv1alpha1.LabVPN) bool {
+	return g.Kind == laboratoryv1alpha1.GatewayKindVPN && !g.ReverseConnections && leg != nil && leg.Status.LabInitiatedBlocked
 }

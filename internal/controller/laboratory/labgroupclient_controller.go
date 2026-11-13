@@ -33,8 +33,8 @@ type LabGroupClientReconciler struct {
 	Recorder record.EventRecorder
 	// Reader reads straight from the API server (nil: through Client).
 	Reader client.Reader
-	// VPNBaseNetwork is the full VPN address space advertised to WireGuard clients (e.g. "10.8.0.0/10").
-	VPNBaseNetwork string
+	// LabBaseNetwork is the whole lab address space, advertised to WireGuard clients as their AllowedIPs (e.g. "10.128.0.0/9").
+	LabBaseNetwork string
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroupclients,verbs=get;list;watch;create;update;patch;delete
@@ -125,7 +125,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		AssignedIP:      assignedIP,
 		ServerPublicKey: serverPubKey,
 		Endpoint:        endpoint,
-		AllowedIPs:      r.VPNBaseNetwork,
+		AllowedIPs:      r.LabBaseNetwork,
 	})
 
 	updated := false
@@ -283,7 +283,7 @@ func renderWGConf(p wgConfParams) (string, error) {
 // vpnClientIP computes the /32 address for pool slot idx within the first /24 of vpnBaseNet.
 // idx=0 → .1 (first client; .0 is the subnet address, VPN gateway uses .1 conventionally).
 func (r *LabGroupClientReconciler) vpnClientIP(idx uint) (string, error) {
-	s, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	s, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return "", fmt.Errorf("derive client subnet: %w", err)
 	}

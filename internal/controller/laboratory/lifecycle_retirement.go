@@ -216,6 +216,7 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 	l.Status.ImageWarning = ""
 	l.Status.VPN = lab.LabNetworkStatus{}
 	l.Status.Internet = lab.LabNetworkStatus{}
+	l.Status.Gateways = nil
 	l.Status.Conditions = nil
 	return s.Client.Status().Patch(ctx, l, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
@@ -253,12 +254,13 @@ func (s *RetentionSweeper) cleanupRetiredLab(ctx context.Context, reader client.
 	if len(remaining) > 0 {
 		return fmt.Errorf("unrecorded or pending Lab configuration remains")
 	}
-	if len(l.Spec.Devices) > 0 || len(l.Spec.Connections) > 0 || l.Spec.VPN.Enabled || l.Spec.Internet.Enabled {
+	if len(l.Spec.Devices) > 0 || len(l.Spec.Connections) > 0 || l.Spec.VPN.Enabled || l.Spec.Internet.Enabled || len(l.Spec.Gateways) > 0 {
 		base := l.DeepCopy()
 		l.Spec.Devices = nil
 		l.Spec.Connections = nil
 		l.Spec.VPN = lab.LabNetworkSpec{}
 		l.Spec.Internet = lab.LabNetworkSpec{}
+		l.Spec.Gateways = nil
 		return s.Client.Patch(ctx, l, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 	}
 	return nil

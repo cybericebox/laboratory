@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"reflect"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -131,5 +133,35 @@ func TestTerminatingOldGroupPodKeepsReplacementPorts(t *testing.T) {
 		if got := GroupPortsPresentOwned("g", component, "", map[string]types.UID{key: ""}); len(got) != 0 {
 			t.Fatal("unknown owner selected", got)
 		}
+	}
+}
+
+// The legs of the one lab address pool go up to names.MaxLabNetworkIndex: a leg of number 5000 is attached, found among the ports of the
+// node and detached when its gateway is gone; a number above the ceiling is not attached.
+func TestGroupLegsOfHighNumbers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	var objs []client.Object
+	for _, n := range []uint{300, 5000, names.MaxLabNetworkIndex, names.MaxLabNetworkIndex + 1} {
+		objs = append(objs, &laboratoryv1alpha1.LabVPN{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("v%d", n), Namespace: "g"},
+			Spec:       laboratoryv1alpha1.LabVPNSpec{LabName: "a", NetworkIndex: n},
+		})
+	}
+	objs = append(objs, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}})
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	got, err := GroupPodAttachments(context.Background(), c, "g", names.ComponentVPN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Iface != "lab300" || got[1].Iface != "lab5000" || got[2].Iface != fmt.Sprintf("lab%d", names.MaxLabNetworkIndex) {
+		t.Fatalf("attachments: %+v", got)
+	}
+	present := map[string]bool{names.VPNHostPortKey("g", 5000): true, names.VPNHostPortKey("g", 7000): true}
+	if stale := StaleGroupPorts("g", names.ComponentVPN, got[:1], present); len(stale) != 2 {
+		t.Fatalf("the legs of 5000 and 7000 are not wanted here: %v", stale)
+	}
+	if all := GroupPortsPresent("g", names.ComponentVPN, present); len(all) != 2 {
+		t.Fatalf("both legs are found: %v", all)
 	}
 }
