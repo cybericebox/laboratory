@@ -199,9 +199,16 @@ spec:
                             properties:
                               addressRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+                                  gateway a declared one (spec.gateways). Exactly one of the two.
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
+                                  gateway:
+                                    description: Gateway is the name of a gateway
+                                      declared in spec.gateways.
+                                    maxLength: 35
+                                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                    type: string
                                   host:
                                     format: int32
                                     maximum: 254
@@ -214,15 +221,24 @@ spec:
                                     type: string
                                 required:
                                 - host
-                                - network
                                 type: object
+                                x-kubernetes-validations:
+                                - message: exactly one of network and gateway
+                                  rule: has(self.network) != has(self.gateway)
                               gateway:
                                 type: string
                               gatewayRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+                                  gateway a declared one (spec.gateways). Exactly one of the two.
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
+                                  gateway:
+                                    description: Gateway is the name of a gateway
+                                      declared in spec.gateways.
+                                    maxLength: 35
+                                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                    type: string
                                   host:
                                     format: int32
                                     maximum: 254
@@ -235,8 +251,10 @@ spec:
                                     type: string
                                 required:
                                 - host
-                                - network
                                 type: object
+                                x-kubernetes-validations:
+                                - message: exactly one of network and gateway
+                                  rule: has(self.network) != has(self.gateway)
                               ip:
                                 type: string
                               routes:
@@ -247,23 +265,37 @@ spec:
                                       type: string
                                     dstRef:
                                       description: NetworkSubnetRef selects the full
-                                        lab-allocated VPN or Internet /24.
+                                        /24 of a gateway of the lab (see NetworkIPRef).
                                       properties:
+                                        gateway:
+                                          description: Gateway is the name of a gateway
+                                            declared in spec.gateways.
+                                          maxLength: 35
+                                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                          type: string
                                         network:
                                           enum:
                                           - vpn
                                           - internet
                                           type: string
-                                      required:
-                                      - network
                                       type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of network and gateway
+                                        rule: has(self.network) != has(self.gateway)
                                     via:
                                       type: string
                                     viaRef:
                                       description: |-
-                                        NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                        NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+                                        gateway a declared one (spec.gateways). Exactly one of the two.
                                         The lab reconciler resolves it before creating a Device.
                                       properties:
+                                        gateway:
+                                          description: Gateway is the name of a gateway
+                                            declared in spec.gateways.
+                                          maxLength: 35
+                                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                          type: string
                                         host:
                                           format: int32
                                           maximum: 254
@@ -276,8 +308,10 @@ spec:
                                           type: string
                                       required:
                                       - host
-                                      - network
                                       type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of network and gateway
+                                        rule: has(self.network) != has(self.gateway)
                                   type: object
                                 type: array
                               type:
@@ -439,6 +473,85 @@ spec:
                       self.type == ''container'''
                 maxItems: 64
                 type: array
+              gateways:
+                description: |-
+                  Gateways are the VPN entries and Internet exits of the lab besides the shorthand above. Each one is a device of its own kind with
+                  one port, eth0, attached to a lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, DHCP
+                  settings and, on a VPN gateway, its own reverse-connections switch. The names share one space with the devices. At most
+                  The chart value operator.maxLabGateways (default 10) limits the gateways in all, shorthand included; the agent checks it at
+                  creation and the operator again.
+                items:
+                  description: GatewayTemplate declares one VPN entry or Internet
+                    exit of a lab.
+                  properties:
+                    dhcpServer:
+                      description: DHCPServer is the embedded DHCP server of the gateway's
+                        /24 (DNS only on an internet gateway).
+                      properties:
+                        dns:
+                          description: DNS is advertised only by the internet gateway's
+                            DHCP server.
+                          type: string
+                        enabled:
+                          type: boolean
+                        ranges:
+                          items:
+                            description: |-
+                              DHCPRange is an inclusive host-offset interval within the lab /24.
+                              An enabled DHCP server must have at least one range.
+                            properties:
+                              end:
+                                format: int32
+                                maximum: 254
+                                minimum: 2
+                                type: integer
+                              start:
+                                format: int32
+                                maximum: 254
+                                minimum: 2
+                                type: integer
+                            required:
+                            - end
+                            - start
+                            type: object
+                          type: array
+                      type: object
+                    kind:
+                      description: 'GatewayKind is the kind of a gateway: a VPN entry
+                        or an Internet exit.'
+                      enum:
+                      - vpn
+                      - internet
+                      type: string
+                    name:
+                      description: Name is a DNS label of at most 35 characters (names.MaxDeviceNameLen),
+                        unique among the devices and gateways of the lab.
+                      maxLength: 35
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: the names vpn, gateway and internet are reserved
+                          by the platform
+                        rule: '!(self in [''vpn'', ''gateway'', ''internet''])'
+                    reverseConnections:
+                      description: ReverseConnections (vpn gateway only) allows a
+                        device of the lab to START connections towards a VPN client;
+                        see LabNetworkSpec.
+                      type: boolean
+                  required:
+                  - kind
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: reverseConnections belongs to a vpn gateway only
+                    rule: '!has(self.reverseConnections) || !self.reverseConnections
+                      || self.kind == ''vpn'''
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               imagePullSecret:
                 description: |-
                   ImagePullSecret names a kubernetes.io/dockerconfigjson Secret in the lab's namespace with
@@ -538,8 +651,8 @@ spec:
                   rule: '!has(oldSelf.terminal) || !oldSelf.terminal || (has(self.terminal)
                     && self.terminal)'
               vpn:
-                description: LabNetworkSpec configures a network segment (VPN or internet)
-                  attached to the lab.
+                description: 'VPN and Internet are the shorthand for ONE gateway of
+                  each kind: a gateway named "vpn" and one named "internet" (see Gateways).'
                 properties:
                   dhcpServer:
                     description: |-
@@ -857,6 +970,46 @@ spec:
                   - name
                   type: object
                 type: array
+              gateways:
+                description: |-
+                  Gateways is the state of every gateway of the lab (spec.vpn and spec.internet included, under their names). status.vpn and
+                  status.internet stay as the mirror of those two.
+                items:
+                  description: GatewayStatus is the observed state of one gateway
+                    of a lab, the shorthand ones included (named vpn and internet).
+                  properties:
+                    cidr:
+                      description: CIDR is the /24 of the gateway, taken once from
+                        the one lab address pool of the group and kept for the life
+                        of the lab.
+                      type: string
+                    kind:
+                      description: 'GatewayKind is the kind of a gateway: a VPN entry
+                        or an Internet exit.'
+                      enum:
+                      - vpn
+                      - internet
+                      type: string
+                    labInitiatedBlocked:
+                      description: 'LabInitiatedBlocked (vpn gateway only): see LabNetworkStatus.'
+                      type: boolean
+                    name:
+                      type: string
+                    networkIndex:
+                      description: |-
+                        NetworkIndex is the number of the gateway's leg (interface lab<N> in the VPN or gateway pod, and its port): the position of the
+                        /24 in the lab base network, except for a lab made before the one pool, whose Internet /24 keeps the old number.
+                      type: integer
+                    ready:
+                      type: boolean
+                  required:
+                  - kind
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               imageCache:
                 description: |-
                   ImageCache records whether this lab pulls its images through the platform

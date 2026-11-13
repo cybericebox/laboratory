@@ -154,20 +154,35 @@ type AddrSpec struct {
 	Routes     []Route       `json:"routes,omitempty"`
 }
 
-// NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+// NetworkIPRef selects a host address from the /24 of a gateway of the lab: network names the shorthand gateway (vpn or internet),
+// gateway a declared one (spec.gateways). Exactly one of the two.
 // The lab reconciler resolves it before creating a Device.
+// +kubebuilder:validation:XValidation:rule="has(self.network) != has(self.gateway)",message="exactly one of network and gateway"
 type NetworkIPRef struct {
 	// +kubebuilder:validation:Enum=vpn;internet
-	Network string `json:"network"`
+	// +optional
+	Network string `json:"network,omitempty"`
+	// Gateway is the name of a gateway declared in spec.gateways.
+	// +kubebuilder:validation:MaxLength=35
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	// +optional
+	Gateway string `json:"gateway,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=254
 	Host int32 `json:"host"`
 }
 
-// NetworkSubnetRef selects the full lab-allocated VPN or Internet /24.
+// NetworkSubnetRef selects the full /24 of a gateway of the lab (see NetworkIPRef).
+// +kubebuilder:validation:XValidation:rule="has(self.network) != has(self.gateway)",message="exactly one of network and gateway"
 type NetworkSubnetRef struct {
 	// +kubebuilder:validation:Enum=vpn;internet
-	Network string `json:"network"`
+	// +optional
+	Network string `json:"network,omitempty"`
+	// Gateway is the name of a gateway declared in spec.gateways.
+	// +kubebuilder:validation:MaxLength=35
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	// +optional
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // Route is a static route entry.
