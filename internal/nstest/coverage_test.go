@@ -12,6 +12,9 @@ import (
 
 // CI runs the privileged network tests only as `-test.run TestNetns` (hack/test-netns.sh). A test that uses this package but is named
 // otherwise would be skipped there and never run anywhere, so every test that calls into nstest must be called TestNetns...
+//
+// One explicit exception: the TestPerf... measurements. They skip unless CICE_PERF=1 and the job fails on any skip, so they must NOT carry
+// the TestNetns prefix; they are run by hand (CICE_PERF=1 and the netns script with -test.run TestPerf).
 func TestEveryTestThatUsesNstestIsRunByTheNetnsJob(t *testing.T) {
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
@@ -31,7 +34,7 @@ func TestEveryTestThatUsesNstestIsRunByTheNetnsJob(t *testing.T) {
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Test") || strings.HasPrefix(fn.Name.Name, "TestNetns") {
+			if !ok || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Test") || strings.HasPrefix(fn.Name.Name, "TestNetns") || strings.HasPrefix(fn.Name.Name, "TestPerf") {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
