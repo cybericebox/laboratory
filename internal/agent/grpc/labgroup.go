@@ -479,7 +479,8 @@ func (h *Handler) applyExpectedCounts(it *protobuf.LabGroupItem) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	vpn, gw := grouppods.VPNSize(users, labs), grouppods.GatewaySize(labs)
+	limits := h.features.GroupLimits
+	vpn, gw := grouppods.VPNSize(users, limits.VPNLegs(labs)), grouppods.GatewaySize(limits.InternetLegs(labs))
 	it.VpnSize = &protobuf.PodSize{CpuMillicores: vpn.CPU, MemoryBytes: vpn.Memory}
 	it.GatewaySize = &protobuf.PodSize{CpuMillicores: gw.CPU, MemoryBytes: gw.Memory}
 	return true, nil

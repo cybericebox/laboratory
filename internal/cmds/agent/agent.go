@@ -210,7 +210,7 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	f.GroupLimits = cfg.GroupLimits
 	// the pods are sized for at most this many users and labs: the maximum the agent reports is the size at these counts, so the default
 	// size must fit inside THAT maximum (not the one of vpn.sizing.maxUsers, which groupLimits.maxUsers replaces)
-	f.GroupPods.Sizing.VPN.MaxUnits, f.GroupPods.Sizing.Gateway.MaxUnits = cfg.GroupLimits.MaxUsers, cfg.GroupLimits.MaxLabs
+	f.GroupPods.Sizing.VPN.MaxUnits, f.GroupPods.Sizing.Gateway.MaxUnits = cfg.GroupLimits.MaxUsers, cfg.GroupLimits.InternetLegs(cfg.GroupLimits.MaxLabs)
 	if err = cfg.GroupPods.CheckWithin(f.GroupPods.Sizing); err != nil {
 		return f, err
 	}

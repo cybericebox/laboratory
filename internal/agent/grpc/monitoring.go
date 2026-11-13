@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/labels"
 
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -138,8 +139,8 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 				}
 			}
 			for _, l := range labsOf[ns] {
-				if l.DeletionTimestamp == nil && l.Spec.HasInternet() {
-					internetLabs++
+				if l.DeletionTimestamp == nil {
+					internetLabs += len(l.Spec.GatewaysOfKind(lab.GatewayKindInternet)) // the units of the gateway pod: its legs
 				}
 			}
 			var groupUsage map[string]deviceUsage
