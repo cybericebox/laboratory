@@ -256,6 +256,24 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
   eth0 (потому что Service использует под селектор). Это OK для текущей реализации, но в спецификации описана
   дополнительная нога. Уточнить у пользователя.
 
+#### REQ-OP-028A: gRPC access (EDA web-direct, programmatic level) — Service + NetworkPolicy
+
+- **Статус:** ✅ Implemented
+- **Реализация:** `lab_grpc.go:ensureGRPCServices` (after `materializeDevices`: the host needs the code of the Device). For every device with an
+  `access` entry of kind `grpc`: a headless Service `<device>-<code>g` (`names.AccessHostLabel`, label `laboratory.cybericebox.com/access-kind=grpc`,
+  so `labServiceSnapshot.find` never returns it as the web Service) on the port of the entry, and a NetworkPolicy `<service>-grpc` that admits the
+  L7 proxy on that port and no egress (the same peers as the web policy). A Service of a device that no longer has the access is removed with its
+  policy. The pod gets the EDA interface (`default-network: eda`) when it has a web or a gRPC port (`HasEDAPort`).
+- **Статус в `lab.status.access`:** `{device, port, protocol: "grpc", url: https://<device>-<code>g.<BASE_DOMAIN>}`, `url` empty until the device has a code.
+- **Что считать выполненным:** the Service and the policy exist, only the proxy reaches the port, the entry is in the status.
+
+#### REQ-OP-028B: `devices[].internet: deny`
+
+- **Статус:** ✅ Implemented
+- **Реализация:** `lab_controller.go:validateBroadcastDomains`: a denied device in the broadcast domain of an Internet gateway (the union-find over
+  connections through switches and hubs) fails the lab with `InternetDeniedDeviceOnInternetNetwork`. Fail-closed at admission of the topology; no
+  runtime rule and no dependence on addresses. Default (empty) is `allow`.
+
 #### REQ-OP-029: Lab.status.access — публичные URL после Ready
 
 - **Источник:** §10 «`access: { ... }` — собирается на Ready (напр. challenge-URL для web)»; §14 «платформа подставляет

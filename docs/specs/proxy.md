@@ -196,6 +196,24 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Что считать выполненным:** Lab без записи `access` вида `http` → Service не существует → 404; никакой отдельной authz-проверки не
   нужно.
 
+#### REQ-PX-019B: gRPC access of a device (EDA web-direct, programmatic level)
+
+- **Статус:** ✅ Implemented
+- **Реализация:** `internal/proxy/l7/grpc.go`, `grpc_auth.go`. A host whose first label ends in `g` (`names.ParseAccessHost`, kind `grpc`) is handled
+  before any cookie logic. HTTP/2 over TLS from the client (ALPN `h2, http/1.1`, `proxy.NewHTTPServer`), h2c with prior knowledge to
+  `http://<service>.<ns>.svc.cluster.local:<port>` (stdlib `http.Transport` with `Protocols.UnencryptedHTTP2`, ping every 30s), `httputil.ReverseProxy`
+  with `FlushInterval=-1`: messages and trailers pass as they come. `SetReadDeadline/SetWriteDeadline(0)` per call: neither `READ_TIMEOUT` nor
+  `IDLE_TIMEOUT` cuts a stream. Cancelling a call closes the request body too (the h2 transport otherwise stays in a read of an idle stream).
+- **Auth:** `authorization: Bearer <EdDSA JWT>`, verified like a handoff link (`accessKeyFunc`): `iss`/`kid`, aud `laboratory-proxy`, iat+nbf+exp,
+  `host` = the host label, `group_id`, `sub`, `run`; `exp - iat <= GRPC_TOKEN_MAX_TTL` (24h); the group belongs to the issuer. No cookie, no `/_auth`.
+  The device does not see `authorization`, `cookie` or client address headers.
+- **Live:** one `liveEntry` per call (deadline = token `exp`, `valid` = the signing key is still registered); `CheckLive` re-runs the group, lab, client
+  and policy checks. A cut call ends with `grpc-status` in the trailers (7 access ended, 16 token expired).
+- **Errors:** gRPC trailers-only answers: 16 token problems, 5 unknown route or policy refusal, 14 device or `prepare` failure, 8 caps and repeated bad
+  tokens, 13 internal; `415` plain text for a non-gRPC request. Not metered (see DEPLOY.md).
+- **Не делает:** vnc and rdp (monitor) and the management web UI are later; for them the proxy would need a WebSocket/guacd-like bridge with its own
+  host letters (`v`, `r` are reserved), a per-kind upstream (RFB/RDP is not HTTP), and the device side (a framebuffer, a VM).
+
 #### REQ-PX-019: Internal upstream — http (default) или https
 
 - **Источник:** §5 «access[kind=http].protocol: http (дефолт) — внутрь plain HTTP; https — re-encrypt».
