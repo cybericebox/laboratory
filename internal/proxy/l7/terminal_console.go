@@ -91,7 +91,7 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 	claims := jwtClaims{GroupID: hc.GroupID, Client: hc.client(), Tenant: hc.Issuer, Abs: abs.Unix(), Host: host, Use: "console",
 		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now)}}
 	device, code, _ := names.ParseAccessHost(task)
-	_, tg, ok := h.consoleTarget(w, r, claims, device, code)
+	tg, ok := h.consoleTarget(w, r, claims, device, code)
 	if !ok {
 		return
 	}
@@ -118,7 +118,7 @@ func (h *Handler) consoleSocket(w http.ResponseWriter, r *http.Request, task str
 		return
 	}
 	device, code, _ := names.ParseAccessHost(task)
-	_, tg, ok := h.consoleTarget(w, r, claims, device, code)
+	tg, ok := h.consoleTarget(w, r, claims, device, code)
 	if !ok {
 		return
 	}
@@ -127,14 +127,13 @@ func (h *Handler) consoleSocket(w http.ResponseWriter, r *http.Request, task str
 
 // consoleTarget runs the checks every console request passes: the group exists and still belongs to the tenant of the session, then
 // authorizeTerminal (the client may reach the lab, the device has a console, its node has a service).
-func (h *Handler) consoleTarget(w http.ResponseWriter, r *http.Request, claims jwtClaims, device, code string) (AccessGroup, terminalTarget, bool) {
+func (h *Handler) consoleTarget(w http.ResponseWriter, r *http.Request, claims jwtClaims, device, code string) (terminalTarget, bool) {
 	group, err := h.access.Group(r.Context(), claims.GroupID)
 	if err != nil || group.Tenant != claims.Tenant || claims.client() == "" {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
-		return AccessGroup{}, terminalTarget{}, false
+		return terminalTarget{}, false
 	}
-	tg, ok := h.authorizeTerminal(w, r, device, code, claims, claims.client(), group)
-	return group, tg, ok
+	return h.authorizeTerminal(w, r, device, code, claims, claims.client(), group)
 }
 
 // verifyConsoleToken checks a console session token: the proxy's signature, use "console", an end in the future and the one host it was

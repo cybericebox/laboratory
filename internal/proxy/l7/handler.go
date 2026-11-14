@@ -137,14 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusBadRequest, pageGone, "bad request")
 		return
 	}
-	// The gRPC access of a device has a host of its own and its own authentication (a bearer token, no cookie, no handoff).
-	if _, _, kind := names.ParseAccessHost(task); kind == names.AccessKindGRPC {
-		h.serveGRPC(w, r, task)
-		return
-	}
-	// The console host has no cookie: its own handoff, token and WebSocket (terminal_console.go).
-	if _, _, kind := names.ParseAccessHost(task); kind == names.AccessKindTerminal && h.terminal != nil && h.access != nil {
-		h.serveConsoleHost(w, r, task)
+	if h.serveOwnAuthKind(w, r, task) {
 		return
 	}
 	if r.URL.Path == AuthPath {
@@ -192,7 +185,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.renewSession(w, claims)
 	var backendURL, lab string
 	if h.access != nil {
-		if h.serveAccessKind(w, r, task, claims, client, group) {
+		if h.serveAccessKind(w, r, task) {
 			return
 		}
 		route, routeErr := h.access.Route(r.Context(), task, namespace)
@@ -492,15 +485,29 @@ func stripClientAddress(h http.Header) {
 	h["X-Forwarded-For"] = nil
 }
 
+// serveOwnAuthKind serves the kinds that do not use the session cookie: the gRPC access of a device (the credential of the call, no cookie, no
+// handoff) and the console (its own handoff, token and WebSocket, see terminal_console.go). It reports whether the host was one of them.
+func (h *Handler) serveOwnAuthKind(w http.ResponseWriter, r *http.Request, task string) bool {
+	switch _, _, kind := names.ParseAccessHost(task); {
+	case kind == names.AccessKindGRPC:
+		h.serveGRPC(w, r, task)
+		return true
+	case kind == names.AccessKindTerminal && h.terminal != nil && h.access != nil:
+		h.serveConsoleHost(w, r, task)
+		return true
+	}
+	return false
+}
+
 // serveAccessKind answers a host that is the access of a kind other than http to a device and reports whether it did. The last character
 // of the first label says which access the host is: a host of another kind is never the Service of a device. Only the console is served;
 // vnc, rdp and the reserved characters answer like a host that does not exist.
-func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task string, claims jwtClaims, client string, group AccessGroup) bool {
-	device, code, kind := names.ParseAccessHost(task)
+func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task string) bool {
+	_, _, kind := names.ParseAccessHost(task)
 	if kind == "" || kind == names.AccessKindHTTP {
 		return false
 	}
-	_, _ = device, code // the console and the gRPC kind are served before the cookie is looked at; nothing else is served
+	// the console and the gRPC kind are served before the cookie is looked at; nothing else is served
 	fail(w, r, http.StatusNotFound, pageGone, "not found")
 	return true
 }
