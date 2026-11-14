@@ -37,7 +37,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
-	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", Host: "mytask.challenges.example.com", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	req.AddCookie(&http.Cookie{Name: "other", Value: "keep"})
 
 	rec := httptest.NewRecorder()

@@ -41,7 +41,7 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request) {
 		abs = limit
 	}
 	value, end, err := h.sessionCookie(jwtClaims{
-		GroupID: claims.GroupID, Client: claims.client(), Tenant: claims.Issuer, Abs: abs.Unix(),
+		GroupID: claims.GroupID, Client: claims.client(), Tenant: claims.Issuer, Abs: abs.Unix(), Host: host,
 		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now)},
 	}, now)
 	if err != nil {

@@ -697,3 +697,54 @@ func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
 		t.Fatal("a cookie of another device host leaked to a third host")
 	}
 }
+
+// The session names the one host it was opened for: what leaks opens at most that device. A cookie of host A sent to host B (the same
+// group, a real session) is refused, and so is one without a host (issued before the binding).
+func TestSession_IsBoundToItsHost(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithLimits(DefaultHandoffLifetime, 10*time.Hour, 2*time.Hour, 24*time.Hour)
+	c := f.open(f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(1000 * time.Hour).Unix() })).Result().Cookies()[0]
+	claims, err := validateCookie(requestWithCookie(c.Value), testSecret, "challenge", f.handler.now)
+	if err != nil || claims.Host != labHost {
+		t.Fatalf("the handoff binds the session to the host: %+v %v", claims, err)
+	}
+	get := func(host string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "https://"+host+"/", nil)
+		req.Host = host
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get(labHost+":8443", c); rec.Code != 200 {
+		t.Fatalf("its own host (with a port): %d", rec.Code)
+	}
+	for _, other := range []string{"web-abc12t.challenges.example.com", "web-zzz99w.challenges.example.com"} {
+		if rec := get(other, c); rec.Code != http.StatusUnauthorized {
+			t.Errorf("the cookie of %s opened %s: %d", labHost, other, rec.Code)
+		}
+	}
+	// renewal keeps the host, and a renewed cookie is still refused elsewhere
+	f.now = f.now.Add(9 * time.Hour)
+	rec := get(labHost, c)
+	renewed := rec.Result().Cookies()
+	if rec.Code != 200 || len(renewed) != 1 {
+		t.Fatalf("renewal: %d %v", rec.Code, renewed)
+	}
+	if cl, err := validateCookie(requestWithCookie(renewed[0].Value), testSecret, "challenge", f.handler.now); err != nil || cl.Host != labHost {
+		t.Fatalf("the renewed session names the same host: %+v %v", cl, err)
+	}
+	if rec := get("web-zzz99w.challenges.example.com", renewed[0]); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("a renewed cookie on another host: %d %v", rec.Code, rec.Result().Cookies())
+	}
+	// a session cookie that names no host (the old kind) is no session
+	old := jwtClaims{GroupID: "g1", Client: "p-u1", Tenant: "acme", Abs: f.now.Add(time.Hour).Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Hour))}}
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, old).SignedString(testSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(labHost, &http.Cookie{Name: "challenge", Value: tok}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a cookie without a host: %d", rec.Code)
+	}
+}
