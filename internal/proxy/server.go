@@ -17,7 +17,13 @@ import (
 // that dribbles its headers or its body, or opens connections and says nothing, is cut instead of holding a connection
 // and a goroutine forever. There is no write timeout (responses stream; an upgraded connection is bounded by the live
 // check), and a hijacked connection has its deadlines cleared by the handler.
+//
+// The server offers HTTP/2 and HTTP/1.1 (ALPN h2, http/1.1): the gRPC access of a device needs h2, and a browser takes it too. A tlsConfig
+// that names its own protocols keeps them.
 func NewHTTPServer(cfg *L7Config, handler http.Handler, tlsConfig *tls.Config) *http.Server {
+	if tlsConfig != nil && len(tlsConfig.NextProtos) == 0 {
+		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+	}
 	return &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,

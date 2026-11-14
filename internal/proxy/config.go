@@ -30,6 +30,8 @@ type L7Config struct {
 	// AccessTokenMaxTTL is the longest exp - iat of a handoff link the proxy accepts; SessionMaxTTL is the
 	// longest its own session cookie lives, whatever the link asks for. The agent reports both to the backend.
 	AccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
+	// GRPCTokenMaxTTL is the longest exp - iat of the bearer token of the gRPC access of a device (it lives for a run, see l7/grpc.go).
+	GRPCTokenMaxTTL time.Duration `env:"GRPC_TOKEN_MAX_TTL" envDefault:"24h"`
 	// The session is sliding: it expires SessionIdleTTL after the last request, the cookie is re-issued only when
 	// less than SessionRenewBefore of it remains, and it ends SessionMaxTTL after the handoff at the latest (and
 	// never past the link's sess).
@@ -140,6 +142,9 @@ func LoadL7Config() (*L7Config, error) {
 	}
 	if cfg.ReadHeaderTimeout <= 0 || cfg.ReadTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.MaxHeaderBytes <= 0 {
 		return cfg, fmt.Errorf("READ_HEADER_TIMEOUT, READ_TIMEOUT, IDLE_TIMEOUT and MAX_HEADER_BYTES must be positive")
+	}
+	if cfg.GRPCTokenMaxTTL <= 0 {
+		return cfg, fmt.Errorf("GRPC_TOKEN_MAX_TTL must be positive")
 	}
 	if cfg.SessionIdleTTL <= 0 || cfg.SessionMaxTTL <= 0 || cfg.SessionRenewBefore < 0 || cfg.SessionRenewBefore >= cfg.SessionIdleTTL {
 		return cfg, fmt.Errorf("SESSION_IDLE_TTL and SESSION_MAX_TTL must be positive and SESSION_RENEW_BEFORE must be shorter than SESSION_IDLE_TTL")

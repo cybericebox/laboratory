@@ -71,6 +71,8 @@ spec:
           key: {{ .Values.proxy.l7.sessionSecret.key | quote }}
     - name: ACCESS_TOKEN_MAX_TTL
       value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
+    - name: GRPC_TOKEN_MAX_TTL
+      value: {{ .Values.proxy.l7.grpcTokenMaxTTL | quote }}
     - name: SESSION_IDLE_TTL
       value: {{ .Values.proxy.l7.sessionIdleTTL | quote }}
     - name: SESSION_RENEW_BEFORE

@@ -102,27 +102,39 @@ func validateCookie(r *http.Request, secret []byte, cookieName string, now func(
 
 var tenantNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// accessKeyFunc finds the key a tenant's token is signed with: EdDSA only, the issuer (iss) names the tenant and the header kid the key
+// of that tenant (see KeyLookup). The claims of the token must be a handoffClaims or a grpcClaims.
+func accessKeyFunc(keys KeyLookup) jwt.Keyfunc {
+	return func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodEd25519); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		kid, _ := t.Header["kid"].(string)
+		var issuer string
+		switch c := t.Claims.(type) {
+		case *handoffClaims:
+			issuer = c.Issuer
+		case *grpcClaims:
+			issuer = c.Issuer
+		}
+		if kid == "" || !tenantNameRE.MatchString(issuer) || len(issuer) > 63 {
+			return nil, fmt.Errorf("no issuer or key id")
+		}
+		key, ok := keys(issuer, kid)
+		if !ok {
+			return nil, fmt.Errorf("unknown issuer or key id")
+		}
+		return key, nil
+	}
+}
+
 // verifyHandoff checks a tenant's handoff link: the signature against the key registered for
 // (iss, kid), aud, iat/nbf/exp and the link lifetime, that it was issued for this device host, and
 // that the LabGroup belongs to the tenant that signed it (a tenant cannot reach another's labs).
 func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host string, now func() time.Time, maxLifetime time.Duration) (handoffClaims, error) {
 	var claims handoffClaims
 	token, err := jwt.ParseWithClaims(
-		raw, &claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodEd25519); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-			}
-			kid, _ := t.Header["kid"].(string)
-			iss, _ := t.Claims.(*handoffClaims)
-			if kid == "" || iss == nil || !tenantNameRE.MatchString(iss.Issuer) || len(iss.Issuer) > 63 {
-				return nil, fmt.Errorf("no issuer or key id")
-			}
-			key, ok := keys(iss.Issuer, kid)
-			if !ok {
-				return nil, fmt.Errorf("unknown issuer or key id")
-			}
-			return key, nil
-		},
+		raw, &claims, accessKeyFunc(keys),
 		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithTimeFunc(now), jwt.WithExpirationRequired(), jwt.WithIssuedAt(),
 		jwt.WithAudience(HandoffAudience), jwt.WithLeeway(30*time.Second),
 	)

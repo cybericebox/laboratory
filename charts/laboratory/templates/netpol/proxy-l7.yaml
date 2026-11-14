@@ -29,7 +29,7 @@ and gateway pods of a group and anything else there are not reachable) and,
 with the console on, the device access service pods on their one port.
 What the proxy dials in those namespaces, checked in the code: the pod
 behind the Service of an exposed device (internal/proxy/l7/access.go
-Route, the web port of the device); its traffic reports and the report
+Route, the web port of the device; GRPCRoute, its gRPC port over h2c); its traffic reports and the report
 preparation go through the API server. Nothing else.
 l7 dials per-device Services in
 namespaces the operator creates dynamically per LabGroup/Lab (see
