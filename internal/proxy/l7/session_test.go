@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -29,7 +30,7 @@ func staticKeys(tenant, kid string, pub ed25519.PublicKey) KeyLookup {
 // baseHandoff is a valid handoff of tenant acme for group g1.
 func baseHandoff(now time.Time) handoffClaims {
 	return handoffClaims{
-		GroupID: "g1", Host: "web-abc12w", Session: now.Add(24 * time.Hour).Unix(),
+		GroupID: "g1", Host: labHost, Session: now.Add(24 * time.Hour).Unix(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: "acme", Subject: "p-u1", Audience: jwt.ClaimStrings{HandoffAudience},
 			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
@@ -110,7 +111,7 @@ func TestHandoff_SetsTheProxyCookieAndRedirects(t *testing.T) {
 		t.Fatalf("cookies = %v", cookies)
 	}
 	c := cookies[0]
-	if c.Name != "challenge" || c.Domain != "challenges.example.com" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
+	if c.Name != "challenge" || c.Domain != "" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
 		t.Fatalf("cookie = %+v", c)
 	}
 	if want := f.now.Add(24 * time.Hour).Unix(); c.Expires.Unix() != want {
@@ -509,6 +510,9 @@ func TestSession_SlidesWithActivityAndEndsAtTheMax(t *testing.T) {
 	if rec := get(c); rec.Code != 200 || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("9h-plus remain: no renewal, got %d %v", rec.Code, rec.Result().Cookies())
 	}
+	if c.Domain != "" {
+		t.Fatalf("the session cookie is host-only: %+v", c)
+	}
 	// 9h later 1h remains (< 2h): renewed to now+10h
 	f.now = start.Add(9 * time.Hour)
 	rec := get(c)
@@ -523,6 +527,9 @@ func TestSession_SlidesWithActivityAndEndsAtTheMax(t *testing.T) {
 	// near the absolute end (24h from the start) the expiry is cut to it, and then nothing later is possible
 	f.now = start.Add(18 * time.Hour)
 	last := get(renewed[0]).Result().Cookies()
+	if len(last) == 1 && last[0].Domain != "" {
+		t.Fatalf("a renewed cookie stays host-only: %+v", last[0])
+	}
 	if len(last) != 1 || last[0].Expires.Unix() != start.Add(24*time.Hour).Unix() {
 		t.Fatalf("cut to the absolute end: %v", last)
 	}
@@ -587,5 +594,106 @@ func TestDeviceCannotSetTheSessionCookie(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "app=1" {
 		t.Fatalf("the response cookies are %v: the session cookie must be stripped, the device's own kept", names)
+	}
+}
+
+// A handoff link opens ONE device: its host claim is the whole host name, and the same group's other hosts refuse it.
+func TestHandoff_IsBoundToTheFullHostName(t *testing.T) {
+	f := newHandoffFixture(t)
+	open := func(host, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "https://"+host+AuthPath+"?t="+url.QueryEscape(token), nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, req)
+		return rec
+	}
+	link := f.link(t, nil) // host = web-abc12w.challenges.example.com
+	for _, host := range []string{"web-abc12t.challenges.example.com", "other-xyz12w.challenges.example.com", "web-abc12w.other.example.com"} {
+		if rec := open(host, link); rec.Code == http.StatusSeeOther || len(rec.Result().Cookies()) != 0 {
+			t.Errorf("a link for %s opened on %s: %d %v", labHost, host, rec.Code, rec.Result().Cookies())
+		}
+	}
+	// only the first label is no longer enough
+	if rec := open(labHost, f.link(t, func(c *handoffClaims) { c.Host = "web-abc12w" })); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a link that names the first label only: %d", rec.Code)
+	}
+	// the right host with a port is still the same host
+	if rec := open(labHost+":8443", link); rec.Code != http.StatusSeeOther {
+		t.Errorf("the same host with a port: %d", rec.Code)
+	}
+}
+
+// Sessions of two groups live side by side in one browser, one cookie per device host, and each opens only its own host.
+func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	backends := map[string]*httptest.Server{}
+	for _, g := range []string{"g1", "g2"} {
+		g := g
+		b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("lab-" + g)) }))
+		t.Cleanup(b.Close)
+		backends[g] = b
+	}
+	now := time.Now()
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+		func(task, groupID string) (string, error) { return backends[groupID].URL, nil }).
+		WithGroupTenant(func(string) (string, bool) { return "acme", true })
+	h.now = func() time.Time { return now }
+
+	hostA, hostB := "web-aaa11w.challenges.example.com", "web-bbb22w.challenges.example.com"
+	jar, _ := cookiejar.New(nil)
+	login := func(host, group string) {
+		claims := baseHandoff(now)
+		claims.Host, claims.GroupID = host, group
+		req := httptest.NewRequest("GET", "https://"+host+AuthPath+"?t="+url.QueryEscape(signHandoff(t, priv, "k1", claims)), nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("handoff on %s: %d", host, rec.Code)
+		}
+		u, _ := url.Parse("https://" + host + "/")
+		jar.SetCookies(u, rec.Result().Cookies())
+	}
+	login(hostA, "g1")
+	login(hostB, "g2") // the second login must not replace the first
+
+	get := func(host string) string {
+		u, _ := url.Parse("https://" + host + "/")
+		req := httptest.NewRequest("GET", u.String(), nil)
+		req.Host = host
+		for _, c := range jar.Cookies(u) { // what a browser sends to this host
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d", host, rec.Code)
+		}
+		return rec.Body.String()
+	}
+	if got := get(hostA); got != "lab-g1" {
+		t.Fatalf("host A serves group 1 with its own cookie, got %q", got)
+	}
+	if got := get(hostB); got != "lab-g2" {
+		t.Fatalf("host B serves group 2 with its own cookie, got %q", got)
+	}
+	for _, host := range []string{hostA, hostB} {
+		u, _ := url.Parse("https://" + host + "/")
+		if n := len(jar.Cookies(u)); n != 1 {
+			t.Fatalf("the browser holds one cookie for %s, got %d", host, n)
+		}
+	}
+	// a host the browser never logged in to gets no cookie, and so no session
+	other := "web-ccc33w.challenges.example.com"
+	req := httptest.NewRequest("GET", "https://"+other+"/", nil)
+	req.Host = other
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a host with no cookie: %d", rec.Code)
+	}
+	u, _ := url.Parse("https://" + other + "/")
+	if len(jar.Cookies(u)) != 0 {
+		t.Fatal("a cookie of another device host leaked to a third host")
 	}
 }

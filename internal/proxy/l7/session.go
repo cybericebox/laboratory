@@ -1,6 +1,7 @@
 package l7
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,7 +19,8 @@ const AuthPath = "/_auth"
 
 // handoff turns a platform link into the proxy's own cookie and sends the
 // browser to a safe device destination, so the token leaves the URL.
-func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
+func (h *Handler) handoff(w http.ResponseWriter, r *http.Request) {
+	host := requestHost(r)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
 	raw := r.URL.Query().Get("t")
@@ -91,7 +93,7 @@ func (h *Handler) sessionCookie(c jwtClaims, now time.Time) (string, time.Time, 
 
 func (h *Handler) setSessionCookie(w http.ResponseWriter, value string, end, now time.Time) {
 	http.SetCookie(w, &http.Cookie{
-		Name: h.cookieName, Value: value, Domain: h.baseDomain, Path: "/",
+		Name: h.cookieName, Value: value, Path: "/", // no Domain: host-only, the cookie belongs to the one device host that set it
 		Expires: end, MaxAge: int(end.Sub(now).Seconds()),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
@@ -113,4 +115,13 @@ func (h *Handler) renewSession(w http.ResponseWriter, c jwtClaims) {
 		return
 	}
 	h.setSessionCookie(w, value, end, now)
+}
+
+// requestHost is the host name of the request: lower case, without a port.
+func requestHost(r *http.Request) string {
+	host := strings.ToLower(r.Host)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.TrimSuffix(host, ".")
 }

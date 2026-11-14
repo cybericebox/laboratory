@@ -55,7 +55,8 @@ type handoffClaims struct {
 	// token that has one is refused here, so a long-lived credential can never become a browser cookie.
 	TokenUse string `json:"token_use,omitempty"`
 	Kind     string `json:"kind,omitempty"`
-	// Host is the device host label (<device>-<code>) the link was issued for.
+	// Host is the FULL host name of the device access host (<device>-<code><letter>.<base domain>) the link was issued for; the proxy requires
+	// it to equal the Host of the request, so a link opens one device and nothing else.
 	Host string `json:"host"`
 	// Session is the unix time the proxy cookie expires.
 	Session int64 `json:"sess"`
@@ -133,8 +134,8 @@ func accessKeyFunc(keys KeyLookup) jwt.Keyfunc {
 }
 
 // verifyHandoff checks a tenant's handoff link: the signature against the key registered for
-// (iss, kid), aud, iat/nbf/exp and the link lifetime, that it was issued for this device host, and
-// that the LabGroup belongs to the tenant that signed it (a tenant cannot reach another's labs).
+// (iss, kid), aud, iat/nbf/exp and the link lifetime, that it was issued for exactly this device host (the whole host name), and
+// that the LabGroup belongs to the tenant that signed it (a tenant cannot reach another's labs). host is the full host name of the request, without a port, in lower case.
 func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host string, now func() time.Time, maxLifetime time.Duration) (handoffClaims, error) {
 	var claims handoffClaims
 	token, err := jwt.ParseWithClaims(

@@ -1416,7 +1416,7 @@ pair, and sends the cluster only public material: a certificate request and the 
    the PEM public key); the proxy reads them from there (it watches that namespace and nothing else). The agent has no role in `laboratory-tenants`.
 5. **Handoff links.** The proxy accepts a lab access link only if it is a JWT signed with EdDSA by an access key of the tenant it
    names: `iss` = the tenant, the header `kid` = the key id, `aud` = `laboratory-proxy`, `sub` = the LabGroupClient, `iat`, `nbf` and `exp`
-   (at most 5 minutes apart), plus `group_id`, `host` (the `<device>-<code>` label) and `sess` (the end of the session, unix time). An unknown
+   (at most 5 minutes apart), plus `group_id`, `host` (the FULL host name of the device access host, `<device>-<code><letter>.<base domain>`, which must equal the request's host without its port: a link opens one device and no other host of the same group; it lives 60 s, there is no replay cache) and `sess` (the end of the session, unix time). The session cookie the proxy sets is host-only (no `Domain`), so it belongs to that device host and a browser holds one per host: sessions of several groups coexist. An unknown
    issuer or key id, another audience, an expired or not yet valid link is refused. The group must belong to the issuer (the tenant
    label of the LabGroup): a tenant cannot open another's labs, even with a perfect signature, and a session stops when its group
    changes owner. There is no shared lab access key any more.

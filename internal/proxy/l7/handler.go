@@ -148,7 +148,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
 			return
 		}
-		h.handoff(w, r, task)
+		h.handoff(w, r)
 		return
 	}
 	claims, err := validateCookie(r, h.secret, h.cookieName, h.now)

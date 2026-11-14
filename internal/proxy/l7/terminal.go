@@ -24,7 +24,7 @@ import (
 // device has a console. It then relays the stream to the device access service on the node of the device, which opens the shell.
 // The proxy never learns the container; it names a device (namespace, lab, device) and the service finds the container itself.
 //
-// Because the cookie of the session covers every host under the base domain, a page of a device (written by a participant) could ask
+// The session cookie is host-only (it belongs to the one device host that set it), so a page of another device cannot send it here at all. Before that, with a cookie that covered every host under the base domain, a page of a device (written by a participant) could ask
 // for the console of the participant's own session. What stops it: the WebSocket accepts only the page's own Origin.
 
 // ErrNoConsole is returned by a DeviceLookup for a device that has no console (or does not exist; the answer is the same).
