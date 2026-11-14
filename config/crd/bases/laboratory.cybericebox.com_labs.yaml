@@ -115,8 +115,8 @@ spec:
                         and rdp. At most one entry per kind.
                       items:
                         description: |-
-                          DeviceAccess is one access of a device. At most one entry per kind. http, vnc and rdp need a port (and http a protocol);
-                          terminal takes a command and a user and no port.
+                          DeviceAccess is one access of a device (an entry of the EDA access list). At most one entry per kind. http, vnc, rdp and grpc need a
+                          port (and http a protocol); terminal takes a command and a user and no port.
                         properties:
                           command:
                             description: Command starts the terminal session; empty
@@ -135,9 +135,10 @@ spec:
                             - terminal
                             - vnc
                             - rdp
+                            - grpc
                             type: string
                           port:
-                            description: Port of the device (http, vnc, rdp).
+                            description: Port of the device (http, vnc, rdp, grpc).
                             format: int32
                             maximum: 65535
                             minimum: 1
@@ -159,7 +160,7 @@ spec:
                         - kind
                         type: object
                         x-kubernetes-validations:
-                        - message: http, vnc and rdp need a port from 1 to 65535,
+                        - message: http, vnc, rdp and grpc need a port from 1 to 65535,
                             terminal takes none
                           rule: 'self.kind == ''terminal'' ? (!has(self.port) && !has(self.protocol))
                             : (has(self.port) && self.port > 0 && self.port <= 65535)'

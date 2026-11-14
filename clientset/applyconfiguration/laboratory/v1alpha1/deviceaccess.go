@@ -24,11 +24,11 @@ import (
 // DeviceAccessApplyConfiguration represents a declarative configuration of the DeviceAccess type for use
 // with apply.
 //
-// DeviceAccess is one access of a device. At most one entry per kind. http, vnc and rdp need a port (and http a protocol);
-// terminal takes a command and a user and no port.
+// DeviceAccess is one access of a device (an entry of the EDA access list). At most one entry per kind. http, vnc, rdp and grpc need a
+// port (and http a protocol); terminal takes a command and a user and no port.
 type DeviceAccessApplyConfiguration struct {
 	Kind *laboratoryv1alpha1.AccessKind `json:"kind,omitempty"`
-	// Port of the device (http, vnc, rdp).
+	// Port of the device (http, vnc, rdp, grpc).
 	Port *int32 `json:"port,omitempty"`
 	// Protocol of an http access: http (the default) or https.
 	Protocol *string `json:"protocol,omitempty"`
