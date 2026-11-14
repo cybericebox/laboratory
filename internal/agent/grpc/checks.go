@@ -168,7 +168,7 @@ func validateCheckSet(set *checkSet, spec *laboratoryv1alpha1.LabSpec) error {
 }
 
 // validateAccess checks the access list of a device: known kinds, at most one entry of each, the fields each kind takes (the CRD says
-// the same; this gives the caller the reason in the call itself). vnc and rdp are stored and served by nothing yet.
+// the same; this gives the caller the reason in the call itself). vnc and rdp are stored and served by nothing yet; grpc is served by the L7 proxy.
 func validateAccess(d *laboratoryv1alpha1.DeviceTemplate) error {
 	seen := map[laboratoryv1alpha1.AccessKind]bool{}
 	for _, a := range d.Access {
@@ -177,7 +177,7 @@ func validateAccess(d *laboratoryv1alpha1.DeviceTemplate) error {
 		}
 		seen[a.Kind] = true
 		switch a.Kind {
-		case laboratoryv1alpha1.AccessHTTP, laboratoryv1alpha1.AccessVNC, laboratoryv1alpha1.AccessRDP:
+		case laboratoryv1alpha1.AccessHTTP, laboratoryv1alpha1.AccessVNC, laboratoryv1alpha1.AccessRDP, laboratoryv1alpha1.AccessGRPC:
 			if a.Port < 1 || a.Port > 65535 {
 				return fmt.Errorf("device %q: the %s access needs a port from 1 to 65535", d.Name, a.Kind)
 			}

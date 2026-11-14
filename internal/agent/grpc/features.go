@@ -146,7 +146,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
 				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				Checks:          h.checksFeature(),
-				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed},
+				Access:          &protobuf.AccessFeature{Http: true, Grpc: true, Terminal: f.TerminalEnabled && f.TerminalServed},
 				Bootstrap:       bootstrapFeature(),
 				Vpn:             h.vpnFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
