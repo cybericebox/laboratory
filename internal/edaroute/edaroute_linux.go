@@ -1,13 +1,13 @@
 //go:build linux
 
-// Package accessroute keeps the access port of a web-exposed device pod out of the pod's main routing table.
+// Package edaroute keeps the EDA interface of a web-exposed device pod out of the pod's main routing table.
 //
-// The Kubernetes CNI (Cilium) puts "default via <gw> dev accessport" and "<gw> dev accessport scope link" into the main table.
+// The Kubernetes CNI (Cilium) puts "default via <gw> dev eda" and "<gw> dev eda scope link" into the main table.
 // A lab interface with a default gateway of its own (the author's, or DHCP's) then replaces that default, and the replies to
 // the L7 proxy go into the lab and time out. The fix is source routing, like the sbr CNI meta plugin: every route of the port
 // moves into a table of its own, and a rule "from <port address> lookup <table>" sends what leaves with the port's address
 // back out of the port. The main table is left with no route through the port, so the pod never uses it for its own traffic.
-package accessroute
+package edaroute
 
 import (
 	"errors"
@@ -22,8 +22,8 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// ErrNoPort means the access port is not in the netns (deleted from inside the pod, or not wired yet).
-var ErrNoPort = errors.New("access port not found")
+// ErrNoPort means the EDA interface is not in the netns (deleted from inside the pod, or not wired yet).
+var ErrNoPort = errors.New("EDA interface not found")
 
 // Result says what Ensure found and did.
 type Result struct {
@@ -34,7 +34,7 @@ type Result struct {
 	Changed bool
 }
 
-// Ensure makes the access port ifname of the netns at netnsPath use the source routing described in the package comment. It is
+// Ensure makes the EDA interface ifname of the netns at netnsPath use the source routing described in the package comment. It is
 // idempotent: it moves what is still in the main table (RouteReplace into the port's table, then delete from main), adds the
 // rule of every address of the port for IPv4 and IPv6 when absent, and puts back the routes from known (what an earlier call returned) that the table lacks. It fails when the port is not there or has no
 // address, or when a route or rule cannot be written.
@@ -96,9 +96,9 @@ func ensureFamily(h *netlink.Handle, link netlink.Link, family int, known []netl
 	if err != nil {
 		return false, 0, nil, fmt.Errorf("list main routes of %s: %w", link.Attrs().Name, err)
 	}
-	inTable, err := h.RouteListFiltered(family, &netlink.Route{LinkIndex: idx, Table: names.AccessPortRouteTable}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TABLE)
+	inTable, err := h.RouteListFiltered(family, &netlink.Route{LinkIndex: idx, Table: names.EDARouteTable}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return false, 0, nil, fmt.Errorf("list table %d routes of %s: %w", names.AccessPortRouteTable, link.Attrs().Name, err)
+		return false, 0, nil, fmt.Errorf("list table %d routes of %s: %w", names.EDARouteTable, link.Attrs().Name, err)
 	}
 	if len(global) == 0 && len(inMain) == 0 && len(inTable) == 0 {
 		// This family is not in use on the port.
@@ -109,7 +109,7 @@ func ensureFamily(h *netlink.Handle, link netlink.Link, family int, known []netl
 	// What an earlier call saw and the table lacks now (flushed from inside the pod) comes back.
 	for _, r := range known {
 		if r.LinkIndex == idx && r.Family == family && !hasRoute(want, r) {
-			r.Table = names.AccessPortRouteTable
+			r.Table = names.EDARouteTable
 			want = append(want, r)
 		}
 	}
@@ -119,9 +119,9 @@ func ensureFamily(h *netlink.Handle, link netlink.Link, family int, known []netl
 		if hasRoute(inTable, r) {
 			continue
 		}
-		r.Table = names.AccessPortRouteTable
+		r.Table = names.EDARouteTable
 		if err := h.RouteReplace(&r); err != nil {
-			return changed, len(global), nil, fmt.Errorf("route %s into table %d: %w", routeString(r), names.AccessPortRouteTable, err)
+			return changed, len(global), nil, fmt.Errorf("route %s into table %d: %w", routeString(r), names.EDARouteTable, err)
 		}
 		changed = true
 	}
@@ -147,15 +147,15 @@ func ensureFamily(h *netlink.Handle, link netlink.Link, family int, known []netl
 		rule := netlink.NewRule()
 		rule.Family = family
 		rule.Src = src
-		rule.Table = names.AccessPortRouteTable
-		rule.Priority = names.AccessPortRulePriority
+		rule.Table = names.EDARouteTable
+		rule.Priority = names.EDARulePriority
 		if err := h.RuleAdd(rule); err != nil && !errors.Is(err, unix.EEXIST) {
 			return changed, len(global), nil, fmt.Errorf("rule from %s: %w", src, err)
 		}
 		changed = true
 	}
 	for i := range want {
-		want[i].Table = names.AccessPortRouteTable
+		want[i].Table = names.EDARouteTable
 	}
 	return changed, len(global), want, nil
 }
@@ -226,7 +226,7 @@ func isDefault(n *net.IPNet) bool {
 
 func hasRule(rules []netlink.Rule, src *net.IPNet) bool {
 	for _, r := range rules {
-		if r.Table == names.AccessPortRouteTable && r.Src != nil && r.Src.IP.Equal(src.IP) {
+		if r.Table == names.EDARouteTable && r.Src != nil && r.Src.IP.Equal(src.IP) {
 			return true
 		}
 	}

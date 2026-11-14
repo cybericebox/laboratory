@@ -254,11 +254,11 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 		deviceIfaces[d.Name] = ifaces
 	}
 
-	// Lab interface names must not shadow the reserved access-port name:
+	// Lab interface names must not shadow the reserved EDA name:
 	// SetupNetworks would delete/replace the delegated interface on a CNI retry.
 	for _, d := range lab.Spec.Devices {
 		for _, iface := range d.Interfaces {
-			if iface.Name == names.AccessPortIface {
+			if names.IsEDAIface(iface.Name) {
 				return fmt.Errorf(
 					"ReservedInterfaceName: device %q uses reserved interface name %q",
 					d.Name,

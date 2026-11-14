@@ -536,7 +536,7 @@ func TestParseLabSpecValidatesInterfaces(t *testing.T) {
 	}
 	for _, bad := range []string{
 		`{"name":"a@x,eth0@y|ff:ff:ff:ff:ff:ff"}`,
-		`{"name":"lo"}`, `{"name":"accessport"}`, `{"name":"A"}`,
+		`{"name":"lo"}`, `{"name":"eda"}`, `{"name":"A"}`,
 		`{"name":"eth1","mac":"ff:ff:ff:ff:ff:ff"}`, `{"name":"eth1","mac":"01:00:5e:00:00:01"}`,
 	} {
 		if _, err := parseLabSpec(spec(bad), false); err == nil {

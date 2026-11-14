@@ -18,7 +18,7 @@ import (
 // must answer on it) or asks to wait for /run/ready (WaitReadyFile); a device with neither is Ready when it runs, as before.
 //
 // The probe is an exec probe, run by the kubelet inside the container, not an httpGet from the node: the device pod has
-// no route from the node's side that the platform guarantees (the access port is wired by the node-agent, the cluster
+// no route from the node's side that the platform guarantees (the EDA interface is wired by the node-agent, the cluster
 // network policy admits only the proxy), and an httpGet counts only 200-399, so an application that answers 401 or 404 on
 // "/" would never be Ready. The program is the static probe of package internal/probe: a device image may carry no shell.
 // It is readiness only: no liveness or startup probe, so nothing here ever restarts a container.

@@ -149,12 +149,12 @@ func cmdADD(args *skel.CmdArgs) error {
 		result = &cniv1.Result{CNIVersion: conf.CNIVersion}
 
 	default:
-		// Access-port pod: delegate k8s CNI to the named iface.
+		// EDA pod: delegate k8s CNI to the named iface.
 		accessIface := resp.DefaultNetwork
 		logf("ADD pod=%s/%s branch=ACCESS delegate to iface=%s", ns, name, accessIface)
 		dt := delegateType(conf)
 		if dt == "" {
-			return fmt.Errorf("cni-gate: delegate.type required for access port")
+			return fmt.Errorf("cni-gate: delegate.type required for EDA interface")
 		}
 		orig := os.Getenv("CNI_IFNAME")
 		_ = os.Setenv("CNI_IFNAME", accessIface)
@@ -170,7 +170,7 @@ func cmdADD(args *skel.CmdArgs) error {
 		}
 		// Source routing, before the container starts: the routes of the port leave the main table, so that a default
 		// gateway of a lab interface never takes the replies to the proxy. An error fails the ADD, the kubelet retries it.
-		if err := routeAccessPort(args.Netns, accessIface); err != nil {
+		if err := routeEDA(args.Netns, accessIface); err != nil {
 			logf("ADD pod=%s/%s source routing of %s error: %v", ns, name, accessIface, err)
 			return fmt.Errorf("source routing of %s: %w", accessIface, err)
 		}
@@ -347,7 +347,7 @@ func parsePodArgs(cniArgs string) (namespace, name, uid string) {
 // so pod.status.podIP comes from the IP entry pointing at eth0. Cases:
 //   - eth0 present with an IP  → unchanged.
 //   - eth0 present without IP  → attach a stub IP (127.0.0.1/32) to it.
-//   - eth0 absent, result has a real IP (access-port pod) → prepend a logical
+//   - eth0 absent, result has a real IP (EDA pod) → prepend a logical
 //     eth0 and redirect the first real IP entry to it, so Kubernetes reports the
 //     real IP as podIP — NOT the stub. The IP still physically lives on the
 //     access interface; the redirect is result metadata only.

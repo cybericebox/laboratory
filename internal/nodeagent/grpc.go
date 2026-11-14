@@ -140,7 +140,7 @@ func (s *NodeAgentServer) SetupNetworks(
 		return nil, ErrPortOwnerChanged
 	}
 
-	// Device pod or access-port pod: wire all OVS interfaces synchronously.
+	// Device pod or EDA pod: wire all OVS interfaces synchronously.
 	attachments := ParseNetworkAnnotation(pod.Annotations[names.AnnotationNetworks])
 	log.Info("wiring OVS interfaces synchronously", "count", len(attachments))
 	if err := s.setupOVSAttachments(ctx, req, reader, &pod, attachments); err != nil {
@@ -151,8 +151,8 @@ func (s *NodeAgentServer) SetupNetworks(
 		log.Info("default network: NONE (stub eth0 only, no default-network connection)")
 		return &nodev1.SetupNetworksResponse{DefaultNetwork: "stub"}, nil
 	}
-	log.Info("default network: ACCESS port (delegate k8s CNI to named iface)", "iface", defaultIface)
-	// Access port: cni-gate delegates k8s CNI to this interface name + adds stub eth0.
+	log.Info("default network: EDA interface (delegate k8s CNI to named iface)", "iface", defaultIface)
+	// EDA interface: cni-gate delegates k8s CNI to this interface name + adds stub eth0.
 	return &nodev1.SetupNetworksResponse{DefaultNetwork: defaultIface}, nil
 }
 

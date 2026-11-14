@@ -47,7 +47,7 @@ func TestLabCRDValidatesInterfaces(t *testing.T) {
 		t.Error("addr with an empty type must be rejected")
 	}
 	for i, bad := range []laboratoryv1alpha1.InterfaceSpec{
-		{Name: "a@x,eth0@y|ff:ff:ff:ff:ff:ff"}, {Name: "lo"}, {Name: "accessport"},
+		{Name: "a@x,eth0@y|ff:ff:ff:ff:ff:ff"}, {Name: "lo"}, {Name: "eda"},
 		{Name: "Eth1"}, {Name: "averyveryverylongname"},
 		{Name: "eth1", MAC: "ff:ff:ff:ff:ff:ff"}, {Name: "eth1", MAC: "01:00:5e:00:00:01"},
 		{Name: "eth1", MAC: "00:00:00:00:00:00"}, {Name: "eth1", MAC: "nonsense"},

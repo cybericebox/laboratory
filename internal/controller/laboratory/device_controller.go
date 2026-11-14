@@ -404,7 +404,7 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 		names.AnnotationSafeToEvict: "false",
 	}
 	if laboratoryv1alpha1.HTTPAccess(device.Spec.Access) != nil {
-		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
+		annotations[names.AnnotationDefaultNetwork] = names.EDAIface
 	} else if len(device.Spec.Interfaces) > 0 {
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}

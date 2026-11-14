@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/cybericebox/laboratory/internal/accessroute"
+	"github.com/cybericebox/laboratory/internal/edaroute"
 )
 
 type podListCounter struct {
@@ -29,7 +29,7 @@ func (c *podListCounter) List(ctx context.Context, list client.ObjectList, opts 
 	return nil
 }
 
-func TestAccessPortScanScopesReadsAndRetiresGoneUIDs(t *testing.T) {
+func TestEDAScanScopesReadsAndRetiresGoneUIDs(t *testing.T) {
 	local := accessPod("local", "n1", "NET_ADMIN")
 	remote := accessPod("remote", "n2", "NET_ADMIN")
 	remote.UID = "remote-uid"
@@ -38,11 +38,11 @@ func TestAccessPortScanScopesReadsAndRetiresGoneUIDs(t *testing.T) {
 			return []string{o.(*corev1.Pod).Spec.NodeName}
 		}).Build()}
 	checks := 0
-	r := &AccessPortChecker{Client: c, NodeName: "n1",
+	r := &EDAChecker{Client: c, NodeName: "n1",
 		netnsOf: func(context.Context, string) (string, error) { return "test", nil },
-		ensure: func(string, string, []netlink.Route) (accessroute.Result, error) {
+		ensure: func(string, string, []netlink.Route) (edaroute.Result, error) {
 			checks++
-			return accessroute.Result{}, nil
+			return edaroute.Result{}, nil
 		},
 	}
 	r.Check(context.Background())

@@ -170,9 +170,9 @@ func receiptDelegateIface(cache delCache, outerIface, cniArgs string) (string, e
 		}
 		return outerIface, nil
 	}
-	// ensureEth0 prepends a logical eth0 for an access-port result. Its MAC is
+	// ensureEth0 prepends a logical eth0 for an EDA result. Its MAC is
 	// empty; the sole physical sandbox interface retains its delegate MAC.
-	if accessPortDelegateReceipt(sandbox, converted) {
+	if edaDelegateReceipt(sandbox, converted) {
 		return sandbox[1].Name, nil
 	}
 	return "", fmt.Errorf("ADD receipt has no unambiguous delegate interface")
@@ -182,6 +182,6 @@ func stubDelegateReceipt(converted *cniv1.Result, sandbox []*cniv1.Interface) bo
 	return len(converted.Interfaces) == 1 && sandbox[0].Name == names.DefaultEth0 && sandbox[0].Mac == "" && len(converted.IPs) == 1 && converted.IPs[0].Interface != nil && *converted.IPs[0].Interface == 0 && converted.IPs[0].Address.String() == "127.0.0.1/32"
 }
 
-func accessPortDelegateReceipt(sandbox []*cniv1.Interface, converted *cniv1.Result) bool {
+func edaDelegateReceipt(sandbox []*cniv1.Interface, converted *cniv1.Result) bool {
 	return len(sandbox) == 2 && len(converted.Interfaces) > 0 && sandbox[0] == converted.Interfaces[0] && sandbox[0].Name == names.DefaultEth0 && sandbox[0].Mac == "" && sandbox[1].Name != names.DefaultEth0 && sandbox[1].Mac != "" && sandbox[0].Sandbox == sandbox[1].Sandbox
 }
