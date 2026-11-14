@@ -135,8 +135,8 @@ func newGRPCRig(t *testing.T) *grpcRig {
 func (r *grpcRig) token(mutate func(*grpcClaims)) string {
 	r.t.Helper()
 	now := time.Now()
-	c := grpcClaims{GroupID: "g1", Host: grpcHostLabel, Run: "run-1", RegisteredClaims: jwt.RegisteredClaims{
-		Issuer: "acme", Subject: "bot-1", Audience: jwt.ClaimStrings{HandoffAudience},
+	c := grpcClaims{GroupID: "g1", Host: grpcHostLabel, Run: "run-1", TokenUse: GRPCTokenUse, Kind: GRPCKind, RegisteredClaims: jwt.RegisteredClaims{
+		Issuer: "acme", Subject: "bot-1", Audience: jwt.ClaimStrings{GRPCAudience},
 		IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(2 * time.Hour)),
 	}}
 	if mutate != nil {
@@ -164,7 +164,7 @@ func (r *grpcRig) dial(authority string) *grpc.ClientConn {
 }
 
 func withToken(ctx context.Context, token string) context.Context {
-	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+	return metadata.AppendToOutgoingContext(ctx, "x-lab-access", token)
 }
 
 func TestGRPCUnaryThroughTheProxyKeepsTrailersAndHidesTheToken(t *testing.T) {
@@ -174,7 +174,10 @@ func TestGRPCUnaryThroughTheProxyKeepsTrailersAndHidesTheToken(t *testing.T) {
 	defer cancel()
 	var out wrapperspb.StringValue
 	var trailer metadata.MD
-	err := conn.Invoke(withToken(ctx, rig.token(nil)), "/test.Echo/Unary", wrapperspb.String("hi"), &out, grpc.Trailer(&trailer))
+	// the device's own authorization and metadata go through byte for byte, the proxy credential does not
+	own := "Bearer device-own.token+/=" // not a proxy credential; the proxy never looks at it
+	callCtx := metadata.AppendToOutgoingContext(withToken(ctx, rig.token(nil)), "authorization", own, "x-custom", "v1")
+	err := conn.Invoke(callCtx, "/test.Echo/Unary", wrapperspb.String("hi"), &out, grpc.Trailer(&trailer))
 	if err != nil || out.Value != "device:hi" {
 		t.Fatalf("unary: %q %v", out.Value, err)
 	}
@@ -183,8 +186,11 @@ func TestGRPCUnaryThroughTheProxyKeepsTrailersAndHidesTheToken(t *testing.T) {
 	}
 	rig.mu.Lock()
 	defer rig.mu.Unlock()
-	if len(rig.seenMD.Get("authorization")) != 0 || len(rig.seenMD.Get("cookie")) != 0 {
-		t.Fatalf("the device saw the credentials of the client: %v", rig.seenMD)
+	if got := rig.seenMD.Get("authorization"); len(got) != 1 || got[0] != own || rig.seenMD.Get("x-custom")[0] != "v1" {
+		t.Fatalf("the device's own authorization did not arrive unchanged: %v", rig.seenMD)
+	}
+	if len(rig.seenMD.Get("x-lab-access")) != 0 || len(rig.seenMD.Get("cookie")) != 0 {
+		t.Fatalf("the device saw the proxy credential or a cookie: %v", rig.seenMD)
 	}
 }
 
@@ -226,7 +232,7 @@ func TestGRPCRefusalsAreGRPCStatuses(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if md != "" {
-			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", md)
+			ctx = metadata.AppendToOutgoingContext(ctx, "x-lab-access", md)
 		}
 		var out wrapperspb.StringValue
 		return c.Invoke(ctx, "/test.Echo/Unary", wrapperspb.String("x"), &out)
@@ -237,18 +243,22 @@ func TestGRPCRefusalsAreGRPCStatuses(t *testing.T) {
 		want codes.Code
 	}{
 		{"no token", "", codes.Unauthenticated},
-		{"not a bearer", "Basic abc", codes.Unauthenticated},
-		{"garbage", "Bearer not.a.jwt", codes.Unauthenticated},
-		{"expired", "Bearer " + rig.token(func(c *grpcClaims) {
+		{"garbage", "not.a.jwt", codes.Unauthenticated},
+		{"expired", rig.token(func(c *grpcClaims) {
 			c.IssuedAt = jwt.NewNumericDate(time.Now().Add(-3 * time.Hour))
 			c.NotBefore = c.IssuedAt
 			c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Hour))
 		}), codes.Unauthenticated},
-		{"another host", "Bearer " + rig.token(func(c *grpcClaims) { c.Host = "bot-zzzzg" }), codes.Unauthenticated},
-		{"no run", "Bearer " + rig.token(func(c *grpcClaims) { c.Run = "" }), codes.Unauthenticated},
-		{"lives past the hard cap", "Bearer " + rig.token(func(c *grpcClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(25 * time.Hour)) }), codes.Unauthenticated},
-		{"another tenant's group", "Bearer " + rig.token(func(c *grpcClaims) { c.GroupID = "g-other" }), codes.Unauthenticated},
-		{"a client the group does not have", "Bearer " + rig.token(func(c *grpcClaims) { c.Subject = "ghost" }), codes.NotFound},
+		{"another host", rig.token(func(c *grpcClaims) { c.Host = "bot-zzzzg" }), codes.Unauthenticated},
+		{"a handoff audience", rig.token(func(c *grpcClaims) { c.Audience = jwt.ClaimStrings{HandoffAudience} }), codes.Unauthenticated},
+		{"both audiences", rig.token(func(c *grpcClaims) { c.Audience = jwt.ClaimStrings{HandoffAudience, GRPCAudience} }), codes.Unauthenticated},
+		{"no token_use", rig.token(func(c *grpcClaims) { c.TokenUse = "" }), codes.Unauthenticated},
+		{"another token_use", rig.token(func(c *grpcClaims) { c.TokenUse = "web" }), codes.Unauthenticated},
+		{"another kind", rig.token(func(c *grpcClaims) { c.Kind = "terminal" }), codes.Unauthenticated},
+		{"no run", rig.token(func(c *grpcClaims) { c.Run = "" }), codes.Unauthenticated},
+		{"lives past the hard cap", rig.token(func(c *grpcClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(13 * time.Hour)) }), codes.Unauthenticated},
+		{"another tenant's group", rig.token(func(c *grpcClaims) { c.GroupID = "g-other" }), codes.Unauthenticated},
+		{"a client the group does not have", rig.token(func(c *grpcClaims) { c.Subject = "ghost" }), codes.NotFound},
 	}
 	for _, c := range cases {
 		err := call(conn, c.auth)
@@ -351,7 +361,7 @@ func TestGRPCHostIsNotAWebHost(t *testing.T) {
 	}
 }
 
-func TestGRPCTokenLifetimeCapIsConfigurable(t *testing.T) {
+func TestGRPCCredentialLifetimeCapIsConfigurable(t *testing.T) {
 	rig := newGRPCRig(t)
 	rig.h.WithGRPCTokenMaxLifetime(time.Hour)
 	conn := rig.dial(grpcHost)
@@ -361,5 +371,161 @@ func TestGRPCTokenLifetimeCapIsConfigurable(t *testing.T) {
 	err := conn.Invoke(withToken(ctx, rig.token(nil)), "/test.Echo/Unary", wrapperspb.String("x"), &out) // lives 2 h
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("a token past the configured cap: %v", err)
+	}
+}
+
+// Calls are counted and paced like web requests, by (group namespace, client, lab).
+func TestGRPCCallsAreMeteredAndPaced(t *testing.T) {
+	rig := newGRPCRig(t)
+	meter := NewMeter("boot", time.Now())
+	rig.h.WithAccounting(meter, nil)
+	conn := rig.dial(grpcHost)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	payload := strings.Repeat("x", 60000)
+
+	var out wrapperspb.StringValue
+	start := time.Now()
+	if err := conn.Invoke(withToken(ctx, rig.token(nil)), "/test.Echo/Unary", wrapperspb.String(payload), &out); err != nil {
+		t.Fatal(err)
+	}
+	free := time.Since(start)
+	rows, _ := meter.Ledger("legacy")
+	if len(rows) != 1 || rows[0].Subject != "bot-1" || rows[0].Lab != "lab" || rows[0].Attempts != 1 || rows[0].BytesIn < 60000 || rows[0].BytesOut < 60000 {
+		t.Fatalf("the call is not in the ledger as (client, lab): %+v", rows)
+	}
+
+	rig.h.Throttle().SetLimits(0, 800) // 100 kB/s per participant, burst 16 kB
+	start = time.Now()
+	if err := conn.Invoke(withToken(ctx, rig.token(nil)), "/test.Echo/Unary", wrapperspb.String(payload), &out); err != nil {
+		t.Fatal(err)
+	}
+	if paced := time.Since(start); paced < 350*time.Millisecond || paced < free+250*time.Millisecond {
+		t.Fatalf("120 kB through a 100 kB/s ceiling took %v (free: %v)", paced, free)
+	}
+	rows, _ = meter.Ledger("legacy")
+	if len(rows) != 1 || rows[0].Attempts != 2 {
+		t.Fatalf("ledger after two calls: %+v", rows)
+	}
+}
+
+// A call lives at most the live lifetime cap even when its credential is good for longer.
+func TestGRPCCallEndsAtTheLiveLifetimeCap(t *testing.T) {
+	rig := newGRPCRig(t)
+	rig.h.WithLiveMaxLifetime(time.Second)
+	conn := rig.dial(grpcHost)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := conn.NewStream(withToken(ctx, rig.token(nil)), &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, "/test.Echo/Bidi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out wrapperspb.StringValue
+	_ = stream.SendMsg(wrapperspb.String("a"))
+	if err := stream.RecvMsg(&out); err != nil {
+		t.Fatal(err)
+	}
+	if n := rig.h.CheckLive(); n != 0 {
+		t.Fatalf("closed too early: %d", n)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if n := rig.h.CheckLive(); n != 1 {
+		t.Fatalf("CheckLive closed %d after the cap, want 1", n)
+	}
+	if err := stream.RecvMsg(&out); err == nil || err == io.EOF {
+		t.Fatalf("the stream outlived the live lifetime cap: %v", err)
+	}
+}
+
+// The credential of one channel never works in another: the cookie path does not serve the gRPC host, and neither the proxy credential
+// nor a device's authorization unlocks a web or terminal host; a gRPC credential is not a handoff link and a handoff link is not a credential.
+func TestGRPCCredentialAndCookiesAreNotInterchangeable(t *testing.T) {
+	rig := newGRPCRig(t)
+	cookie := signCookie(t, jwtClaims{GroupID: "g1", Client: "bot-1", Tenant: "acme",
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+
+	// a session cookie is not a credential of the gRPC host (and an HTTP request there is refused before anything else)
+	conn := rig.dial(grpcHost)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out wrapperspb.StringValue
+	if err := conn.Invoke(metadata.AppendToOutgoingContext(ctx, "cookie", "challenge="+cookie), "/test.Echo/Unary", wrapperspb.String("x"), &out); status.Code(err) != codes.Unauthenticated {
+		t.Errorf("a cookie opened the gRPC host: %v", err)
+	}
+	req := httptest.NewRequest("GET", "https://"+grpcHost+"/", nil)
+	req.Host = grpcHost
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
+	rec := httptest.NewRecorder()
+	rig.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("a cookie request to the gRPC host: %d", rec.Code)
+	}
+
+	// the proxy credential and a bearer do not open web or terminal hosts
+	for _, host := range []string{"web-k7xw.challenges.example.com", "bot-k7xt.challenges.example.com"} {
+		for _, hdr := range []http.Header{{GRPCAccessHeader: {rig.token(nil)}}, {"Authorization": {"Bearer " + rig.token(nil)}}} {
+			req := httptest.NewRequest("GET", "https://"+host+"/", nil)
+			req.Host = host
+			req.Header = hdr
+			rec := httptest.NewRecorder()
+			rig.h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s with %v: %d, want 401", host, hdr, rec.Code)
+			}
+		}
+	}
+
+	// /_auth refuses a gRPC credential, and anything that carries token_use or kind, whatever its audience
+	now := time.Now()
+	for name, mutate := range map[string]func(*grpcClaims){
+		"the gRPC credential as it is": func(*grpcClaims) {},
+		"a handoff audience with token_use": func(c *grpcClaims) {
+			c.Audience = jwt.ClaimStrings{HandoffAudience}
+			c.Kind = ""
+		},
+		"a handoff audience with kind": func(c *grpcClaims) {
+			c.Audience = jwt.ClaimStrings{HandoffAudience}
+			c.TokenUse = ""
+		},
+		"both audiences": func(c *grpcClaims) { c.Audience = jwt.ClaimStrings{HandoffAudience, GRPCAudience}; c.TokenUse, c.Kind = "", "" },
+	} {
+		tok := rig.token(func(c *grpcClaims) {
+			c.Host = "web-k7xw"
+			c.ExpiresAt = jwt.NewNumericDate(now.Add(time.Minute))
+			mutate(c)
+		})
+		req := httptest.NewRequest("GET", "https://web-k7xw.challenges.example.com/_auth?t="+tok, nil)
+		req.Host = "web-k7xw.challenges.example.com"
+		rec := httptest.NewRecorder()
+		rig.h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized || rec.Header().Get("Set-Cookie") != "" {
+			t.Errorf("/_auth with %s: %d, cookie %q", name, rec.Code, rec.Header().Get("Set-Cookie"))
+		}
+	}
+	// and a real handoff link is not a gRPC credential
+	hc := baseHandoff(now)
+	hc.Host = grpcHostLabel
+	link := signHandoff(t, rig.priv, "k1", hc)
+	if err := conn.Invoke(withToken(ctx, link), "/test.Echo/Unary", wrapperspb.String("x"), &out); status.Code(err) != codes.Unauthenticated {
+		t.Errorf("a handoff link as the proxy credential: %v", err)
+	}
+}
+
+type denyAll struct{}
+
+func (denyAll) Verify(string, string, func() time.Time) (GRPCGrant, error) {
+	return GRPCGrant{}, io.ErrClosedPipe
+}
+
+// Who signs the credential is behind one interface.
+func TestGRPCVerifierCanBeReplaced(t *testing.T) {
+	rig := newGRPCRig(t)
+	rig.h.WithGRPCVerifier(denyAll{})
+	conn := rig.dial(grpcHost)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out wrapperspb.StringValue
+	if err := conn.Invoke(withToken(ctx, rig.token(nil)), "/test.Echo/Unary", wrapperspb.String("x"), &out); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("%v", err)
 	}
 }

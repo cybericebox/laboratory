@@ -66,6 +66,7 @@ type Handler struct {
 	// grpcTokenMax caps exp - iat of a gRPC access token (see grpc.go); grpcTransport is the transport to a device's gRPC port (h2c).
 	grpcTokenMax  time.Duration
 	grpcTransport http.RoundTripper
+	grpcVerifier  GRPCVerifier
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
