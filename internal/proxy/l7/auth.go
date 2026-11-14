@@ -51,6 +51,10 @@ const HandoffAudience = "laboratory-proxy"
 // of the link: about a minute, five at most). The rest is what the operator knows.
 type handoffClaims struct {
 	GroupID string `json:"group_id"`
+	// TokenUse and Kind belong to the credential of another channel (the gRPC access, see GRPCAudience); a handoff has neither, and a
+	// token that has one is refused here, so a long-lived credential can never become a browser cookie.
+	TokenUse string `json:"token_use,omitempty"`
+	Kind     string `json:"kind,omitempty"`
 	// Host is the device host label (<device>-<code>) the link was issued for.
 	Host string `json:"host"`
 	// Session is the unix time the proxy cookie expires.
@@ -143,6 +147,14 @@ func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host str
 	}
 	if !token.Valid {
 		return handoffClaims{}, fmt.Errorf("invalid handoff")
+	}
+	if claims.TokenUse != "" || claims.Kind != "" {
+		return handoffClaims{}, fmt.Errorf("not a handoff")
+	}
+	for _, aud := range claims.Audience {
+		if aud != HandoffAudience {
+			return handoffClaims{}, fmt.Errorf("not a handoff")
+		}
 	}
 	if claims.GroupID == "" || claims.Subject == "" || claims.Host == "" {
 		return handoffClaims{}, fmt.Errorf("incomplete handoff")

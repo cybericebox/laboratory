@@ -357,3 +357,23 @@ func TestProxyProtocolSecretIsNeverInAnError(t *testing.T) {
 		t.Fatalf("an error must name the setting, not a secret: %v", err)
 	}
 }
+
+// No call outlives the live lifetime cap, so a gRPC credential longer than the cap is a configuration error.
+func TestGRPCTokenTTLMayNotExceedTheLiveLifetime(t *testing.T) {
+	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TLS_CERT_PATH", "/x")
+	t.Setenv("TLS_KEY_PATH", "/y")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	cfg, err := LoadL7Config()
+	if err != nil || cfg.GRPCTokenMaxTTL != 12*time.Hour || cfg.GRPCTokenMaxTTL > cfg.LiveMaxLifetime {
+		t.Fatalf("the defaults must agree: %v %+v", err, cfg)
+	}
+	t.Setenv("GRPC_TOKEN_MAX_TTL", "13h")
+	if _, err := LoadL7Config(); err == nil {
+		t.Fatal("a gRPC token TTL past LIVE_MAX_LIFETIME must be refused")
+	}
+	t.Setenv("LIVE_MAX_LIFETIME", "24h")
+	if _, err := LoadL7Config(); err != nil {
+		t.Fatalf("with the cap raised it is fine: %v", err)
+	}
+}

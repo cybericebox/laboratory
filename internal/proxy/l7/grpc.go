@@ -23,14 +23,16 @@ import (
 //
 //   - the client speaks gRPC (HTTP/2 over TLS, ALPN h2) and the proxy speaks h2c to the device, so a call, a server stream and a bidi
 //     stream pass as they are, with their trailers;
-//   - there is no cookie and no handoff. Every call carries "authorization: Bearer <token>", a platform-signed EdDSA token checked like a
-//     handoff link (see grpcClaims) but valid for the run (exp - iat at most DefaultGRPCTokenMaxLifetime). exp ends the stream too;
+//   - there is no cookie and no handoff. Every call carries the proxy credential in "x-lab-access", a platform-signed EdDSA token (see
+//     grpcClaims, aud laboratory-proxy-grpc) checked like a handoff link but valid for the run (exp - iat at most
+//     DefaultGRPCTokenMaxLifetime). The proxy verifies it and removes it; it decides pass or deny and nothing else. exp ends the stream too;
 //   - the same live checks as for the web: the group still belongs to the tenant, the lab runs, the client exists, the policy allows it,
 //     repeated every live-check interval (CheckLive), and the key that signed the token must still be registered;
 //   - no read or write deadline of the server applies, a stream is bounded by the token alone;
 //   - every refusal is a gRPC status (a trailers-only answer, application/grpc), never an HTML page.
 //
-// What the device sees is a plain gRPC server on its port: no token, no cookie, no address of the client.
+// What the device sees is a plain gRPC server on its port: the call as the client made it (its own authorization header and metadata
+// unchanged, never inspected here), without the proxy credential, the session cookie or an address of the client.
 
 // gRPC status codes the proxy answers with (google.golang.org/grpc/codes), spelled here so that the proxy needs no gRPC library.
 const (
@@ -65,6 +67,13 @@ func newGRPCTransport() *http.Transport {
 // WithGRPCTokenMaxLifetime sets the longest exp - iat of a gRPC access token (zero: DefaultGRPCTokenMaxLifetime).
 func (h *Handler) WithGRPCTokenMaxLifetime(d time.Duration) *Handler {
 	h.grpcTokenMax = d
+	return h
+}
+
+// WithGRPCVerifier replaces who signs the gRPC credential and where the trust comes from (the default: the tenant's access key, like a
+// handoff link).
+func (h *Handler) WithGRPCVerifier(v GRPCVerifier) *Handler {
+	h.grpcVerifier = v
 	return h
 }
 
@@ -119,15 +128,18 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	raw, ok := bearerToken(r.Header.Get("Authorization"))
-	var claims grpcClaims
-	var kid string
-	var err error
-	if ok {
-		claims, kid, err = verifyGRPCToken(raw, h.keys, h.groupTenant, task, h.now, h.grpcTokenMax)
+	raw := r.Header.Get(GRPCAccessHeader)
+	verifier := h.grpcVerifier
+	if verifier == nil {
+		verifier = tenantKeyVerifier{keys: h.keys, groupTenant: h.groupTenant, maxLifetime: h.grpcTokenMax}
 	}
-	if !ok || err != nil {
-		// A client that keeps sending a bad token is slowed down; the calls of a good token are never counted.
+	var grant GRPCGrant
+	var err error
+	if raw != "" {
+		grant, err = verifier.Verify(raw, task, h.now)
+	}
+	if raw == "" || err != nil {
+		// A client that keeps sending a bad credential is slowed down; the calls of a good one are never counted.
 		if !h.authLimit.allow("grpc|" + task) {
 			w.Header().Set("Retry-After", "5")
 			grpcFail(w, grpcResourceExhaust, "too many requests")
@@ -138,8 +150,8 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 	}
 
 	ctx := r.Context()
-	group, err := h.access.Group(ctx, claims.GroupID)
-	if err != nil || group.Tenant != claims.Issuer {
+	group, err := h.access.Group(ctx, grant.Group)
+	if err != nil || group.Tenant != grant.Issuer {
 		grpcFail(w, grpcNotFound, "not found")
 		return
 	}
@@ -148,7 +160,7 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 		grpcFail(w, grpcNotFound, "not found")
 		return
 	}
-	client := claims.Subject
+	client := grant.Client
 	if !h.access.Allowed(ctx, group.Namespace, client, route.Lab) {
 		grpcFail(w, grpcNotFound, "not found")
 		return
@@ -168,24 +180,34 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 		return
 	}
 
-	// The device never sees the token, a cookie or an address of the client.
+	// The credential of the proxy ends here, and so does the session cookie and every address of the client. Everything else, the
+	// authorization header included, is the device's own and goes through as it came.
 	r = r.Clone(ctx)
-	r.Header.Del("Authorization")
-	r.Header.Del("Cookie")
+	r.Header.Del(GRPCAccessHeader)
+	var kept []string
+	for _, c := range r.Cookies() {
+		if c.Name != h.cookieName {
+			kept = append(kept, c.Name+"="+c.Value)
+		}
+	}
+	if len(kept) > 0 {
+		r.Header.Set("Cookie", strings.Join(kept, "; "))
+	} else {
+		r.Header.Del("Cookie")
+	}
 	stripClientAddress(r.Header)
 
-	// Track the call: CheckLive cancels it when the access is lost, and exp of the token is its last moment.
+	// Track the call: CheckLive cancels it when the access is lost; it ends at the credential's exp or at the live lifetime cap,
+	// whichever comes first.
 	clientCtx := r.Context()
 	callCtx, cancel := context.WithCancel(clientCtx)
 	defer cancel()
 	r = r.WithContext(callCtx)
-	issuer := claims.Issuer
-	key, _ := h.keys(issuer, kid)
-	entry := &liveEntry{group: claims.GroupID, client: client, lab: route.Lab, tenant: issuer, deadline: claims.ExpiresAt.Time, cancel: cancel,
-		valid: func() bool {
-			k, ok := h.keys(issuer, kid)
-			return ok && k.Equal(key)
-		}}
+	deadline := h.liveDeadline(0)
+	if grant.Expires.Before(deadline) {
+		deadline = grant.Expires
+	}
+	entry := &liveEntry{group: grant.Group, client: client, lab: route.Lab, tenant: grant.Issuer, deadline: deadline, cancel: cancel, valid: grant.Valid}
 	if !h.live.tryAdd(entry, h.caps) {
 		w.Header().Set("Retry-After", "5")
 		grpcFail(w, grpcResourceExhaust, "too many requests")
@@ -204,6 +226,25 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 		defer h.accessLog.emit(rec, r, route.Lab, clientCtx)
 	}
 
+	// Count and pace the call like a web request, by (group namespace, client, lab).
+	var request *RequestMeter
+	if h.meter != nil && route.Lab != "" {
+		request = h.meter.Begin(group.Namespace, client, route.Lab, h.now())
+		defer func() {
+			if value := recover(); value != nil {
+				request.Incomplete()
+				request.End()
+				panic(value)
+			}
+			request.End()
+		}()
+		pace := h.pacerFor(callCtx, group.Namespace, client)
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = &countingBody{ReadCloser: r.Body, request: request, pace: pace}
+		}
+		w = &countingWriter{ResponseWriter: w, request: request, pace: pace}
+	}
+
 	// The transport to the device writes the request body in the goroutine that also waits for the end of the call, and a read of the
 	// body of an idle bidi stream does not end by itself when the call is cancelled: closing the body does, and the call with it.
 	if body := r.Body; body != nil && body != http.NoBody {
@@ -214,6 +255,9 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 	proxy.Transport = transport
 	// Responses of a stream go out as they come (the reverse proxy flushes at once when the length is unknown); trailers pass with them.
 	proxy.FlushInterval = -1
+	if request != nil {
+		proxy.ModifyResponse = func(*http.Response) error { request.Responded(h.now()); return nil }
+	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		switch {
 		case errors.Is(err, context.Canceled) && clientCtx.Err() == nil:
