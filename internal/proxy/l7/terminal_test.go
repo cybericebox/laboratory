@@ -185,6 +185,17 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 	return &termFixture{t: t, h: h, srv: srv, svc: svc, cluster: c, cookie: cookieFor(t, "p-u1")}
 }
 
+// rehost is the session cookie the browser would hold for host: the same session, opened on that host (a session names the one host it is for).
+func rehost(t *testing.T, token, host string) string {
+	t.Helper()
+	var claims jwtClaims
+	if _, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
+		t.Fatalf("rehost: %v", err)
+	}
+	claims.Host = host
+	return signCookie(t, claims)
+}
+
 func cookieFor(t *testing.T, clientName string) string {
 	return signCookie(t, jwtClaims{GroupID: "g1", Client: clientName, Tenant: "acme",
 		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
@@ -198,7 +209,7 @@ func (f *termFixture) getHost(host, path string, hdr map[string]string) *httptes
 	req := httptest.NewRequest("GET", "http://"+host+path, nil)
 	req.Host = host
 	if f.cookie != "" {
-		req.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
+		req.AddCookie(&http.Cookie{Name: "challenge", Value: rehost(f.t, f.cookie, host)})
 	}
 	for k, v := range hdr {
 		req.Header.Set(k, v)
@@ -215,7 +226,7 @@ func (f *termFixture) dialSocket(device string, origin string) (*websocket.Conn,
 func (f *termFixture) dialSocketHost(host string, origin string) (*websocket.Conn, *http.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	hdr := http.Header{"Cookie": {"challenge=" + f.cookie}}
+	hdr := http.Header{"Cookie": {"challenge=" + rehost(f.t, f.cookie, host)}}
 	if origin != "" {
 		hdr.Set("Origin", origin)
 	}
@@ -287,7 +298,7 @@ func TestTerminalHasNoFileTransfer(t *testing.T) {
 		for _, method := range []string{"GET", "PUT"} {
 			req := httptest.NewRequest(method, "http://"+termHost+path, nil)
 			req.Host = termHost
-			req.AddCookie(&http.Cookie{Name: "challenge", Value: f.cookie})
+			req.AddCookie(&http.Cookie{Name: "challenge", Value: rehost(f.t, f.cookie, termHost)})
 			req.Header.Set("Origin", "http://"+termHost)
 			rec := httptest.NewRecorder()
 			f.h.ServeHTTP(rec, req)

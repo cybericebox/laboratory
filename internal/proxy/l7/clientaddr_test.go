@@ -31,7 +31,7 @@ func TestHandler_NoClientAddressReachesTheDevice(t *testing.T) {
 			req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 			req.Host = "mytask.challenges.example.com"
 			req.RemoteAddr = "198.51.100.7:4242"
-			req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
+			req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", Host: "mytask.challenges.example.com", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 			for _, hdr := range clientAddressHeaders {
 				req.Header.Set(hdr, "203.0.113.9")
 			}

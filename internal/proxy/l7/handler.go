@@ -157,6 +157,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if claims.Host == "" || claims.Host != requestHost(r) {
+		h.expired(w, r) // a session of another device host, or one that names none
+		return
+	}
 	client := claims.client()
 	if client == "" {
 		h.expired(w, r)

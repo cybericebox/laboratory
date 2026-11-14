@@ -13,8 +13,12 @@ import (
 
 var testSecret = []byte("test-session-secret-0123456789abcdef")
 
+// signCookie signs a session cookie. A session names the one host it is for; a test that does not say defaults to labHost.
 func signCookie(t *testing.T, claims jwtClaims) string {
 	t.Helper()
+	if claims.Host == "" {
+		claims.Host = labHost
+	}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(testSecret)
 	if err != nil {
 		t.Fatalf("sign cookie: %v", err)

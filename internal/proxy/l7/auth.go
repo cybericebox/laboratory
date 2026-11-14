@@ -37,6 +37,9 @@ type jwtClaims struct {
 	// Abs is the unix time the session ends at the latest, whatever renewals do (the handoff's start plus the
 	// session maximum, never past the link's sess). Absent in older cookies: they are not renewed.
 	Abs int64 `json:"abs,omitempty"`
+	// Host is the full host name (lower case, no port) of the one device access host the session was opened for. The request must be for
+	// exactly this host, renewals included; a cookie without it is refused, so what leaks opens at most one device.
+	Host string `json:"host,omitempty"`
 	jwt.RegisteredClaims
 }
 
