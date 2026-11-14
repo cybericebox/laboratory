@@ -2,6 +2,8 @@ package laboratory
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -112,5 +114,44 @@ func TestServiceSnapshotIgnoresTheGRPCService(t *testing.T) {
 	snap.remember(svc)
 	if snap.byDevice["bot"] != nil {
 		t.Fatal("the gRPC Service was taken for the web Service")
+	}
+}
+
+// The runner behind the gRPC port has no transport authentication of its own in h2c mode: the policy must admit the proxy pods, on that one
+// port, and nothing else. The object is compared whole, so a broader selector, another port or a second rule fails here.
+func TestGRPCNetworkPolicyIsExactlyTheProxyOnOnePort(t *testing.T) {
+	s := pruneScheme(t)
+	_ = corev1.AddToScheme(s)
+	_ = networkingv1.AddToScheme(s)
+	for _, cidrs := range [][]string{nil, {"10.1.2.3/32", "10.1.2.4/32"}} {
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(grpcDevice("k7x")).Build()
+		r := &LabReconciler{Client: c, Scheme: s, BaseDomain: "labs.example.com", ProxySourceCIDRs: cidrs}
+		if err := r.ensureGRPCServices(context.Background(), grpcLab()); err != nil {
+			t.Fatal(err)
+		}
+		var np networkingv1.NetworkPolicy
+		if err := c.Get(context.Background(), client.ObjectKey{Namespace: "team-alpha", Name: "bot-k7xg-grpc"}, &np); err != nil {
+			t.Fatal(err)
+		}
+		tcp := corev1.ProtocolTCP
+		from := []networkingv1.NetworkPolicyPeer{{
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.ProxyNamespace}},
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": names.ProxyL7App}},
+		}}
+		for _, cidr := range cidrs {
+			from = append(from, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
+		}
+		want := networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "bot"}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From:  from,
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 9099}}},
+			}},
+			Egress: []networkingv1.NetworkPolicyEgressRule{},
+		}
+		if !equality.Semantic.DeepEqual(np.Spec, want) {
+			t.Fatalf("cidrs %v:\n got  %+v\n want %+v", cidrs, np.Spec, want)
+		}
 	}
 }
