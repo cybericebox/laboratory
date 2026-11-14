@@ -92,7 +92,7 @@ const (
 	// AnnotationDefaultNetwork controls how cni-gate handles the default k8s network.
 	// Missing: regular pod — delegate eth0 to k8s CNI as normal.
 	// Empty "": no default network — cni-gate returns stub eth0 only.
-	// Non-empty: interface name to wire via k8s CNI (e.g. "accessport").
+	// Non-empty: interface name to wire via k8s CNI (e.g. "eda").
 	AnnotationDefaultNetwork = "network.cybericebox.com/default-network"
 
 	// AnnotationConntrackAccounting on a pod asks the node-agent to switch on conntrack byte accounting and flow
@@ -124,19 +124,24 @@ const (
 	// DefaultEth0 is the standard container ethernet interface name.
 	DefaultEth0 = "eth0"
 
-	// AccessPortIface is the reserved in-pod interface name that carries the
+	// EDAIface is the reserved in-pod interface name that carries the
 	// delegated Kubernetes network for web-exposed device pods. Lab interface
 	// names must not collide with it: SetupNetworks would delete/replace the
 	// delegated interface on a kubelet CNI retry.
-	AccessPortIface = "accessport"
+	EDAIface = "eda"
 
-	// AccessPortRouteTable is the routing table that holds every route of the access port inside the pod. The rule
-	// "from <access port address> lookup <table>" sends the replies back out of the port; the main table, where the lab
-	// interfaces and their default gateway live, never holds a route through it (see package accessroute).
-	AccessPortRouteTable = 100
-	// AccessPortRulePriority is the priority of that rule: above the main table (32766), so the replies never reach
+	// LegacyAccessPortIface is the name EDAIface had before the rename. Pods created earlier still carry it (the
+	// default-network annotation and the interface inside the pod); they keep working until they are recreated. It stays
+	// reserved as a lab interface name, and nothing new is created with it.
+	LegacyAccessPortIface = "accessport"
+
+	// EDARouteTable is the routing table that holds every route of the EDA interface inside the pod. The rule
+	// "from <EDA interface address> lookup <table>" sends the replies back out of the port; the main table, where the lab
+	// interfaces and their default gateway live, never holds a route through it (see package edaroute).
+	EDARouteTable = 100
+	// EDARulePriority is the priority of that rule: above the main table (32766), so the replies never reach
 	// the lab's default route.
-	AccessPortRulePriority = 1000
+	EDARulePriority = 1000
 )
 
 // The readiness probe of a device (see package internal/probe). A static program is copied by an init container into an
@@ -266,3 +271,7 @@ func UserLabels(in map[string]string) map[string]string {
 
 // CheckerLabRoleName is the name of the Role and the RoleBinding that let the lab checker read the checks Secret of one lab.
 func CheckerLabRoleName(lab string) string { return "checker-checks-" + lab }
+
+// IsEDAIface is true for the interface name of the EDA channel in a pod: EDAIface, and for pods created before the rename
+// LegacyAccessPortIface.
+func IsEDAIface(name string) bool { return name == EDAIface || name == LegacyAccessPortIface }

@@ -162,7 +162,7 @@ func TestEnsureWebServicesGivesUpAfterAllAttempts(t *testing.T) {
 	}
 }
 
-// The policy of a web-exposed device pod (the one Cilium enforces on the access port): in only from the L7 proxy on the published
+// The policy of a web-exposed device pod (the one Cilium enforces on the EDA interface): in only from the L7 proxy on the published
 // port, out nothing (the replies of the allowed connections pass by conntrack), so a connection the pod starts is denied.
 func TestWebNetworkPolicyAdmitsOnlyTheProxyAndNoEgress(t *testing.T) {
 	s := pruneScheme(t)

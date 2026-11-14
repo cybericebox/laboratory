@@ -87,7 +87,7 @@ func TestRuntimeDELRejectsForeignOrAmbiguousReceipts(t *testing.T) {
 		edit func(*delCache)
 	}{
 		{"wrong-container", func(c *delCache) { c.ContainerID = "other-container" }},
-		{"wrong-interface", func(c *delCache) { c.IfName = "accessport" }},
+		{"wrong-interface", func(c *delCache) { c.IfName = "eda" }},
 		{"wrong-network", func(c *delCache) { c.NetworkName = "other-network" }},
 		{"wrong-netns", func(c *delCache) { c.NetNS = "/other/netns" }},
 		{"wrong-pod-uid", func(c *delCache) { c.CniArgs = [][2]string{{"K8S_POD_UID", "replacement-uid"}} }},
@@ -109,7 +109,7 @@ func TestRuntimeDELRejectsForeignOrAmbiguousReceipts(t *testing.T) {
 		}},
 		{"ambiguous-interfaces", func(c *delCache) {
 			c.CniArgs = runtimeDELPodArgs()
-			c.Result = json.RawMessage(`{"cniVersion":"0.3.1","interfaces":[{"name":"eth0","mac":"00:00:00:00:00:01","sandbox":"/test/ns"},{"name":"accessport","mac":"00:00:00:00:00:02","sandbox":"/test/ns"}]}`)
+			c.Result = json.RawMessage(`{"cniVersion":"0.3.1","interfaces":[{"name":"eth0","mac":"00:00:00:00:00:01","sandbox":"/test/ns"},{"name":"eda","mac":"00:00:00:00:00:02","sandbox":"/test/ns"}]}`)
 			c.NetNS = ""
 		}},
 	} {
@@ -192,7 +192,7 @@ func TestRuntimeDELMissingCacheDoesNotRecoverLegacyLease(t *testing.T) {
 }
 
 func TestRuntimeDELRestoresPhysicalInterfaceWithoutCurrentAnnotation(t *testing.T) {
-	for _, iface := range []string{"eth0", "accessport"} {
+	for _, iface := range []string{"eth0", "eda"} {
 		t.Run(iface, func(t *testing.T) {
 			cni, cacheDir, dataDir := runtimeDELFixture(t)
 			rt := runtimeDELArgs(t)
@@ -206,7 +206,7 @@ func TestRuntimeDELRestoresPhysicalInterfaceWithoutCurrentAnnotation(t *testing.
 				t.Fatal(err)
 			}
 			otherIfaceLease := filepath.Join(dataDir, "cybericebox", converted.IPs[0].Address.IP.String())
-			if iface == "accessport" {
+			if iface == "eda" {
 				converted = hostLocalRuntimeADD(t, old, rt, iface)
 			}
 			lease := filepath.Join(dataDir, "cybericebox", converted.IPs[0].Address.IP.String())

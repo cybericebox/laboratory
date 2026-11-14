@@ -203,13 +203,13 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if err := mgr.Add(&nodeagent.AccessPortChecker{
+	if err := mgr.Add(&nodeagent.EDAChecker{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		CRISock:  cfg.CRISock,
-		Recorder: mgr.GetEventRecorderFor("node-agent-access-port"),
+		Recorder: mgr.GetEventRecorderFor("node-agent-eda"),
 	}); err != nil {
-		log.Error(err, "setup AccessPortChecker")
+		log.Error(err, "setup EDAChecker")
 		os.Exit(1)
 	}
 

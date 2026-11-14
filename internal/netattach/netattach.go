@@ -24,8 +24,9 @@ var interfaceName = regexp.MustCompile(InterfaceNamePattern)
 // eth0 is not reserved: a device with lab interfaces has no real eth0 (the CNI leaves a
 // stub there), so the platform's own topologies name their first interface eth0.
 var reservedInterfaces = map[string]bool{
-	names.AccessPortIface: true,
-	"lo":                  true,
+	names.EDAIface:              true,
+	names.LegacyAccessPortIface: true,
+	"lo":                        true,
 }
 
 // ValidateInterfaceName checks a tenant-chosen interface name.

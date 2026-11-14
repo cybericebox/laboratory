@@ -317,13 +317,13 @@ spec:
                           name:
                             description: |-
                               Name is the interface name inside the pod: a lowercase word of at most 15
-                              characters; lo and accessport are reserved.
+                              characters; lo, eda and accessport (the EDA interface; accessport is its name before the rename) are reserved.
                             maxLength: 15
                             pattern: ^[a-z][a-z0-9-]{0,14}$
                             type: string
                             x-kubernetes-validations:
                             - message: reserved interface name
-                              rule: self != 'lo' && self != 'accessport'
+                              rule: self != 'lo' && self != 'eda' && self != 'accessport'
                         required:
                         - name
                         type: object

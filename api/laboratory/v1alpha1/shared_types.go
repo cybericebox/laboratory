@@ -127,11 +127,11 @@ type EndpointSpec struct {
 // InterfaceSpec defines a network interface on a device.
 type InterfaceSpec struct {
 	// Name is the interface name inside the pod: a lowercase word of at most 15
-	// characters; lo and accessport are reserved.
+	// characters; lo, eda and accessport (the EDA interface; accessport is its name before the rename) are reserved.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=15
 	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]{0,14}$`
-	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'accessport'",message="reserved interface name"
+	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'eda' && self != 'accessport'",message="reserved interface name"
 	Name string `json:"name"`
 	// Addr is optional: nil means the interface is created without an IP.
 	// +optional

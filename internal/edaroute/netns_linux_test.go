@@ -1,6 +1,6 @@
 //go:build linux
 
-package accessroute
+package edaroute
 
 import (
 	"strings"
@@ -11,12 +11,12 @@ import (
 
 func TestNetnsHelperProcess(*testing.T) { nstest.HelperProcess() }
 
-// The pod is this process; the access port is wired like Cilium wires it:
+// The pod is this process; the EDA interface is wired like Cilium wires it:
 //
-//	pod (this process)   accessport 10.0.0.2/24  <-> ns proxy   10.0.0.1/24 and 10.0.1.5 (the proxy, one hop away)
+//	pod (this process)   eda 10.0.0.2/24  <-> ns proxy   10.0.0.1/24 and 10.0.1.5 (the proxy, one hop away)
 //	                     eth1       192.168.0.2   <-> ns lab     192.168.0.1 (the lab's gateway, with the author's default route)
 //
-// Cilium leaves "default via 10.0.0.1 dev accessport" and "10.0.0.1 dev accessport scope link" in the main table.
+// Cilium leaves "default via 10.0.0.1 dev eda" and "10.0.0.1 dev eda scope link" in the main table.
 func setupPod(t *testing.T) {
 	t.Helper()
 	nstest.Require(t)
@@ -24,22 +24,22 @@ func setupPod(t *testing.T) {
 	nstest.NS(t, "lab")
 	t.Cleanup(func() {
 		for _, c := range [][]string{
-			{"ip", "link", "del", "accessport"}, {"ip", "link", "del", "eth1"},
+			{"ip", "link", "del", "eda"}, {"ip", "link", "del", "eth1"},
 			{"ip", "rule", "del", "from", "10.0.0.2/32", "lookup", "100"}, {"ip", "-6", "rule", "del", "from", "fd00:1::2/128", "lookup", "100"},
 		} {
 			_, _ = nstest.Try("", c...)
 		}
 	})
-	nstest.Veth(t, "", "accessport", "10.0.0.2/24", "proxy", "p0", "10.0.0.1/24")
+	nstest.Veth(t, "", "eda", "10.0.0.2/24", "proxy", "p0", "10.0.0.1/24")
 	nstest.Veth(t, "", "eth1", "192.168.0.2/24", "lab", "l0", "192.168.0.1/24")
 	nstest.Run(t, "proxy", "ip", "addr", "add", "10.0.1.5/32", "dev", "lo")
 	nstest.Run(t, "proxy", "ip", "route", "add", "10.0.0.2", "dev", "p0")
 	nstest.Run(t, "proxy", "sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")
-	for _, k := range []string{"all", "default", "accessport", "eth1"} {
+	for _, k := range []string{"all", "default", "eda", "eth1"} {
 		nstest.Run(t, "", "sysctl", "-w", "net.ipv4.conf."+k+".rp_filter=0")
 	}
-	nstest.Run(t, "", "ip", "route", "add", "10.0.0.1", "dev", "accessport", "scope", "link")
-	nstest.Run(t, "", "ip", "route", "replace", "default", "via", "10.0.0.1", "dev", "accessport")
+	nstest.Run(t, "", "ip", "route", "add", "10.0.0.1", "dev", "eda", "scope", "link")
+	nstest.Run(t, "", "ip", "route", "replace", "default", "via", "10.0.0.1", "dev", "eda")
 }
 
 // proxyPings says whether the proxy, from its address 10.0.1.5, gets an answer from the pod.
@@ -49,12 +49,12 @@ func proxyPings(t *testing.T) bool {
 	return err == nil
 }
 
-func mainHoldsAccessPort(t *testing.T) string {
+func mainHoldsEDA(t *testing.T) string {
 	t.Helper()
 	var left []string
 	for _, v := range []string{"-4", "-6"} {
 		for _, l := range strings.Split(nstest.Run(t, "", "ip", v, "route", "show", "table", "main"), "\n") {
-			if strings.Contains(l, "dev accessport") {
+			if strings.Contains(l, "dev eda") {
 				left = append(left, l)
 			}
 		}
@@ -80,15 +80,15 @@ func TestNetnsBugWithoutTheFix(t *testing.T) {
 // The fix, in the order of a real pod: cni-gate moves the routes in the CNI ADD, the author's gateway comes after.
 func TestNetnsLabDefaultGatewayDoesNotTakeTheReplies(t *testing.T) {
 	setupPod(t)
-	res, err := Ensure(self, "accessport", nil)
+	res, err := Ensure(self, "eda", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Changed {
 		t.Error("the first call must report a change")
 	}
-	if left := mainHoldsAccessPort(t); left != "" {
-		t.Fatalf("main still holds routes through accessport: %s", left)
+	if left := mainHoldsEDA(t); left != "" {
+		t.Fatalf("main still holds routes through eda: %s", left)
 	}
 	nstest.Run(t, "", "ip", "route", "replace", "default", "via", "192.168.0.1", "dev", "eth1")
 	if !proxyPings(t) {
@@ -102,7 +102,7 @@ func TestNetnsLabDefaultGatewayDoesNotTakeTheReplies(t *testing.T) {
 	}
 
 	// Idempotent.
-	res, err = Ensure(self, "accessport", res.Routes)
+	res, err = Ensure(self, "eda", res.Routes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestNetnsLabDefaultGatewayDoesNotTakeTheReplies(t *testing.T) {
 // Extended devices can flush the table and delete the rule; Ensure puts them back, from what it saw before.
 func TestNetnsRestoresARemovedRuleAndFlushedTable(t *testing.T) {
 	setupPod(t)
-	res, err := Ensure(self, "accessport", nil)
+	res, err := Ensure(self, "eda", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestNetnsRestoresARemovedRuleAndFlushedTable(t *testing.T) {
 	if proxyPings(t) {
 		t.Fatal("precondition: without the rule and the table the replies are lost")
 	}
-	res2, err := Ensure(self, "accessport", res.Routes)
+	res2, err := Ensure(self, "eda", res.Routes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,13 +136,13 @@ func TestNetnsRestoresARemovedRuleAndFlushedTable(t *testing.T) {
 	}
 
 	// The author puts the default back into main through the port: it leaves main again.
-	nstest.Run(t, "", "ip", "route", "add", "10.0.0.0/24", "dev", "accessport", "scope", "link")
-	nstest.Run(t, "", "ip", "route", "add", "default", "via", "10.0.0.1", "dev", "accessport", "metric", "5")
-	if _, err := Ensure(self, "accessport", res2.Routes); err != nil {
+	nstest.Run(t, "", "ip", "route", "add", "10.0.0.0/24", "dev", "eda", "scope", "link")
+	nstest.Run(t, "", "ip", "route", "add", "default", "via", "10.0.0.1", "dev", "eda", "metric", "5")
+	if _, err := Ensure(self, "eda", res2.Routes); err != nil {
 		t.Fatal(err)
 	}
-	if left := mainHoldsAccessPort(t); left != "" {
-		t.Fatalf("main holds routes through accessport: %s", left)
+	if left := mainHoldsEDA(t); left != "" {
+		t.Fatalf("main holds routes through eda: %s", left)
 	}
 	if !proxyPings(t) {
 		t.Fatal("publication broke after the routes were moved again")
@@ -151,24 +151,24 @@ func TestNetnsRestoresARemovedRuleAndFlushedTable(t *testing.T) {
 
 func TestNetnsPortGone(t *testing.T) {
 	setupPod(t)
-	nstest.Run(t, "", "ip", "link", "del", "accessport")
-	if _, err := Ensure(self, "accessport", nil); err == nil || !strings.Contains(err.Error(), ErrNoPort.Error()) {
+	nstest.Run(t, "", "ip", "link", "del", "eda")
+	if _, err := Ensure(self, "eda", nil); err == nil || !strings.Contains(err.Error(), ErrNoPort.Error()) {
 		t.Fatalf("want ErrNoPort, got %v", err)
 	}
 }
 
 func TestNetnsIPv6(t *testing.T) {
 	setupPod(t)
-	nstest.Run(t, "", "sysctl", "-w", "net.ipv6.conf.accessport.disable_ipv6=0")
-	nstest.Run(t, "", "ip", "-6", "addr", "add", "fd00:1::2/64", "dev", "accessport", "nodad")
-	nstest.Run(t, "", "ip", "-6", "route", "add", "default", "via", "fd00:1::1", "dev", "accessport")
+	nstest.Run(t, "", "sysctl", "-w", "net.ipv6.conf.eda.disable_ipv6=0")
+	nstest.Run(t, "", "ip", "-6", "addr", "add", "fd00:1::2/64", "dev", "eda", "nodad")
+	nstest.Run(t, "", "ip", "-6", "route", "add", "default", "via", "fd00:1::1", "dev", "eda")
 	nstest.Run(t, "", "ip", "addr", "add", "fd00:2::2/64", "dev", "eth1", "nodad")
 	nstest.Run(t, "", "ip", "-6", "route", "replace", "default", "via", "fd00:2::1", "dev", "eth1", "metric", "1")
-	if _, err := Ensure(self, "accessport", nil); err != nil {
+	if _, err := Ensure(self, "eda", nil); err != nil {
 		t.Fatal(err)
 	}
-	if left := mainHoldsAccessPort(t); left != "" {
-		t.Fatalf("main holds routes through accessport: %s", left)
+	if left := mainHoldsEDA(t); left != "" {
+		t.Fatalf("main holds routes through eda: %s", left)
 	}
 	if got := nstest.Run(t, "", "ip", "-6", "rule", "show"); !strings.Contains(got, "from fd00:1::2 lookup 100") {
 		t.Fatalf("no IPv6 rule: %s", got)
