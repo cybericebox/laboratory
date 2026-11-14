@@ -487,7 +487,10 @@ func TestGRPCCredentialAndCookiesAreNotInterchangeable(t *testing.T) {
 			c.Audience = jwt.ClaimStrings{HandoffAudience}
 			c.TokenUse = ""
 		},
-		"both audiences": func(c *grpcClaims) { c.Audience = jwt.ClaimStrings{HandoffAudience, GRPCAudience}; c.TokenUse, c.Kind = "", "" },
+		"both audiences": func(c *grpcClaims) {
+			c.Audience = jwt.ClaimStrings{HandoffAudience, GRPCAudience}
+			c.TokenUse, c.Kind = "", ""
+		},
 	} {
 		tok := rig.token(func(c *grpcClaims) {
 			c.Host = "web-k7xw"

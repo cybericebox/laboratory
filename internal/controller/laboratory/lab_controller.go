@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	goerrors "errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -185,6 +186,13 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
 	}
+	var denied *internetDeniedError
+	if goerrors.As(validationErr, &denied) {
+		// Fail closed: the wiring of the last good spec must not keep a denied device on the Internet gateway's network.
+		if err := r.cutInternetDenied(ctx, &lab, denied.conflicts); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if validationErr != nil {
 		// Surface the specific validation reason — it was previously discarded,
 		// leaving the Lab in Failed with no user-visible cause.
@@ -363,18 +371,10 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 			}
 		}
 	}
-	return r.validateBroadcastDomains(lab, switchDevices)
-}
-
-// internetDenied is the set of the devices that must have no Internet gateway in a broadcast domain they are in.
-func internetDenied(lab *laboratoryv1alpha1.Lab) map[string]bool {
-	denied := map[string]bool{}
-	for _, d := range lab.Spec.Devices {
-		if d.Internet == laboratoryv1alpha1.InternetDeny {
-			denied[d.Name] = true
-		}
+	if conflicts := lab.Spec.InternetConflicts(); len(conflicts) > 0 {
+		return &internetDeniedError{conflicts: conflicts}
 	}
-	return denied
+	return r.validateBroadcastDomains(lab, switchDevices)
 }
 
 func validForwardingPort(name string) bool {
@@ -436,11 +436,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	type domainFlags struct {
 		gateways    int
 		dhcpSources int
-		// internet is the Internet gateway of the domain, if it has one; denied the devices of the domain that may not reach it.
-		internet string
-		denied   []string
 	}
-	denied := internetDenied(lab)
 	domains := map[int]*domainFlags{}
 	for ci, conn := range lab.Spec.Connections {
 		root := find(ci)
@@ -450,13 +446,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 			domains[root] = d
 		}
 		for _, ep := range conn.Endpoints {
-			if denied[ep.Device] {
-				d.denied = append(d.denied, ep.Device)
-			}
 			if g, ok := gatewayEndpoint(lab, ep); ok {
-				if g.Kind == laboratoryv1alpha1.GatewayKindInternet {
-					d.internet = g.Name
-				}
 				d.gateways++
 				if g.DHCPServer != nil && g.DHCPServer.Enabled {
 					d.dhcpSources++
@@ -466,10 +456,6 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	}
 
 	for _, d := range domains {
-		if d.internet != "" && len(d.denied) > 0 {
-			return fmt.Errorf("InternetDeniedDeviceOnInternetNetwork: device %q has internet: deny but shares a broadcast domain with the Internet gateway %q",
-				d.denied[0], d.internet)
-		}
 		if d.gateways > 1 {
 			return fmt.Errorf("BroadcastDomainHasSeveralGateways: a broadcast domain holds at most one gateway, VPN or Internet (found %d)", d.gateways)
 		}
@@ -732,21 +718,26 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if !r.RuntimeObservation && c.Status.VNI != nil {
-			if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
-				return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
-			}
-			c.Status.VNI = nil
-			c.Status.VNILease = nil
-			if err := r.Status().Update(ctx, c); err != nil {
-				return err
-			}
-		}
-		if err := r.Delete(ctx, c); client.IgnoreNotFound(err) != nil {
+		if err := r.deleteConnection(ctx, c); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// deleteConnection releases the VNI of a Connection and deletes it.
+func (r *LabReconciler) deleteConnection(ctx context.Context, c *laboratoryv1alpha1.Connection) error {
+	if !r.RuntimeObservation && c.Status.VNI != nil {
+		if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
+			return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
+		}
+		c.Status.VNI = nil
+		c.Status.VNILease = nil
+		if err := r.Status().Update(ctx, c); err != nil {
+			return err
+		}
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, c))
 }
 
 // pruneDevices deletes Device CRs owned by the lab whose names are no longer in

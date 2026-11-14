@@ -214,6 +214,9 @@ func validateAccess(d *laboratoryv1alpha1.DeviceTemplate) error {
 
 // validateDeviceExtras checks the non-secret service and access fields of every device of a spec.
 func validateDeviceExtras(spec *laboratoryv1alpha1.LabSpec) error {
+	if c := spec.InternetConflicts(); len(c) > 0 {
+		return fmt.Errorf("device %q has internet: deny but shares a broadcast domain with the Internet gateway %q", c[0].Device, c[0].Gateway)
+	}
 	for i := range spec.Devices {
 		d := &spec.Devices[i]
 		if s := d.Service; s != nil {

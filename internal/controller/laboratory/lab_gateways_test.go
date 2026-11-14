@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -551,5 +552,42 @@ func TestInternetDeniedDeviceStaysOffTheInternetNetwork(t *testing.T) {
 	l.Spec.Connections = []laboratoryv1alpha1.ConnectionTemplate{{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("r2", "eth0")}}}
 	if err := (&LabReconciler{}).validateGraph(l); err != nil {
 		t.Fatalf("a device without internet: deny on the internet network: %v", err)
+	}
+}
+
+// A spec update that puts a denied device on the Internet gateway's network is refused, and the device is cut off at once: the Connection
+// that attaches it is deleted, so the wiring of the last good spec cannot keep it on the Internet. Other connections stay.
+func TestUpdateThatDeniesADeviceOnTheInternetNetworkCutsItOff(t *testing.T) {
+	s := pruneScheme(t)
+	mk := func(a, b string, ia, ib string) *laboratoryv1alpha1.Connection {
+		eps := []laboratoryv1alpha1.EndpointSpec{endpoint(a, ia), endpoint(b, ib)}
+		return &laboratoryv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: connectionName("lab1", eps), Namespace: "team-alpha", Labels: map[string]string{names.LabelLab: "lab1"}},
+			Spec: laboratoryv1alpha1.ConnectionSpec{LabRef: "lab1", Endpoints: eps}}
+	}
+	toOut, toUser := mk("out", "r1", "eth0", "eth0"), mk("user", "r2", "eth0", "eth0")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(toOut, toUser).Build()
+	r := &LabReconciler{Client: c, Scheme: s}
+
+	// the old spec was fine; the new one says r1 has no internet while it is wired to the exit
+	l := gatewayGraphLab()
+	l.Name, l.Namespace = "lab1", "team-alpha"
+	l.Spec.Devices[0].Internet = laboratoryv1alpha1.InternetDeny
+	l.Spec.Connections = []laboratoryv1alpha1.ConnectionTemplate{
+		{Endpoints: toOut.Spec.Endpoints}, {Endpoints: toUser.Spec.Endpoints},
+	}
+	err := r.validateGraph(l)
+	var denied *internetDeniedError
+	if !goerrors.As(err, &denied) || len(denied.conflicts) != 1 || denied.conflicts[0].Device != "r1" {
+		t.Fatalf("the update must be refused as an internet conflict of r1: %v", err)
+	}
+	if err := r.cutInternetDenied(context.Background(), l, denied.conflicts); err != nil {
+		t.Fatal(err)
+	}
+	var left laboratoryv1alpha1.ConnectionList
+	if err := c.List(context.Background(), &left, client.InNamespace("team-alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if len(left.Items) != 1 || left.Items[0].Name != toUser.Name {
+		t.Fatalf("only the connection of the denied device is cut: %+v", left.Items)
 	}
 }
