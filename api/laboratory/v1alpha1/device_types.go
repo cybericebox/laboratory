@@ -22,11 +22,11 @@ type DeviceSpec struct {
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
-	// and rdp. At most one entry per kind.
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, grpc (the management gRPC
+	// endpoint behind the L7 proxy) and the reserved vnc and rdp. At most one entry per kind.
 	// +listType=map
 	// +listMapKey=kind
-	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:MaxItems=5
 	// +optional
 	Access []DeviceAccess `json:"access,omitempty"`
 	// Resources sets the container resource requests/limits for this device.

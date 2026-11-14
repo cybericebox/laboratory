@@ -123,13 +123,20 @@ type DeviceTemplate struct {
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
-	// and rdp. At most one entry per kind.
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, grpc (the management gRPC
+	// endpoint behind the L7 proxy) and the reserved vnc and rdp. At most one entry per kind.
 	// +listType=map
 	// +listMapKey=kind
-	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:MaxItems=5
 	// +optional
 	Access []DeviceAccess `json:"access,omitempty"`
+	// Internet is the device's reach to the public internet: allow (the default when empty; the device uses an Internet gateway when it
+	// shares a broadcast domain with one) or deny. A device with deny must not share a broadcast domain with an Internet gateway: the lab
+	// is refused otherwise (InternetDeniedDeviceOnInternetNetwork), so the guarantee never depends on an address or a firewall rule. It is
+	// meant for the devices of AI opponents and other devices that the platform drives out-of-band (EDA), which need no network egress. The
+	// devices of a student and of a grader are left as they are (symmetric: both allow, or both deny).
+	// +optional
+	Internet InternetPolicy `json:"internet,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
@@ -150,6 +157,15 @@ type DeviceTemplate struct {
 	// +optional
 	Bootstrap *DeviceBootstrapSpec `json:"bootstrap,omitempty"`
 }
+
+// InternetPolicy is whether a device may use an Internet gateway of its lab.
+// +kubebuilder:validation:Enum=allow;deny
+type InternetPolicy string
+
+const (
+	InternetAllow InternetPolicy = "allow"
+	InternetDeny  InternetPolicy = "deny"
+)
 
 // DevicePersistence is the per-device state-persistence request of a topology.
 type DevicePersistence struct {
