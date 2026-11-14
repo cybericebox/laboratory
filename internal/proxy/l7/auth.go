@@ -40,6 +40,9 @@ type jwtClaims struct {
 	// Host is the full host name (lower case, no port) of the one device access host the session was opened for. The request must be for
 	// exactly this host, renewals included; a cookie without it is refused, so what leaks opens at most one device.
 	Host string `json:"host,omitempty"`
+	// Use is "console" for a console session token (the token a console page holds, see terminal_console.go) and empty for the cookie of a
+	// web session: neither is accepted in the other's place.
+	Use string `json:"use,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -104,6 +107,9 @@ func validateCookie(r *http.Request, secret []byte, cookieName string, now func(
 	}
 	if claims.GroupID == "" {
 		return jwtClaims{}, fmt.Errorf("empty group_id")
+	}
+	if claims.Use != "" {
+		return jwtClaims{}, fmt.Errorf("not a web session")
 	}
 	return claims, nil
 }

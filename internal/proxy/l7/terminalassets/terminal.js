@@ -5,6 +5,11 @@
   'use strict';
   const app = document.getElementById('app');
   const T = JSON.parse(document.getElementById('i18n').textContent);
+  // The console session token the proxy put into the page. It lives in this variable only; the link's ?t= is removed from the address at
+  // once, so neither of them stays in the history, a bookmark or a Referer.
+  const SESSION = JSON.parse(document.getElementById('session').textContent);
+  const PROTOCOL = 'cib.console.v1';
+  history.replaceState(null, '', location.pathname.replace(/\/_auth$/, '/'));
   const TYPE = { DATA: 1, RESIZE: 2, CLOSE: 3, ACK: 4 };
   const MAX_FRAME = 32 * 1024;
   const $ = (id) => document.getElementById(id);
@@ -103,7 +108,7 @@
   function connect() {
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     setStatus(T.connecting, '');
-    ws = new WebSocket(scheme + '//' + location.host + '/ws');
+    ws = new WebSocket(scheme + '//' + location.host + '/ws', [PROTOCOL, SESSION.token]);
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => ws.send(JSON.stringify({ cols: term.cols, rows: term.rows }));
     ws.onmessage = (ev) => {
@@ -142,7 +147,16 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => fit.fit(), 100);
   });
-  $('again').addEventListener('click', () => location.reload());
+  // Reconnect reuses the token this page holds while it is valid; once it is not (or after a reload, which has no link) the user opens a
+  // new link and the page shows "session over".
+  $('again').addEventListener('click', () => {
+    ended = false;
+    ready = false;
+    reason = '';
+    $('over').classList.remove('show');
+    term.reset();
+    connect();
+  });
 
   connect();
 })();

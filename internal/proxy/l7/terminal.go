@@ -24,8 +24,8 @@ import (
 // device has a console. It then relays the stream to the device access service on the node of the device, which opens the shell.
 // The proxy never learns the container; it names a device (namespace, lab, device) and the service finds the container itself.
 //
-// The session cookie is host-only (it belongs to the one device host that set it), so a page of another device cannot send it here at all. Before that, with a cookie that covered every host under the base domain, a page of a device (written by a participant) could ask
-// for the console of the participant's own session. What stops it: the WebSocket accepts only the page's own Origin.
+// The console has no cookie. The handoff link (/_auth?t=) is verified on the console host itself and answered with the page, which carries a
+// console session token signed by the proxy; the page opens the WebSocket with that token in Sec-WebSocket-Protocol. See terminal_console.go.
 
 // ErrNoConsole is returned by a DeviceLookup for a device that has no console (or does not exist; the answer is the same).
 var ErrNoConsole = errors.New("the device has no console")
@@ -141,40 +141,6 @@ type terminalTarget struct {
 	base                   string
 }
 
-// serveTerminal answers a request for the console host. The session was validated by the caller (cookie, group, tenant).
-func (h *Handler) serveTerminal(w http.ResponseWriter, r *http.Request, device, code string, claims jwtClaims, client string, group AccessGroup) {
-	t := h.terminal
-	ancestor := ancestorNone
-	if r.URL.Path == "/" {
-		// Only the page itself is framed; the answer depends on the Referer, so a cache must not reuse it.
-		w.Header().Add("Vary", "Referer")
-		ancestor = t.cfg.Embed.Ancestor(r.Referer())
-	}
-	setTerminalHeaders(w, r, ancestor)
-	switch {
-	case strings.HasPrefix(r.URL.Path, "/assets/"):
-		serveTerminalAsset(w, r)
-	case r.URL.Path == "/":
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			fail(w, r, http.StatusMethodNotAllowed, pageGone, "method not allowed")
-			return
-		}
-		tg, ok := h.authorizeTerminal(w, r, device, code, claims, client, group)
-		if !ok {
-			return
-		}
-		serveTerminalPage(w, r, tg)
-	case r.URL.Path == "/ws":
-		tg, ok := h.authorizeTerminal(w, r, device, code, claims, client, group)
-		if !ok {
-			return
-		}
-		h.terminalSocket(w, r, tg)
-	default:
-		fail(w, r, http.StatusNotFound, pageGone, "not found")
-	}
-}
-
 // authorizeTerminal is the authorization of a console request: the client may reach the lab (the same Allowed check as for a web
 // request: the client exists, the policy allows the lab, the lab is not stopped) and the device has a console. Every refusal is the
 // same card, so the answer does not tell a lab that does not exist from one the client may not use.
@@ -231,11 +197,19 @@ func setTerminalHeaders(w http.ResponseWriter, r *http.Request, ancestor string)
 	hd.Set("Cross-Origin-Resource-Policy", "same-origin")
 }
 
-// sameOrigin reports whether the Origin header is the page's own origin. A request without Origin is not (a browser sends one on a
-// WebSocket handshake and on a cross-origin or non-GET request).
-func (t *terminalState) sameOrigin(r *http.Request) bool {
+// originAllowed says whether the Origin of a console WebSocket handshake may drive a console: the console host's own origin, or an origin
+// the embedding lists allow to frame the console (the same match as frame-ancestors). A request without Origin is not (a browser always sends
+// one on a WebSocket handshake). The console is authenticated by its token, not by a cookie, so this is the second lock: a page of a device
+// or of any other site cannot open it even with a token it got hold of.
+func (t *terminalState) originAllowed(r *http.Request) bool {
 	o := r.Header.Get("Origin")
-	return o != "" && strings.EqualFold(o, t.cfg.OriginScheme+"://"+r.Host)
+	if o == "" {
+		return false
+	}
+	if strings.EqualFold(o, t.cfg.OriginScheme+"://"+r.Host) {
+		return true
+	}
+	return t.cfg.Embed.Ancestor(o) != ancestorNone
 }
 
 // defaultDial opens the stream to a service.

@@ -130,6 +130,7 @@ var terminalTmpl = template.Must(template.New("terminal").Parse(`<!doctype html>
 </div>
 <div id="over" role="alertdialog" aria-labelledby="over-text"><div><p id="over-text"></p><button id="again" type="button">{{.T.Again}}</button></div></div>
 <script type="application/json" id="i18n">{{.I18N}}</script>
+<script type="application/json" id="session">{{.Session}}</script>
 <script src="/assets/xterm.js"></script>
 <script src="/assets/addon-fit.js"></script>
 <script src="/assets/addon-web-links.js"></script>
@@ -138,14 +139,20 @@ var terminalTmpl = template.Must(template.New("terminal").Parse(`<!doctype html>
 </html>
 `))
 
-func serveTerminalPage(w http.ResponseWriter, r *http.Request, tg terminalTarget) {
+// serveTerminalPage answers with the console page. token is the console session token the page opens its WebSocket with; it is in a
+// JSON data block that the bundled script reads (nothing is executed inline, so the script-src of the page stays 'self').
+func serveTerminalPage(w http.ResponseWriter, r *http.Request, tg terminalTarget, token string) {
 	t := pickTerminalText(r.Header.Get("Accept-Language"))
 	raw, _ := json.Marshal(t)
+	sess, _ := json.Marshal(struct {
+		Token string `json:"token"`
+	}{token})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = terminalTmpl.Execute(w, struct {
-		T      terminalText
-		Lab    string
-		Device string
-		I18N   template.JS
-	}{t, tg.lab, tg.device, template.JS(raw)})
+		T       terminalText
+		Lab     string
+		Device  string
+		I18N    template.JS
+		Session template.JS
+	}{t, tg.lab, tg.device, template.JS(raw), template.JS(sess)})
 }
