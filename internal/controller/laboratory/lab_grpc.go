@@ -28,10 +28,11 @@ func grpcServiceName(device, code string) (string, bool) {
 
 // proxyIngressPeers are the sources the L7 proxy reaches a device from: its pods, and the node CIDRs when it runs on the host network.
 func (r *LabReconciler) proxyIngressPeers() []networkingv1.NetworkPolicyPeer {
-	peers := []networkingv1.NetworkPolicyPeer{{
+	peers := make([]networkingv1.NetworkPolicyPeer, 0, 1+len(r.ProxySourceCIDRs))
+	peers = append(peers, networkingv1.NetworkPolicyPeer{
 		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.ProxyNamespace}},
 		PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{labelApp: names.ProxyL7App}},
-	}}
+	})
 	for _, cidr := range r.ProxySourceCIDRs {
 		peers = append(peers, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
 	}

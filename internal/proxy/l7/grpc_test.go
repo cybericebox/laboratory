@@ -47,9 +47,8 @@ type grpcRig struct {
 	keyOK   atomic.Bool
 	device  *grpc.Server
 
-	mu       sync.Mutex
-	seenMD   metadata.MD
-	seenPeer string
+	mu     sync.Mutex
+	seenMD metadata.MD
 }
 
 func newGRPCRig(t *testing.T) *grpcRig {
