@@ -366,6 +366,17 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	return r.validateBroadcastDomains(lab, switchDevices)
 }
 
+// internetDenied is the set of the devices that must have no Internet gateway in a broadcast domain they are in.
+func internetDenied(lab *laboratoryv1alpha1.Lab) map[string]bool {
+	denied := map[string]bool{}
+	for _, d := range lab.Spec.Devices {
+		if d.Internet == laboratoryv1alpha1.InternetDeny {
+			denied[d.Name] = true
+		}
+	}
+	return denied
+}
+
 func validForwardingPort(name string) bool {
 	const prefix = "GigabitEthernet0/"
 	if !strings.HasPrefix(name, prefix) {
@@ -425,7 +436,11 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	type domainFlags struct {
 		gateways    int
 		dhcpSources int
+		// internet is the Internet gateway of the domain, if it has one; denied the devices of the domain that may not reach it.
+		internet string
+		denied   []string
 	}
+	denied := internetDenied(lab)
 	domains := map[int]*domainFlags{}
 	for ci, conn := range lab.Spec.Connections {
 		root := find(ci)
@@ -435,7 +450,13 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 			domains[root] = d
 		}
 		for _, ep := range conn.Endpoints {
+			if denied[ep.Device] {
+				d.denied = append(d.denied, ep.Device)
+			}
 			if g, ok := gatewayEndpoint(lab, ep); ok {
+				if g.Kind == laboratoryv1alpha1.GatewayKindInternet {
+					d.internet = g.Name
+				}
 				d.gateways++
 				if g.DHCPServer != nil && g.DHCPServer.Enabled {
 					d.dhcpSources++
@@ -445,6 +466,10 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	}
 
 	for _, d := range domains {
+		if d.internet != "" && len(d.denied) > 0 {
+			return fmt.Errorf("InternetDeniedDeviceOnInternetNetwork: device %q has internet: deny but shares a broadcast domain with the Internet gateway %q",
+				d.denied[0], d.internet)
+		}
 		if d.gateways > 1 {
 			return fmt.Errorf("BroadcastDomainHasSeveralGateways: a broadcast domain holds at most one gateway, VPN or Internet (found %d)", d.gateways)
 		}

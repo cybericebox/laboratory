@@ -241,6 +241,9 @@ func validateDeviceExtras(spec *laboratoryv1alpha1.LabSpec) error {
 		if err := requireServiceUser(d, false); err != nil {
 			return err
 		}
+		if d.Internet != "" && d.Internet != laboratoryv1alpha1.InternetAllow && d.Internet != laboratoryv1alpha1.InternetDeny {
+			return fmt.Errorf("device %q: internet is allow or deny", d.Name)
+		}
 		if err := validateAccess(d); err != nil {
 			return err
 		}

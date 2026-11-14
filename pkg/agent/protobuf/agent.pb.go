@@ -1862,7 +1862,7 @@ func (x *SetLabGroupAccessRequest) GetPolicies() []*LabGroupAccessPolicy {
 type LabVariant struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	VariantId string                 `protobuf:"bytes,1,opt,name=variant_id,json=variantId,proto3" json:"variant_id,omitempty"`
-	SpecJson  []byte                 `protobuf:"bytes,2,opt,name=spec_json,json=specJson,proto3" json:"spec_json,omitempty"` // Lab.spec serialized; the agent passes it through
+	SpecJson  []byte                 `protobuf:"bytes,2,opt,name=spec_json,json=specJson,proto3" json:"spec_json,omitempty"` // Lab.spec serialized; the agent passes it through (contract 2.2: devices[].internet, allow|deny)
 	Env       []*DeviceEnv           `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty"`                           // variables common to every lab of the variant
 	// Pull credentials for the variant's private images (at most 8, one per registry host).
 	// The agent stores them in a per-lab dockerconfigjson Secret and sets

@@ -38,9 +38,15 @@ type DeviceTemplateApplyConfiguration struct {
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
 	Interfaces []InterfaceSpecApplyConfiguration `json:"interfaces,omitempty"`
-	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
-	// and rdp. At most one entry per kind.
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, grpc (the management gRPC
+	// endpoint behind the L7 proxy) and the reserved vnc and rdp. At most one entry per kind.
 	Access []DeviceAccessApplyConfiguration `json:"access,omitempty"`
+	// Internet is the device's reach to the public internet: allow (the default when empty; the device uses an Internet gateway when it
+	// shares a broadcast domain with one) or deny. A device with deny must not share a broadcast domain with an Internet gateway: the lab
+	// is refused otherwise (InternetDeniedDeviceOnInternetNetwork), so the guarantee never depends on an address or a firewall rule. It is
+	// meant for the devices of AI opponents and other devices that the platform drives out-of-band (EDA), which need no network egress. The
+	// devices of a student and of a grader are left as they are (symmetric: both allow, or both deny).
+	Internet *laboratoryv1alpha1.InternetPolicy `json:"internet,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 	// Persistence is the optional state-persistence policy of this device, set at
@@ -126,6 +132,14 @@ func (b *DeviceTemplateApplyConfiguration) WithAccess(values ...*DeviceAccessApp
 		}
 		b.Access = append(b.Access, *values[i])
 	}
+	return b
+}
+
+// WithInternet sets the Internet field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Internet field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithInternet(value laboratoryv1alpha1.InternetPolicy) *DeviceTemplateApplyConfiguration {
+	b.Internet = &value
 	return b
 }
 

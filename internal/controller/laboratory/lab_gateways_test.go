@@ -507,3 +507,49 @@ func TestObjectsOfTheLongestNamesAreValid(t *testing.T) {
 		}
 	}
 }
+
+// A device with internet: deny never shares a broadcast domain with an Internet gateway, directly or through a switch; its other
+// networks (a VPN entry, a lab network without an exit) are as free as before, and a device without the field is not touched.
+func TestInternetDeniedDeviceStaysOffTheInternetNetwork(t *testing.T) {
+	deny := func(l *laboratoryv1alpha1.Lab, device string) *laboratoryv1alpha1.Lab {
+		for i := range l.Spec.Devices {
+			if l.Spec.Devices[i].Name == device {
+				l.Spec.Devices[i].Internet = laboratoryv1alpha1.InternetDeny
+			}
+		}
+		return l
+	}
+	for name, tc := range map[string]struct {
+		conns []laboratoryv1alpha1.ConnectionTemplate
+		want  string // "" = valid
+	}{
+		"joined to the internet gateway directly": {[]laboratoryv1alpha1.ConnectionTemplate{
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("r2", "eth0")}},
+		}, "InternetDeniedDeviceOnInternetNetwork"},
+		"through a switch": {[]laboratoryv1alpha1.ConnectionTemplate{
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("sw", "GigabitEthernet0/1")}},
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("r2", "eth0"), endpoint("sw", "GigabitEthernet0/2")}},
+		}, "InternetDeniedDeviceOnInternetNetwork"},
+		"on a VPN network only": {[]laboratoryv1alpha1.ConnectionTemplate{
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("attack", "eth0"), endpoint("r2", "eth0")}},
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("r1", "eth0")}},
+		}, ""},
+		"on a network of its own": {[]laboratoryv1alpha1.ConnectionTemplate{
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("r2", "eth0"), endpoint("sw", "GigabitEthernet0/1")}},
+			{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("r1", "eth0")}},
+		}, ""},
+	} {
+		l := deny(gatewayGraphLab(), "r2")
+		l.Spec.Connections = tc.conns
+		err := (&LabReconciler{}).validateGraph(l)
+		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v, want %q", name, err, tc.want)
+		}
+	}
+	// the same wiring without the field is valid: students and graders are left as they are
+	l := gatewayGraphLab()
+	l.Spec.Connections = []laboratoryv1alpha1.ConnectionTemplate{{Endpoints: []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("r2", "eth0")}}}
+	if err := (&LabReconciler{}).validateGraph(l); err != nil {
+		t.Fatalf("a device without internet: deny on the internet network: %v", err)
+	}
+}
