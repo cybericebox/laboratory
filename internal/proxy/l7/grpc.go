@@ -128,57 +128,17 @@ func (h *Handler) serveGRPC(w http.ResponseWriter, r *http.Request, task string)
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	raw := r.Header.Get(GRPCAccessHeader)
-	verifier := h.grpcVerifier
-	if verifier == nil {
-		verifier = tenantKeyVerifier{keys: h.keys, groupTenant: h.groupTenant, maxLifetime: h.grpcTokenMax}
-	}
-	var grant GRPCGrant
-	var err error
-	if raw != "" {
-		grant, err = verifier.Verify(raw, task, h.now)
-	}
-	if raw == "" || err != nil {
-		// A client that keeps sending a bad credential is slowed down; the calls of a good one are never counted.
-		if !h.authLimit.allow("grpc|" + task) {
-			w.Header().Set("Retry-After", "5")
-			grpcFail(w, grpcResourceExhaust, "too many requests")
-			return
-		}
-		grpcFail(w, grpcUnauthenticated, "unauthenticated")
-		return
-	}
-
-	ctx := r.Context()
-	group, err := h.access.Group(ctx, grant.Group)
-	if err != nil || group.Tenant != grant.Issuer {
-		grpcFail(w, grpcNotFound, "not found")
-		return
-	}
-	route, err := h.access.GRPCRoute(ctx, task, group.Namespace)
-	if err != nil {
-		grpcFail(w, grpcNotFound, "not found")
+	grant, route, group, ok := h.authorizeGRPC(w, r, task)
+	if !ok {
 		return
 	}
 	client := grant.Client
-	if !h.access.Allowed(ctx, group.Namespace, client, route.Lab) {
-		grpcFail(w, grpcNotFound, "not found")
-		return
-	}
-	if h.prepare != nil {
-		prepareCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err = h.prepare(prepareCtx, group.Namespace)
-		cancel()
-		if err != nil {
-			grpcFail(w, grpcUnavailable, "service unavailable")
-			return
-		}
-	}
 	target, err := url.Parse(route.URL)
 	if err != nil {
 		grpcFail(w, grpcInternalError, "internal error")
 		return
 	}
+	ctx := r.Context()
 
 	// The credential of the proxy ends here, and so does the session cookie and every address of the client. Everything else, the
 	// authorization header included, is the device's own and goes through as it came.
@@ -306,4 +266,50 @@ func (a *AccessReader) GRPCRoute(ctx context.Context, task, namespace string) (A
 		return AccessRoute{}, fmt.Errorf("service has an invalid gRPC port")
 	}
 	return AccessRoute{fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", task, namespace, declared.Port), svc.Labels[names.LabelLab]}, nil
+}
+
+// authorizeGRPC runs everything that decides pass or deny for a call: the credential, the group and its tenant, the route of the host, the
+// policy and the lab, the wake of the group. On a refusal it has already answered with the gRPC status.
+func (h *Handler) authorizeGRPC(w http.ResponseWriter, r *http.Request, task string) (GRPCGrant, AccessRoute, AccessGroup, bool) {
+	raw := r.Header.Get(GRPCAccessHeader)
+	verifier := h.grpcVerifier
+	if verifier == nil {
+		verifier = tenantKeyVerifier{keys: h.keys, groupTenant: h.groupTenant, maxLifetime: h.grpcTokenMax}
+	}
+	var grant GRPCGrant
+	var err error
+	if raw != "" {
+		grant, err = verifier.Verify(raw, task, h.now)
+	}
+	if raw == "" || err != nil {
+		// A client that keeps sending a bad credential is slowed down; the calls of a good one are never counted.
+		if !h.authLimit.allow("grpc|" + task) {
+			w.Header().Set("Retry-After", "5")
+			grpcFail(w, grpcResourceExhaust, "too many requests")
+			return GRPCGrant{}, AccessRoute{}, AccessGroup{}, false
+		}
+		grpcFail(w, grpcUnauthenticated, "unauthenticated")
+		return GRPCGrant{}, AccessRoute{}, AccessGroup{}, false
+	}
+	ctx := r.Context()
+	group, err := h.access.Group(ctx, grant.Group)
+	if err != nil || group.Tenant != grant.Issuer {
+		grpcFail(w, grpcNotFound, "not found")
+		return GRPCGrant{}, AccessRoute{}, AccessGroup{}, false
+	}
+	route, err := h.access.GRPCRoute(ctx, task, group.Namespace)
+	if err != nil || !h.access.Allowed(ctx, group.Namespace, grant.Client, route.Lab) {
+		grpcFail(w, grpcNotFound, "not found")
+		return GRPCGrant{}, AccessRoute{}, AccessGroup{}, false
+	}
+	if h.prepare != nil {
+		prepareCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = h.prepare(prepareCtx, group.Namespace)
+		cancel()
+		if err != nil {
+			grpcFail(w, grpcUnavailable, "service unavailable")
+			return GRPCGrant{}, AccessRoute{}, AccessGroup{}, false
+		}
+	}
+	return grant, route, group, true
 }

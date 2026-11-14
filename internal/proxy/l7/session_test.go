@@ -628,7 +628,6 @@ func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	backends := map[string]*httptest.Server{}
 	for _, g := range []string{"g1", "g2"} {
-		g := g
 		b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("lab-" + g)) }))
 		t.Cleanup(b.Close)
 		backends[g] = b
