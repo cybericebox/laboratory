@@ -19,6 +19,8 @@ type liveEntry struct {
 	group, client, lab, tenant string
 	deadline                   time.Time
 	cancel                     context.CancelFunc
+	// valid, when set, is asked at every live check: false ends the request (the key that signed a gRPC token is gone).
+	valid func() bool
 
 	mu     sync.Mutex
 	conn   net.Conn
@@ -127,7 +129,7 @@ func (h *Handler) CheckLive() int {
 	owners := map[string]AccessGroup{}
 	checked := map[string]bool{}
 	for _, e := range h.live.snapshot() {
-		stop := !now.Before(e.deadline)
+		stop := !now.Before(e.deadline) || (e.valid != nil && !e.valid())
 		if !stop {
 			key := binding{e.group, e.client, e.lab, e.tenant}
 			allowed, seen := permissions[key]

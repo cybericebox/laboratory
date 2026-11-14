@@ -63,6 +63,9 @@ type Handler struct {
 	terminal *terminalState
 	// throttle paces each participant to its fair share of the bandwidth class of this proxy (see pace.go); no limits until set.
 	throttle *bandwidth.Throttle[string]
+	// grpcTokenMax caps exp - iat of a gRPC access token (see grpc.go); grpcTransport is the transport to a device's gRPC port (h2c).
+	grpcTokenMax  time.Duration
+	grpcTransport http.RoundTripper
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -131,6 +134,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	task, err := getTaskName(r, h.baseDomain)
 	if err != nil {
 		fail(w, r, http.StatusBadRequest, pageGone, "bad request")
+		return
+	}
+	// The gRPC access of a device has a host of its own and its own authentication (a bearer token, no cookie, no handoff).
+	if _, _, kind := names.ParseAccessHost(task); kind == names.AccessKindGRPC {
+		h.serveGRPC(w, r, task)
 		return
 	}
 	if r.URL.Path == AuthPath {

@@ -81,6 +81,7 @@ func Run() {
 
 	access := &l7.AccessReader{Reader: mgr.GetClient()}
 	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName, nil).
+		WithGRPCTokenMaxLifetime(cfg.GRPCTokenMaxTTL).
 		WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).
 		WithAccounting(meter, nil).WithAccessReader(access).WithLiveMaxLifetime(cfg.LiveMaxLifetime).
 		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst).
@@ -142,6 +143,8 @@ func Run() {
 	httpsSrv := proxy.NewHTTPServer(cfg, handler, &tls.Config{
 		GetCertificate: certWatcher.GetCertificate,
 		MinVersion:     tls.VersionTLS12,
+		// h2 is what the gRPC access of a device needs (see l7/grpc.go); a browser takes it as well.
+		NextProtos: []string{"h2", "http/1.1"},
 	})
 
 	for _, r := range []struct {
