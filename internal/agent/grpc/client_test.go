@@ -178,3 +178,35 @@ func TestSetLabGroupAccessEndToEnd(t *testing.T) {
 		t.Fatalf("a refused policy changed the stored one: %#v", stored.Spec.Rules)
 	}
 }
+
+// An access-only client is made without a WireGuard key and is not waited for: the answer has no config, the CR has no public key, and
+// nothing simulates a reconciler here, so waiting for a config would fail.
+func TestAccessOnlyLabGroupClientHasNoVPNPeer(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k8s, "team-acc", "team-acc", nil)
+
+	res, err := h.CreateLabGroupClients(ctx, &protobuf.CreateLabGroupClientsRequest{Items: []*protobuf.LabGroupClientItem{
+		{LabGroup: "team-acc", Name: "g-run1", AccessOnly: true},
+	}})
+	if err != nil || res.Results[0].Result.State != stCreated {
+		t.Fatalf("create: %v %v", res, err)
+	}
+	if c := res.Results[0].Client; c == nil || c.Status.GetConfig() != "" || c.Status.GetAssignedIp() != "" {
+		t.Fatalf("an access-only client has no config and no address: %v", c)
+	}
+	cr, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-acc").Get(ctx, "g-run1", metav1.GetOptions{})
+	if err != nil || !cr.Spec.AccessOnly || cr.Spec.PublicKey != "" {
+		t.Fatalf("CR: %+v %v", cr.Spec, err)
+	}
+	// it cannot be turned into a VPN client afterwards, nor given a key at creation
+	cr.Spec.AccessOnly = false
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-acc").Update(ctx, cr, metav1.UpdateOptions{}); err == nil {
+		t.Fatal("accessOnly must be fixed at creation")
+	}
+	bad := &laboratoryv1alpha1.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "both", Namespace: "team-acc"},
+		Spec: laboratoryv1alpha1.LabGroupClientSpec{AccessOnly: true, PublicKey: "abc"}}
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-acc").Create(ctx, bad, metav1.CreateOptions{}); err == nil {
+		t.Fatal("an access-only client with a public key must be refused")
+	}
+}

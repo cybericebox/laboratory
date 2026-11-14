@@ -83,8 +83,8 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
 	for i := range clients.Items {
 		client := &clients.Items[i]
-		if !client.DeletionTimestamp.IsZero() {
-			continue
+		if !client.DeletionTimestamp.IsZero() || client.Spec.AccessOnly {
+			continue // an access-only client has no tunnel address: no VPN rule is built for it
 		}
 		clientSnapshots = append(clientSnapshots, vpn.ClientAccessSnapshot{
 			Name:       client.Name,

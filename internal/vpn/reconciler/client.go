@@ -49,6 +49,11 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
+	// An access-only client has no WireGuard peer.
+	if lgc.Spec.AccessOnly {
+		return ctrl.Result{}, nil
+	}
+
 	// The operator allocates the IP and generates/persists the public key. Wait
 	// for both before adding the peer — do NOT gate on the operator's finalizer,
 	// which is a different finalizer than this reconciler's readiness signal.

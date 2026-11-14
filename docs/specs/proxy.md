@@ -204,13 +204,14 @@ demux — `LabGroup.Status.VPN.PublicKey`.
   `http://<service>.<ns>.svc.cluster.local:<port>` (stdlib `http.Transport` with `Protocols.UnencryptedHTTP2`, ping every 30s), `httputil.ReverseProxy`
   with `FlushInterval=-1`: messages and trailers pass as they come. `SetReadDeadline/SetWriteDeadline(0)` per call: neither `READ_TIMEOUT` nor
   `IDLE_TIMEOUT` cuts a stream. Cancelling a call closes the request body too (the h2 transport otherwise stays in a read of an idle stream).
-- **Auth:** `authorization: Bearer <EdDSA JWT>`, verified like a handoff link (`accessKeyFunc`): `iss`/`kid`, aud `laboratory-proxy`, iat+nbf+exp,
-  `host` = the host label, `group_id`, `sub`, `run`; `exp - iat <= GRPC_TOKEN_MAX_TTL` (24h); the group belongs to the issuer. No cookie, no `/_auth`.
-  The device does not see `authorization`, `cookie` or client address headers.
-- **Live:** one `liveEntry` per call (deadline = token `exp`, `valid` = the signing key is still registered); `CheckLive` re-runs the group, lab, client
+- **Auth:** the metadata key `x-lab-access` holds an EdDSA JWT, verified like a handoff link behind `GRPCVerifier` (`accessKeyFunc`): `iss`/`kid`,
+  aud exactly `laboratory-proxy-grpc`, `token_use`=`kind`=`grpc`, iat+nbf+exp, `host` = the host label, `group_id`, `sub`, `run`; `exp - iat <=
+  GRPC_TOKEN_MAX_TTL` (12h, not above LIVE_MAX_LIFETIME); the group belongs to the issuer. The proxy strips it; `authorization` and the rest pass
+  unchanged. No cookie, no `/_auth` (which refuses these tokens).
+- **Live:** one `liveEntry` per call (deadline = the earlier of token `exp` and the live lifetime cap, `valid` = the signing key is still registered); `CheckLive` re-runs the group, lab, client
   and policy checks. A cut call ends with `grpc-status` in the trailers (7 access ended, 16 token expired).
 - **Errors:** gRPC trailers-only answers: 16 token problems, 5 unknown route or policy refusal, 14 device or `prepare` failure, 8 caps and repeated bad
-  tokens, 13 internal; `415` plain text for a non-gRPC request. Not metered (see DEPLOY.md).
+  tokens, 13 internal; `415` plain text for a non-gRPC request. Metered and paced like a web request.
 - **Не делает:** vnc and rdp (monitor) and the management web UI are later; for them the proxy would need a WebSocket/guacd-like bridge with its own
   host letters (`v`, `r` are reserved), a per-kind upstream (RFB/RDP is not HTTP), and the device side (a framebuffer, a VM).
 
