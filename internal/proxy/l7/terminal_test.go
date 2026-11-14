@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -125,7 +126,8 @@ type termFixture struct {
 	h       *Handler
 	srv     *httptest.Server
 	svc     *fakeService
-	cookie  string
+	cookie  string // the session the fixture's browser holds: its group and client; the token and the link are made from it per host
+	priv    ed25519.PrivateKey
 	cluster client.Client
 }
 
@@ -161,7 +163,7 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 		termDevice("lab3", "kali", true, "n1"),
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	access := &AccessReader{Reader: c}
 	svc := newFakeService(t)
 	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", nil).WithAccessReader(access)
@@ -182,17 +184,17 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 	h.WithTerminal(cfg)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &termFixture{t: t, h: h, srv: srv, svc: svc, cluster: c, cookie: cookieFor(t, "p-u1")}
+	return &termFixture{t: t, h: h, srv: srv, svc: svc, cluster: c, priv: priv, cookie: cookieFor(t, "p-u1")}
 }
 
-// rehost is the session cookie the browser would hold for host: the same session, opened on that host (a session names the one host it is for).
+// rehost is the console session token the page of host would hold: the same session, opened on that host (a token names the one host it is for).
 func rehost(t *testing.T, token, host string) string {
 	t.Helper()
 	var claims jwtClaims
 	if _, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
 		t.Fatalf("rehost: %v", err)
 	}
-	claims.Host = host
+	claims.Host, claims.Use = host, "console"
 	return signCookie(t, claims)
 }
 
@@ -205,11 +207,36 @@ func (f *termFixture) get(path string, hdr map[string]string) *httptest.Response
 	return f.getHost(termHost, path, hdr)
 }
 
+// link is the handoff link the platform would give the fixture's session for the console host.
+func (f *termFixture) link(host string) string {
+	var sc jwtClaims
+	if _, err := jwt.ParseWithClaims(f.cookie, &sc, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
+		f.t.Fatalf("link: %v", err)
+	}
+	now := time.Now()
+	hc := handoffClaims{GroupID: sc.GroupID, Host: host, Session: now.Add(24 * time.Hour).Unix(), RegisteredClaims: jwt.RegisteredClaims{
+		Issuer: "acme", Subject: sc.Client, Audience: jwt.ClaimStrings{HandoffAudience},
+		IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))}}
+	return signHandoff(f.t, f.priv, "k1", hc)
+}
+
+// getHost asks for a path of a console host; the page ("/") is what the handoff link of the host opens, and it is the only request that
+// carries the link: the console has no cookie.
 func (f *termFixture) getHost(host, path string, hdr map[string]string) *httptest.ResponseRecorder {
+	_, _, kind := names.ParseAccessHost(strings.SplitN(host, ".", 2)[0])
+	cookieHost := kind != names.AccessKindTerminal || f.h.terminal == nil // not a console host here: the cookie of a web session is what is looked at
+	if (path == "/" || strings.HasPrefix(path, "/?")) && f.cookie != "" && !cookieHost {
+		path = AuthPath + "?" + strings.TrimPrefix(strings.TrimPrefix(path, "/"), "?") + "&t=" + url.QueryEscape(f.link(host))
+	}
 	req := httptest.NewRequest("GET", "http://"+host+path, nil)
 	req.Host = host
-	if f.cookie != "" {
-		req.AddCookie(&http.Cookie{Name: "challenge", Value: rehost(f.t, f.cookie, host)})
+	if f.cookie != "" && cookieHost {
+		var sc jwtClaims
+		if _, err := jwt.ParseWithClaims(f.cookie, &sc, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
+			f.t.Fatal(err)
+		}
+		sc.Host, sc.Use = host, ""
+		req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(f.t, sc)})
 	}
 	for k, v := range hdr {
 		req.Header.Set(k, v)
@@ -226,11 +253,12 @@ func (f *termFixture) dialSocket(device string, origin string) (*websocket.Conn,
 func (f *termFixture) dialSocketHost(host string, origin string) (*websocket.Conn, *http.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	hdr := http.Header{"Cookie": {"challenge=" + rehost(f.t, f.cookie, host)}}
+	hdr := http.Header{}
 	if origin != "" {
 		hdr.Set("Origin", origin)
 	}
-	return websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.srv.URL, "http")+"/ws", &websocket.DialOptions{Host: host, HTTPHeader: hdr})
+	return websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.srv.URL, "http")+"/ws",
+		&websocket.DialOptions{Host: host, HTTPHeader: hdr, Subprotocols: []string{ConsoleSubprotocol, rehost(f.t, f.cookie, host)}})
 }
 
 func TestTerminalPageAndHeaders(t *testing.T) {
@@ -298,7 +326,6 @@ func TestTerminalHasNoFileTransfer(t *testing.T) {
 		for _, method := range []string{"GET", "PUT"} {
 			req := httptest.NewRequest(method, "http://"+termHost+path, nil)
 			req.Host = termHost
-			req.AddCookie(&http.Cookie{Name: "challenge", Value: rehost(f.t, f.cookie, termHost)})
 			req.Header.Set("Origin", "http://"+termHost)
 			rec := httptest.NewRecorder()
 			f.h.ServeHTTP(rec, req)

@@ -142,6 +142,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveGRPC(w, r, task)
 		return
 	}
+	// The console host has no cookie: its own handoff, token and WebSocket (terminal_console.go).
+	if _, _, kind := names.ParseAccessHost(task); kind == names.AccessKindTerminal && h.terminal != nil && h.access != nil {
+		h.serveConsoleHost(w, r, task)
+		return
+	}
 	if r.URL.Path == AuthPath {
 		if !h.authLimit.allow(h.authKey(r, task)) {
 			w.Header().Set("Retry-After", "5")
@@ -495,11 +500,8 @@ func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task s
 	if kind == "" || kind == names.AccessKindHTTP {
 		return false
 	}
-	if kind == names.AccessKindTerminal && h.terminal != nil {
-		h.serveTerminal(w, r, device, code, claims, client, group)
-	} else {
-		fail(w, r, http.StatusNotFound, pageGone, "not found")
-	}
+	_, _ = device, code // the console and the gRPC kind are served before the cookie is looked at; nothing else is served
+	fail(w, r, http.StatusNotFound, pageGone, "not found")
 	return true
 }
 

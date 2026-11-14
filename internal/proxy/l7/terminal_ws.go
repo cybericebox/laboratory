@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/coder/websocket"
@@ -44,8 +45,8 @@ func browserText(ctx context.Context, c *websocket.Conn, m browserMsg) error {
 // terminalSocket is the console's WebSocket: the browser's stream relayed to the service on the node of the device.
 func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg terminalTarget) {
 	t := h.terminal
-	if !t.sameOrigin(r) {
-		// A page of a device, or any other site, may not drive the console with the participant's cookie.
+	if !t.originAllowed(r) {
+		// A page of a device, or any other site, may not drive the console, whatever token it holds.
 		fail(w, r, http.StatusForbidden, pageGone, "forbidden")
 		return
 	}
@@ -67,7 +68,12 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	}
 	defer t.remove(sess)
 
-	browser, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+	// The origin was judged above (the host itself or an allowed embedding site); the library's own same-host check is told the same answer.
+	var patterns []string
+	if u, err := url.Parse(r.Header.Get("Origin")); err == nil && u.Host != "" {
+		patterns = []string{u.Host}
+	}
+	browser, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled, Subprotocols: []string{ConsoleSubprotocol}, OriginPatterns: patterns})
 	if err != nil {
 		return
 	}
