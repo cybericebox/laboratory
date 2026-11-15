@@ -70,6 +70,15 @@ cannot use them. JSON errors look like `{"error": "unauthorized"}`.
 Tokens are valid for one hour at a time and live until `max_until`; refresh when less than a quarter of their life is left. A token is valid
 on one host only.
 
+### Framing and close codes, precisely
+
+- Only **binary** messages carry data; a text message closes the connection with 1003. A message is at most 1 MiB (1009 above that). There is
+  no length prefix or header of our own: concatenating the payloads in order is the byte stream.
+- The proxy sends close 1000 when the device closes its side, 1001 "service restarting" when the replica stops, 1008 "access ended" when a
+  live check fails or a lifetime limit is reached. The client closes with 1000.
+- Nothing is sent by the proxy on its own (no heartbeat messages); a client that wants to detect a dead path uses WebSocket ping frames.
+- The client's `sub` of the handoff is only a label for the traffic ledger: the tunnel does not require it to be a client of the lab group.
+
 ## What cuts a tunnel, and what to do
 
 | event | what the client sees | what to do |
