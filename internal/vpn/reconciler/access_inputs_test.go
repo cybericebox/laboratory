@@ -90,7 +90,7 @@ func accessReconcileFixture(t *testing.T) (*AccessReconciler, *recordingAccessAp
 	}
 	peer := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "group"}, Status: lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"}}
 	l, firstLeg := vpnLab("group", "l1", "10.8.1.0/24", 1)
-	p := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "group", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
+	p := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "group", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, LabNames: []string{"l1"}, GatewayNames: []string{"vpn"}}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(peer, l, p, &lab.LabVPN{}, &lab.LabTrafficReport{}).WithObjects(peer, l, p, firstLeg).Build()
 	a := &recordingAccessApplier{}
 	return &AccessReconciler{Client: c, IPT: a}, a, c, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "group", Name: names.LabGroupAccessPolicyName}}

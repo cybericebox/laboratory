@@ -43,7 +43,7 @@ func TestControlTwentyPeersAndLabsIgnoreOneHundredStatsUpdates(t *testing.T) {
 	if err := c.Get(context.Background(), key, policy); err != nil {
 		t.Fatal(err)
 	}
-	policy.Spec.Rules = []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"}}}
+	policy.Spec.Rules = []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"}, GatewayNames: []string{"vpn"}}}
 	if err := c.Update(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}

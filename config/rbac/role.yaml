@@ -181,6 +181,7 @@ rules:
 - apiGroups:
   - laboratory.cybericebox.com
   resources:
+  - labgroupaccesspolicies
   - labtrafficreports
   verbs:
   - get
