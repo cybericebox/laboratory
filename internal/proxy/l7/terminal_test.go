@@ -813,3 +813,23 @@ func TestEndpointDirectory(t *testing.T) {
 		}
 	}
 }
+
+// The console socket carries a proxy-signed token and is not charged to the pre-verification bucket: a garbage flood from the same address
+// does not close it.
+func TestConsoleSocketIsNotAffectedByAPreAuthFlood(t *testing.T) {
+	f := newTermFixture(t, nil)
+	f.h.WithAuthRateLimit(1, 3)
+	for i := 0; i < 100; i++ {
+		req, _ := http.NewRequest("GET", f.srv.URL+AuthPath+"?t=garbage", nil)
+		req.Host = termHostFor("lab1", "kali")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if i == 99 && resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("the flood must be throttled, got %d", resp.StatusCode)
+		}
+	}
+	f.openConsole("kali")
+}

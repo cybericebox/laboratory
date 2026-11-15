@@ -3,6 +3,7 @@ package l7
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -50,7 +51,7 @@ type bucketSet struct {
 	max         int
 	keys        map[string]*bkt
 	all         bkt
-	allMul      float64 // the shared bucket is this many times a key's
+	allMul      float64 // the shared bucket is this many times a key's; 0: no shared bucket
 	now         func() time.Time
 }
 
@@ -87,7 +88,7 @@ func (b *bucketSet) allow(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
-	if !b.all.take(now, b.rate*b.allMul, b.burst*b.allMul) {
+	if b.allMul > 0 && !b.all.take(now, b.rate*b.allMul, b.burst*b.allMul) {
 		return false
 	}
 	k, ok := b.keys[key]
@@ -119,14 +120,14 @@ func (b *bucketSet) evict(now time.Time) {
 }
 
 // WithAuthRateLimit limits the handoff path (/_auth) twice. Before anything is verified, every attempt costs its client address (whatever it
-// sends: no lab, no cookie in that key) a token of a bucket of preAuthRate per second and preAuthBurst, so garbage cannot make the proxy verify
+// sends: no lab, no cookie in that key) a token of a bucket of preAuthRate per second and preAuthBurst (no bucket shared by all addresses), so garbage cannot make the proxy verify
 // signatures without end and one address cannot hold back another. After a link verifies, the lab, the address and the verified session
 // (group and client of the link) share a bucket of rate per second and burst. Over either the answer is 429. Both tables are capped.
 func (h *Handler) WithAuthRateLimit(rate float64, burst int) *Handler {
 	h.authLimit = newBucketSet(rate, burst, 100000)
 	if rate > 0 {
 		h.preAuthLimit = newBucketSet(preAuthRate, preAuthBurst, 100000)
-		h.preAuthLimit.allMul = 200 // the shared bucket only bounds the whole proxy; a normal user never meets it
+		h.preAuthLimit.allMul = 0 // per address only: a shared bucket could be drained from many addresses to refuse everybody
 	}
 	return h
 }
@@ -138,12 +139,25 @@ const (
 )
 
 // preAuthClientIP is the client address the proxy resolved for the connection (the PROXY protocol header of the trusted edge, else the peer).
+//
+// An IPv6 client is keyed by its /64 (the smallest network a site is given), an IPv4 one by its address, so one client cannot rotate through
+// many keys.
 func preAuthClientIP(r *http.Request) string {
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
 	}
-	return ip
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		if p, err := a.Prefix(64); err == nil {
+			return p.String()
+		}
+	}
+	return a.String()
 }
 
 // throttlePreAuth charges the caller's address one attempt, before the link is looked at. It answers 429 itself when the address is over.
