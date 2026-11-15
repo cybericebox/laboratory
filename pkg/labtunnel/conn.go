@@ -19,10 +19,11 @@ type tunnelAddr string
 func (tunnelAddr) Network() string  { return "labtunnel" }
 func (a tunnelAddr) String() string { return string(a) }
 
-// conn is a net.Conn over the WebSocket of a tunnel. websocket.NetConn closes the connection when a deadline expires and reports it as a
-// cancelled context, which is not what a net.Conn promises (a caller of gRPC or TLS retries after a timeout), so this one keeps a reader
-// goroutine and answers a read deadline with os.ErrDeadlineExceeded (a net.Error with Timeout() true) and leaves the connection alone. A
-// write that does not finish by its deadline fails the connection, as a stuck write must.
+// conn is a net.Conn over the WebSocket of a tunnel. websocket.NetConn closes the connection when a deadline expires
+// and reports it as a cancelled context, which is not what a net.Conn promises (a caller of gRPC or TLS retries after
+// a timeout). This one keeps a reader goroutine, answers a read deadline with os.ErrDeadlineExceeded (a net.Error with
+// Timeout() true) and leaves the connection alone. A write that does not finish by its deadline fails the connection,
+// as a stuck write must.
 type conn struct {
 	ws     *websocket.Conn
 	ctx    context.Context
@@ -44,7 +45,10 @@ type conn struct {
 
 func newConn(ws *websocket.Conn, remote string) *conn {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &conn{ws: ws, ctx: ctx, cancel: cancel, local: "labtunnel", remote: tunnelAddr(remote), in: make(chan []byte, 1), wake: make(chan struct{}, 1)}
+	c := &conn{
+		ws: ws, ctx: ctx, cancel: cancel, local: "labtunnel", remote: tunnelAddr(remote),
+		in: make(chan []byte, 1), wake: make(chan struct{}, 1),
+	}
 	go c.pump()
 	return c
 }

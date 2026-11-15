@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,4 +48,13 @@ func (r *LabReconciler) cutInternetDenied(ctx context.Context, lab *laboratoryv1
 		}
 	}
 	return nil
+}
+
+// failClosedOnInternetDenied cuts the denied devices off when the refusal of the lab is an internet conflict; any other error is left alone.
+func (r *LabReconciler) failClosedOnInternetDenied(ctx context.Context, lab *laboratoryv1alpha1.Lab, validationErr error) error {
+	var denied *internetDeniedError
+	if !goerrors.As(validationErr, &denied) {
+		return nil
+	}
+	return r.cutInternetDenied(ctx, lab, denied.conflicts)
 }

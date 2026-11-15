@@ -72,7 +72,8 @@ func newPKI(t *testing.T) *pki {
 	return &pki{pool: pool, server: issue(2, "device.internal", x509.ExtKeyUsageServerAuth), client: issue(3, "runner-client", x509.ExtKeyUsageClientAuth), clientName: "runner-client"}
 }
 
-// proxy is one replica of the lab proxy in front of the device. It can be stopped and started again on the same address (a restart).
+// proxy is one replica of the lab proxy in front of the device. It can be stopped and started again on the same
+// address (a restart).
 type proxy struct {
 	t       *testing.T
 	addr    string
@@ -144,7 +145,8 @@ func (p *proxy) stop() {
 	p.srv.Close()
 }
 
-// clock is the client's idea of the time: the proxy keeps real time, so a test moves only the client to reach "the token is about to end".
+// clock is the client's idea of the time: the proxy keeps real time, so a test moves only the client to reach "the
+// token is about to end".
 type clock struct{ offset atomic.Int64 }
 
 func (c *clock) now() time.Time { return time.Now().Add(time.Duration(c.offset.Load())) }
@@ -304,7 +306,8 @@ func TestTokenIsRefreshedBeforeItExpires(t *testing.T) {
 	}
 }
 
-// A proxy replica restarts: the tunnel drops, gRPC dials again, and the dialer reconnects with the token it holds, without a new handoff.
+// A proxy replica restarts: the tunnel drops, gRPC dials again, and the dialer reconnects with the token it holds,
+// without a new handoff.
 func TestReconnectsAfterAProxyRestart(t *testing.T) {
 	e := newEnv(t)
 	conn := e.grpcConn(e.dialer())
@@ -329,7 +332,8 @@ func TestReconnectsAfterAProxyRestart(t *testing.T) {
 	}
 }
 
-// A proxy that does not know the token (its secret is another) answers 401; the dialer then starts again from a handoff.
+// A proxy that does not know the token (its secret is another) answers 401; the dialer then starts again from a
+// handoff.
 func TestAskForANewHandoffAfter401(t *testing.T) {
 	e := newEnv(t)
 	dial := e.dialer()
@@ -351,7 +355,8 @@ func TestAskForANewHandoffAfter401(t *testing.T) {
 	}
 }
 
-// Past max_until the token cannot be refreshed: a new handoff is asked for; when the platform refuses, the dial fails with that error.
+// Past max_until the token cannot be refreshed: a new handoff is asked for; when the platform refuses, the dial fails
+// with that error.
 func TestExpiryAsksForANewHandoff(t *testing.T) {
 	e := newEnv(t)
 	e.session = 2 * time.Minute
