@@ -79,7 +79,7 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 	}
 	now := h.now()
 	host := requestHost(r)
-	hc, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
+	hc, err := verifyHandoff(raw, h.keys, h.groupTenant, host, "", h.now, h.handoffMax)
 	if err != nil {
 		h.expired(w, r)
 		return
@@ -107,12 +107,12 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 
 // consoleSocket opens the console WebSocket of a page that holds a console session token.
 func (h *Handler) consoleSocket(w http.ResponseWriter, r *http.Request, task string) {
-	token, ok := consoleSubprotocolToken(r.Header.Values("Sec-WebSocket-Protocol"))
+	token, ok := subprotocolToken(r.Header.Values("Sec-WebSocket-Protocol"), ConsoleSubprotocol)
 	if !ok {
 		h.expired(w, r)
 		return
 	}
-	claims, err := h.verifyConsoleToken(token, requestHost(r))
+	claims, err := h.verifySessionToken(token, requestHost(r), "console")
 	if err != nil {
 		h.expired(w, r)
 		return
@@ -136,9 +136,9 @@ func (h *Handler) consoleTarget(w http.ResponseWriter, r *http.Request, claims j
 	return h.authorizeTerminal(w, r, device, code, claims, claims.client(), group)
 }
 
-// verifyConsoleToken checks a console session token: the proxy's signature, use "console", an end in the future and the one host it was
+// verifySessionToken checks a session token of a console or a tunnel: the proxy's signature, the use, an end in the future and the one host it was
 // issued for.
-func (h *Handler) verifyConsoleToken(raw, host string) (jwtClaims, error) {
+func (h *Handler) verifySessionToken(raw, host, use string) (jwtClaims, error) {
 	var claims jwtClaims
 	token, err := jwt.ParseWithClaims(raw, &claims, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -149,14 +149,14 @@ func (h *Handler) verifyConsoleToken(raw, host string) (jwtClaims, error) {
 	if err != nil || !token.Valid || len(h.secret) == 0 {
 		return jwtClaims{}, errBadToken
 	}
-	if claims.Use != "console" || claims.GroupID == "" || claims.Host == "" || claims.Host != host {
+	if claims.Use != use || claims.GroupID == "" || claims.Host == "" || claims.Host != host {
 		return jwtClaims{}, errBadToken
 	}
 	return claims, nil
 }
 
-// consoleSubprotocolToken reads the offered subprotocols: exactly ConsoleSubprotocol and one token.
-func consoleSubprotocolToken(values []string) (string, bool) {
+// subprotocolToken reads the offered subprotocols: exactly proto and one token, in that order.
+func subprotocolToken(values []string, proto string) (string, bool) {
 	var offered []string
 	for _, v := range values {
 		for _, p := range strings.Split(v, ",") {
@@ -165,7 +165,7 @@ func consoleSubprotocolToken(values []string) (string, bool) {
 			}
 		}
 	}
-	if len(offered) != 2 || offered[0] != ConsoleSubprotocol || offered[1] == ConsoleSubprotocol {
+	if len(offered) != 2 || offered[0] != proto || offered[1] == proto {
 		return "", false
 	}
 	return offered[1], true

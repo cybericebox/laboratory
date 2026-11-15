@@ -66,15 +66,6 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		}
 	}
 
-	// An access-only client is a name for the policy and the proxy: no WireGuard peer, no address, no config, nothing to allocate.
-	if lgc.Spec.AccessOnly {
-		if !labstatus.IsReady(lgc.Status.Conditions) {
-			labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, true, labstatus.ReasonReady, "access-only client: no VPN peer")
-			_ = r.Status().Update(ctx, lgc)
-		}
-		return ctrl.Result{}, nil
-	}
-
 	// The caller generates the WireGuard keypair and provides the public key;
 	// the cluster never generates or holds the private key.
 	pubKey := lgc.Spec.PublicKey

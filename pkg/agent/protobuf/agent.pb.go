@@ -1472,13 +1472,10 @@ func (x *UpdateLabGroupsRequest) GetItems() []*UpdateLabGroupItem {
 }
 
 type LabGroupClientItem struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	LabGroup string                 `protobuf:"bytes,1,opt,name=lab_group,json=labGroup,proto3" json:"lab_group,omitempty"`
-	Name     string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Labels   map[string]string      `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// access_only (contract 2.3): a client for the access policy and the L7 proxy only (the gRPC access of an AI opponent): no WireGuard key
-	// is made, no tunnel address or config exists (the answer has no config), and it has no VPN peer. Fixed at creation.
-	AccessOnly    bool `protobuf:"varint,4,opt,name=access_only,json=accessOnly,proto3" json:"access_only,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LabGroup      string                 `protobuf:"bytes,1,opt,name=lab_group,json=labGroup,proto3" json:"lab_group,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Labels        map[string]string      `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1532,13 +1529,6 @@ func (x *LabGroupClientItem) GetLabels() map[string]string {
 		return x.Labels
 	}
 	return nil
-}
-
-func (x *LabGroupClientItem) GetAccessOnly() bool {
-	if x != nil {
-		return x.AccessOnly
-	}
-	return false
 }
 
 type CreateLabGroupClientsRequest struct {
@@ -12654,16 +12644,14 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\vby_selector\x18\x01 \x01(\v2\x14.labmanager.SelectorR\n" +
 	"bySelector\x125\n" +
 	"\achanges\x18\x02 \x01(\v2\x1b.labmanager.LabGroupChangesR\achanges\x124\n" +
-	"\x05items\x18\x03 \x03(\v2\x1e.labmanager.UpdateLabGroupItemR\x05items\"\xe5\x01\n" +
+	"\x05items\x18\x03 \x03(\v2\x1e.labmanager.UpdateLabGroupItemR\x05items\"\xd7\x01\n" +
 	"\x12LabGroupClientItem\x12\x1b\n" +
 	"\tlab_group\x18\x01 \x01(\tR\blabGroup\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12B\n" +
-	"\x06labels\x18\x03 \x03(\v2*.labmanager.LabGroupClientItem.LabelsEntryR\x06labels\x12\x1f\n" +
-	"\vaccess_only\x18\x04 \x01(\bR\n" +
-	"accessOnly\x1a9\n" +
+	"\x06labels\x18\x03 \x03(\v2*.labmanager.LabGroupClientItem.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdd\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x04\x10\x05R\vaccess_only\"\xdd\x01\n" +
 	"\x1cCreateLabGroupClientsRequest\x12L\n" +
 	"\x06labels\x18\x01 \x03(\v24.labmanager.CreateLabGroupClientsRequest.LabelsEntryR\x06labels\x124\n" +
 	"\x05items\x18\x02 \x03(\v2\x1e.labmanager.LabGroupClientItemR\x05items\x1a9\n" +

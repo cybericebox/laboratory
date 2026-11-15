@@ -83,22 +83,16 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 		return failedResult(ref, fmt.Errorf("retired group cannot create clients")), nil
 	}
 	name := crName(it.GetName())
-	var priv wgtypes.Key
-	if !it.GetAccessOnly() {
-		if priv, err = wgtypes.GeneratePrivateKey(); err != nil {
-			return failedResult(ref, fmt.Errorf("generate wireguard key: %w", err)), nil
-		}
+	priv, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		return failedResult(ref, fmt.Errorf("generate wireguard key: %w", err)), nil
 	}
 	want := mergeItemLabels(common, it.GetLabels())
 	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
 	lgc := &laboratoryv1alpha1.LabGroupClient{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: stampTenant(copyLabels(want), tenantOf(ctx)), Annotations: stampID(it.GetName())},
 	}
-	if it.GetAccessOnly() {
-		lgc.Spec.AccessOnly = true
-	} else {
-		lgc.Spec.PublicKey = priv.PublicKey().String()
-	}
+	lgc.Spec.PublicKey = priv.PublicKey().String()
 	_, err = clients.Create(ctx, lgc, metav1.CreateOptions{})
 	if err = createErr(err, kindLabGroupClient, it.GetName(), func() (metav1.Object, error) {
 		return clients.Get(ctx, name, metav1.GetOptions{})
@@ -108,16 +102,6 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 		return failedResult(ref, err), nil
 	}
 
-	if it.GetAccessOnly() {
-		// nothing to wait for: no peer, no address, no config
-		created, err := clients.Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return failedResult(ref, err), nil
-		}
-		p := clientToProto(created)
-		p.LabGroupName = it.GetLabGroup()
-		return result(ref, protobuf.ItemState_ITEM_STATE_CREATED), p
-	}
 	out, err := h.awaitClientConfig(ctx, ns, name)
 	if err != nil {
 		// The private key would be lost with this call, so the half-made client is
