@@ -28,12 +28,15 @@ import (
 // relation. Counters are cumulative kernel counters; CounterReset marks a
 // replacement/restart so downstream summaries never infer negative traffic.
 type LabGroupAccessPolicyRuleStatusApplyConfiguration struct {
-	ClientName   *string                                  `json:"clientName,omitempty"`
-	LabName      *string                                  `json:"labName,omitempty"`
-	Action       *laboratoryv1alpha1.LabGroupAccessAction `json:"action,omitempty"`
-	Packets      *int64                                   `json:"packets,omitempty"`
-	Bytes        *int64                                   `json:"bytes,omitempty"`
-	CounterReset *bool                                    `json:"counterReset,omitempty"`
+	ClientName *string                                  `json:"clientName,omitempty"`
+	LabName    *string                                  `json:"labName,omitempty"`
+	Action     *laboratoryv1alpha1.LabGroupAccessAction `json:"action,omitempty"`
+	// GatewayNames are the connectors of the laboratory the relation covers (the counters are those of the client in the laboratory, over all of
+	// them).
+	GatewayNames []string `json:"gatewayNames,omitempty"`
+	Packets      *int64   `json:"packets,omitempty"`
+	Bytes        *int64   `json:"bytes,omitempty"`
+	CounterReset *bool    `json:"counterReset,omitempty"`
 }
 
 // LabGroupAccessPolicyRuleStatusApplyConfiguration constructs a declarative configuration of the LabGroupAccessPolicyRuleStatus type for use with
@@ -63,6 +66,16 @@ func (b *LabGroupAccessPolicyRuleStatusApplyConfiguration) WithLabName(value str
 // If called multiple times, the Action field is set to the value of the last call.
 func (b *LabGroupAccessPolicyRuleStatusApplyConfiguration) WithAction(value laboratoryv1alpha1.LabGroupAccessAction) *LabGroupAccessPolicyRuleStatusApplyConfiguration {
 	b.Action = &value
+	return b
+}
+
+// WithGatewayNames adds the given value to the GatewayNames field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the GatewayNames field.
+func (b *LabGroupAccessPolicyRuleStatusApplyConfiguration) WithGatewayNames(values ...string) *LabGroupAccessPolicyRuleStatusApplyConfiguration {
+	for i := range values {
+		b.GatewayNames = append(b.GatewayNames, values[i])
+	}
 	return b
 }
 

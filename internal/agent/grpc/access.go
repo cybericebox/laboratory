@@ -77,9 +77,9 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	if err != nil {
 		return 0, err
 	}
-	knownLabs := make(map[string]struct{}, len(labs.Items))
+	knownLabs := make(map[string]*laboratoryv1alpha1.Lab, len(labs.Items))
 	for i := range labs.Items {
-		knownLabs[labs.Items[i].Name] = struct{}{}
+		knownLabs[labs.Items[i].Name] = &labs.Items[i]
 	}
 	idMap := map[string]string{}
 	rules := make([]laboratoryv1alpha1.LabGroupAccessRule, 0, len(in.Rules))
@@ -103,11 +103,17 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 				missing = append(missing, id)
 			}
 		}
+		gatewayNames, include, err := accessRuleTargets(action, rule, labNames, knownLabs)
+		if err != nil {
+			return 0, err
+		}
 		// The VPN reconciler matches CR names; the originals go to the id map.
 		rules = append(rules, laboratoryv1alpha1.LabGroupAccessRule{
-			Action:      action,
-			ClientNames: encodeNames(uniqueSorted(rule.ClientNames), idMap),
-			LabNames:    encodeNames(labNames, idMap),
+			Action:       action,
+			ClientNames:  encodeNames(uniqueSorted(rule.ClientNames), idMap),
+			LabNames:     encodeNames(labNames, idMap),
+			GatewayNames: gatewayNames,
+			Include:      include,
 		})
 	}
 	if len(missing) > 0 {
@@ -285,4 +291,51 @@ func (e labsNotInGroupError) Reason() string { return client.ReasonLabNotInGroup
 
 func (e labsNotInGroupError) GRPCStatus() *status.Status {
 	return status.New(codes.InvalidArgument, e.Error())
+}
+
+// accessRuleTargets checks what a rule says about the VPN gateways (connectors) and the subnets of their /24: an allow rule names the
+// laboratories and the gateways (access is never per whole laboratory); every gateway is a VPN gateway of each named laboratory; an include
+// entry is a subnet of the gateway's /24, /24 to /32, starting at its first address, and belongs to an allow rule only. The entries are
+// relative to the gateway because the operator allocates its /24 (they cannot lie outside it).
+func accessRuleTargets(action laboratoryv1alpha1.LabGroupAccessAction, rule *protobuf.LabGroupAccessRule, labNames []string, labs map[string]*laboratoryv1alpha1.Lab) ([]string, []laboratoryv1alpha1.AccessInclude, error) {
+	gateways := uniqueSorted(rule.GatewayNames)
+	if action == laboratoryv1alpha1.LabGroupAccessAllow && len(labNames) == 0 {
+		return nil, nil, invalid("an allow rule names the laboratories")
+	}
+	if len(gateways) > 16 {
+		return nil, nil, invalid("an access rule names at most 16 gateways")
+	}
+	for _, g := range gateways {
+		if err := names.ValidateDeviceName(g); err != nil {
+			return nil, nil, invalid("access rule gateway: %v", err)
+		}
+		for _, id := range labNames {
+			l := labs[crName(id)]
+			if l == nil {
+				continue // reported as a missing laboratory
+			}
+			if gw, ok := l.Spec.Gateway(g); !ok || gw.Kind != laboratoryv1alpha1.GatewayKindVPN {
+				return nil, nil, invalid("laboratory %q has no VPN gateway %q", id, g)
+			}
+		}
+	}
+	if len(rule.Include) > 0 && (action != laboratoryv1alpha1.LabGroupAccessAllow || len(gateways) == 0) {
+		return nil, nil, invalid("include needs an allow rule that names gateways")
+	}
+	if len(rule.Include) > 32 {
+		return nil, nil, invalid("an access rule has at most 32 include entries")
+	}
+	var include []laboratoryv1alpha1.AccessInclude
+	seen := map[laboratoryv1alpha1.AccessInclude]bool{}
+	for _, in := range rule.Include {
+		if in == nil || in.Prefix < 24 || in.Prefix > 32 || in.Host < 0 || in.Host > 255 || in.Host%(1<<(32-in.Prefix)) != 0 {
+			return nil, nil, invalid("an include entry is a subnet of the gateway's /24: prefix 24 to 32 and host the first address of that subnet")
+		}
+		e := laboratoryv1alpha1.AccessInclude{Host: in.Host, Prefix: in.Prefix}
+		if !seen[e] {
+			seen[e] = true
+			include = append(include, e)
+		}
+	}
+	return gateways, include, nil
 }

@@ -347,7 +347,11 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 		case laboratoryv1alpha1.LabGroupAccessDeny:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
-		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames)})
+		include := make([]*protobuf.AccessInclude, 0, len(rule.Include))
+		for _, in := range rule.Include {
+			include = append(include, &protobuf.AccessInclude{Host: in.Host, Prefix: in.Prefix})
+		}
+		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames), GatewayNames: rule.GatewayNames, Include: include})
 	}
 	for _, rule := range policy.Status.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
@@ -359,7 +363,7 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 		}
 		p.Status.Rules = append(p.Status.Rules, &protobuf.LabGroupAccessRuleStatistics{
 			ClientName: origOne(rule.ClientName), LabName: origOne(rule.LabName), Action: action,
-			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset,
+			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset, GatewayNames: rule.GatewayNames,
 		})
 	}
 	return p

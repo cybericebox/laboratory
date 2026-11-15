@@ -59,9 +59,13 @@ spec:
               rules:
                 items:
                   description: |-
-                    LabGroupAccessRule targets selected clients and laboratories in one group.
-                    An empty ClientNames list means every LabGroupClient in this namespace.
-                    An empty LabNames list means every Lab in this namespace.
+                    LabGroupAccessRule targets selected clients and VPN gateways (connectors) of selected laboratories in one group. A VPN gateway is a flat
+                    segment: its own /24 and nothing behind it. Access is per client and per connector, never per whole laboratory: an allow rule names the
+                    laboratories AND the gateways, and may narrow what of the gateway's /24 is reachable with Include.
+
+                    An empty ClientNames list means every LabGroupClient in this namespace. An allow rule needs LabNames; it reaches over VPN only the gateways in GatewayNames (empty GatewayNames: no VPN reach, only the browser access
+                    of the laboratory, which the proxy decides per laboratory); a deny rule with an
+                    empty LabNames or GatewayNames list means every laboratory or every VPN gateway. Deny always wins over allow.
                   properties:
                     action:
                       description: |-
@@ -75,14 +79,65 @@ spec:
                     clientNames:
                       items:
                         type: string
+                      maxItems: 256
+                      type: array
+                    gatewayNames:
+                      description: GatewayNames are the VPN gateways (connectors)
+                        of those laboratories the rule is about, by the name in the
+                        lab's spec.gateways.
+                      items:
+                        type: string
+                      maxItems: 16
+                      type: array
+                    include:
+                      description: |-
+                        Include narrows the access to these subnets of each named gateway's /24 (the union of the entries). Empty means the whole /24. There are
+                        no ranges and no excludes. An entry is relative to the gateway, because its /24 is allocated by the operator: it always lies inside it.
+                      items:
+                        description: |-
+                          AccessInclude is a subnet of a gateway's /24: <the /24>.Host/Prefix. Prefix is 24 (the whole /24, Host 0) to 32 (one address), and Host is
+                          the first address of the subnet inside the /24, so it is a multiple of the subnet size (a /26 starts at 0, 64, 128 or 192).
+                        properties:
+                          host:
+                            format: int32
+                            maximum: 255
+                            minimum: 0
+                            type: integer
+                          prefix:
+                            format: int32
+                            maximum: 32
+                            minimum: 24
+                            type: integer
+                        required:
+                        - host
+                        - prefix
+                        type: object
+                        x-kubernetes-validations:
+                        - message: host is not the first address of a subnet of that
+                            size
+                          rule: 'self.host % (self.prefix == 32 ? 1 : self.prefix
+                            == 31 ? 2 : self.prefix == 30 ? 4 : self.prefix == 29
+                            ? 8 : self.prefix == 28 ? 16 : self.prefix == 27 ? 32
+                            : self.prefix == 26 ? 64 : self.prefix == 25 ? 128 : 256)
+                            == 0'
+                      maxItems: 32
                       type: array
                     labNames:
                       items:
                         type: string
+                      maxItems: 256
                       type: array
                   required:
                   - action
                   type: object
+                  x-kubernetes-validations:
+                  - message: an allow rule names the laboratories
+                    rule: self.action != 'allow' || (has(self.labNames) && size(self.labNames)
+                      > 0)
+                  - message: include needs an allow rule that names gateways
+                    rule: '!has(self.include) || size(self.include) == 0 || (self.action
+                      == ''allow'' && has(self.gatewayNames) && size(self.gatewayNames)
+                      > 0)'
                 type: array
             type: object
           status:
@@ -127,6 +182,13 @@ spec:
                       type: string
                     counterReset:
                       type: boolean
+                    gatewayNames:
+                      description: |-
+                        GatewayNames are the connectors of the laboratory the relation covers (the counters are those of the client in the laboratory, over all of
+                        them).
+                      items:
+                        type: string
+                      type: array
                     labName:
                       type: string
                     packets:
