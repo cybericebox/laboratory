@@ -9,8 +9,8 @@ func pairFor(t *testing.T, labInitiated bool) ForwardRule {
 	t.Helper()
 	plan, err := CompileForwardPlan(
 		[]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}},
-		[]AccessPolicyRule{{Action: AccessAllow}})
+		map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: labInitiated}},
+		allowLabs("a", "b", "l1"))
 	if err != nil || len(plan.Allows) != 1 {
 		t.Fatalf("plan %+v %v", plan, err)
 	}
@@ -55,9 +55,9 @@ func TestSwitchDoesNotChangeThePairIdentity(t *testing.T) {
 		t.Fatalf("binding id changed: %s %s", off.BindingID, on.BindingID)
 	}
 	rules := BuildAccessRules([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+		map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, allowLabs("a", "b", "l1"))
 	flipped := BuildAccessRules([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true}}, []AccessPolicyRule{{Action: AccessAllow}})
+		map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true}}, allowLabs("a", "b", "l1"))
 	if rules[0].Identifier() != flipped[0].Identifier() || rules[0] == flipped[0] {
 		t.Fatal("the flip must change the rule (so it is applied) but not its identifier")
 	}
@@ -68,9 +68,9 @@ func TestTheSwitchIsPerLab(t *testing.T) {
 	plan, err := CompileForwardPlan(
 		[]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}, {Name: "p2", AssignedIP: "10.8.0.3/32"}},
 		map[string]LabAccessSnapshot{
-			"a": {LabName: "a", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true},
-			"b": {LabName: "b", VPNCIDR: "10.8.2.0/24", Ready: true, Interface: "lab2"},
-		}, []AccessPolicyRule{{Action: AccessAllow}})
+			"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1", LabInitiated: true},
+			"b": {LabName: "b", Gateway: "vpn", VPNCIDR: "10.8.2.0/24", Ready: true, Interface: "lab2"},
+		}, allowLabs("a", "b", "l1"))
 	if err != nil || len(plan.Allows) != 4 {
 		t.Fatalf("%+v %v", plan, err)
 	}

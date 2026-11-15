@@ -59,13 +59,13 @@ func TestEveryVPNGatewayOfALabHasASnapshot(t *testing.T) {
 	if user.Interface != "lab4" || user.Ready || user.LabInitiated {
 		t.Fatalf("user: %+v", user)
 	}
-	rules := vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snapshots, []vpn.AccessPolicyRule{{Action: vpn.AccessAllow}})
+	rules := vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snapshots, allowLabs("a", "b", "l1"))
 	if len(rules) != 1 || rules[0].GatewayName != "attack" || rules[0].LabName != "a" || rules[0].LabInterface != "lab3" {
 		t.Fatalf("only the ready gateway is opened: %+v", rules)
 	}
 	user.Ready = true
 	snapshots[names.LabVPNObjectName("a", "user")] = user
-	rules = vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snapshots, []vpn.AccessPolicyRule{{Action: vpn.AccessAllow}})
+	rules = vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snapshots, allowLabs("a", "b", "l1"))
 	if len(rules) != 2 || rules[0].GatewayName != "attack" || rules[1].GatewayName != "user" || rules[0].Identifier() != rules[1].Identifier() {
 		t.Fatalf("a client reaches every gateway of the lab, under one lab identifier: %+v", rules)
 	}
@@ -104,7 +104,7 @@ func TestResumedVPNPodDoesNotOpenAStoppedLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snaps, []vpn.AccessPolicyRule{{Action: vpn.AccessAllow}})
+	rules := vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snaps, allowLabs("a", "b", "l1"))
 	allowed := map[string]bool{}
 	for _, r := range rules {
 		if r.Action == vpn.AccessAllow {

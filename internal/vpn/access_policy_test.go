@@ -10,13 +10,13 @@ func TestBuildAccessRulesUsesOnlyAssignedClientsAndReadyVPNLabs(t *testing.T) {
 			{Name: "no-ip"},
 		},
 		map[string]LabAccessSnapshot{
-			"web":      {LabName: "web", VPNCIDR: "10.16.0.0/24", Ready: true},
-			"forensic": {LabName: "forensic", VPNCIDR: "10.17.0.0/24", Ready: true},
-			"warming":  {LabName: "warming", VPNCIDR: "10.17.0.0/24", Ready: false},
+			"web":      {LabName: "web", Gateway: "vpn", VPNCIDR: "10.16.0.0/24", Ready: true},
+			"forensic": {LabName: "forensic", Gateway: "vpn", VPNCIDR: "10.17.0.0/24", Ready: true},
+			"warming":  {LabName: "warming", Gateway: "vpn", VPNCIDR: "10.17.0.0/24", Ready: false},
 		},
 		[]AccessPolicyRule{
-			{Action: AccessAllow, ClientNames: []string{"alice"}, LabNames: []string{"web", "missing"}},
-			{Action: AccessAllow, LabNames: []string{"forensic"}},
+			{Action: AccessAllow, ClientNames: []string{"alice"}, LabNames: []string{"web", "missing"}, GatewayNames: []string{"vpn"}},
+			{Action: AccessAllow, LabNames: []string{"forensic"}, GatewayNames: []string{"vpn"}},
 			{Action: AccessDeny, ClientNames: []string{"alice"}, LabNames: []string{"forensic"}},
 		},
 	)
@@ -24,16 +24,16 @@ func TestBuildAccessRulesUsesOnlyAssignedClientsAndReadyVPNLabs(t *testing.T) {
 	if len(rules) != 4 {
 		t.Fatalf("rules = %#v, want every ready client-to-lab pair", rules)
 	}
-	if rules[0] != (AccessRule{ClientName: "alice", LabName: "forensic", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.17.0.0/24", Action: AccessDeny}) {
+	if rules[0] != (AccessRule{ClientName: "alice", GatewayName: "vpn", LabName: "forensic", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.17.0.0/24", Action: AccessDeny}) {
 		t.Fatalf("first rule = %#v", rules[0])
 	}
-	if rules[1] != (AccessRule{ClientName: "alice", LabName: "web", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.16.0.0/24", Action: AccessAllow}) {
+	if rules[1] != (AccessRule{ClientName: "alice", GatewayName: "vpn", LabName: "web", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.16.0.0/24", Action: AccessAllow}) {
 		t.Fatalf("second rule = %#v", rules[1])
 	}
-	if rules[2] != (AccessRule{ClientName: "bob", LabName: "forensic", SourceCIDR: "10.8.0.3/32", DestinationCIDR: "10.17.0.0/24", Action: AccessAllow}) {
+	if rules[2] != (AccessRule{ClientName: "bob", GatewayName: "vpn", LabName: "forensic", SourceCIDR: "10.8.0.3/32", DestinationCIDR: "10.17.0.0/24", Action: AccessAllow}) {
 		t.Fatalf("third rule = %#v", rules[2])
 	}
-	if rules[3] != (AccessRule{ClientName: "bob", LabName: "web", SourceCIDR: "10.8.0.3/32", DestinationCIDR: "10.16.0.0/24", Action: AccessDeny}) {
+	if rules[3] != (AccessRule{ClientName: "bob", GatewayName: "vpn", LabName: "web", SourceCIDR: "10.8.0.3/32", DestinationCIDR: "10.16.0.0/24", Action: AccessDeny}) {
 		t.Fatalf("fourth rule = %#v", rules[3])
 	}
 }
@@ -41,7 +41,7 @@ func TestBuildAccessRulesUsesOnlyAssignedClientsAndReadyVPNLabs(t *testing.T) {
 func TestBuildAccessRulesDefaultsToDenyForEmptyPolicy(t *testing.T) {
 	rules := BuildAccessRules(
 		[]ClientAccessSnapshot{{Name: "alice", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"web": {LabName: "web", VPNCIDR: "10.16.0.0/24", Ready: true}},
+		map[string]LabAccessSnapshot{"web": {LabName: "web", Gateway: "vpn", VPNCIDR: "10.16.0.0/24", Ready: true}},
 		nil,
 	)
 	if len(rules) != 1 || rules[0].Action != AccessDeny {
@@ -52,9 +52,9 @@ func TestBuildAccessRulesDefaultsToDenyForEmptyPolicy(t *testing.T) {
 func TestAccessStatisticsDenyOverridesAllowAndReportsBlockedCounters(t *testing.T) {
 	rules := BuildAccessRules(
 		[]ClientAccessSnapshot{{Name: "alice", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"web": {LabName: "web", VPNCIDR: "10.16.0.0/24", Ready: true}},
+		map[string]LabAccessSnapshot{"web": {LabName: "web", Gateway: "vpn", VPNCIDR: "10.16.0.0/24", Ready: true}},
 		[]AccessPolicyRule{
-			{Action: AccessAllow},
+			{Action: AccessAllow, LabNames: []string{"web"}, GatewayNames: []string{"vpn"}},
 			{Action: AccessDeny, ClientNames: []string{"alice"}, LabNames: []string{"web"}},
 		},
 	)
