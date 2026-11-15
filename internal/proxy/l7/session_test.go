@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -756,20 +757,32 @@ func (f *handoffFixture) openFrom(addr, token string) *httptest.ResponseRecorder
 	return rec
 }
 
-// A flood against the handoff path of one device host does not hold back a valid link of another client: garbage is rejected before it is
-// counted, and a flood of valid links from one address only spends that address' budget.
-func TestHandoff_FloodFromOneAddressDoesNotBlockAnother(t *testing.T) {
+// A garbage flood from one address is stopped before any signature is verified, and does not touch another address' valid link.
+func TestHandoff_GarbageFloodIsThrottledBeforeVerification(t *testing.T) {
 	f := newHandoffFixture(t)
-	f.handler.WithAuthRateLimit(0.001, 3)
-	for i := 0; i < 200; i++ {
-		if rec := f.openFrom("198.51.100.7:4000", "garbage"); rec.Code == http.StatusTooManyRequests {
-			t.Fatalf("garbage %d was counted: 429", i)
+	f.handler.WithAuthRateLimit(1, 3)
+	limited := 0
+	for i := 0; i < 100; i++ {
+		if f.openFrom("198.51.100.7:4000", "garbage").Code == http.StatusTooManyRequests {
+			limited++
 		}
 	}
-	good := f.link(t, nil)
-	if rec := f.openFrom("203.0.113.9:5000", good); rec.Code != http.StatusSeeOther {
-		t.Fatalf("a valid link after a garbage flood: %d", rec.Code)
+	if limited < 100-preAuthBurst-10 {
+		t.Fatalf("only %d of 100 garbage attempts were throttled", limited)
 	}
+	if rec := f.openFrom("203.0.113.9:5000", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid link of another address after the flood: %d", rec.Code)
+	}
+	if rec := f.openFrom("198.51.100.7:4000", f.link(t, nil)); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("the flooding address is still over its bucket: %d", rec.Code)
+	}
+}
+
+// Valid links of one session from one address spend the (lab, address, session) bucket, and only that one.
+func TestHandoff_ValidLinkFloodIsLimitedPerSession(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithAuthRateLimit(0.001, 3)
+	good := f.link(t, nil)
 	limited := false
 	for i := 0; i < 10; i++ {
 		if f.openFrom("198.51.100.7:4000", good).Code == http.StatusTooManyRequests {
@@ -777,9 +790,35 @@ func TestHandoff_FloodFromOneAddressDoesNotBlockAnother(t *testing.T) {
 		}
 	}
 	if !limited {
-		t.Fatal("a flood of valid links from one address must be limited")
+		t.Fatal("a flood of valid links of one session must be limited")
 	}
 	if rec := f.openFrom("203.0.113.10:5000", good); rec.Code != http.StatusSeeOther {
-		t.Fatalf("another address while the first is limited: %d", rec.Code)
+		t.Fatalf("another address: %d", rec.Code)
+	}
+}
+
+// Whatever cookies an attacker sends, the limiter tables do not grow with them and never pass their cap.
+func TestHandoff_AttackerChosenValuesDoNotGrowTheTables(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithAuthRateLimit(1, 3)
+	for i := 0; i < 500; i++ {
+		req := httptest.NewRequest("GET", "https://"+labHost+AuthPath+"?t=garbage", nil)
+		req.Host, req.RemoteAddr = labHost, "198.51.100.7:4000"
+		req.AddCookie(&http.Cookie{Name: "challenge", Value: fmt.Sprintf("c%d", i)})
+		f.handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if n := len(f.handler.preAuthLimit.keys); n != 1 {
+		t.Fatalf("pre-verification buckets = %d, one per address", n)
+	}
+	if n := len(f.handler.authLimit.keys); n != 0 {
+		t.Fatalf("post-verification buckets = %d: garbage must not create any", n)
+	}
+	// The cap holds against attacker-chosen keys.
+	set := newBucketSet(1, 3, 50)
+	for i := 0; i < 5000; i++ {
+		set.allow(fmt.Sprintf("k%d", i))
+	}
+	if len(set.keys) > 50 {
+		t.Fatalf("table = %d, cap 50", len(set.keys))
 	}
 }
