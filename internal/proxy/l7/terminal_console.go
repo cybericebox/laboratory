@@ -77,7 +77,11 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 	}
 	now := h.now()
 	host := requestHost(r)
+	if !h.acquireVerify(w, r) {
+		return
+	}
 	hc, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
+	h.releaseVerify()
 	if err != nil {
 		h.expired(w, r)
 		return

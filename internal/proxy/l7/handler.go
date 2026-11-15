@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -55,9 +56,10 @@ type Handler struct {
 	live    *liveSet
 	liveMax time.Duration
 	// caps bound the requests in flight (see LiveCaps); authLimit limits the handoff path.
-	caps         LiveCaps
-	authLimit    *bucketSet
-	preAuthLimit *bucketSet
+	caps                       LiveCaps
+	authLimit                  *bucketSet
+	preAuthFine, preAuthCoarse *bucketSet    // per address, then per network, before anything is verified
+	verifySem                  chan struct{} // handoff verifications in flight (a cap, not a bucket)
 	// accessLog, when set, writes a line per proxied request (see accesslog.go).
 	accessLog *accessLog
 	// terminal, when set, serves the console on a host of its own per device (see terminal.go).
@@ -90,6 +92,7 @@ func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, re
 		resolver:   resolver,
 		transport:  upstreamTransport,
 		now:        time.Now,
+		verifySem:  make(chan struct{}, 2*runtime.GOMAXPROCS(0)),
 		live:       newLiveSet(),
 		throttle:   bandwidth.NewThrottle[string](5 * time.Second),
 		handoffMax: DefaultHandoffLifetime, sessionIdle: DefaultSessionIdleTTL, sessionRenew: DefaultSessionRenewBefore, sessionMax: DefaultSessionMaxTTL,

@@ -807,7 +807,7 @@ func TestHandoff_AttackerChosenValuesDoNotGrowTheTables(t *testing.T) {
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: fmt.Sprintf("c%d", i)})
 		f.handler.ServeHTTP(httptest.NewRecorder(), req)
 	}
-	if n := len(f.handler.preAuthLimit.keys); n != 1 {
+	if n := len(f.handler.preAuthFine.keys); n != 1 {
 		t.Fatalf("pre-verification buckets = %d, one per address", n)
 	}
 	if n := len(f.handler.authLimit.keys); n != 0 {
@@ -859,7 +859,7 @@ func TestHandoff_IPv6ClientsAreKeyedByTheirSlash64(t *testing.T) {
 	if rec := f.openFrom("[2001:db8:1:3::1]:1", f.link(t, nil)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("another /64: %d", rec.Code)
 	}
-	if got := preAuthKeyOf("203.0.113.5:80"); got != "203.0.113.5" {
+	if got := preAuthKeyOf("203.0.113.5:80"); got != "203.0.113.5/32" {
 		t.Fatalf("IPv4 key = %q", got)
 	}
 }
