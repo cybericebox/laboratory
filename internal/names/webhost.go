@@ -106,13 +106,12 @@ const (
 	AccessKindTerminal = "terminal"
 	AccessKindVNC      = "vnc"
 	AccessKindRDP      = "rdp"
-	AccessKindGRPC     = "grpc"
 	// AccessKindUnknown is what ParseAccessHost says of a kind character that stands for nothing (yet).
 	AccessKindUnknown = "unknown"
 )
 
-// kindChars are the kind characters: w web, t terminal (the console), v vnc, r rdp, g grpc (the management API of the device, programmatic web-direct). Every other character is reserved.
-var kindChars = map[string]byte{AccessKindHTTP: 'w', AccessKindTerminal: 't', AccessKindVNC: 'v', AccessKindRDP: 'r', AccessKindGRPC: 'g'}
+// kindChars are the kind characters: w web, t terminal (the console), v vnc, r rdp. Every other character is reserved.
+var kindChars = map[string]byte{AccessKindHTTP: 'w', AccessKindTerminal: 't', AccessKindVNC: 'v', AccessKindRDP: 'r'}
 
 func validCode(code string) bool {
 	if code == "" {

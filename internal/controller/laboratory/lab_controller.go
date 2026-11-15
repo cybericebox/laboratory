@@ -215,11 +215,6 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureGRPCServices(ctx, &lab, services); err != nil {
-		logger.Error(err, "ensure gRPC services")
-		return ctrl.Result{}, err
-	}
-
 	if err := r.materializeConnections(ctx, &lab); err != nil {
 		logger.Error(err, "materialize connections")
 		return ctrl.Result{}, err
@@ -1004,8 +999,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 // The host of a web port is the name of the device's existing web Service, never
 // recomputed; a device whose Service does not exist yet is skipped.
 func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
-	entries := append(r.buildWebAccessEntries(ctx, lab, snapshots...), r.terminalAccessEntries(ctx, lab)...)
-	return append(entries, r.grpcAccessEntries(ctx, lab)...)
+	return append(r.buildWebAccessEntries(ctx, lab, snapshots...), r.terminalAccessEntries(ctx, lab)...)
 }
 
 // terminalAccessEntries is one entry per device with a terminal access.

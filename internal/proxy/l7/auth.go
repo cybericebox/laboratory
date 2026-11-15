@@ -43,8 +43,6 @@ type jwtClaims struct {
 	// Use is "console" for a console session token (the token a console page holds, see terminal_console.go) and empty for the cookie of a
 	// web session: neither is accepted in the other's place.
 	Use string `json:"use,omitempty"`
-	// Kid is, for a tunnel token, the id of the tenant access key whose link opened it (the live check asks that the key is still registered).
-	Kid string `json:"kid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -59,11 +57,6 @@ const HandoffAudience = "laboratory-proxy"
 // of the link: about a minute, five at most). The rest is what the operator knows.
 type handoffClaims struct {
 	GroupID string `json:"group_id"`
-	// Use says what the link is for: empty for a web or console link, "tunnel" for the exchange of the gRPC-kind tunnel (see tunnel.go). A
-	// link is verified for exactly the use the endpoint asks for, so a tunnel link opens no page and a page link starts no tunnel.
-	Use string `json:"use,omitempty"`
-	// Kid is the id of the access key that signed the link (from the header, not from the payload); a tunnel keeps it to check that the key is still registered.
-	Kid string `json:"-"`
 	// Host is the FULL host name of the device access host (<device>-<code><letter>.<base domain>) the link was issued for; the proxy requires
 	// it to equal the Host of the request, so a link opens one device and nothing else.
 	Host string `json:"host"`
@@ -146,7 +139,7 @@ func accessKeyFunc(keys KeyLookup) jwt.Keyfunc {
 // verifyHandoff checks a tenant's handoff link: the signature against the key registered for
 // (iss, kid), aud, iat/nbf/exp and the link lifetime, that it was issued for exactly this device host (the whole host name), and
 // that the LabGroup belongs to the tenant that signed it (a tenant cannot reach another's labs). host is the full host name of the request, without a port, in lower case.
-func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host, use string, now func() time.Time, maxLifetime time.Duration) (handoffClaims, error) {
+func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host string, now func() time.Time, maxLifetime time.Duration) (handoffClaims, error) {
 	var claims handoffClaims
 	token, err := jwt.ParseWithClaims(
 		raw, &claims, accessKeyFunc(keys),
@@ -158,10 +151,6 @@ func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host, us
 	}
 	if !token.Valid {
 		return handoffClaims{}, fmt.Errorf("invalid handoff")
-	}
-	claims.Kid, _ = token.Header["kid"].(string)
-	if claims.Use != use {
-		return handoffClaims{}, fmt.Errorf("a link for another use")
 	}
 	if claims.GroupID == "" || claims.Subject == "" || claims.Host == "" {
 		return handoffClaims{}, fmt.Errorf("incomplete handoff")

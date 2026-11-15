@@ -212,23 +212,6 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Что считать выполненным:** Lab без записи `access` вида `http` → Service не существует → 404; никакой отдельной authz-проверки не
   нужно.
 
-#### REQ-PX-019B: gRPC kind of a device, a byte tunnel over a WebSocket (EDA web-direct, programmatic level)
-
-- **Статус:** ✅ Implemented
-- **Реализация:** `internal/proxy/l7/tunnel.go`; client `pkg/labtunnel`; protocol `docs/tunnel-access.md`. Хост `<device>-<code>g` обрабатывается до cookie-логики
-  (`serveOwnAuthKind`). Три пути: `POST /_access/exchange`, `POST /_access/refresh`, `GET /_tunnel`. Любой запрос с заголовком `Origin` получает 403.
-- **Handoff:** тот же JWT на 60 с (`verifyHandoff`, полное имя хоста), но с `use: "tunnel"`; `/_auth` веб и консольных хостов требует `use` пустым,
-  обмен тоннеля требует `tunnel`. **Токен:** HS256 секретом прокси, `use=tunnel`, `host`, группа, тенант, `kid` ключа тенанта, `abs` (конец сессии ссылки,
-  не позже `SESSION_MAX_TTL`); живёт `DefaultTunnelTokenTTL` (1 ч), обновляется `refresh` не дальше `abs` (`max_until`).
-- **Тоннель:** WebSocket с подпротоколами `cib.tunnel.v1, <token>` (отвечает только первым); бинарные сообщения это байты TCP-соединения с портом Service
-  (`AccessReader.TunnelRoute`). Прокси не знает прикладной протокол: gRPC, TLS и mTLS проходят насквозь.
-- **Live:** `liveEntry` с `runningOnly` (нет клиента группы и политики) и `valid` (ключ тенанта зарегистрирован, Service вида на месте); `CheckLive` проверяет
-  группу и тенанта и что лаборатория существует и не остановлена; дедлайн `LIVE_MAX_LIFETIME`/`abs`. Остановка прокси закрывает тоннели статусом 1001.
-- **Учёт и пейсинг:** как у веб-запроса, по (namespace, `sub` ссылки, lab). Токены в логи не попадают (на пути тоннеля нет записей в лог).
-- **Удалено:** HTTP/2-прокси с h2c до устройства, `x-lab-access`, `GRPCVerifier`, `GRPC_TOKEN_MAX_TTL`, access-only LabGroupClient.
-- **Не делает:** vnc и rdp (монитор) и management web UI позже; для них прокси нужен был бы мост не-HTTP протоколов (RFB/RDP), свои буквы хоста (`v`, `r`
-  зарезервированы) и сторона устройства (framebuffer, VM).
-
 #### REQ-PX-019: Internal upstream — http (default) или https
 
 - **Источник:** §5 «access[kind=http].protocol: http (дефолт) — внутрь plain HTTP; https — re-encrypt».

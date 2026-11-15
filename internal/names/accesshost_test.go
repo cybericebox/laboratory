@@ -30,7 +30,7 @@ func TestAccessHostLabels(t *testing.T) {
 		}
 	}
 	long := strings.Repeat("a", MaxDeviceNameLen)
-	for _, kind := range []string{AccessKindHTTP, AccessKindTerminal, AccessKindVNC, AccessKindRDP, AccessKindGRPC} {
+	for _, kind := range []string{AccessKindHTTP, AccessKindTerminal, AccessKindVNC, AccessKindRDP} {
 		if l, _ := AccessHostLabel(long, strings.Repeat("z", WebCodeMaxLen), kind); len(l) != 41 {
 			t.Fatalf("%s label is %d characters", kind, len(l))
 		}
@@ -77,7 +77,7 @@ func TestParseAccessHostEdges(t *testing.T) {
 	// the kind is the last character; every other value stands for nothing yet
 	for _, last := range "0123456789abcdefghijklmnopqrstuvwxyz" {
 		_, _, kind := ParseAccessHost("kali-ab0" + string(last))
-		want := map[rune]string{'w': AccessKindHTTP, 't': AccessKindTerminal, 'v': AccessKindVNC, 'r': AccessKindRDP, 'g': AccessKindGRPC}[last]
+		want := map[rune]string{'w': AccessKindHTTP, 't': AccessKindTerminal, 'v': AccessKindVNC, 'r': AccessKindRDP}[last]
 		if want == "" {
 			want = AccessKindUnknown
 		}

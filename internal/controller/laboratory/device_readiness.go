@@ -55,10 +55,6 @@ func readinessCommandFor(device *laboratoryv1alpha1.Device, bootstrapped bool) [
 			scheme = probe.SchemeHTTPS
 		}
 		args = append(args, "-port", strconv.Itoa(int(web.Port)), "-scheme", scheme)
-	} else if g := laboratoryv1alpha1.GRPCAccess(device.Spec.Access); g != nil {
-		// A device driven through its gRPC endpoint (the runner) is Ready when that port accepts a connection; the probe takes one port,
-		// so a device that publishes a web port as well is gated by the web port, as before.
-		args = append(args, "-port", strconv.Itoa(int(g.Port)), "-scheme", probe.SchemeTCP)
 	}
 	if len(args) == 0 {
 		return nil

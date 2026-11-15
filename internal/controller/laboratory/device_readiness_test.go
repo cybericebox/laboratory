@@ -150,18 +150,3 @@ func TestNoProbeWithoutTheNodeImage(t *testing.T) {
 		t.Fatalf("pod = %+v", spec)
 	}
 }
-
-// A device driven through its gRPC endpoint (the runner) is Ready when that port accepts a connection, and its pod carries the EDA
-// interface (the proxy's way in) like a web device.
-func TestGRPCPortGetsATCPProbeAndTheEDAInterface(t *testing.T) {
-	d := readinessDevice(&laboratoryv1alpha1.DeviceAccess{Kind: laboratoryv1alpha1.AccessGRPC, Port: 9099}, false)
-	_, _, annotations, spec := readinessReconciler().workloadTemplate(d)
-	p := mainContainer(spec).ReadinessProbe
-	want := []string{names.ProbeBinary, "ready", "-port", "9099", "-scheme", "tcp"}
-	if p == nil || p.Exec == nil || !slices.Equal(p.Exec.Command, want) {
-		t.Fatalf("readiness probe = %+v, want %v", p, want)
-	}
-	if annotations[names.AnnotationDefaultNetwork] != names.EDAIface {
-		t.Fatalf("default network = %q, want %q", annotations[names.AnnotationDefaultNetwork], names.EDAIface)
-	}
-}

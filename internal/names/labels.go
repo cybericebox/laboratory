@@ -15,10 +15,7 @@ const LabelPrefix = "laboratory.cybericebox.com/"
 const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
-	// LabelAccessKind marks a Service that publishes an access kind other than the device's web port (the web Service has no such
-	// label). Today only AccessKindGRPC.
-	LabelAccessKind = "laboratory.cybericebox.com/access-kind"
-	LabelGroup      = "laboratory.cybericebox.com/group"
+	LabelGroup  = "laboratory.cybericebox.com/group"
 	// LabelLabUID and LabelDeviceUID mark the pod of a device with the UIDs of its Lab and its Device. The node-agent reads them
 	// from the runtime to attribute containers; they replace the environment variables the containers used to carry (a participant
 	// sees the environment, never the labels).

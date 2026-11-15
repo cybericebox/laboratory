@@ -79,7 +79,7 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 	}
 	now := h.now()
 	host := requestHost(r)
-	hc, err := verifyHandoff(raw, h.keys, h.groupTenant, host, "", h.now, h.handoffMax)
+	hc, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
 	if err != nil {
 		h.expired(w, r)
 		return
@@ -136,7 +136,7 @@ func (h *Handler) consoleTarget(w http.ResponseWriter, r *http.Request, claims j
 	return h.authorizeTerminal(w, r, device, code, claims, claims.client(), group)
 }
 
-// verifySessionToken checks a session token of a console or a tunnel: the proxy's signature, the use, an end in the future and the one host it was
+// verifySessionToken checks a session token of a console: the proxy's signature, the use, an end in the future and the one host it was
 // issued for.
 func (h *Handler) verifySessionToken(raw, host, use string) (jwtClaims, error) {
 	var claims jwtClaims

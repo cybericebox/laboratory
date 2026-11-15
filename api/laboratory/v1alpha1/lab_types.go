@@ -123,11 +123,11 @@ type DeviceTemplate struct {
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, grpc (the management gRPC
-	// endpoint behind the L7 proxy) and the reserved vnc and rdp. At most one entry per kind.
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
 	// +listType=map
 	// +listMapKey=kind
-	// +kubebuilder:validation:MaxItems=5
+	// +kubebuilder:validation:MaxItems=4
 	// +optional
 	Access []DeviceAccess `json:"access,omitempty"`
 	// Internet is the device's reach to the public internet: allow (the default when empty; the device uses an Internet gateway when it

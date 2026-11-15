@@ -63,8 +63,6 @@ type Handler struct {
 	terminal *terminalState
 	// throttle paces each participant to its fair share of the bandwidth class of this proxy (see pace.go); no limits until set.
 	throttle *bandwidth.Throttle[string]
-	// tunnel is the state of the gRPC-kind tunnel (see tunnel.go).
-	tunnel tunnelConfig
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -483,12 +481,9 @@ func stripClientAddress(h http.Header) {
 	h["X-Forwarded-For"] = nil
 }
 
-// serveOwnAuthKind serves the kinds that do not use the session cookie: the gRPC-kind tunnel of a device (its own exchange and token) and the console (its own handoff, token and WebSocket, see terminal_console.go). It reports whether the host was one of them.
+// serveOwnAuthKind serves the kind that does not use the session cookie: the console (its own handoff, token and WebSocket, see terminal_console.go). It reports whether the host was one of them.
 func (h *Handler) serveOwnAuthKind(w http.ResponseWriter, r *http.Request, task string) bool {
 	switch _, _, kind := names.ParseAccessHost(task); {
-	case kind == names.AccessKindGRPC && h.access != nil:
-		h.serveTunnelHost(w, r, task)
-		return true
 	case kind == names.AccessKindTerminal && h.terminal != nil && h.access != nil:
 		h.serveConsoleHost(w, r, task)
 		return true
@@ -504,7 +499,7 @@ func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task s
 	if kind == "" || kind == names.AccessKindHTTP {
 		return false
 	}
-	// the console and the gRPC kind are served before the cookie is looked at; nothing else is served
+	// the console is served before the cookie is looked at; nothing else is served
 	fail(w, r, http.StatusNotFound, pageGone, "not found")
 	return true
 }
