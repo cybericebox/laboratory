@@ -18,7 +18,7 @@ import (
 // and a goroutine forever. There is no write timeout (responses stream; an upgraded connection is bounded by the live
 // check), and a hijacked connection has its deadlines cleared by the handler.
 //
-// The server offers HTTP/2 and HTTP/1.1 (ALPN h2, http/1.1): a browser takes h2; the WebSocket of the tunnel and the console stays on HTTP/1.1. A tlsConfig
+// The server offers HTTP/2 and HTTP/1.1 (ALPN h2, http/1.1): a browser takes h2; the WebSocket of the console stays on HTTP/1.1. A tlsConfig
 // that names its own protocols keeps them.
 func NewHTTPServer(cfg *L7Config, handler http.Handler, tlsConfig *tls.Config) *http.Server {
 	if tlsConfig != nil && len(tlsConfig.NextProtos) == 0 {

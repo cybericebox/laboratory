@@ -29,7 +29,7 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.now()
-	claims, err := verifyHandoff(raw, h.keys, h.groupTenant, host, "", h.now, h.handoffMax)
+	claims, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
 	if err != nil {
 		h.expired(w, r)
 		return

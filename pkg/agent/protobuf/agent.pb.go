@@ -5962,10 +5962,9 @@ func (x *LabConnectionStatus) GetReady() bool {
 	return false
 }
 
-// protocol is http or https for a web port. protocol "grpc" (contract 2.1) is the gRPC management endpoint of the device: port = the port of
-// the device, url = https://<device>-<code>g.<endpoints.labs_domain>. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0, and url is
+// protocol is http or https for a web port. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0, and url is
 // the host of its console, https://<device>-<code>t.<endpoints.labs_domain>. Every access host is one label <device>-<code><kind>; the
-// last character is the kind of access (w web, t console, v vnc, r rdp, g grpc), which is the lab's private encoding: a caller never parses the host, it
+// last character is the kind of access (w web, t console, v vnc, r rdp), which is the lab's private encoding: a caller never parses the host, it
 // takes the link and its kind from this entry (protocol + url). url is empty until the device has its code; no link is built by the caller.
 type LabAccessEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -8083,15 +8082,11 @@ func (x *ChecksFeature) GetObservations() []string {
 // The address of a kind of access to a device is a host name alone, never a path or a query: the link is LabAccessEntry.url of the entry
 // of that kind, and the daemon takes it from there, as it does for http.
 type AccessFeature struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Http     bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
-	Terminal bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
-	Vnc      bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
-	Rdp      bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
-	// grpc (contract 2.1): the management gRPC endpoint of a device (EDA web-direct, programmatic level) is served by the L7 proxy:
-	// HTTP/2 to the client, h2c to the device, a bearer token of the tenant's access key on every call, no cookie. Its entry in
-	// LabAccessEntry has protocol "grpc", the port of the device and url = https://<device>-<code>g.<labs domain>.
-	Grpc          bool `protobuf:"varint,7,opt,name=grpc,proto3" json:"grpc,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Http          bool                   `protobuf:"varint,1,opt,name=http,proto3" json:"http,omitempty"`
+	Terminal      bool                   `protobuf:"varint,2,opt,name=terminal,proto3" json:"terminal,omitempty"`
+	Vnc           bool                   `protobuf:"varint,3,opt,name=vnc,proto3" json:"vnc,omitempty"`
+	Rdp           bool                   `protobuf:"varint,4,opt,name=rdp,proto3" json:"rdp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8150,13 +8145,6 @@ func (x *AccessFeature) GetVnc() bool {
 func (x *AccessFeature) GetRdp() bool {
 	if x != nil {
 		return x.Rdp
-	}
-	return false
-}
-
-func (x *AccessFeature) GetGrpc() bool {
-	if x != nil {
-		return x.Grpc
 	}
 	return false
 }
@@ -13326,13 +13314,12 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x16max_time_limit_seconds\x18\x04 \x01(\x05R\x13maxTimeLimitSeconds\x120\n" +
 	"\x14max_schedule_seconds\x18\x05 \x01(\x05R\x12maxScheduleSeconds\x12(\n" +
 	"\x10max_detail_bytes\x18\x06 \x01(\x05R\x0emaxDetailBytes\x12\"\n" +
-	"\fobservations\x18\a \x03(\tR\fobservations\"\xa2\x01\n" +
+	"\fobservations\x18\a \x03(\tR\fobservations\"\x9a\x01\n" +
 	"\rAccessFeature\x12\x12\n" +
 	"\x04http\x18\x01 \x01(\bR\x04http\x12\x1a\n" +
 	"\bterminal\x18\x02 \x01(\bR\bterminal\x12\x10\n" +
 	"\x03vnc\x18\x03 \x01(\bR\x03vnc\x12\x10\n" +
-	"\x03rdp\x18\x04 \x01(\bR\x03rdp\x12\x12\n" +
-	"\x04grpc\x18\a \x01(\bR\x04grpcJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\rterminal_hostR\x0eterminal_files\"\xff\x01\n" +
+	"\x03rdp\x18\x04 \x01(\bR\x03rdpJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\rterminal_hostR\x0eterminal_filesR\x04grpc\"\xff\x01\n" +
 	"\x10BootstrapFeature\x12(\n" +
 	"\x10max_script_bytes\x18\x01 \x01(\x05R\x0emaxScriptBytes\x12\x1b\n" +
 	"\tmax_files\x18\x02 \x01(\x05R\bmaxFiles\x12$\n" +

@@ -31,7 +31,7 @@ type DeviceService struct {
 
 // AccessKind is one way a participant reaches a device besides its network (design record docs/specs/2026-11-12-device-access-and-checks.md,
 // section 2).
-// +kubebuilder:validation:Enum=http;terminal;vnc;rdp;grpc
+// +kubebuilder:validation:Enum=http;terminal;vnc;rdp
 type AccessKind string
 
 const (
@@ -43,20 +43,16 @@ const (
 	// AccessVNC and AccessRDP are accepted and stored, and served by nothing yet: the laboratory reports them as not available.
 	AccessVNC AccessKind = "vnc"
 	AccessRDP AccessKind = "rdp"
-	// AccessGRPC is the programmatic level of the EDA web-direct channel (docs/lab-access-model.md): the device's management gRPC
-	// endpoint (the runner, by default on port 9099), published through the L7 proxy as HTTP/2 (h2c to the device) for a client that
-	// is not a browser. It has its own host (<device>-<code>g) and its own token, never the browser session cookie.
-	AccessGRPC AccessKind = "grpc"
 )
 
-// DeviceAccess is one access of a device (an entry of the EDA access list). At most one entry per kind. http, vnc, rdp and grpc need a
+// DeviceAccess is one access of a device (an entry of the EDA access list). At most one entry per kind. http, vnc and rdp need a
 // port (and http a protocol); terminal takes a command and a user and no port.
-// +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' ? (!has(self.port) && !has(self.protocol)) : (has(self.port) && self.port > 0 && self.port <= 65535)",message="http, vnc, rdp and grpc need a port from 1 to 65535, terminal takes none"
+// +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' ? (!has(self.port) && !has(self.protocol)) : (has(self.port) && self.port > 0 && self.port <= 65535)",message="http, vnc and rdp need a port from 1 to 65535, terminal takes none"
 // +kubebuilder:validation:XValidation:rule="self.kind == 'http' || !has(self.protocol)",message="only an http access has a protocol"
 // +kubebuilder:validation:XValidation:rule="self.kind == 'terminal' || (!has(self.command) && !has(self.user))",message="only a terminal access has a command and a user"
 type DeviceAccess struct {
 	Kind AccessKind `json:"kind"`
-	// Port of the device (http, vnc, rdp, grpc).
+	// Port of the device (http, vnc, rdp).
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
@@ -85,18 +81,6 @@ func AccessOf(list []DeviceAccess, kind AccessKind) *DeviceAccess {
 	}
 	return nil
 }
-
-// GRPCAccess is the gRPC management port of a device (the grpc access with a port), or nil.
-func GRPCAccess(list []DeviceAccess) *DeviceAccess {
-	if a := AccessOf(list, AccessGRPC); a != nil && a.Port > 0 {
-		return a
-	}
-	return nil
-}
-
-// HasEDAPort is true when the device publishes a port through the L7 proxy (a web or a gRPC port): its pod then carries the EDA
-// interface, the proxy's way in.
-func HasEDAPort(list []DeviceAccess) bool { return HTTPAccess(list) != nil || GRPCAccess(list) != nil }
 
 // HTTPAccess is the web port of a device (the http access with a port), or nil. Everything that used the old "external" exposure
 // (the L7 proxy routes, the readiness by port, the access URLs, the EDA interface of the pod) reads this.
