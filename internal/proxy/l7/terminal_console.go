@@ -108,9 +108,6 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 
 // consoleSocket opens the console WebSocket of a page that holds a console session token.
 func (h *Handler) consoleSocket(w http.ResponseWriter, r *http.Request, task string) {
-	if !h.throttlePreAuth(w, r) {
-		return
-	}
 	token, ok := subprotocolToken(r.Header.Values("Sec-WebSocket-Protocol"), ConsoleSubprotocol)
 	if !ok {
 		h.expired(w, r)

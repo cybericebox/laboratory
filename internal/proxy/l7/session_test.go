@@ -822,3 +822,50 @@ func TestHandoff_AttackerChosenValuesDoNotGrowTheTables(t *testing.T) {
 		t.Fatalf("table = %d, cap 50", len(set.keys))
 	}
 }
+
+// Garbage from a thousand addresses is not a lever on everybody: there is no bucket shared by all addresses before verification.
+func TestHandoff_GarbageFromManyAddressesDoesNotBlockAFreshOne(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithAuthRateLimit(1, 3)
+	for i := 0; i < 1000; i++ {
+		for j := 0; j < 25; j++ { // each address spends its own whole budget
+			if i < 40 {
+				f.openFrom(fmt.Sprintf("10.%d.%d.%d:1", i/250, i%250, 1), "garbage")
+			}
+		}
+		f.openFrom(fmt.Sprintf("10.9.%d.%d:1", i/250, i%250), "garbage")
+	}
+	if rec := f.openFrom("203.0.113.77:5000", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid link from a fresh address after the flood: %d", rec.Code)
+	}
+}
+
+// One IPv6 network (a /64) is one client: rotating the host part does not give a fresh bucket; another /64 has its own.
+func TestHandoff_IPv6ClientsAreKeyedByTheirSlash64(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithAuthRateLimit(1, 3)
+	limited := false
+	for i := 0; i < 60; i++ {
+		if f.openFrom(fmt.Sprintf("[2001:db8:1:2::%x]:1", i+1), "garbage").Code == http.StatusTooManyRequests {
+			limited = true
+		}
+	}
+	if !limited {
+		t.Fatal("addresses of one /64 must share a bucket")
+	}
+	if f.openFrom("[2001:db8:1:2:ffff::9]:1", "garbage").Code != http.StatusTooManyRequests {
+		t.Fatal("any address of the same /64 is over the same bucket")
+	}
+	if rec := f.openFrom("[2001:db8:1:3::1]:1", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("another /64: %d", rec.Code)
+	}
+	if got := preAuthKeyOf("203.0.113.5:80"); got != "203.0.113.5" {
+		t.Fatalf("IPv4 key = %q", got)
+	}
+}
+
+func preAuthKeyOf(addr string) string {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = addr
+	return preAuthClientIP(r)
+}
