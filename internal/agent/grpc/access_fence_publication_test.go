@@ -24,7 +24,7 @@ func accessFencePublicationRig() (*Handler, *versionedfake.Clientset, *protobuf.
 	g := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "group", UID: "group-uid", Labels: map[string]string{"event": "e"}}, Status: lab.LabGroupStatus{Namespace: "group-ns"}}
 	cs := versionedfake.NewSimpleClientset(g)
 	h := NewHandler(cs, kfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "group-ns"}}), nil)
-	p := &protobuf.LabGroupAccessPolicy{LabGroupName: "group", OperationId: "acl-current", DesiredRevision: 3, ExpectedGroupUid: string(g.UID), Rules: []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW}}}
+	p := &protobuf.LabGroupAccessPolicy{LabGroupName: "group", OperationId: "acl-current", DesiredRevision: 3, ExpectedGroupUid: string(g.UID), Rules: []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY}}}
 	return h, cs, p
 }
 
@@ -53,7 +53,7 @@ func TestAccessFencePublicationMonotonicIdempotentAndLegacy(t *testing.T) {
 		func(p *protobuf.LabGroupAccessPolicy) { p.DesiredRevision = 2 },
 		func(p *protobuf.LabGroupAccessPolicy) { p.OperationId = "conflict" },
 		func(p *protobuf.LabGroupAccessPolicy) {
-			p.Rules = []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY}}
+			p.Rules = []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY, ClientNames: []string{"other"}}}
 		},
 		func(p *protobuf.LabGroupAccessPolicy) {
 			p.OperationId = ""
@@ -74,7 +74,7 @@ func TestAccessFencePublicationMonotonicIdempotentAndLegacy(t *testing.T) {
 		}
 	}
 	stored, _ := cs.LaboratoryV1alpha1().LabGroupAccessPolicies("group-ns").Get(context.Background(), names.LabGroupAccessPolicyName, metav1.GetOptions{})
-	if stored.Spec.OperationID != p.OperationId || stored.Spec.Revision != 3 || stored.Spec.Rules[0].Action != lab.LabGroupAccessAllow {
+	if stored.Spec.OperationID != p.OperationId || stored.Spec.Revision != 3 || stored.Spec.Rules[0].Action != lab.LabGroupAccessDeny {
 		t.Fatal("refusal modified current fence")
 	}
 	p.OperationId = "acl-next"
@@ -192,7 +192,7 @@ func TestAccessFenceGenerationEnvtest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &protobuf.LabGroupAccessPolicy{LabGroupName: "fence-generation", Rules: []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW}}}
+	p := &protobuf.LabGroupAccessPolicy{LabGroupName: "fence-generation", Rules: []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY}}}
 	if accessFenceState(t, h, p) != stCreated {
 		t.Fatal("legacy seed failed")
 	}

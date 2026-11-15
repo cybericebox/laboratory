@@ -13,15 +13,44 @@ const (
 	LabGroupAccessDeny  LabGroupAccessAction = "deny"
 )
 
-// LabGroupAccessRule targets selected clients and laboratories in one group.
-// An empty ClientNames list means every LabGroupClient in this namespace.
-// An empty LabNames list means every Lab in this namespace.
+// LabGroupAccessRule targets selected clients and VPN gateways (connectors) of selected laboratories in one group. A VPN gateway is a flat
+// segment: its own /24 and nothing behind it. Access is per client and per connector, never per whole laboratory: an allow rule names the
+// laboratories AND the gateways, and may narrow what of the gateway's /24 is reachable with Include.
+//
+// An empty ClientNames list means every LabGroupClient in this namespace. An allow rule needs LabNames; it reaches over VPN only the gateways in GatewayNames (empty GatewayNames: no VPN reach, only the browser access
+// of the laboratory, which the proxy decides per laboratory); a deny rule with an
+// empty LabNames or GatewayNames list means every laboratory or every VPN gateway. Deny always wins over allow.
+// +kubebuilder:validation:XValidation:rule="self.action != 'allow' || (has(self.labNames) && size(self.labNames) > 0)",message="an allow rule names the laboratories"
+// +kubebuilder:validation:XValidation:rule="!has(self.include) || size(self.include) == 0 || (self.action == 'allow' && has(self.gatewayNames) && size(self.gatewayNames) > 0)",message="include needs an allow rule that names gateways"
 type LabGroupAccessRule struct {
 	Action LabGroupAccessAction `json:"action"`
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
 	ClientNames []string `json:"clientNames,omitempty"`
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
 	LabNames []string `json:"labNames,omitempty"`
+	// GatewayNames are the VPN gateways (connectors) of those laboratories the rule is about, by the name in the lab's spec.gateways.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	GatewayNames []string `json:"gatewayNames,omitempty"`
+	// Include narrows the access to these subnets of each named gateway's /24 (the union of the entries). Empty means the whole /24. There are
+	// no ranges and no excludes. An entry is relative to the gateway, because its /24 is allocated by the operator: it always lies inside it.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Include []AccessInclude `json:"include,omitempty"`
+}
+
+// AccessInclude is a subnet of a gateway's /24: <the /24>.Host/Prefix. Prefix is 24 (the whole /24, Host 0) to 32 (one address), and Host is
+// the first address of the subnet inside the /24, so it is a multiple of the subnet size (a /26 starts at 0, 64, 128 or 192).
+// +kubebuilder:validation:XValidation:rule="self.host % (self.prefix == 32 ? 1 : self.prefix == 31 ? 2 : self.prefix == 30 ? 4 : self.prefix == 29 ? 8 : self.prefix == 28 ? 16 : self.prefix == 27 ? 32 : self.prefix == 26 ? 64 : self.prefix == 25 ? 128 : 256) == 0",message="host is not the first address of a subnet of that size"
+type AccessInclude struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=255
+	Host int32 `json:"host"`
+	// +kubebuilder:validation:Minimum=24
+	// +kubebuilder:validation:Maximum=32
+	Prefix int32 `json:"prefix"`
 }
 
 // LabGroupAccessPolicySpec is a complete replacement desired policy. Empty is
@@ -43,12 +72,15 @@ type LabGroupAccessPolicySpec struct {
 // relation. Counters are cumulative kernel counters; CounterReset marks a
 // replacement/restart so downstream summaries never infer negative traffic.
 type LabGroupAccessPolicyRuleStatus struct {
-	ClientName   string               `json:"clientName"`
-	LabName      string               `json:"labName"`
-	Action       LabGroupAccessAction `json:"action"`
-	Packets      int64                `json:"packets,omitempty"`
-	Bytes        int64                `json:"bytes,omitempty"`
-	CounterReset bool                 `json:"counterReset,omitempty"`
+	ClientName string               `json:"clientName"`
+	LabName    string               `json:"labName"`
+	Action     LabGroupAccessAction `json:"action"`
+	// GatewayNames are the connectors of the laboratory the relation covers (the counters are those of the client in the laboratory, over all of
+	// them).
+	GatewayNames []string `json:"gatewayNames,omitempty"`
+	Packets      int64    `json:"packets,omitempty"`
+	Bytes        int64    `json:"bytes,omitempty"`
+	CounterReset bool     `json:"counterReset,omitempty"`
 }
 
 // LabGroupAccessPolicyStatus is written only by the in-namespace VPN

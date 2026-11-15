@@ -24,13 +24,22 @@ import (
 // LabGroupAccessRuleApplyConfiguration represents a declarative configuration of the LabGroupAccessRule type for use
 // with apply.
 //
-// LabGroupAccessRule targets selected clients and laboratories in one group.
-// An empty ClientNames list means every LabGroupClient in this namespace.
-// An empty LabNames list means every Lab in this namespace.
+// LabGroupAccessRule targets selected clients and VPN gateways (connectors) of selected laboratories in one group. A VPN gateway is a flat
+// segment: its own /24 and nothing behind it. Access is per client and per connector, never per whole laboratory: an allow rule names the
+// laboratories AND the gateways, and may narrow what of the gateway's /24 is reachable with Include.
+//
+// An empty ClientNames list means every LabGroupClient in this namespace. An allow rule needs LabNames; it reaches over VPN only the gateways in GatewayNames (empty GatewayNames: no VPN reach, only the browser access
+// of the laboratory, which the proxy decides per laboratory); a deny rule with an
+// empty LabNames or GatewayNames list means every laboratory or every VPN gateway. Deny always wins over allow.
 type LabGroupAccessRuleApplyConfiguration struct {
 	Action      *laboratoryv1alpha1.LabGroupAccessAction `json:"action,omitempty"`
 	ClientNames []string                                 `json:"clientNames,omitempty"`
 	LabNames    []string                                 `json:"labNames,omitempty"`
+	// GatewayNames are the VPN gateways (connectors) of those laboratories the rule is about, by the name in the lab's spec.gateways.
+	GatewayNames []string `json:"gatewayNames,omitempty"`
+	// Include narrows the access to these subnets of each named gateway's /24 (the union of the entries). Empty means the whole /24. There are
+	// no ranges and no excludes. An entry is relative to the gateway, because its /24 is allocated by the operator: it always lies inside it.
+	Include []AccessIncludeApplyConfiguration `json:"include,omitempty"`
 }
 
 // LabGroupAccessRuleApplyConfiguration constructs a declarative configuration of the LabGroupAccessRule type for use with
@@ -63,6 +72,29 @@ func (b *LabGroupAccessRuleApplyConfiguration) WithClientNames(values ...string)
 func (b *LabGroupAccessRuleApplyConfiguration) WithLabNames(values ...string) *LabGroupAccessRuleApplyConfiguration {
 	for i := range values {
 		b.LabNames = append(b.LabNames, values[i])
+	}
+	return b
+}
+
+// WithGatewayNames adds the given value to the GatewayNames field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the GatewayNames field.
+func (b *LabGroupAccessRuleApplyConfiguration) WithGatewayNames(values ...string) *LabGroupAccessRuleApplyConfiguration {
+	for i := range values {
+		b.GatewayNames = append(b.GatewayNames, values[i])
+	}
+	return b
+}
+
+// WithInclude adds the given value to the Include field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Include field.
+func (b *LabGroupAccessRuleApplyConfiguration) WithInclude(values ...*AccessIncludeApplyConfiguration) *LabGroupAccessRuleApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithInclude")
+		}
+		b.Include = append(b.Include, *values[i])
 	}
 	return b
 }

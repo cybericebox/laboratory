@@ -97,7 +97,7 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("get group access policy: %w", err)
 	}
 	policyFound := err == nil
-	desiredPolicy := policyRules(policy)
+	desiredPolicy := vpn.PolicyRules(policy)
 	policyIdentityError := ""
 	if policy.Spec.ExpectedGroupUID != "" && policy.Spec.ExpectedGroupUID != r.GroupUID {
 		desiredPolicy = nil
@@ -146,23 +146,6 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
-func policyRules(policy *laboratoryv1alpha1.LabGroupAccessPolicy) []vpn.AccessPolicyRule {
-	rules := make([]vpn.AccessPolicyRule, 0, len(policy.Spec.Rules))
-	for _, rule := range policy.Spec.Rules {
-		var action vpn.AccessAction
-		switch rule.Action {
-		case laboratoryv1alpha1.LabGroupAccessAllow:
-			action = vpn.AccessAllow
-		case laboratoryv1alpha1.LabGroupAccessDeny:
-			action = vpn.AccessDeny
-		default:
-			continue
-		}
-		rules = append(rules, vpn.AccessPolicyRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
-	}
-	return rules
-}
-
 func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *laboratoryv1alpha1.LabGroupAccessPolicy, rules []vpn.AccessRule, counters map[string]vpn.TrafficCounter, state, lastError string) error {
 	previous := make(map[string]vpn.TrafficCounter, len(policy.Status.Rules))
 	for _, status := range policy.Status.Rules {
@@ -189,6 +172,7 @@ func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *labora
 		policy.Status.Rules = append(policy.Status.Rules, laboratoryv1alpha1.LabGroupAccessPolicyRuleStatus{
 			ClientName:   statistic.ClientName,
 			LabName:      statistic.LabName,
+			GatewayNames: statistic.GatewayNames,
 			Action:       laboratoryv1alpha1.LabGroupAccessAction(statistic.Action),
 			Packets:      statistic.Packets,
 			Bytes:        statistic.Bytes,

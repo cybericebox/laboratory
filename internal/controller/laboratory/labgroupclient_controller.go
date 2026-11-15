@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
+	"strings"
 	"text/template"
 	"time"
 
@@ -13,15 +15,19 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
+	"github.com/cybericebox/laboratory/internal/vpn"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
@@ -121,11 +127,15 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 	// Assemble the client config with a private-key PLACEHOLDER and store it in
 	// status — never in a Secret, so the cluster never holds the private key.
 	// Empty until the parent VPN endpoint/server key land (the requeue waits).
+	allowed, err := r.reachableDestinations(ctx, lgc, assignedIP)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	config, _ := renderWGConf(wgConfParams{
 		AssignedIP:      assignedIP,
 		ServerPublicKey: serverPubKey,
 		Endpoint:        endpoint,
-		AllowedIPs:      r.LabBaseNetwork,
+		AllowedIPs:      strings.Join(allowed, ", "),
 	})
 
 	updated := false
@@ -256,8 +266,8 @@ Address = {{ .AssignedIP }}
 [Peer]
 PublicKey = {{ .ServerPublicKey }}
 Endpoint = {{ .Endpoint }}
-AllowedIPs = {{ .AllowedIPs }}
-PersistentKeepalive = 15
+{{ if .AllowedIPs }}AllowedIPs = {{ .AllowedIPs }}
+{{ end }}PersistentKeepalive = 15
 `,
 	),
 )
@@ -266,7 +276,7 @@ PersistentKeepalive = 15
 // cluster never has the real private key; the caller substitutes it. Returns an
 // error (empty config) until the parent VPN endpoint/server key are known.
 func renderWGConf(p wgConfParams) (string, error) {
-	if p.ServerPublicKey == "" || p.Endpoint == "" || p.AssignedIP == "" || p.AllowedIPs == "" {
+	if p.ServerPublicKey == "" || p.Endpoint == "" || p.AssignedIP == "" {
 		return "", fmt.Errorf("incomplete params")
 	}
 	var buf bytes.Buffer
@@ -332,9 +342,29 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return reqs
 	}
 
+	// The routes of a client follow the access policy and the gateways of the labs.
+	inNamespace := func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var lgcList laboratoryv1alpha1.LabGroupClientList
+		if err := r.List(ctx, &lgcList, client.InNamespace(obj.GetNamespace())); err != nil {
+			return nil
+		}
+		reqs := make([]reconcile.Request, 0, len(lgcList.Items))
+		for _, lgc := range lgcList.Items {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: lgc.Name, Namespace: lgc.Namespace}})
+		}
+		return reqs
+	}
+	gatewaysChanged := predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+		oldLab, ok1 := e.ObjectOld.(*laboratoryv1alpha1.Lab)
+		newLab, ok2 := e.ObjectNew.(*laboratoryv1alpha1.Lab)
+		return !ok1 || !ok2 || !reflect.DeepEqual(oldLab.Spec.Gateways, newLab.Spec.Gateways) || !reflect.DeepEqual(oldLab.Status.Gateways, newLab.Status.Gateways)
+	}}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).
+		// Counter refreshes patch only the status of the policy; a change of its spec (a new generation) is what moves the routes.
+		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, handler.EnqueueRequestsFromMapFunc(inNamespace), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(inNamespace), builder.WithPredicates(gatewaysChanged)).
 		Complete(reconcileutil.Quiet(r))
 }
 
@@ -360,4 +390,19 @@ func (r *LabGroupClientReconciler) clientIndexesInUse(namespace string) func(con
 		}
 		return used, nil
 	}
+}
+
+// reachableDestinations is what the client may reach through the VPN: the subnets its allow rules name, over all the VPN gateways (connectors)
+// of the group's labs. It is the AllowedIPs of the client's WireGuard config, so the client routes exactly that into the tunnel (the policy
+// is enforced by the VPN pod in any case). A client no rule lets in gets an empty list. Both the policy and the lab gateways trigger this again.
+func (r *LabGroupClientReconciler) reachableDestinations(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient, assignedIP string) ([]string, error) {
+	var policy laboratoryv1alpha1.LabGroupAccessPolicy
+	if err := r.Get(ctx, types.NamespacedName{Namespace: lgc.Namespace, Name: names.LabGroupAccessPolicyName}, &policy); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	var labs laboratoryv1alpha1.LabList
+	if err := r.List(ctx, &labs, client.InNamespace(lgc.Namespace)); err != nil {
+		return nil, err
+	}
+	return vpn.ReachableDestinations(vpn.ClientAccessSnapshot{Name: lgc.Name, AssignedIP: assignedIP}, labs.Items, &policy), nil
 }

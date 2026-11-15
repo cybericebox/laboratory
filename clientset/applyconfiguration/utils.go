@@ -47,6 +47,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		// Group=laboratory, Version=v1alpha1
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("AccessEntry"):
 		return &applyconfigurationlaboratoryv1alpha1.AccessEntryApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("AccessInclude"):
+		return &applyconfigurationlaboratoryv1alpha1.AccessIncludeApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("AddrSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.AddrSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("CheckRef"):

@@ -6468,8 +6468,13 @@ type LabGroupAccessRule struct {
 	Action LabGroupAccessAction   `protobuf:"varint,1,opt,name=action,proto3,enum=labmanager.LabGroupAccessAction" json:"action,omitempty"`
 	// Empty means every VPN client in the LabGroup.
 	ClientNames []string `protobuf:"bytes,2,rep,name=client_names,json=clientNames,proto3" json:"client_names,omitempty"`
-	// Empty means every Lab in the LabGroup.
-	LabNames      []string `protobuf:"bytes,3,rep,name=lab_names,json=labNames,proto3" json:"lab_names,omitempty"`
+	// Empty means every Lab in the LabGroup (a deny rule only: an allow rule must name its laboratories).
+	LabNames []string `protobuf:"bytes,3,rep,name=lab_names,json=labNames,proto3" json:"lab_names,omitempty"`
+	// The VPN gateways (connectors) of those laboratories, by the name in the lab's spec.gateways (contract 2.4). An allow rule must name them: access is per
+	// client and per connector, never per whole laboratory. A deny rule with none means every VPN gateway.
+	GatewayNames []string `protobuf:"bytes,4,rep,name=gateway_names,json=gatewayNames,proto3" json:"gateway_names,omitempty"`
+	// Allow only: narrows the access to these subnets of each named gateway's /24 (the union). Empty means the whole /24.
+	Include       []*AccessInclude `protobuf:"bytes,5,rep,name=include,proto3" json:"include,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6525,6 +6530,74 @@ func (x *LabGroupAccessRule) GetLabNames() []string {
 	return nil
 }
 
+func (x *LabGroupAccessRule) GetGatewayNames() []string {
+	if x != nil {
+		return x.GatewayNames
+	}
+	return nil
+}
+
+func (x *LabGroupAccessRule) GetInclude() []*AccessInclude {
+	if x != nil {
+		return x.Include
+	}
+	return nil
+}
+
+// A subnet of a gateway's /24, <the /24>.host/prefix: prefix 24..32, host the first address of the subnet (a multiple of its size, 0..255). It is
+// relative to the gateway because the operator allocates the /24; it always lies inside it.
+type AccessInclude struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Host          int32                  `protobuf:"varint,1,opt,name=host,proto3" json:"host,omitempty"`
+	Prefix        int32                  `protobuf:"varint,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccessInclude) Reset() {
+	*x = AccessInclude{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccessInclude) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccessInclude) ProtoMessage() {}
+
+func (x *AccessInclude) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccessInclude.ProtoReflect.Descriptor instead.
+func (*AccessInclude) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *AccessInclude) GetHost() int32 {
+	if x != nil {
+		return x.Host
+	}
+	return 0
+}
+
+func (x *AccessInclude) GetPrefix() int32 {
+	if x != nil {
+		return x.Prefix
+	}
+	return 0
+}
+
 type LabGroupAccessPolicyStatus struct {
 	state              protoimpl.MessageState          `protogen:"open.v1"`
 	ObservedGeneration int64                           `protobuf:"varint,1,opt,name=observed_generation,json=observedGeneration,proto3" json:"observed_generation,omitempty"`
@@ -6541,7 +6614,7 @@ type LabGroupAccessPolicyStatus struct {
 
 func (x *LabGroupAccessPolicyStatus) Reset() {
 	*x = LabGroupAccessPolicyStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[78]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6553,7 +6626,7 @@ func (x *LabGroupAccessPolicyStatus) String() string {
 func (*LabGroupAccessPolicyStatus) ProtoMessage() {}
 
 func (x *LabGroupAccessPolicyStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[78]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6566,7 +6639,7 @@ func (x *LabGroupAccessPolicyStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupAccessPolicyStatus.ProtoReflect.Descriptor instead.
 func (*LabGroupAccessPolicyStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{78}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *LabGroupAccessPolicyStatus) GetObservedGeneration() int64 {
@@ -6626,20 +6699,22 @@ func (x *LabGroupAccessPolicyStatus) GetVpnBootId() string {
 }
 
 type LabGroupAccessRuleStatistics struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClientName    string                 `protobuf:"bytes,1,opt,name=client_name,json=clientName,proto3" json:"client_name,omitempty"`
-	LabName       string                 `protobuf:"bytes,2,opt,name=lab_name,json=labName,proto3" json:"lab_name,omitempty"`
-	Action        LabGroupAccessAction   `protobuf:"varint,3,opt,name=action,proto3,enum=labmanager.LabGroupAccessAction" json:"action,omitempty"`
-	Packets       int64                  `protobuf:"varint,4,opt,name=packets,proto3" json:"packets,omitempty"`
-	Bytes         int64                  `protobuf:"varint,5,opt,name=bytes,proto3" json:"bytes,omitempty"`
-	CounterReset  bool                   `protobuf:"varint,6,opt,name=counter_reset,json=counterReset,proto3" json:"counter_reset,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ClientName   string                 `protobuf:"bytes,1,opt,name=client_name,json=clientName,proto3" json:"client_name,omitempty"`
+	LabName      string                 `protobuf:"bytes,2,opt,name=lab_name,json=labName,proto3" json:"lab_name,omitempty"`
+	Action       LabGroupAccessAction   `protobuf:"varint,3,opt,name=action,proto3,enum=labmanager.LabGroupAccessAction" json:"action,omitempty"`
+	Packets      int64                  `protobuf:"varint,4,opt,name=packets,proto3" json:"packets,omitempty"`
+	Bytes        int64                  `protobuf:"varint,5,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	CounterReset bool                   `protobuf:"varint,6,opt,name=counter_reset,json=counterReset,proto3" json:"counter_reset,omitempty"`
+	// The connectors of the lab the row covers (contract 2.4); the counters are the client's in the lab, over all of them.
+	GatewayNames  []string `protobuf:"bytes,7,rep,name=gateway_names,json=gatewayNames,proto3" json:"gateway_names,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LabGroupAccessRuleStatistics) Reset() {
 	*x = LabGroupAccessRuleStatistics{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[79]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6651,7 +6726,7 @@ func (x *LabGroupAccessRuleStatistics) String() string {
 func (*LabGroupAccessRuleStatistics) ProtoMessage() {}
 
 func (x *LabGroupAccessRuleStatistics) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[79]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6664,7 +6739,7 @@ func (x *LabGroupAccessRuleStatistics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupAccessRuleStatistics.ProtoReflect.Descriptor instead.
 func (*LabGroupAccessRuleStatistics) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{79}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *LabGroupAccessRuleStatistics) GetClientName() string {
@@ -6709,6 +6784,13 @@ func (x *LabGroupAccessRuleStatistics) GetCounterReset() bool {
 	return false
 }
 
+func (x *LabGroupAccessRuleStatistics) GetGatewayNames() []string {
+	if x != nil {
+		return x.GatewayNames
+	}
+	return nil
+}
+
 type MonitoringRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The agent bounds this to protect the Kubernetes API from a too-fast caller. It is
@@ -6731,7 +6813,7 @@ type MonitoringRequest struct {
 
 func (x *MonitoringRequest) Reset() {
 	*x = MonitoringRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[80]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6743,7 +6825,7 @@ func (x *MonitoringRequest) String() string {
 func (*MonitoringRequest) ProtoMessage() {}
 
 func (x *MonitoringRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[80]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6756,7 +6838,7 @@ func (x *MonitoringRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringRequest.ProtoReflect.Descriptor instead.
 func (*MonitoringRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{80}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *MonitoringRequest) GetMinIntervalMs() int64 {
@@ -6799,7 +6881,7 @@ type MonitoringDeletedKey struct {
 
 func (x *MonitoringDeletedKey) Reset() {
 	*x = MonitoringDeletedKey{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[81]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6811,7 +6893,7 @@ func (x *MonitoringDeletedKey) String() string {
 func (*MonitoringDeletedKey) ProtoMessage() {}
 
 func (x *MonitoringDeletedKey) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[81]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6824,7 +6906,7 @@ func (x *MonitoringDeletedKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringDeletedKey.ProtoReflect.Descriptor instead.
 func (*MonitoringDeletedKey) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{81}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *MonitoringDeletedKey) GetKind() string {
@@ -6893,7 +6975,7 @@ type MonitoringUpdate struct {
 
 func (x *MonitoringUpdate) Reset() {
 	*x = MonitoringUpdate{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[82]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6905,7 +6987,7 @@ func (x *MonitoringUpdate) String() string {
 func (*MonitoringUpdate) ProtoMessage() {}
 
 func (x *MonitoringUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[82]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6918,7 +7000,7 @@ func (x *MonitoringUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringUpdate.ProtoReflect.Descriptor instead.
 func (*MonitoringUpdate) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{82}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *MonitoringUpdate) GetAgentId() string {
@@ -7061,7 +7143,7 @@ type TrafficReport struct {
 
 func (x *TrafficReport) Reset() {
 	*x = TrafficReport{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[83]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7073,7 +7155,7 @@ func (x *TrafficReport) String() string {
 func (*TrafficReport) ProtoMessage() {}
 
 func (x *TrafficReport) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[83]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7086,7 +7168,7 @@ func (x *TrafficReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrafficReport.ProtoReflect.Descriptor instead.
 func (*TrafficReport) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{83}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *TrafficReport) GetLabGroupName() string {
@@ -7187,7 +7269,7 @@ type TrafficCoverageSpan struct {
 
 func (x *TrafficCoverageSpan) Reset() {
 	*x = TrafficCoverageSpan{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[84]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7199,7 +7281,7 @@ func (x *TrafficCoverageSpan) String() string {
 func (*TrafficCoverageSpan) ProtoMessage() {}
 
 func (x *TrafficCoverageSpan) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[84]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7212,7 +7294,7 @@ func (x *TrafficCoverageSpan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrafficCoverageSpan.ProtoReflect.Descriptor instead.
 func (*TrafficCoverageSpan) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{84}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *TrafficCoverageSpan) GetFromUnixMs() int64 {
@@ -7281,7 +7363,7 @@ type TrafficTouch struct {
 
 func (x *TrafficTouch) Reset() {
 	*x = TrafficTouch{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[85]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7293,7 +7375,7 @@ func (x *TrafficTouch) String() string {
 func (*TrafficTouch) ProtoMessage() {}
 
 func (x *TrafficTouch) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[85]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7306,7 +7388,7 @@ func (x *TrafficTouch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrafficTouch.ProtoReflect.Descriptor instead.
 func (*TrafficTouch) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{85}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *TrafficTouch) GetSubject() string {
@@ -7457,7 +7539,7 @@ type CapacityResponse struct {
 
 func (x *CapacityResponse) Reset() {
 	*x = CapacityResponse{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[86]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7469,7 +7551,7 @@ func (x *CapacityResponse) String() string {
 func (*CapacityResponse) ProtoMessage() {}
 
 func (x *CapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[86]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7482,7 +7564,7 @@ func (x *CapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityResponse.ProtoReflect.Descriptor instead.
 func (*CapacityResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{86}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *CapacityResponse) GetTenant() string {
@@ -7647,7 +7729,7 @@ type NodeProfileCapacity struct {
 
 func (x *NodeProfileCapacity) Reset() {
 	*x = NodeProfileCapacity{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[87]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7659,7 +7741,7 @@ func (x *NodeProfileCapacity) String() string {
 func (*NodeProfileCapacity) ProtoMessage() {}
 
 func (x *NodeProfileCapacity) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[87]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7672,7 +7754,7 @@ func (x *NodeProfileCapacity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeProfileCapacity.ProtoReflect.Descriptor instead.
 func (*NodeProfileCapacity) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{87}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *NodeProfileCapacity) GetProfile() string {
@@ -7759,7 +7841,7 @@ type FeaturesResponse struct {
 
 func (x *FeaturesResponse) Reset() {
 	*x = FeaturesResponse{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[88]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7771,7 +7853,7 @@ func (x *FeaturesResponse) String() string {
 func (*FeaturesResponse) ProtoMessage() {}
 
 func (x *FeaturesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[88]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7784,7 +7866,7 @@ func (x *FeaturesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeaturesResponse.ProtoReflect.Descriptor instead.
 func (*FeaturesResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{88}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *FeaturesResponse) GetTenant() string {
@@ -7941,7 +8023,7 @@ type VPNFeature struct {
 
 func (x *VPNFeature) Reset() {
 	*x = VPNFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[89]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7953,7 +8035,7 @@ func (x *VPNFeature) String() string {
 func (*VPNFeature) ProtoMessage() {}
 
 func (x *VPNFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[89]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7966,7 +8048,7 @@ func (x *VPNFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VPNFeature.ProtoReflect.Descriptor instead.
 func (*VPNFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{89}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *VPNFeature) GetReverseConnections() bool {
@@ -8000,7 +8082,7 @@ type ChecksFeature struct {
 
 func (x *ChecksFeature) Reset() {
 	*x = ChecksFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[90]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8012,7 +8094,7 @@ func (x *ChecksFeature) String() string {
 func (*ChecksFeature) ProtoMessage() {}
 
 func (x *ChecksFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[90]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8025,7 +8107,7 @@ func (x *ChecksFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChecksFeature.ProtoReflect.Descriptor instead.
 func (*ChecksFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{90}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *ChecksFeature) GetEnabled() bool {
@@ -8093,7 +8175,7 @@ type AccessFeature struct {
 
 func (x *AccessFeature) Reset() {
 	*x = AccessFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[91]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8105,7 +8187,7 @@ func (x *AccessFeature) String() string {
 func (*AccessFeature) ProtoMessage() {}
 
 func (x *AccessFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[91]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8118,7 +8200,7 @@ func (x *AccessFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessFeature.ProtoReflect.Descriptor instead.
 func (*AccessFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{91}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *AccessFeature) GetHttp() bool {
@@ -8164,7 +8246,7 @@ type BootstrapFeature struct {
 
 func (x *BootstrapFeature) Reset() {
 	*x = BootstrapFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[92]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8176,7 +8258,7 @@ func (x *BootstrapFeature) String() string {
 func (*BootstrapFeature) ProtoMessage() {}
 
 func (x *BootstrapFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[92]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8189,7 +8271,7 @@ func (x *BootstrapFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BootstrapFeature.ProtoReflect.Descriptor instead.
 func (*BootstrapFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{92}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *BootstrapFeature) GetMaxScriptBytes() int32 {
@@ -8248,7 +8330,7 @@ type GroupLimitsFeature struct {
 
 func (x *GroupLimitsFeature) Reset() {
 	*x = GroupLimitsFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[93]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8260,7 +8342,7 @@ func (x *GroupLimitsFeature) String() string {
 func (*GroupLimitsFeature) ProtoMessage() {}
 
 func (x *GroupLimitsFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[93]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8273,7 +8355,7 @@ func (x *GroupLimitsFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupLimitsFeature.ProtoReflect.Descriptor instead.
 func (*GroupLimitsFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{93}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *GroupLimitsFeature) GetMaxUsers() int32 {
@@ -8318,7 +8400,7 @@ type ReservationsFeature struct {
 
 func (x *ReservationsFeature) Reset() {
 	*x = ReservationsFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[94]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8330,7 +8412,7 @@ func (x *ReservationsFeature) String() string {
 func (*ReservationsFeature) ProtoMessage() {}
 
 func (x *ReservationsFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[94]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8343,7 +8425,7 @@ func (x *ReservationsFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReservationsFeature.ProtoReflect.Descriptor instead.
 func (*ReservationsFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{94}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *ReservationsFeature) GetRequired() bool {
@@ -8376,7 +8458,7 @@ type PodSizing struct {
 
 func (x *PodSizing) Reset() {
 	*x = PodSizing{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[95]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8388,7 +8470,7 @@ func (x *PodSizing) String() string {
 func (*PodSizing) ProtoMessage() {}
 
 func (x *PodSizing) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[95]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8401,7 +8483,7 @@ func (x *PodSizing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PodSizing.ProtoReflect.Descriptor instead.
 func (*PodSizing) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{95}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *PodSizing) GetBaseCpuMillicores() int64 {
@@ -8454,7 +8536,7 @@ type GroupPodsFeature struct {
 
 func (x *GroupPodsFeature) Reset() {
 	*x = GroupPodsFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[96]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8466,7 +8548,7 @@ func (x *GroupPodsFeature) String() string {
 func (*GroupPodsFeature) ProtoMessage() {}
 
 func (x *GroupPodsFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[96]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8479,7 +8561,7 @@ func (x *GroupPodsFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupPodsFeature.ProtoReflect.Descriptor instead.
 func (*GroupPodsFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{96}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *GroupPodsFeature) GetVpn() *PodSizing {
@@ -8530,7 +8612,7 @@ type DeviceConstants struct {
 
 func (x *DeviceConstants) Reset() {
 	*x = DeviceConstants{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[97]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8542,7 +8624,7 @@ func (x *DeviceConstants) String() string {
 func (*DeviceConstants) ProtoMessage() {}
 
 func (x *DeviceConstants) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[97]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8555,7 +8637,7 @@ func (x *DeviceConstants) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceConstants.ProtoReflect.Descriptor instead.
 func (*DeviceConstants) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{97}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *DeviceConstants) GetMaxInterfacesPerContainer() int32 {
@@ -8592,7 +8674,7 @@ type TenantQuotaFeature struct {
 
 func (x *TenantQuotaFeature) Reset() {
 	*x = TenantQuotaFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[98]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8604,7 +8686,7 @@ func (x *TenantQuotaFeature) String() string {
 func (*TenantQuotaFeature) ProtoMessage() {}
 
 func (x *TenantQuotaFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[98]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8617,7 +8699,7 @@ func (x *TenantQuotaFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantQuotaFeature.ProtoReflect.Descriptor instead.
 func (*TenantQuotaFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{98}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *TenantQuotaFeature) GetHasCpuQuota() bool {
@@ -8664,7 +8746,7 @@ type LimitsFeature struct {
 
 func (x *LimitsFeature) Reset() {
 	*x = LimitsFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[99]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8676,7 +8758,7 @@ func (x *LimitsFeature) String() string {
 func (*LimitsFeature) ProtoMessage() {}
 
 func (x *LimitsFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[99]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8689,7 +8771,7 @@ func (x *LimitsFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LimitsFeature.ProtoReflect.Descriptor instead.
 func (*LimitsFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{99}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *LimitsFeature) GetDevice() *DeviceLimits {
@@ -8732,7 +8814,7 @@ type DeviceLimits struct {
 
 func (x *DeviceLimits) Reset() {
 	*x = DeviceLimits{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[100]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8744,7 +8826,7 @@ func (x *DeviceLimits) String() string {
 func (*DeviceLimits) ProtoMessage() {}
 
 func (x *DeviceLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[100]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8757,7 +8839,7 @@ func (x *DeviceLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceLimits.ProtoReflect.Descriptor instead.
 func (*DeviceLimits) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{100}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *DeviceLimits) GetMaxCpuMillicores() int64 {
@@ -8798,7 +8880,7 @@ type LabLimits struct {
 
 func (x *LabLimits) Reset() {
 	*x = LabLimits{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[101]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8810,7 +8892,7 @@ func (x *LabLimits) String() string {
 func (*LabLimits) ProtoMessage() {}
 
 func (x *LabLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[101]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8823,7 +8905,7 @@ func (x *LabLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabLimits.ProtoReflect.Descriptor instead.
 func (*LabLimits) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{101}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *LabLimits) GetMaxDevices() int32 {
@@ -8845,7 +8927,7 @@ type GroupLimits struct {
 
 func (x *GroupLimits) Reset() {
 	*x = GroupLimits{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[102]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8857,7 +8939,7 @@ func (x *GroupLimits) String() string {
 func (*GroupLimits) ProtoMessage() {}
 
 func (x *GroupLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[102]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8870,7 +8952,7 @@ func (x *GroupLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupLimits.ProtoReflect.Descriptor instead.
 func (*GroupLimits) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{102}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *GroupLimits) GetMaxLabs() int32 {
@@ -8904,7 +8986,7 @@ type TenantLimits struct {
 
 func (x *TenantLimits) Reset() {
 	*x = TenantLimits{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[103]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8916,7 +8998,7 @@ func (x *TenantLimits) String() string {
 func (*TenantLimits) ProtoMessage() {}
 
 func (x *TenantLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[103]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8929,7 +9011,7 @@ func (x *TenantLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantLimits.ProtoReflect.Descriptor instead.
 func (*TenantLimits) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{103}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *TenantLimits) GetMaxLabs() int32 {
@@ -8955,7 +9037,7 @@ type ProxyFeature struct {
 
 func (x *ProxyFeature) Reset() {
 	*x = ProxyFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[104]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8967,7 +9049,7 @@ func (x *ProxyFeature) String() string {
 func (*ProxyFeature) ProtoMessage() {}
 
 func (x *ProxyFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[104]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8980,7 +9062,7 @@ func (x *ProxyFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyFeature.ProtoReflect.Descriptor instead.
 func (*ProxyFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{104}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *ProxyFeature) GetAccessTokenMaxTtlSeconds() int64 {
@@ -9036,7 +9118,7 @@ type StatePersistenceFeature struct {
 
 func (x *StatePersistenceFeature) Reset() {
 	*x = StatePersistenceFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[105]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9048,7 +9130,7 @@ func (x *StatePersistenceFeature) String() string {
 func (*StatePersistenceFeature) ProtoMessage() {}
 
 func (x *StatePersistenceFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[105]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9061,7 +9143,7 @@ func (x *StatePersistenceFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatePersistenceFeature.ProtoReflect.Descriptor instead.
 func (*StatePersistenceFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{105}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *StatePersistenceFeature) GetAvailable() bool {
@@ -9132,7 +9214,7 @@ type ImageCacheFeature struct {
 
 func (x *ImageCacheFeature) Reset() {
 	*x = ImageCacheFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[106]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9144,7 +9226,7 @@ func (x *ImageCacheFeature) String() string {
 func (*ImageCacheFeature) ProtoMessage() {}
 
 func (x *ImageCacheFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[106]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9157,7 +9239,7 @@ func (x *ImageCacheFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageCacheFeature.ProtoReflect.Descriptor instead.
 func (*ImageCacheFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{106}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *ImageCacheFeature) GetEnabled() bool {
@@ -9189,7 +9271,7 @@ type SchedulerFeature struct {
 
 func (x *SchedulerFeature) Reset() {
 	*x = SchedulerFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[107]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9201,7 +9283,7 @@ func (x *SchedulerFeature) String() string {
 func (*SchedulerFeature) ProtoMessage() {}
 
 func (x *SchedulerFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[107]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9214,7 +9296,7 @@ func (x *SchedulerFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerFeature.ProtoReflect.Descriptor instead.
 func (*SchedulerFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{107}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *SchedulerFeature) GetEnabled() bool {
@@ -9251,7 +9333,7 @@ type EndpointsFeature struct {
 
 func (x *EndpointsFeature) Reset() {
 	*x = EndpointsFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[108]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9263,7 +9345,7 @@ func (x *EndpointsFeature) String() string {
 func (*EndpointsFeature) ProtoMessage() {}
 
 func (x *EndpointsFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[108]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9276,7 +9358,7 @@ func (x *EndpointsFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointsFeature.ProtoReflect.Descriptor instead.
 func (*EndpointsFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{108}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *EndpointsFeature) GetLabsDomain() string {
@@ -9306,7 +9388,7 @@ type CertificateFeature struct {
 
 func (x *CertificateFeature) Reset() {
 	*x = CertificateFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[109]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9318,7 +9400,7 @@ func (x *CertificateFeature) String() string {
 func (*CertificateFeature) ProtoMessage() {}
 
 func (x *CertificateFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[109]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9331,7 +9413,7 @@ func (x *CertificateFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateFeature.ProtoReflect.Descriptor instead.
 func (*CertificateFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{109}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *CertificateFeature) GetNotAfterUnix() int64 {
@@ -9368,7 +9450,7 @@ type ErrorJournal struct {
 
 func (x *ErrorJournal) Reset() {
 	*x = ErrorJournal{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[110]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9380,7 +9462,7 @@ func (x *ErrorJournal) String() string {
 func (*ErrorJournal) ProtoMessage() {}
 
 func (x *ErrorJournal) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[110]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9393,7 +9475,7 @@ func (x *ErrorJournal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorJournal.ProtoReflect.Descriptor instead.
 func (*ErrorJournal) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{110}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *ErrorJournal) GetWindowStartUnixMs() int64 {
@@ -9445,7 +9527,7 @@ type ComponentErrors struct {
 
 func (x *ComponentErrors) Reset() {
 	*x = ComponentErrors{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[111]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9457,7 +9539,7 @@ func (x *ComponentErrors) String() string {
 func (*ComponentErrors) ProtoMessage() {}
 
 func (x *ComponentErrors) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[111]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9470,7 +9552,7 @@ func (x *ComponentErrors) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComponentErrors.ProtoReflect.Descriptor instead.
 func (*ComponentErrors) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{111}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *ComponentErrors) GetComponent() string {
@@ -9515,7 +9597,7 @@ type ErrorGroup struct {
 
 func (x *ErrorGroup) Reset() {
 	*x = ErrorGroup{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[112]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9527,7 +9609,7 @@ func (x *ErrorGroup) String() string {
 func (*ErrorGroup) ProtoMessage() {}
 
 func (x *ErrorGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[112]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9540,7 +9622,7 @@ func (x *ErrorGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorGroup.ProtoReflect.Descriptor instead.
 func (*ErrorGroup) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{112}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *ErrorGroup) GetFingerprint() string {
@@ -9609,7 +9691,7 @@ type DeployFailure struct {
 
 func (x *DeployFailure) Reset() {
 	*x = DeployFailure{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[113]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9621,7 +9703,7 @@ func (x *DeployFailure) String() string {
 func (*DeployFailure) ProtoMessage() {}
 
 func (x *DeployFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[113]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9634,7 +9716,7 @@ func (x *DeployFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeployFailure.ProtoReflect.Descriptor instead.
 func (*DeployFailure) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{113}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *DeployFailure) GetLabGroup() string {
@@ -9691,7 +9773,7 @@ type PrewarmImagesRequest struct {
 
 func (x *PrewarmImagesRequest) Reset() {
 	*x = PrewarmImagesRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[114]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9703,7 +9785,7 @@ func (x *PrewarmImagesRequest) String() string {
 func (*PrewarmImagesRequest) ProtoMessage() {}
 
 func (x *PrewarmImagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[114]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9716,7 +9798,7 @@ func (x *PrewarmImagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrewarmImagesRequest.ProtoReflect.Descriptor instead.
 func (*PrewarmImagesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{114}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *PrewarmImagesRequest) GetImages() []string {
@@ -9748,7 +9830,7 @@ type PrewarmImageStatus struct {
 
 func (x *PrewarmImageStatus) Reset() {
 	*x = PrewarmImageStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[115]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9760,7 +9842,7 @@ func (x *PrewarmImageStatus) String() string {
 func (*PrewarmImageStatus) ProtoMessage() {}
 
 func (x *PrewarmImageStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[115]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9773,7 +9855,7 @@ func (x *PrewarmImageStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrewarmImageStatus.ProtoReflect.Descriptor instead.
 func (*PrewarmImageStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{115}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *PrewarmImageStatus) GetImage() string {
@@ -9820,7 +9902,7 @@ type PrewarmImagesResult struct {
 
 func (x *PrewarmImagesResult) Reset() {
 	*x = PrewarmImagesResult{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[116]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9832,7 +9914,7 @@ func (x *PrewarmImagesResult) String() string {
 func (*PrewarmImagesResult) ProtoMessage() {}
 
 func (x *PrewarmImagesResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[116]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9845,7 +9927,7 @@ func (x *PrewarmImagesResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrewarmImagesResult.ProtoReflect.Descriptor instead.
 func (*PrewarmImagesResult) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{116}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *PrewarmImagesResult) GetImages() []*PrewarmImageStatus {
@@ -9867,7 +9949,7 @@ type EnrollRequest struct {
 
 func (x *EnrollRequest) Reset() {
 	*x = EnrollRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[117]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9879,7 +9961,7 @@ func (x *EnrollRequest) String() string {
 func (*EnrollRequest) ProtoMessage() {}
 
 func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[117]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9892,7 +9974,7 @@ func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollRequest.ProtoReflect.Descriptor instead.
 func (*EnrollRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{117}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *EnrollRequest) GetToken() string {
@@ -9932,7 +10014,7 @@ type RenewCertificateRequest struct {
 
 func (x *RenewCertificateRequest) Reset() {
 	*x = RenewCertificateRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[118]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9944,7 +10026,7 @@ func (x *RenewCertificateRequest) String() string {
 func (*RenewCertificateRequest) ProtoMessage() {}
 
 func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[118]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9957,7 +10039,7 @@ func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertificateRequest.ProtoReflect.Descriptor instead.
 func (*RenewCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{118}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *RenewCertificateRequest) GetCsrPem() string {
@@ -9978,7 +10060,7 @@ type CertificateResponse struct {
 
 func (x *CertificateResponse) Reset() {
 	*x = CertificateResponse{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[119]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9990,7 +10072,7 @@ func (x *CertificateResponse) String() string {
 func (*CertificateResponse) ProtoMessage() {}
 
 func (x *CertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[119]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10003,7 +10085,7 @@ func (x *CertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateResponse.ProtoReflect.Descriptor instead.
 func (*CertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{119}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *CertificateResponse) GetCertificatePem() string {
@@ -10037,7 +10119,7 @@ type RotateAccessKeyRequest struct {
 
 func (x *RotateAccessKeyRequest) Reset() {
 	*x = RotateAccessKeyRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[120]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10049,7 +10131,7 @@ func (x *RotateAccessKeyRequest) String() string {
 func (*RotateAccessKeyRequest) ProtoMessage() {}
 
 func (x *RotateAccessKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[120]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10062,7 +10144,7 @@ func (x *RotateAccessKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RotateAccessKeyRequest.ProtoReflect.Descriptor instead.
 func (*RotateAccessKeyRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{120}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *RotateAccessKeyRequest) GetPublicKeyPem() string {
@@ -10088,7 +10170,7 @@ type RemoveAccessKeyRequest struct {
 
 func (x *RemoveAccessKeyRequest) Reset() {
 	*x = RemoveAccessKeyRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[121]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10100,7 +10182,7 @@ func (x *RemoveAccessKeyRequest) String() string {
 func (*RemoveAccessKeyRequest) ProtoMessage() {}
 
 func (x *RemoveAccessKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[121]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10113,7 +10195,7 @@ func (x *RemoveAccessKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAccessKeyRequest.ProtoReflect.Descriptor instead.
 func (*RemoveAccessKeyRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{121}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *RemoveAccessKeyRequest) GetKeyId() string {
@@ -10133,7 +10215,7 @@ type DeviceSnapshotRequest struct {
 
 func (x *DeviceSnapshotRequest) Reset() {
 	*x = DeviceSnapshotRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[122]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10145,7 +10227,7 @@ func (x *DeviceSnapshotRequest) String() string {
 func (*DeviceSnapshotRequest) ProtoMessage() {}
 
 func (x *DeviceSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[122]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10158,7 +10240,7 @@ func (x *DeviceSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*DeviceSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{122}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *DeviceSnapshotRequest) GetRef() *ItemRef {
@@ -10185,7 +10267,7 @@ type SnapshotChunk struct {
 
 func (x *SnapshotChunk) Reset() {
 	*x = SnapshotChunk{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[123]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10197,7 +10279,7 @@ func (x *SnapshotChunk) String() string {
 func (*SnapshotChunk) ProtoMessage() {}
 
 func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[123]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10210,7 +10292,7 @@ func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotChunk.ProtoReflect.Descriptor instead.
 func (*SnapshotChunk) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{123}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *SnapshotChunk) GetContent() isSnapshotChunk_Content {
@@ -10295,7 +10377,7 @@ type SnapshotMeta struct {
 
 func (x *SnapshotMeta) Reset() {
 	*x = SnapshotMeta{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[124]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10307,7 +10389,7 @@ func (x *SnapshotMeta) String() string {
 func (*SnapshotMeta) ProtoMessage() {}
 
 func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[124]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10320,7 +10402,7 @@ func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotMeta.ProtoReflect.Descriptor instead.
 func (*SnapshotMeta) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{124}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *SnapshotMeta) GetRef() *ItemRef {
@@ -10404,7 +10486,7 @@ type SnapshotTrailer struct {
 
 func (x *SnapshotTrailer) Reset() {
 	*x = SnapshotTrailer{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[125]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10416,7 +10498,7 @@ func (x *SnapshotTrailer) String() string {
 func (*SnapshotTrailer) ProtoMessage() {}
 
 func (x *SnapshotTrailer) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[125]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10429,7 +10511,7 @@ func (x *SnapshotTrailer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotTrailer.ProtoReflect.Descriptor instead.
 func (*SnapshotTrailer) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{125}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *SnapshotTrailer) GetCompressedBytes() int64 {
@@ -10455,7 +10537,7 @@ type ListMaintenanceWindowsRequest struct {
 
 func (x *ListMaintenanceWindowsRequest) Reset() {
 	*x = ListMaintenanceWindowsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[126]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10467,7 +10549,7 @@ func (x *ListMaintenanceWindowsRequest) String() string {
 func (*ListMaintenanceWindowsRequest) ProtoMessage() {}
 
 func (x *ListMaintenanceWindowsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[126]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10480,7 +10562,7 @@ func (x *ListMaintenanceWindowsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMaintenanceWindowsRequest.ProtoReflect.Descriptor instead.
 func (*ListMaintenanceWindowsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{126}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *ListMaintenanceWindowsRequest) GetIncludePast() bool {
@@ -10512,7 +10594,7 @@ type MaintenanceWindow struct {
 
 func (x *MaintenanceWindow) Reset() {
 	*x = MaintenanceWindow{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[127]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10524,7 +10606,7 @@ func (x *MaintenanceWindow) String() string {
 func (*MaintenanceWindow) ProtoMessage() {}
 
 func (x *MaintenanceWindow) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[127]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10537,7 +10619,7 @@ func (x *MaintenanceWindow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MaintenanceWindow.ProtoReflect.Descriptor instead.
 func (*MaintenanceWindow) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{127}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *MaintenanceWindow) GetName() string {
@@ -10612,7 +10694,7 @@ type MaintenanceWindowList struct {
 
 func (x *MaintenanceWindowList) Reset() {
 	*x = MaintenanceWindowList{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[128]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10624,7 +10706,7 @@ func (x *MaintenanceWindowList) String() string {
 func (*MaintenanceWindowList) ProtoMessage() {}
 
 func (x *MaintenanceWindowList) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[128]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10637,7 +10719,7 @@ func (x *MaintenanceWindowList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MaintenanceWindowList.ProtoReflect.Descriptor instead.
 func (*MaintenanceWindowList) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{128}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *MaintenanceWindowList) GetItems() []*MaintenanceWindow {
@@ -10659,7 +10741,7 @@ type LabLifecycleTarget struct {
 
 func (x *LabLifecycleTarget) Reset() {
 	*x = LabLifecycleTarget{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[129]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10671,7 +10753,7 @@ func (x *LabLifecycleTarget) String() string {
 func (*LabLifecycleTarget) ProtoMessage() {}
 
 func (x *LabLifecycleTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[129]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10684,7 +10766,7 @@ func (x *LabLifecycleTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabLifecycleTarget.ProtoReflect.Descriptor instead.
 func (*LabLifecycleTarget) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{129}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *LabLifecycleTarget) GetRef() *ItemRef {
@@ -10727,7 +10809,7 @@ type StopLabItem struct {
 
 func (x *StopLabItem) Reset() {
 	*x = StopLabItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[130]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10739,7 +10821,7 @@ func (x *StopLabItem) String() string {
 func (*StopLabItem) ProtoMessage() {}
 
 func (x *StopLabItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[130]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10752,7 +10834,7 @@ func (x *StopLabItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopLabItem.ProtoReflect.Descriptor instead.
 func (*StopLabItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{130}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *StopLabItem) GetTarget() *LabLifecycleTarget {
@@ -10792,7 +10874,7 @@ type StopLabsRequest struct {
 
 func (x *StopLabsRequest) Reset() {
 	*x = StopLabsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[131]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10804,7 +10886,7 @@ func (x *StopLabsRequest) String() string {
 func (*StopLabsRequest) ProtoMessage() {}
 
 func (x *StopLabsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[131]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10817,7 +10899,7 @@ func (x *StopLabsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopLabsRequest.ProtoReflect.Descriptor instead.
 func (*StopLabsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{131}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *StopLabsRequest) GetItems() []*StopLabItem {
@@ -10836,7 +10918,7 @@ type StartLabsRequest struct {
 
 func (x *StartLabsRequest) Reset() {
 	*x = StartLabsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[132]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10848,7 +10930,7 @@ func (x *StartLabsRequest) String() string {
 func (*StartLabsRequest) ProtoMessage() {}
 
 func (x *StartLabsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[132]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10861,7 +10943,7 @@ func (x *StartLabsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartLabsRequest.ProtoReflect.Descriptor instead.
 func (*StartLabsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{132}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *StartLabsRequest) GetItems() []*LabLifecycleTarget {
@@ -10895,7 +10977,7 @@ type LabLifecycleStatus struct {
 
 func (x *LabLifecycleStatus) Reset() {
 	*x = LabLifecycleStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[133]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10907,7 +10989,7 @@ func (x *LabLifecycleStatus) String() string {
 func (*LabLifecycleStatus) ProtoMessage() {}
 
 func (x *LabLifecycleStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[133]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10920,7 +11002,7 @@ func (x *LabLifecycleStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabLifecycleStatus.ProtoReflect.Descriptor instead.
 func (*LabLifecycleStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{133}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *LabLifecycleStatus) GetDesiredState() string {
@@ -11045,7 +11127,7 @@ type ResourceAmounts struct {
 
 func (x *ResourceAmounts) Reset() {
 	*x = ResourceAmounts{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[134]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11057,7 +11139,7 @@ func (x *ResourceAmounts) String() string {
 func (*ResourceAmounts) ProtoMessage() {}
 
 func (x *ResourceAmounts) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[134]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11070,7 +11152,7 @@ func (x *ResourceAmounts) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceAmounts.ProtoReflect.Descriptor instead.
 func (*ResourceAmounts) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{134}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *ResourceAmounts) GetCpuMillicores() int64 {
@@ -11110,7 +11192,7 @@ type ResourceAllocation struct {
 
 func (x *ResourceAllocation) Reset() {
 	*x = ResourceAllocation{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[135]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11122,7 +11204,7 @@ func (x *ResourceAllocation) String() string {
 func (*ResourceAllocation) ProtoMessage() {}
 
 func (x *ResourceAllocation) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[135]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11135,7 +11217,7 @@ func (x *ResourceAllocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceAllocation.ProtoReflect.Descriptor instead.
 func (*ResourceAllocation) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{135}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *ResourceAllocation) GetConfiguredRequests() *ResourceAmounts {
@@ -11256,7 +11338,7 @@ type LifecycleFeature struct {
 
 func (x *LifecycleFeature) Reset() {
 	*x = LifecycleFeature{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[136]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11268,7 +11350,7 @@ func (x *LifecycleFeature) String() string {
 func (*LifecycleFeature) ProtoMessage() {}
 
 func (x *LifecycleFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[136]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11281,7 +11363,7 @@ func (x *LifecycleFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LifecycleFeature.ProtoReflect.Descriptor instead.
 func (*LifecycleFeature) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{136}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *LifecycleFeature) GetPerLabStop() bool {
@@ -11336,7 +11418,7 @@ type GroupPodsSizingV2 struct {
 
 func (x *GroupPodsSizingV2) Reset() {
 	*x = GroupPodsSizingV2{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[137]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11348,7 +11430,7 @@ func (x *GroupPodsSizingV2) String() string {
 func (*GroupPodsSizingV2) ProtoMessage() {}
 
 func (x *GroupPodsSizingV2) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[137]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11361,7 +11443,7 @@ func (x *GroupPodsSizingV2) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupPodsSizingV2.ProtoReflect.Descriptor instead.
 func (*GroupPodsSizingV2) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{137}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *GroupPodsSizingV2) GetProfiles() []*GroupPodsSizingProfile {
@@ -11386,7 +11468,7 @@ type GroupPodsSizingProfile struct {
 
 func (x *GroupPodsSizingProfile) Reset() {
 	*x = GroupPodsSizingProfile{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[138]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11398,7 +11480,7 @@ func (x *GroupPodsSizingProfile) String() string {
 func (*GroupPodsSizingProfile) ProtoMessage() {}
 
 func (x *GroupPodsSizingProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[138]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11411,7 +11493,7 @@ func (x *GroupPodsSizingProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupPodsSizingProfile.ProtoReflect.Descriptor instead.
 func (*GroupPodsSizingProfile) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{138}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *GroupPodsSizingProfile) GetId() string {
@@ -11476,7 +11558,7 @@ type GroupSizingInputs struct {
 
 func (x *GroupSizingInputs) Reset() {
 	*x = GroupSizingInputs{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[139]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11488,7 +11570,7 @@ func (x *GroupSizingInputs) String() string {
 func (*GroupSizingInputs) ProtoMessage() {}
 
 func (x *GroupSizingInputs) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[139]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11501,7 +11583,7 @@ func (x *GroupSizingInputs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupSizingInputs.ProtoReflect.Descriptor instead.
 func (*GroupSizingInputs) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{139}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *GroupSizingInputs) GetMaxUsers() int64 {
@@ -11555,7 +11637,7 @@ type GroupTrafficEnvelope struct {
 
 func (x *GroupTrafficEnvelope) Reset() {
 	*x = GroupTrafficEnvelope{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[140]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11567,7 +11649,7 @@ func (x *GroupTrafficEnvelope) String() string {
 func (*GroupTrafficEnvelope) ProtoMessage() {}
 
 func (x *GroupTrafficEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[140]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11580,7 +11662,7 @@ func (x *GroupTrafficEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupTrafficEnvelope.ProtoReflect.Descriptor instead.
 func (*GroupTrafficEnvelope) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{140}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *GroupTrafficEnvelope) GetVpnRetainedFlows() int64 {
@@ -11655,7 +11737,7 @@ type GroupPodFormula struct {
 
 func (x *GroupPodFormula) Reset() {
 	*x = GroupPodFormula{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[141]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11667,7 +11749,7 @@ func (x *GroupPodFormula) String() string {
 func (*GroupPodFormula) ProtoMessage() {}
 
 func (x *GroupPodFormula) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[141]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11680,7 +11762,7 @@ func (x *GroupPodFormula) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupPodFormula.ProtoReflect.Descriptor instead.
 func (*GroupPodFormula) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{141}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *GroupPodFormula) GetBase() *PodSize {
@@ -11752,7 +11834,7 @@ type GroupTarget struct {
 
 func (x *GroupTarget) Reset() {
 	*x = GroupTarget{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[142]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11764,7 +11846,7 @@ func (x *GroupTarget) String() string {
 func (*GroupTarget) ProtoMessage() {}
 
 func (x *GroupTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[142]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11777,7 +11859,7 @@ func (x *GroupTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupTarget.ProtoReflect.Descriptor instead.
 func (*GroupTarget) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{142}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *GroupTarget) GetGroup() string {
@@ -11818,7 +11900,7 @@ type StopLabGroupItem struct {
 
 func (x *StopLabGroupItem) Reset() {
 	*x = StopLabGroupItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[143]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11830,7 +11912,7 @@ func (x *StopLabGroupItem) String() string {
 func (*StopLabGroupItem) ProtoMessage() {}
 
 func (x *StopLabGroupItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[143]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11843,7 +11925,7 @@ func (x *StopLabGroupItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopLabGroupItem.ProtoReflect.Descriptor instead.
 func (*StopLabGroupItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{143}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *StopLabGroupItem) GetTarget() *GroupTarget {
@@ -11869,7 +11951,7 @@ type StopLabGroupsRequest struct {
 
 func (x *StopLabGroupsRequest) Reset() {
 	*x = StopLabGroupsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[144]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11881,7 +11963,7 @@ func (x *StopLabGroupsRequest) String() string {
 func (*StopLabGroupsRequest) ProtoMessage() {}
 
 func (x *StopLabGroupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[144]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11894,7 +11976,7 @@ func (x *StopLabGroupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopLabGroupsRequest.ProtoReflect.Descriptor instead.
 func (*StopLabGroupsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{144}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *StopLabGroupsRequest) GetItems() []*StopLabGroupItem {
@@ -11913,7 +11995,7 @@ type StartLabGroupsRequest struct {
 
 func (x *StartLabGroupsRequest) Reset() {
 	*x = StartLabGroupsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[145]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11925,7 +12007,7 @@ func (x *StartLabGroupsRequest) String() string {
 func (*StartLabGroupsRequest) ProtoMessage() {}
 
 func (x *StartLabGroupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[145]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11938,7 +12020,7 @@ func (x *StartLabGroupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartLabGroupsRequest.ProtoReflect.Descriptor instead.
 func (*StartLabGroupsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{145}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *StartLabGroupsRequest) GetItems() []*GroupTarget {
@@ -11960,7 +12042,7 @@ type GroupLifecycleSpec struct {
 
 func (x *GroupLifecycleSpec) Reset() {
 	*x = GroupLifecycleSpec{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[146]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11972,7 +12054,7 @@ func (x *GroupLifecycleSpec) String() string {
 func (*GroupLifecycleSpec) ProtoMessage() {}
 
 func (x *GroupLifecycleSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[146]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11985,7 +12067,7 @@ func (x *GroupLifecycleSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupLifecycleSpec.ProtoReflect.Descriptor instead.
 func (*GroupLifecycleSpec) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{146}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *GroupLifecycleSpec) GetDesiredState() string {
@@ -12028,7 +12110,7 @@ type LabRetirementTarget struct {
 
 func (x *LabRetirementTarget) Reset() {
 	*x = LabRetirementTarget{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[147]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12040,7 +12122,7 @@ func (x *LabRetirementTarget) String() string {
 func (*LabRetirementTarget) ProtoMessage() {}
 
 func (x *LabRetirementTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[147]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12053,7 +12135,7 @@ func (x *LabRetirementTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabRetirementTarget.ProtoReflect.Descriptor instead.
 func (*LabRetirementTarget) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{147}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *LabRetirementTarget) GetStopTarget() *LabLifecycleTarget {
@@ -12088,7 +12170,7 @@ type GroupRetirementTarget struct {
 
 func (x *GroupRetirementTarget) Reset() {
 	*x = GroupRetirementTarget{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[148]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12100,7 +12182,7 @@ func (x *GroupRetirementTarget) String() string {
 func (*GroupRetirementTarget) ProtoMessage() {}
 
 func (x *GroupRetirementTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[148]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12113,7 +12195,7 @@ func (x *GroupRetirementTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupRetirementTarget.ProtoReflect.Descriptor instead.
 func (*GroupRetirementTarget) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{148}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *GroupRetirementTarget) GetStopTarget() *GroupTarget {
@@ -12146,7 +12228,7 @@ type RetireLabsRequest struct {
 
 func (x *RetireLabsRequest) Reset() {
 	*x = RetireLabsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[149]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12158,7 +12240,7 @@ func (x *RetireLabsRequest) String() string {
 func (*RetireLabsRequest) ProtoMessage() {}
 
 func (x *RetireLabsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[149]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12171,7 +12253,7 @@ func (x *RetireLabsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetireLabsRequest.ProtoReflect.Descriptor instead.
 func (*RetireLabsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{149}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *RetireLabsRequest) GetItems() []*LabRetirementTarget {
@@ -12190,7 +12272,7 @@ type RetireLabGroupsRequest struct {
 
 func (x *RetireLabGroupsRequest) Reset() {
 	*x = RetireLabGroupsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[150]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12202,7 +12284,7 @@ func (x *RetireLabGroupsRequest) String() string {
 func (*RetireLabGroupsRequest) ProtoMessage() {}
 
 func (x *RetireLabGroupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[150]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12215,7 +12297,7 @@ func (x *RetireLabGroupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetireLabGroupsRequest.ProtoReflect.Descriptor instead.
 func (*RetireLabGroupsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{150}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *RetireLabGroupsRequest) GetItems() []*GroupRetirementTarget {
@@ -12248,7 +12330,7 @@ type RetirementStatus struct {
 
 func (x *RetirementStatus) Reset() {
 	*x = RetirementStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[151]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12260,7 +12342,7 @@ func (x *RetirementStatus) String() string {
 func (*RetirementStatus) ProtoMessage() {}
 
 func (x *RetirementStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[151]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12273,7 +12355,7 @@ func (x *RetirementStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetirementStatus.ProtoReflect.Descriptor instead.
 func (*RetirementStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{151}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *RetirementStatus) GetExpectedUid() string {
@@ -12397,7 +12479,7 @@ type LabCreationReceipt struct {
 
 func (x *LabCreationReceipt) Reset() {
 	*x = LabCreationReceipt{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[152]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12409,7 +12491,7 @@ func (x *LabCreationReceipt) String() string {
 func (*LabCreationReceipt) ProtoMessage() {}
 
 func (x *LabCreationReceipt) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[152]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12422,7 +12504,7 @@ func (x *LabCreationReceipt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabCreationReceipt.ProtoReflect.Descriptor instead.
 func (*LabCreationReceipt) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{152}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *LabCreationReceipt) GetGroupUid() string {
@@ -12493,7 +12575,7 @@ type RegistryCredential struct {
 
 func (x *RegistryCredential) Reset() {
 	*x = RegistryCredential{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[153]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12505,7 +12587,7 @@ func (x *RegistryCredential) String() string {
 func (*RegistryCredential) ProtoMessage() {}
 
 func (x *RegistryCredential) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[153]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12518,7 +12600,7 @@ func (x *RegistryCredential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegistryCredential.ProtoReflect.Descriptor instead.
 func (*RegistryCredential) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{153}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *RegistryCredential) GetRegistry() string {
@@ -13153,11 +13235,16 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	" \x03(\v2,.labmanager.LabGroupAccessPolicy.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8e\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe8\x01\n" +
 	"\x12LabGroupAccessRule\x128\n" +
 	"\x06action\x18\x01 \x01(\x0e2 .labmanager.LabGroupAccessActionR\x06action\x12!\n" +
 	"\fclient_names\x18\x02 \x03(\tR\vclientNames\x12\x1b\n" +
-	"\tlab_names\x18\x03 \x03(\tR\blabNames\"\xdd\x02\n" +
+	"\tlab_names\x18\x03 \x03(\tR\blabNames\x12#\n" +
+	"\rgateway_names\x18\x04 \x03(\tR\fgatewayNames\x123\n" +
+	"\ainclude\x18\x05 \x03(\v2\x19.labmanager.AccessIncludeR\ainclude\";\n" +
+	"\rAccessInclude\x12\x12\n" +
+	"\x04host\x18\x01 \x01(\x05R\x04host\x12\x16\n" +
+	"\x06prefix\x18\x02 \x01(\x05R\x06prefix\"\xdd\x02\n" +
 	"\x1aLabGroupAccessPolicyStatus\x12/\n" +
 	"\x13observed_generation\x18\x01 \x01(\x03R\x12observedGeneration\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12+\n" +
@@ -13167,7 +13254,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x05rules\x18\x05 \x03(\v2(.labmanager.LabGroupAccessRuleStatisticsR\x05rules\x12)\n" +
 	"\x10applied_revision\x18\x06 \x01(\x03R\x0fappliedRevision\x12!\n" +
 	"\foperation_id\x18\a \x01(\tR\voperationId\x12\x1e\n" +
-	"\vvpn_boot_id\x18\b \x01(\tR\tvpnBootId\"\xe9\x01\n" +
+	"\vvpn_boot_id\x18\b \x01(\tR\tvpnBootId\"\x8e\x02\n" +
 	"\x1cLabGroupAccessRuleStatistics\x12\x1f\n" +
 	"\vclient_name\x18\x01 \x01(\tR\n" +
 	"clientName\x12\x19\n" +
@@ -13175,7 +13262,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x06action\x18\x03 \x01(\x0e2 .labmanager.LabGroupAccessActionR\x06action\x12\x18\n" +
 	"\apackets\x18\x04 \x01(\x03R\apackets\x12\x14\n" +
 	"\x05bytes\x18\x05 \x01(\x03R\x05bytes\x12#\n" +
-	"\rcounter_reset\x18\x06 \x01(\bR\fcounterReset\"\xac\x01\n" +
+	"\rcounter_reset\x18\x06 \x01(\bR\fcounterReset\x12#\n" +
+	"\rgateway_names\x18\a \x03(\tR\fgatewayNames\"\xac\x01\n" +
 	"\x11MonitoringRequest\x12&\n" +
 	"\x0fmin_interval_ms\x18\x01 \x01(\x03R\rminIntervalMs\x122\n" +
 	"\x15resume_after_sequence\x18\x02 \x01(\x03R\x13resumeAfterSequence\x12\x1a\n" +
@@ -13771,7 +13859,7 @@ func file_pkg_agent_protobuf_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_agent_protobuf_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 170)
+var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 171)
 var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(ItemState)(0),                        // 0: labmanager.ItemState
 	(ReservationPhase)(0),                 // 1: labmanager.ReservationPhase
@@ -13860,123 +13948,124 @@ var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(*LabGroupClientList)(nil),            // 84: labmanager.LabGroupClientList
 	(*LabGroupAccessPolicy)(nil),          // 85: labmanager.LabGroupAccessPolicy
 	(*LabGroupAccessRule)(nil),            // 86: labmanager.LabGroupAccessRule
-	(*LabGroupAccessPolicyStatus)(nil),    // 87: labmanager.LabGroupAccessPolicyStatus
-	(*LabGroupAccessRuleStatistics)(nil),  // 88: labmanager.LabGroupAccessRuleStatistics
-	(*MonitoringRequest)(nil),             // 89: labmanager.MonitoringRequest
-	(*MonitoringDeletedKey)(nil),          // 90: labmanager.MonitoringDeletedKey
-	(*MonitoringUpdate)(nil),              // 91: labmanager.MonitoringUpdate
-	(*TrafficReport)(nil),                 // 92: labmanager.TrafficReport
-	(*TrafficCoverageSpan)(nil),           // 93: labmanager.TrafficCoverageSpan
-	(*TrafficTouch)(nil),                  // 94: labmanager.TrafficTouch
-	(*CapacityResponse)(nil),              // 95: labmanager.CapacityResponse
-	(*NodeProfileCapacity)(nil),           // 96: labmanager.NodeProfileCapacity
-	(*FeaturesResponse)(nil),              // 97: labmanager.FeaturesResponse
-	(*VPNFeature)(nil),                    // 98: labmanager.VPNFeature
-	(*ChecksFeature)(nil),                 // 99: labmanager.ChecksFeature
-	(*AccessFeature)(nil),                 // 100: labmanager.AccessFeature
-	(*BootstrapFeature)(nil),              // 101: labmanager.BootstrapFeature
-	(*GroupLimitsFeature)(nil),            // 102: labmanager.GroupLimitsFeature
-	(*ReservationsFeature)(nil),           // 103: labmanager.ReservationsFeature
-	(*PodSizing)(nil),                     // 104: labmanager.PodSizing
-	(*GroupPodsFeature)(nil),              // 105: labmanager.GroupPodsFeature
-	(*DeviceConstants)(nil),               // 106: labmanager.DeviceConstants
-	(*TenantQuotaFeature)(nil),            // 107: labmanager.TenantQuotaFeature
-	(*LimitsFeature)(nil),                 // 108: labmanager.LimitsFeature
-	(*DeviceLimits)(nil),                  // 109: labmanager.DeviceLimits
-	(*LabLimits)(nil),                     // 110: labmanager.LabLimits
-	(*GroupLimits)(nil),                   // 111: labmanager.GroupLimits
-	(*TenantLimits)(nil),                  // 112: labmanager.TenantLimits
-	(*ProxyFeature)(nil),                  // 113: labmanager.ProxyFeature
-	(*StatePersistenceFeature)(nil),       // 114: labmanager.StatePersistenceFeature
-	(*ImageCacheFeature)(nil),             // 115: labmanager.ImageCacheFeature
-	(*SchedulerFeature)(nil),              // 116: labmanager.SchedulerFeature
-	(*EndpointsFeature)(nil),              // 117: labmanager.EndpointsFeature
-	(*CertificateFeature)(nil),            // 118: labmanager.CertificateFeature
-	(*ErrorJournal)(nil),                  // 119: labmanager.ErrorJournal
-	(*ComponentErrors)(nil),               // 120: labmanager.ComponentErrors
-	(*ErrorGroup)(nil),                    // 121: labmanager.ErrorGroup
-	(*DeployFailure)(nil),                 // 122: labmanager.DeployFailure
-	(*PrewarmImagesRequest)(nil),          // 123: labmanager.PrewarmImagesRequest
-	(*PrewarmImageStatus)(nil),            // 124: labmanager.PrewarmImageStatus
-	(*PrewarmImagesResult)(nil),           // 125: labmanager.PrewarmImagesResult
-	(*EnrollRequest)(nil),                 // 126: labmanager.EnrollRequest
-	(*RenewCertificateRequest)(nil),       // 127: labmanager.RenewCertificateRequest
-	(*CertificateResponse)(nil),           // 128: labmanager.CertificateResponse
-	(*RotateAccessKeyRequest)(nil),        // 129: labmanager.RotateAccessKeyRequest
-	(*RemoveAccessKeyRequest)(nil),        // 130: labmanager.RemoveAccessKeyRequest
-	(*DeviceSnapshotRequest)(nil),         // 131: labmanager.DeviceSnapshotRequest
-	(*SnapshotChunk)(nil),                 // 132: labmanager.SnapshotChunk
-	(*SnapshotMeta)(nil),                  // 133: labmanager.SnapshotMeta
-	(*SnapshotTrailer)(nil),               // 134: labmanager.SnapshotTrailer
-	(*ListMaintenanceWindowsRequest)(nil), // 135: labmanager.ListMaintenanceWindowsRequest
-	(*MaintenanceWindow)(nil),             // 136: labmanager.MaintenanceWindow
-	(*MaintenanceWindowList)(nil),         // 137: labmanager.MaintenanceWindowList
-	(*LabLifecycleTarget)(nil),            // 138: labmanager.LabLifecycleTarget
-	(*StopLabItem)(nil),                   // 139: labmanager.StopLabItem
-	(*StopLabsRequest)(nil),               // 140: labmanager.StopLabsRequest
-	(*StartLabsRequest)(nil),              // 141: labmanager.StartLabsRequest
-	(*LabLifecycleStatus)(nil),            // 142: labmanager.LabLifecycleStatus
-	(*ResourceAmounts)(nil),               // 143: labmanager.ResourceAmounts
-	(*ResourceAllocation)(nil),            // 144: labmanager.ResourceAllocation
-	(*LifecycleFeature)(nil),              // 145: labmanager.LifecycleFeature
-	(*GroupPodsSizingV2)(nil),             // 146: labmanager.GroupPodsSizingV2
-	(*GroupPodsSizingProfile)(nil),        // 147: labmanager.GroupPodsSizingProfile
-	(*GroupSizingInputs)(nil),             // 148: labmanager.GroupSizingInputs
-	(*GroupTrafficEnvelope)(nil),          // 149: labmanager.GroupTrafficEnvelope
-	(*GroupPodFormula)(nil),               // 150: labmanager.GroupPodFormula
-	(*GroupTarget)(nil),                   // 151: labmanager.GroupTarget
-	(*StopLabGroupItem)(nil),              // 152: labmanager.StopLabGroupItem
-	(*StopLabGroupsRequest)(nil),          // 153: labmanager.StopLabGroupsRequest
-	(*StartLabGroupsRequest)(nil),         // 154: labmanager.StartLabGroupsRequest
-	(*GroupLifecycleSpec)(nil),            // 155: labmanager.GroupLifecycleSpec
-	(*LabRetirementTarget)(nil),           // 156: labmanager.LabRetirementTarget
-	(*GroupRetirementTarget)(nil),         // 157: labmanager.GroupRetirementTarget
-	(*RetireLabsRequest)(nil),             // 158: labmanager.RetireLabsRequest
-	(*RetireLabGroupsRequest)(nil),        // 159: labmanager.RetireLabGroupsRequest
-	(*RetirementStatus)(nil),              // 160: labmanager.RetirementStatus
-	(*LabCreationReceipt)(nil),            // 161: labmanager.LabCreationReceipt
-	(*RegistryCredential)(nil),            // 162: labmanager.RegistryCredential
-	nil,                                   // 163: labmanager.LabelChanges.SetEntry
-	nil,                                   // 164: labmanager.LabGroupItem.LabelsEntry
-	nil,                                   // 165: labmanager.CreateLabGroupsRequest.LabelsEntry
-	nil,                                   // 166: labmanager.LabGroupClientItem.LabelsEntry
-	nil,                                   // 167: labmanager.CreateLabGroupClientsRequest.LabelsEntry
-	nil,                                   // 168: labmanager.SetLabGroupAccessRequest.LabelsEntry
-	nil,                                   // 169: labmanager.LabItem.LabelsEntry
-	nil,                                   // 170: labmanager.CreateLabsRequest.LabelsEntry
-	nil,                                   // 171: labmanager.ReservationItem.LabelsEntry
-	nil,                                   // 172: labmanager.CreateReservationsRequest.LabelsEntry
-	nil,                                   // 173: labmanager.Reservation.LabelsEntry
-	nil,                                   // 174: labmanager.LabGroup.LabelsEntry
-	nil,                                   // 175: labmanager.Lab.LabelsEntry
-	nil,                                   // 176: labmanager.DeviceEnv.VarsEntry
-	nil,                                   // 177: labmanager.LabGroupClient.LabelsEntry
-	nil,                                   // 178: labmanager.LabGroupAccessPolicy.LabelsEntry
-	(*durationpb.Duration)(nil),           // 179: google.protobuf.Duration
+	(*AccessInclude)(nil),                 // 87: labmanager.AccessInclude
+	(*LabGroupAccessPolicyStatus)(nil),    // 88: labmanager.LabGroupAccessPolicyStatus
+	(*LabGroupAccessRuleStatistics)(nil),  // 89: labmanager.LabGroupAccessRuleStatistics
+	(*MonitoringRequest)(nil),             // 90: labmanager.MonitoringRequest
+	(*MonitoringDeletedKey)(nil),          // 91: labmanager.MonitoringDeletedKey
+	(*MonitoringUpdate)(nil),              // 92: labmanager.MonitoringUpdate
+	(*TrafficReport)(nil),                 // 93: labmanager.TrafficReport
+	(*TrafficCoverageSpan)(nil),           // 94: labmanager.TrafficCoverageSpan
+	(*TrafficTouch)(nil),                  // 95: labmanager.TrafficTouch
+	(*CapacityResponse)(nil),              // 96: labmanager.CapacityResponse
+	(*NodeProfileCapacity)(nil),           // 97: labmanager.NodeProfileCapacity
+	(*FeaturesResponse)(nil),              // 98: labmanager.FeaturesResponse
+	(*VPNFeature)(nil),                    // 99: labmanager.VPNFeature
+	(*ChecksFeature)(nil),                 // 100: labmanager.ChecksFeature
+	(*AccessFeature)(nil),                 // 101: labmanager.AccessFeature
+	(*BootstrapFeature)(nil),              // 102: labmanager.BootstrapFeature
+	(*GroupLimitsFeature)(nil),            // 103: labmanager.GroupLimitsFeature
+	(*ReservationsFeature)(nil),           // 104: labmanager.ReservationsFeature
+	(*PodSizing)(nil),                     // 105: labmanager.PodSizing
+	(*GroupPodsFeature)(nil),              // 106: labmanager.GroupPodsFeature
+	(*DeviceConstants)(nil),               // 107: labmanager.DeviceConstants
+	(*TenantQuotaFeature)(nil),            // 108: labmanager.TenantQuotaFeature
+	(*LimitsFeature)(nil),                 // 109: labmanager.LimitsFeature
+	(*DeviceLimits)(nil),                  // 110: labmanager.DeviceLimits
+	(*LabLimits)(nil),                     // 111: labmanager.LabLimits
+	(*GroupLimits)(nil),                   // 112: labmanager.GroupLimits
+	(*TenantLimits)(nil),                  // 113: labmanager.TenantLimits
+	(*ProxyFeature)(nil),                  // 114: labmanager.ProxyFeature
+	(*StatePersistenceFeature)(nil),       // 115: labmanager.StatePersistenceFeature
+	(*ImageCacheFeature)(nil),             // 116: labmanager.ImageCacheFeature
+	(*SchedulerFeature)(nil),              // 117: labmanager.SchedulerFeature
+	(*EndpointsFeature)(nil),              // 118: labmanager.EndpointsFeature
+	(*CertificateFeature)(nil),            // 119: labmanager.CertificateFeature
+	(*ErrorJournal)(nil),                  // 120: labmanager.ErrorJournal
+	(*ComponentErrors)(nil),               // 121: labmanager.ComponentErrors
+	(*ErrorGroup)(nil),                    // 122: labmanager.ErrorGroup
+	(*DeployFailure)(nil),                 // 123: labmanager.DeployFailure
+	(*PrewarmImagesRequest)(nil),          // 124: labmanager.PrewarmImagesRequest
+	(*PrewarmImageStatus)(nil),            // 125: labmanager.PrewarmImageStatus
+	(*PrewarmImagesResult)(nil),           // 126: labmanager.PrewarmImagesResult
+	(*EnrollRequest)(nil),                 // 127: labmanager.EnrollRequest
+	(*RenewCertificateRequest)(nil),       // 128: labmanager.RenewCertificateRequest
+	(*CertificateResponse)(nil),           // 129: labmanager.CertificateResponse
+	(*RotateAccessKeyRequest)(nil),        // 130: labmanager.RotateAccessKeyRequest
+	(*RemoveAccessKeyRequest)(nil),        // 131: labmanager.RemoveAccessKeyRequest
+	(*DeviceSnapshotRequest)(nil),         // 132: labmanager.DeviceSnapshotRequest
+	(*SnapshotChunk)(nil),                 // 133: labmanager.SnapshotChunk
+	(*SnapshotMeta)(nil),                  // 134: labmanager.SnapshotMeta
+	(*SnapshotTrailer)(nil),               // 135: labmanager.SnapshotTrailer
+	(*ListMaintenanceWindowsRequest)(nil), // 136: labmanager.ListMaintenanceWindowsRequest
+	(*MaintenanceWindow)(nil),             // 137: labmanager.MaintenanceWindow
+	(*MaintenanceWindowList)(nil),         // 138: labmanager.MaintenanceWindowList
+	(*LabLifecycleTarget)(nil),            // 139: labmanager.LabLifecycleTarget
+	(*StopLabItem)(nil),                   // 140: labmanager.StopLabItem
+	(*StopLabsRequest)(nil),               // 141: labmanager.StopLabsRequest
+	(*StartLabsRequest)(nil),              // 142: labmanager.StartLabsRequest
+	(*LabLifecycleStatus)(nil),            // 143: labmanager.LabLifecycleStatus
+	(*ResourceAmounts)(nil),               // 144: labmanager.ResourceAmounts
+	(*ResourceAllocation)(nil),            // 145: labmanager.ResourceAllocation
+	(*LifecycleFeature)(nil),              // 146: labmanager.LifecycleFeature
+	(*GroupPodsSizingV2)(nil),             // 147: labmanager.GroupPodsSizingV2
+	(*GroupPodsSizingProfile)(nil),        // 148: labmanager.GroupPodsSizingProfile
+	(*GroupSizingInputs)(nil),             // 149: labmanager.GroupSizingInputs
+	(*GroupTrafficEnvelope)(nil),          // 150: labmanager.GroupTrafficEnvelope
+	(*GroupPodFormula)(nil),               // 151: labmanager.GroupPodFormula
+	(*GroupTarget)(nil),                   // 152: labmanager.GroupTarget
+	(*StopLabGroupItem)(nil),              // 153: labmanager.StopLabGroupItem
+	(*StopLabGroupsRequest)(nil),          // 154: labmanager.StopLabGroupsRequest
+	(*StartLabGroupsRequest)(nil),         // 155: labmanager.StartLabGroupsRequest
+	(*GroupLifecycleSpec)(nil),            // 156: labmanager.GroupLifecycleSpec
+	(*LabRetirementTarget)(nil),           // 157: labmanager.LabRetirementTarget
+	(*GroupRetirementTarget)(nil),         // 158: labmanager.GroupRetirementTarget
+	(*RetireLabsRequest)(nil),             // 159: labmanager.RetireLabsRequest
+	(*RetireLabGroupsRequest)(nil),        // 160: labmanager.RetireLabGroupsRequest
+	(*RetirementStatus)(nil),              // 161: labmanager.RetirementStatus
+	(*LabCreationReceipt)(nil),            // 162: labmanager.LabCreationReceipt
+	(*RegistryCredential)(nil),            // 163: labmanager.RegistryCredential
+	nil,                                   // 164: labmanager.LabelChanges.SetEntry
+	nil,                                   // 165: labmanager.LabGroupItem.LabelsEntry
+	nil,                                   // 166: labmanager.CreateLabGroupsRequest.LabelsEntry
+	nil,                                   // 167: labmanager.LabGroupClientItem.LabelsEntry
+	nil,                                   // 168: labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	nil,                                   // 169: labmanager.SetLabGroupAccessRequest.LabelsEntry
+	nil,                                   // 170: labmanager.LabItem.LabelsEntry
+	nil,                                   // 171: labmanager.CreateLabsRequest.LabelsEntry
+	nil,                                   // 172: labmanager.ReservationItem.LabelsEntry
+	nil,                                   // 173: labmanager.CreateReservationsRequest.LabelsEntry
+	nil,                                   // 174: labmanager.Reservation.LabelsEntry
+	nil,                                   // 175: labmanager.LabGroup.LabelsEntry
+	nil,                                   // 176: labmanager.Lab.LabelsEntry
+	nil,                                   // 177: labmanager.DeviceEnv.VarsEntry
+	nil,                                   // 178: labmanager.LabGroupClient.LabelsEntry
+	nil,                                   // 179: labmanager.LabGroupAccessPolicy.LabelsEntry
+	(*durationpb.Duration)(nil),           // 180: google.protobuf.Duration
 }
 var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	10,  // 0: labmanager.ItemResult.ref:type_name -> labmanager.ItemRef
 	0,   // 1: labmanager.ItemResult.state:type_name -> labmanager.ItemState
 	19,  // 2: labmanager.ItemResult.vpn_size:type_name -> labmanager.PodSize
 	19,  // 3: labmanager.ItemResult.gateway_size:type_name -> labmanager.PodSize
-	179, // 4: labmanager.ItemResult.retry_after:type_name -> google.protobuf.Duration
+	180, // 4: labmanager.ItemResult.retry_after:type_name -> google.protobuf.Duration
 	11,  // 5: labmanager.BatchResult.results:type_name -> labmanager.ItemResult
 	10,  // 6: labmanager.ListRequest.items:type_name -> labmanager.ItemRef
 	14,  // 7: labmanager.DeleteRequest.by_selector:type_name -> labmanager.Selector
 	10,  // 8: labmanager.DeleteRequest.items:type_name -> labmanager.ItemRef
-	163, // 9: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
-	164, // 10: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
+	164, // 9: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
+	165, // 10: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
 	19,  // 11: labmanager.LabGroupItem.vpn_size:type_name -> labmanager.PodSize
 	19,  // 12: labmanager.LabGroupItem.gateway_size:type_name -> labmanager.PodSize
-	165, // 13: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
+	166, // 13: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
 	18,  // 14: labmanager.CreateLabGroupsRequest.items:type_name -> labmanager.LabGroupItem
 	16,  // 15: labmanager.LabGroupChanges.labels:type_name -> labmanager.LabelChanges
 	21,  // 16: labmanager.UpdateLabGroupItem.changes:type_name -> labmanager.LabGroupChanges
 	14,  // 17: labmanager.UpdateLabGroupsRequest.by_selector:type_name -> labmanager.Selector
 	21,  // 18: labmanager.UpdateLabGroupsRequest.changes:type_name -> labmanager.LabGroupChanges
 	22,  // 19: labmanager.UpdateLabGroupsRequest.items:type_name -> labmanager.UpdateLabGroupItem
-	166, // 20: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
-	167, // 21: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	167, // 20: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
+	168, // 21: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
 	24,  // 22: labmanager.CreateLabGroupClientsRequest.items:type_name -> labmanager.LabGroupClientItem
 	11,  // 23: labmanager.LabGroupClientResult.result:type_name -> labmanager.ItemResult
 	81,  // 24: labmanager.LabGroupClientResult.client:type_name -> labmanager.LabGroupClient
@@ -13985,17 +14074,17 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	14,  // 27: labmanager.UpdateLabGroupClientsRequest.by_selector:type_name -> labmanager.Selector
 	16,  // 28: labmanager.UpdateLabGroupClientsRequest.labels:type_name -> labmanager.LabelChanges
 	28,  // 29: labmanager.UpdateLabGroupClientsRequest.items:type_name -> labmanager.UpdateLabGroupClientItem
-	168, // 30: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
+	169, // 30: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
 	85,  // 31: labmanager.SetLabGroupAccessRequest.policies:type_name -> labmanager.LabGroupAccessPolicy
 	52,  // 32: labmanager.LabVariant.env:type_name -> labmanager.DeviceEnv
-	162, // 33: labmanager.LabVariant.registry_credentials:type_name -> labmanager.RegistryCredential
+	163, // 33: labmanager.LabVariant.registry_credentials:type_name -> labmanager.RegistryCredential
 	53,  // 34: labmanager.LabVariant.bootstrap:type_name -> labmanager.DeviceBootstrap
 	55,  // 35: labmanager.LabVariant.checks:type_name -> labmanager.LabChecks
 	52,  // 36: labmanager.LabItem.env:type_name -> labmanager.DeviceEnv
-	169, // 37: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
+	170, // 37: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
 	53,  // 38: labmanager.LabItem.bootstrap:type_name -> labmanager.DeviceBootstrap
 	55,  // 39: labmanager.LabItem.checks:type_name -> labmanager.LabChecks
-	170, // 40: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
+	171, // 40: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
 	31,  // 41: labmanager.CreateLabsRequest.variants:type_name -> labmanager.LabVariant
 	32,  // 42: labmanager.CreateLabsRequest.items:type_name -> labmanager.LabItem
 	16,  // 43: labmanager.LabChanges.labels:type_name -> labmanager.LabelChanges
@@ -14006,8 +14095,8 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	14,  // 48: labmanager.UpdateLabsRequest.by_selector:type_name -> labmanager.Selector
 	34,  // 49: labmanager.UpdateLabsRequest.changes:type_name -> labmanager.LabChanges
 	35,  // 50: labmanager.UpdateLabsRequest.items:type_name -> labmanager.UpdateLabItem
-	171, // 51: labmanager.ReservationItem.labels:type_name -> labmanager.ReservationItem.LabelsEntry
-	172, // 52: labmanager.CreateReservationsRequest.labels:type_name -> labmanager.CreateReservationsRequest.LabelsEntry
+	172, // 51: labmanager.ReservationItem.labels:type_name -> labmanager.ReservationItem.LabelsEntry
+	173, // 52: labmanager.CreateReservationsRequest.labels:type_name -> labmanager.CreateReservationsRequest.LabelsEntry
 	37,  // 53: labmanager.CreateReservationsRequest.items:type_name -> labmanager.ReservationItem
 	16,  // 54: labmanager.ReservationChanges.labels:type_name -> labmanager.LabelChanges
 	39,  // 55: labmanager.UpdateReservationItem.changes:type_name -> labmanager.ReservationChanges
@@ -14015,27 +14104,27 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	14,  // 57: labmanager.UpdateReservationsRequest.by_selector:type_name -> labmanager.Selector
 	39,  // 58: labmanager.UpdateReservationsRequest.changes:type_name -> labmanager.ReservationChanges
 	1,   // 59: labmanager.ReservationStatus.phase:type_name -> labmanager.ReservationPhase
-	173, // 60: labmanager.Reservation.labels:type_name -> labmanager.Reservation.LabelsEntry
+	174, // 60: labmanager.Reservation.labels:type_name -> labmanager.Reservation.LabelsEntry
 	42,  // 61: labmanager.Reservation.status:type_name -> labmanager.ReservationStatus
 	43,  // 62: labmanager.ReservationList.items:type_name -> labmanager.Reservation
 	10,  // 63: labmanager.DevicesRequest.items:type_name -> labmanager.ItemRef
 	45,  // 64: labmanager.DevicesRequest.by_selector:type_name -> labmanager.DeviceSelector
 	46,  // 65: labmanager.RescueDevicesRequest.devices:type_name -> labmanager.DevicesRequest
 	49,  // 66: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
-	174, // 67: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
-	155, // 68: labmanager.LabGroup.lifecycle:type_name -> labmanager.GroupLifecycleSpec
+	175, // 67: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
+	156, // 68: labmanager.LabGroup.lifecycle:type_name -> labmanager.GroupLifecycleSpec
 	19,  // 69: labmanager.LabGroup.vpn_size:type_name -> labmanager.PodSize
 	19,  // 70: labmanager.LabGroup.gateway_size:type_name -> labmanager.PodSize
 	72,  // 71: labmanager.LabGroupStatus.scheduling:type_name -> labmanager.Scheduling
 	75,  // 72: labmanager.LabGroupStatus.pods:type_name -> labmanager.LabGroupPod
-	142, // 73: labmanager.LabGroupStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
-	144, // 74: labmanager.LabGroupStatus.resources:type_name -> labmanager.ResourceAllocation
-	160, // 75: labmanager.LabGroupStatus.retirement:type_name -> labmanager.RetirementStatus
+	143, // 73: labmanager.LabGroupStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
+	145, // 74: labmanager.LabGroupStatus.resources:type_name -> labmanager.ResourceAllocation
+	161, // 75: labmanager.LabGroupStatus.retirement:type_name -> labmanager.RetirementStatus
 	48,  // 76: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
 	70,  // 77: labmanager.Lab.status:type_name -> labmanager.LabStatus
-	175, // 78: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
-	161, // 79: labmanager.Lab.creation_receipt:type_name -> labmanager.LabCreationReceipt
-	176, // 80: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
+	176, // 78: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
+	162, // 79: labmanager.Lab.creation_receipt:type_name -> labmanager.LabCreationReceipt
+	177, // 80: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
 	54,  // 81: labmanager.DeviceBootstrap.files:type_name -> labmanager.BootstrapFile
 	56,  // 82: labmanager.LabChecks.items:type_name -> labmanager.Check
 	2,   // 83: labmanager.Check.mode:type_name -> labmanager.CheckMode
@@ -14055,9 +14144,9 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	78,  // 97: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
 	79,  // 98: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
 	72,  // 99: labmanager.LabStatus.scheduling:type_name -> labmanager.Scheduling
-	142, // 100: labmanager.LabStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
-	144, // 101: labmanager.LabStatus.resources:type_name -> labmanager.ResourceAllocation
-	160, // 102: labmanager.LabStatus.retirement:type_name -> labmanager.RetirementStatus
+	143, // 100: labmanager.LabStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
+	145, // 101: labmanager.LabStatus.resources:type_name -> labmanager.ResourceAllocation
+	161, // 102: labmanager.LabStatus.retirement:type_name -> labmanager.RetirementStatus
 	66,  // 103: labmanager.LabStatus.checks:type_name -> labmanager.CheckResult
 	71,  // 104: labmanager.LabStatus.gateways:type_name -> labmanager.LabGatewayStatus
 	5,   // 105: labmanager.PodScheduling.state:type_name -> labmanager.PodState
@@ -14068,173 +14157,174 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	67,  // 110: labmanager.LabDeviceStatus.bootstrap:type_name -> labmanager.BootstrapStatus
 	51,  // 111: labmanager.LabList.items:type_name -> labmanager.Lab
 	82,  // 112: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
-	177, // 113: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
+	178, // 113: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
 	83,  // 114: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
 	81,  // 115: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
 	86,  // 116: labmanager.LabGroupAccessPolicy.rules:type_name -> labmanager.LabGroupAccessRule
-	87,  // 117: labmanager.LabGroupAccessPolicy.status:type_name -> labmanager.LabGroupAccessPolicyStatus
-	178, // 118: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
+	88,  // 117: labmanager.LabGroupAccessPolicy.status:type_name -> labmanager.LabGroupAccessPolicyStatus
+	179, // 118: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
 	6,   // 119: labmanager.LabGroupAccessRule.action:type_name -> labmanager.LabGroupAccessAction
-	88,  // 120: labmanager.LabGroupAccessPolicyStatus.rules:type_name -> labmanager.LabGroupAccessRuleStatistics
-	6,   // 121: labmanager.LabGroupAccessRuleStatistics.action:type_name -> labmanager.LabGroupAccessAction
-	48,  // 122: labmanager.MonitoringUpdate.groups:type_name -> labmanager.LabGroup
-	51,  // 123: labmanager.MonitoringUpdate.labs:type_name -> labmanager.Lab
-	81,  // 124: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
-	90,  // 125: labmanager.MonitoringUpdate.deleted_keys:type_name -> labmanager.MonitoringDeletedKey
-	85,  // 126: labmanager.MonitoringUpdate.policies:type_name -> labmanager.LabGroupAccessPolicy
-	95,  // 127: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
-	97,  // 128: labmanager.MonitoringUpdate.features:type_name -> labmanager.FeaturesResponse
-	92,  // 129: labmanager.MonitoringUpdate.traffic:type_name -> labmanager.TrafficReport
-	119, // 130: labmanager.MonitoringUpdate.errors:type_name -> labmanager.ErrorJournal
-	43,  // 131: labmanager.MonitoringUpdate.reservations:type_name -> labmanager.Reservation
-	94,  // 132: labmanager.TrafficReport.ledger:type_name -> labmanager.TrafficTouch
-	93,  // 133: labmanager.TrafficReport.coverage_spans:type_name -> labmanager.TrafficCoverageSpan
-	96,  // 134: labmanager.CapacityResponse.node_profiles:type_name -> labmanager.NodeProfileCapacity
-	114, // 135: labmanager.FeaturesResponse.state_persistence:type_name -> labmanager.StatePersistenceFeature
-	115, // 136: labmanager.FeaturesResponse.image_cache:type_name -> labmanager.ImageCacheFeature
-	116, // 137: labmanager.FeaturesResponse.scheduler:type_name -> labmanager.SchedulerFeature
-	117, // 138: labmanager.FeaturesResponse.endpoints:type_name -> labmanager.EndpointsFeature
-	118, // 139: labmanager.FeaturesResponse.certificate:type_name -> labmanager.CertificateFeature
-	113, // 140: labmanager.FeaturesResponse.proxy:type_name -> labmanager.ProxyFeature
-	108, // 141: labmanager.FeaturesResponse.limits:type_name -> labmanager.LimitsFeature
-	105, // 142: labmanager.FeaturesResponse.group_pods:type_name -> labmanager.GroupPodsFeature
-	106, // 143: labmanager.FeaturesResponse.constants:type_name -> labmanager.DeviceConstants
-	107, // 144: labmanager.FeaturesResponse.tenant_quota:type_name -> labmanager.TenantQuotaFeature
-	145, // 145: labmanager.FeaturesResponse.lifecycle:type_name -> labmanager.LifecycleFeature
-	103, // 146: labmanager.FeaturesResponse.reservations:type_name -> labmanager.ReservationsFeature
-	102, // 147: labmanager.FeaturesResponse.group_limits:type_name -> labmanager.GroupLimitsFeature
-	99,  // 148: labmanager.FeaturesResponse.checks:type_name -> labmanager.ChecksFeature
-	101, // 149: labmanager.FeaturesResponse.bootstrap:type_name -> labmanager.BootstrapFeature
-	98,  // 150: labmanager.FeaturesResponse.vpn:type_name -> labmanager.VPNFeature
-	100, // 151: labmanager.FeaturesResponse.access:type_name -> labmanager.AccessFeature
-	104, // 152: labmanager.GroupPodsFeature.vpn:type_name -> labmanager.PodSizing
-	104, // 153: labmanager.GroupPodsFeature.gateway:type_name -> labmanager.PodSizing
-	19,  // 154: labmanager.GroupPodsFeature.default_vpn:type_name -> labmanager.PodSize
-	19,  // 155: labmanager.GroupPodsFeature.default_gateway:type_name -> labmanager.PodSize
-	146, // 156: labmanager.GroupPodsFeature.sizing_v2:type_name -> labmanager.GroupPodsSizingV2
-	109, // 157: labmanager.LimitsFeature.device:type_name -> labmanager.DeviceLimits
-	110, // 158: labmanager.LimitsFeature.lab:type_name -> labmanager.LabLimits
-	112, // 159: labmanager.LimitsFeature.tenant:type_name -> labmanager.TenantLimits
-	111, // 160: labmanager.LimitsFeature.group:type_name -> labmanager.GroupLimits
-	120, // 161: labmanager.ErrorJournal.components:type_name -> labmanager.ComponentErrors
-	122, // 162: labmanager.ErrorJournal.deploy_failures:type_name -> labmanager.DeployFailure
-	121, // 163: labmanager.ComponentErrors.groups:type_name -> labmanager.ErrorGroup
-	162, // 164: labmanager.PrewarmImagesRequest.registry_credentials:type_name -> labmanager.RegistryCredential
-	7,   // 165: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
-	124, // 166: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
-	10,  // 167: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
-	133, // 168: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
-	134, // 169: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
-	10,  // 170: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
-	136, // 171: labmanager.MaintenanceWindowList.items:type_name -> labmanager.MaintenanceWindow
-	10,  // 172: labmanager.LabLifecycleTarget.ref:type_name -> labmanager.ItemRef
-	138, // 173: labmanager.StopLabItem.target:type_name -> labmanager.LabLifecycleTarget
-	8,   // 174: labmanager.StopLabItem.snapshot_mode:type_name -> labmanager.StopSnapshotMode
-	139, // 175: labmanager.StopLabsRequest.items:type_name -> labmanager.StopLabItem
-	138, // 176: labmanager.StartLabsRequest.items:type_name -> labmanager.LabLifecycleTarget
-	143, // 177: labmanager.ResourceAllocation.configured_requests:type_name -> labmanager.ResourceAmounts
-	143, // 178: labmanager.ResourceAllocation.configured_limits:type_name -> labmanager.ResourceAmounts
-	143, // 179: labmanager.ResourceAllocation.allocated_requests:type_name -> labmanager.ResourceAmounts
-	143, // 180: labmanager.ResourceAllocation.used:type_name -> labmanager.ResourceAmounts
-	147, // 181: labmanager.GroupPodsSizingV2.profiles:type_name -> labmanager.GroupPodsSizingProfile
-	148, // 182: labmanager.GroupPodsSizingProfile.max_inputs:type_name -> labmanager.GroupSizingInputs
-	150, // 183: labmanager.GroupPodsSizingProfile.vpn:type_name -> labmanager.GroupPodFormula
-	150, // 184: labmanager.GroupPodsSizingProfile.gateway:type_name -> labmanager.GroupPodFormula
-	149, // 185: labmanager.GroupSizingInputs.envelope:type_name -> labmanager.GroupTrafficEnvelope
-	19,  // 186: labmanager.GroupPodFormula.base:type_name -> labmanager.PodSize
-	19,  // 187: labmanager.GroupPodFormula.per_user:type_name -> labmanager.PodSize
-	19,  // 188: labmanager.GroupPodFormula.per_active_lab:type_name -> labmanager.PodSize
-	19,  // 189: labmanager.GroupPodFormula.per_internet_lab:type_name -> labmanager.PodSize
-	19,  // 190: labmanager.GroupPodFormula.per_allowed_relation:type_name -> labmanager.PodSize
-	19,  // 191: labmanager.GroupPodFormula.per_retained_flow:type_name -> labmanager.PodSize
-	19,  // 192: labmanager.GroupPodFormula.floor:type_name -> labmanager.PodSize
-	19,  // 193: labmanager.GroupPodFormula.round_to:type_name -> labmanager.PodSize
-	151, // 194: labmanager.StopLabGroupItem.target:type_name -> labmanager.GroupTarget
-	152, // 195: labmanager.StopLabGroupsRequest.items:type_name -> labmanager.StopLabGroupItem
-	151, // 196: labmanager.StartLabGroupsRequest.items:type_name -> labmanager.GroupTarget
-	138, // 197: labmanager.LabRetirementTarget.stop_target:type_name -> labmanager.LabLifecycleTarget
-	151, // 198: labmanager.GroupRetirementTarget.stop_target:type_name -> labmanager.GroupTarget
-	156, // 199: labmanager.RetireLabsRequest.items:type_name -> labmanager.LabRetirementTarget
-	157, // 200: labmanager.RetireLabGroupsRequest.items:type_name -> labmanager.GroupRetirementTarget
-	9,   // 201: labmanager.LabManager.Ping:input_type -> labmanager.Empty
-	20,  // 202: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
-	13,  // 203: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
-	23,  // 204: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
-	15,  // 205: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
-	25,  // 206: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
-	13,  // 207: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
-	29,  // 208: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
-	15,  // 209: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
-	30,  // 210: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
-	33,  // 211: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
-	13,  // 212: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
-	36,  // 213: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
-	15,  // 214: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
-	140, // 215: labmanager.LabManager.StopLabs:input_type -> labmanager.StopLabsRequest
-	141, // 216: labmanager.LabManager.StartLabs:input_type -> labmanager.StartLabsRequest
-	153, // 217: labmanager.LabManager.StopLabGroups:input_type -> labmanager.StopLabGroupsRequest
-	154, // 218: labmanager.LabManager.StartLabGroups:input_type -> labmanager.StartLabGroupsRequest
-	158, // 219: labmanager.LabManager.RetireLabs:input_type -> labmanager.RetireLabsRequest
-	159, // 220: labmanager.LabManager.RetireLabGroups:input_type -> labmanager.RetireLabGroupsRequest
-	38,  // 221: labmanager.LabManager.CreateReservations:input_type -> labmanager.CreateReservationsRequest
-	13,  // 222: labmanager.LabManager.ListReservations:input_type -> labmanager.ListRequest
-	41,  // 223: labmanager.LabManager.UpdateReservations:input_type -> labmanager.UpdateReservationsRequest
-	15,  // 224: labmanager.LabManager.DeleteReservations:input_type -> labmanager.DeleteRequest
-	89,  // 225: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
-	126, // 226: labmanager.LabManager.Enroll:input_type -> labmanager.EnrollRequest
-	127, // 227: labmanager.LabManager.RenewCertificate:input_type -> labmanager.RenewCertificateRequest
-	129, // 228: labmanager.LabManager.RotateAccessKey:input_type -> labmanager.RotateAccessKeyRequest
-	130, // 229: labmanager.LabManager.RemoveAccessKey:input_type -> labmanager.RemoveAccessKeyRequest
-	9,   // 230: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
-	9,   // 231: labmanager.LabManager.GetFeatures:input_type -> labmanager.Empty
-	135, // 232: labmanager.LabManager.ListMaintenanceWindows:input_type -> labmanager.ListMaintenanceWindowsRequest
-	123, // 233: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
-	46,  // 234: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
-	47,  // 235: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
-	69,  // 236: labmanager.LabManager.RunChecks:input_type -> labmanager.RunChecksRequest
-	131, // 237: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
-	9,   // 238: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	12,  // 239: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
-	50,  // 240: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	12,  // 241: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
-	12,  // 242: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
-	27,  // 243: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
-	84,  // 244: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	12,  // 245: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
-	12,  // 246: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
-	12,  // 247: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
-	12,  // 248: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
-	80,  // 249: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	12,  // 250: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
-	12,  // 251: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
-	12,  // 252: labmanager.LabManager.StopLabs:output_type -> labmanager.BatchResult
-	12,  // 253: labmanager.LabManager.StartLabs:output_type -> labmanager.BatchResult
-	12,  // 254: labmanager.LabManager.StopLabGroups:output_type -> labmanager.BatchResult
-	12,  // 255: labmanager.LabManager.StartLabGroups:output_type -> labmanager.BatchResult
-	12,  // 256: labmanager.LabManager.RetireLabs:output_type -> labmanager.BatchResult
-	12,  // 257: labmanager.LabManager.RetireLabGroups:output_type -> labmanager.BatchResult
-	12,  // 258: labmanager.LabManager.CreateReservations:output_type -> labmanager.BatchResult
-	44,  // 259: labmanager.LabManager.ListReservations:output_type -> labmanager.ReservationList
-	12,  // 260: labmanager.LabManager.UpdateReservations:output_type -> labmanager.BatchResult
-	12,  // 261: labmanager.LabManager.DeleteReservations:output_type -> labmanager.BatchResult
-	91,  // 262: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	128, // 263: labmanager.LabManager.Enroll:output_type -> labmanager.CertificateResponse
-	128, // 264: labmanager.LabManager.RenewCertificate:output_type -> labmanager.CertificateResponse
-	9,   // 265: labmanager.LabManager.RotateAccessKey:output_type -> labmanager.Empty
-	9,   // 266: labmanager.LabManager.RemoveAccessKey:output_type -> labmanager.Empty
-	95,  // 267: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	97,  // 268: labmanager.LabManager.GetFeatures:output_type -> labmanager.FeaturesResponse
-	137, // 269: labmanager.LabManager.ListMaintenanceWindows:output_type -> labmanager.MaintenanceWindowList
-	125, // 270: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
-	12,  // 271: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
-	12,  // 272: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
-	12,  // 273: labmanager.LabManager.RunChecks:output_type -> labmanager.BatchResult
-	132, // 274: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
-	238, // [238:275] is the sub-list for method output_type
-	201, // [201:238] is the sub-list for method input_type
-	201, // [201:201] is the sub-list for extension type_name
-	201, // [201:201] is the sub-list for extension extendee
-	0,   // [0:201] is the sub-list for field type_name
+	87,  // 120: labmanager.LabGroupAccessRule.include:type_name -> labmanager.AccessInclude
+	89,  // 121: labmanager.LabGroupAccessPolicyStatus.rules:type_name -> labmanager.LabGroupAccessRuleStatistics
+	6,   // 122: labmanager.LabGroupAccessRuleStatistics.action:type_name -> labmanager.LabGroupAccessAction
+	48,  // 123: labmanager.MonitoringUpdate.groups:type_name -> labmanager.LabGroup
+	51,  // 124: labmanager.MonitoringUpdate.labs:type_name -> labmanager.Lab
+	81,  // 125: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
+	91,  // 126: labmanager.MonitoringUpdate.deleted_keys:type_name -> labmanager.MonitoringDeletedKey
+	85,  // 127: labmanager.MonitoringUpdate.policies:type_name -> labmanager.LabGroupAccessPolicy
+	96,  // 128: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
+	98,  // 129: labmanager.MonitoringUpdate.features:type_name -> labmanager.FeaturesResponse
+	93,  // 130: labmanager.MonitoringUpdate.traffic:type_name -> labmanager.TrafficReport
+	120, // 131: labmanager.MonitoringUpdate.errors:type_name -> labmanager.ErrorJournal
+	43,  // 132: labmanager.MonitoringUpdate.reservations:type_name -> labmanager.Reservation
+	95,  // 133: labmanager.TrafficReport.ledger:type_name -> labmanager.TrafficTouch
+	94,  // 134: labmanager.TrafficReport.coverage_spans:type_name -> labmanager.TrafficCoverageSpan
+	97,  // 135: labmanager.CapacityResponse.node_profiles:type_name -> labmanager.NodeProfileCapacity
+	115, // 136: labmanager.FeaturesResponse.state_persistence:type_name -> labmanager.StatePersistenceFeature
+	116, // 137: labmanager.FeaturesResponse.image_cache:type_name -> labmanager.ImageCacheFeature
+	117, // 138: labmanager.FeaturesResponse.scheduler:type_name -> labmanager.SchedulerFeature
+	118, // 139: labmanager.FeaturesResponse.endpoints:type_name -> labmanager.EndpointsFeature
+	119, // 140: labmanager.FeaturesResponse.certificate:type_name -> labmanager.CertificateFeature
+	114, // 141: labmanager.FeaturesResponse.proxy:type_name -> labmanager.ProxyFeature
+	109, // 142: labmanager.FeaturesResponse.limits:type_name -> labmanager.LimitsFeature
+	106, // 143: labmanager.FeaturesResponse.group_pods:type_name -> labmanager.GroupPodsFeature
+	107, // 144: labmanager.FeaturesResponse.constants:type_name -> labmanager.DeviceConstants
+	108, // 145: labmanager.FeaturesResponse.tenant_quota:type_name -> labmanager.TenantQuotaFeature
+	146, // 146: labmanager.FeaturesResponse.lifecycle:type_name -> labmanager.LifecycleFeature
+	104, // 147: labmanager.FeaturesResponse.reservations:type_name -> labmanager.ReservationsFeature
+	103, // 148: labmanager.FeaturesResponse.group_limits:type_name -> labmanager.GroupLimitsFeature
+	100, // 149: labmanager.FeaturesResponse.checks:type_name -> labmanager.ChecksFeature
+	102, // 150: labmanager.FeaturesResponse.bootstrap:type_name -> labmanager.BootstrapFeature
+	99,  // 151: labmanager.FeaturesResponse.vpn:type_name -> labmanager.VPNFeature
+	101, // 152: labmanager.FeaturesResponse.access:type_name -> labmanager.AccessFeature
+	105, // 153: labmanager.GroupPodsFeature.vpn:type_name -> labmanager.PodSizing
+	105, // 154: labmanager.GroupPodsFeature.gateway:type_name -> labmanager.PodSizing
+	19,  // 155: labmanager.GroupPodsFeature.default_vpn:type_name -> labmanager.PodSize
+	19,  // 156: labmanager.GroupPodsFeature.default_gateway:type_name -> labmanager.PodSize
+	147, // 157: labmanager.GroupPodsFeature.sizing_v2:type_name -> labmanager.GroupPodsSizingV2
+	110, // 158: labmanager.LimitsFeature.device:type_name -> labmanager.DeviceLimits
+	111, // 159: labmanager.LimitsFeature.lab:type_name -> labmanager.LabLimits
+	113, // 160: labmanager.LimitsFeature.tenant:type_name -> labmanager.TenantLimits
+	112, // 161: labmanager.LimitsFeature.group:type_name -> labmanager.GroupLimits
+	121, // 162: labmanager.ErrorJournal.components:type_name -> labmanager.ComponentErrors
+	123, // 163: labmanager.ErrorJournal.deploy_failures:type_name -> labmanager.DeployFailure
+	122, // 164: labmanager.ComponentErrors.groups:type_name -> labmanager.ErrorGroup
+	163, // 165: labmanager.PrewarmImagesRequest.registry_credentials:type_name -> labmanager.RegistryCredential
+	7,   // 166: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
+	125, // 167: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
+	10,  // 168: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
+	134, // 169: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
+	135, // 170: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
+	10,  // 171: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
+	137, // 172: labmanager.MaintenanceWindowList.items:type_name -> labmanager.MaintenanceWindow
+	10,  // 173: labmanager.LabLifecycleTarget.ref:type_name -> labmanager.ItemRef
+	139, // 174: labmanager.StopLabItem.target:type_name -> labmanager.LabLifecycleTarget
+	8,   // 175: labmanager.StopLabItem.snapshot_mode:type_name -> labmanager.StopSnapshotMode
+	140, // 176: labmanager.StopLabsRequest.items:type_name -> labmanager.StopLabItem
+	139, // 177: labmanager.StartLabsRequest.items:type_name -> labmanager.LabLifecycleTarget
+	144, // 178: labmanager.ResourceAllocation.configured_requests:type_name -> labmanager.ResourceAmounts
+	144, // 179: labmanager.ResourceAllocation.configured_limits:type_name -> labmanager.ResourceAmounts
+	144, // 180: labmanager.ResourceAllocation.allocated_requests:type_name -> labmanager.ResourceAmounts
+	144, // 181: labmanager.ResourceAllocation.used:type_name -> labmanager.ResourceAmounts
+	148, // 182: labmanager.GroupPodsSizingV2.profiles:type_name -> labmanager.GroupPodsSizingProfile
+	149, // 183: labmanager.GroupPodsSizingProfile.max_inputs:type_name -> labmanager.GroupSizingInputs
+	151, // 184: labmanager.GroupPodsSizingProfile.vpn:type_name -> labmanager.GroupPodFormula
+	151, // 185: labmanager.GroupPodsSizingProfile.gateway:type_name -> labmanager.GroupPodFormula
+	150, // 186: labmanager.GroupSizingInputs.envelope:type_name -> labmanager.GroupTrafficEnvelope
+	19,  // 187: labmanager.GroupPodFormula.base:type_name -> labmanager.PodSize
+	19,  // 188: labmanager.GroupPodFormula.per_user:type_name -> labmanager.PodSize
+	19,  // 189: labmanager.GroupPodFormula.per_active_lab:type_name -> labmanager.PodSize
+	19,  // 190: labmanager.GroupPodFormula.per_internet_lab:type_name -> labmanager.PodSize
+	19,  // 191: labmanager.GroupPodFormula.per_allowed_relation:type_name -> labmanager.PodSize
+	19,  // 192: labmanager.GroupPodFormula.per_retained_flow:type_name -> labmanager.PodSize
+	19,  // 193: labmanager.GroupPodFormula.floor:type_name -> labmanager.PodSize
+	19,  // 194: labmanager.GroupPodFormula.round_to:type_name -> labmanager.PodSize
+	152, // 195: labmanager.StopLabGroupItem.target:type_name -> labmanager.GroupTarget
+	153, // 196: labmanager.StopLabGroupsRequest.items:type_name -> labmanager.StopLabGroupItem
+	152, // 197: labmanager.StartLabGroupsRequest.items:type_name -> labmanager.GroupTarget
+	139, // 198: labmanager.LabRetirementTarget.stop_target:type_name -> labmanager.LabLifecycleTarget
+	152, // 199: labmanager.GroupRetirementTarget.stop_target:type_name -> labmanager.GroupTarget
+	157, // 200: labmanager.RetireLabsRequest.items:type_name -> labmanager.LabRetirementTarget
+	158, // 201: labmanager.RetireLabGroupsRequest.items:type_name -> labmanager.GroupRetirementTarget
+	9,   // 202: labmanager.LabManager.Ping:input_type -> labmanager.Empty
+	20,  // 203: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
+	13,  // 204: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
+	23,  // 205: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
+	15,  // 206: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
+	25,  // 207: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
+	13,  // 208: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
+	29,  // 209: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
+	15,  // 210: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
+	30,  // 211: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
+	33,  // 212: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
+	13,  // 213: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
+	36,  // 214: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
+	15,  // 215: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
+	141, // 216: labmanager.LabManager.StopLabs:input_type -> labmanager.StopLabsRequest
+	142, // 217: labmanager.LabManager.StartLabs:input_type -> labmanager.StartLabsRequest
+	154, // 218: labmanager.LabManager.StopLabGroups:input_type -> labmanager.StopLabGroupsRequest
+	155, // 219: labmanager.LabManager.StartLabGroups:input_type -> labmanager.StartLabGroupsRequest
+	159, // 220: labmanager.LabManager.RetireLabs:input_type -> labmanager.RetireLabsRequest
+	160, // 221: labmanager.LabManager.RetireLabGroups:input_type -> labmanager.RetireLabGroupsRequest
+	38,  // 222: labmanager.LabManager.CreateReservations:input_type -> labmanager.CreateReservationsRequest
+	13,  // 223: labmanager.LabManager.ListReservations:input_type -> labmanager.ListRequest
+	41,  // 224: labmanager.LabManager.UpdateReservations:input_type -> labmanager.UpdateReservationsRequest
+	15,  // 225: labmanager.LabManager.DeleteReservations:input_type -> labmanager.DeleteRequest
+	90,  // 226: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
+	127, // 227: labmanager.LabManager.Enroll:input_type -> labmanager.EnrollRequest
+	128, // 228: labmanager.LabManager.RenewCertificate:input_type -> labmanager.RenewCertificateRequest
+	130, // 229: labmanager.LabManager.RotateAccessKey:input_type -> labmanager.RotateAccessKeyRequest
+	131, // 230: labmanager.LabManager.RemoveAccessKey:input_type -> labmanager.RemoveAccessKeyRequest
+	9,   // 231: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
+	9,   // 232: labmanager.LabManager.GetFeatures:input_type -> labmanager.Empty
+	136, // 233: labmanager.LabManager.ListMaintenanceWindows:input_type -> labmanager.ListMaintenanceWindowsRequest
+	124, // 234: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
+	46,  // 235: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
+	47,  // 236: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
+	69,  // 237: labmanager.LabManager.RunChecks:input_type -> labmanager.RunChecksRequest
+	132, // 238: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
+	9,   // 239: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	12,  // 240: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
+	50,  // 241: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	12,  // 242: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
+	12,  // 243: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
+	27,  // 244: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
+	84,  // 245: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	12,  // 246: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
+	12,  // 247: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
+	12,  // 248: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
+	12,  // 249: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
+	80,  // 250: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	12,  // 251: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
+	12,  // 252: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
+	12,  // 253: labmanager.LabManager.StopLabs:output_type -> labmanager.BatchResult
+	12,  // 254: labmanager.LabManager.StartLabs:output_type -> labmanager.BatchResult
+	12,  // 255: labmanager.LabManager.StopLabGroups:output_type -> labmanager.BatchResult
+	12,  // 256: labmanager.LabManager.StartLabGroups:output_type -> labmanager.BatchResult
+	12,  // 257: labmanager.LabManager.RetireLabs:output_type -> labmanager.BatchResult
+	12,  // 258: labmanager.LabManager.RetireLabGroups:output_type -> labmanager.BatchResult
+	12,  // 259: labmanager.LabManager.CreateReservations:output_type -> labmanager.BatchResult
+	44,  // 260: labmanager.LabManager.ListReservations:output_type -> labmanager.ReservationList
+	12,  // 261: labmanager.LabManager.UpdateReservations:output_type -> labmanager.BatchResult
+	12,  // 262: labmanager.LabManager.DeleteReservations:output_type -> labmanager.BatchResult
+	92,  // 263: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	129, // 264: labmanager.LabManager.Enroll:output_type -> labmanager.CertificateResponse
+	129, // 265: labmanager.LabManager.RenewCertificate:output_type -> labmanager.CertificateResponse
+	9,   // 266: labmanager.LabManager.RotateAccessKey:output_type -> labmanager.Empty
+	9,   // 267: labmanager.LabManager.RemoveAccessKey:output_type -> labmanager.Empty
+	96,  // 268: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	98,  // 269: labmanager.LabManager.GetFeatures:output_type -> labmanager.FeaturesResponse
+	138, // 270: labmanager.LabManager.ListMaintenanceWindows:output_type -> labmanager.MaintenanceWindowList
+	126, // 271: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
+	12,  // 272: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
+	12,  // 273: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
+	12,  // 274: labmanager.LabManager.RunChecks:output_type -> labmanager.BatchResult
+	133, // 275: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
+	239, // [239:276] is the sub-list for method output_type
+	202, // [202:239] is the sub-list for method input_type
+	202, // [202:202] is the sub-list for extension type_name
+	202, // [202:202] is the sub-list for extension extendee
+	0,   // [0:202] is the sub-list for field type_name
 }
 
 func init() { file_pkg_agent_protobuf_agent_proto_init() }
@@ -14265,7 +14355,7 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 	file_pkg_agent_protobuf_agent_proto_msgTypes[54].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[55].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[56].OneofWrappers = []any{}
-	file_pkg_agent_protobuf_agent_proto_msgTypes[123].OneofWrappers = []any{
+	file_pkg_agent_protobuf_agent_proto_msgTypes[124].OneofWrappers = []any{
 		(*SnapshotChunk_Meta)(nil),
 		(*SnapshotChunk_Data)(nil),
 		(*SnapshotChunk_Trailer)(nil),
@@ -14276,7 +14366,7 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_agent_protobuf_agent_proto_rawDesc), len(file_pkg_agent_protobuf_agent_proto_rawDesc)),
 			NumEnums:      9,
-			NumMessages:   170,
+			NumMessages:   171,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

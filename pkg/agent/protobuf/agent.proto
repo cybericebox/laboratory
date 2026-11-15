@@ -947,8 +947,19 @@ message LabGroupAccessRule {
   LabGroupAccessAction action = 1;
   // Empty means every VPN client in the LabGroup.
   repeated string client_names = 2;
-  // Empty means every Lab in the LabGroup.
+  // Empty means every Lab in the LabGroup (a deny rule only: an allow rule must name its laboratories).
   repeated string lab_names = 3;
+  // The VPN gateways (connectors) of those laboratories, by the name in the lab's spec.gateways (contract 2.4). An allow rule must name them: access is per
+  // client and per connector, never per whole laboratory. A deny rule with none means every VPN gateway.
+  repeated string gateway_names = 4;
+  // Allow only: narrows the access to these subnets of each named gateway's /24 (the union). Empty means the whole /24.
+  repeated AccessInclude include = 5;
+}
+// A subnet of a gateway's /24, <the /24>.host/prefix: prefix 24..32, host the first address of the subnet (a multiple of its size, 0..255). It is
+// relative to the gateway because the operator allocates the /24; it always lies inside it.
+message AccessInclude {
+  int32 host = 1;
+  int32 prefix = 2;
 }
 
 message LabGroupAccessPolicyStatus {
@@ -968,6 +979,8 @@ message LabGroupAccessRuleStatistics {
 	int64 packets = 4;
 	int64 bytes = 5;
 	bool counter_reset = 6;
+	// The connectors of the lab the row covers (contract 2.4); the counters are the client's in the lab, over all of them.
+	repeated string gateway_names = 7;
 }
 
 message MonitoringRequest {
