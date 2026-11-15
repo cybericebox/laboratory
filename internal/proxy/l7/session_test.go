@@ -747,3 +747,39 @@ func TestSession_IsBoundToItsHost(t *testing.T) {
 		t.Fatalf("a cookie without a host: %d", rec.Code)
 	}
 }
+
+func (f *handoffFixture) openFrom(addr, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", "https://"+labHost+AuthPath+"?t="+url.QueryEscape(token), nil)
+	req.Host, req.RemoteAddr = labHost, addr
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// A flood against the handoff path of one device host does not hold back a valid link of another client: garbage is rejected before it is
+// counted, and a flood of valid links from one address only spends that address' budget.
+func TestHandoff_FloodFromOneAddressDoesNotBlockAnother(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithAuthRateLimit(0.001, 3)
+	for i := 0; i < 200; i++ {
+		if rec := f.openFrom("198.51.100.7:4000", "garbage"); rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("garbage %d was counted: 429", i)
+		}
+	}
+	good := f.link(t, nil)
+	if rec := f.openFrom("203.0.113.9:5000", good); rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid link after a garbage flood: %d", rec.Code)
+	}
+	limited := false
+	for i := 0; i < 10; i++ {
+		if f.openFrom("198.51.100.7:4000", good).Code == http.StatusTooManyRequests {
+			limited = true
+		}
+	}
+	if !limited {
+		t.Fatal("a flood of valid links from one address must be limited")
+	}
+	if rec := f.openFrom("203.0.113.10:5000", good); rec.Code != http.StatusSeeOther {
+		t.Fatalf("another address while the first is limited: %d", rec.Code)
+	}
+}

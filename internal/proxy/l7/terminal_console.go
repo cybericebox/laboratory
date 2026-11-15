@@ -67,11 +67,6 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 		fail(w, r, http.StatusMethodNotAllowed, pageGone, "method not allowed")
 		return
 	}
-	if !h.authLimit.allow(h.authKey(r, task)) {
-		w.Header().Set("Retry-After", "5")
-		fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
-		return
-	}
 	raw := r.URL.Query().Get("t")
 	if raw == "" || len(h.secret) == 0 {
 		h.expired(w, r)
@@ -82,6 +77,9 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 	hc, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
 	if err != nil {
 		h.expired(w, r)
+		return
+	}
+	if !h.throttleHandoff(w, r, task) {
 		return
 	}
 	abs := time.Unix(hc.Session, 0)

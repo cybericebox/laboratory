@@ -3,6 +3,7 @@ package l7
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -104,20 +105,35 @@ func (b *bucketSet) allow(key string) bool {
 	return k.take(now, b.rate, b.burst)
 }
 
-// WithAuthRateLimit limits the handoff path (/_auth), which verifies a signature and may issue a session: per lab and session cookie (rate per second
+// WithAuthRateLimit limits the handoff path (/_auth), which verifies a signature and may issue a session: per lab, client address and session cookie (rate per second
 // and burst), and all of them together at twenty times that. Over it the answer is 429.
 func (h *Handler) WithAuthRateLimit(rate float64, burst int) *Handler {
 	h.authLimit = newBucketSet(rate, burst, 100000)
 	return h
 }
 
-// authKey is the handoff limit key: the lab plus the session cookie presented (hashed), if any. The peer address is never used: behind
-// the gateway every client has the same one, so one client could hold back everybody.
+// authKey is the handoff limit key: the lab, the client address and the session cookie presented (hashed), if any. The address is the one the
+// proxy resolved for the connection (the PROXY protocol header of the trusted edge, else the peer), so a flood from one address spends only
+// its own budget and cannot hold back a valid link of another client.
 func (h *Handler) authKey(r *http.Request, task string) string {
 	sum := ""
 	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
 		d := sha256.Sum256([]byte(c.Value))
 		sum = hex.EncodeToString(d[:8])
 	}
-	return task + "|" + sum
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	return task + "|" + ip + "|" + sum
+}
+
+// throttleHandoff counts a handoff link that has already verified against the budget of its key and answers 429 when it is over.
+func (h *Handler) throttleHandoff(w http.ResponseWriter, r *http.Request, task string) bool {
+	if h.authLimit.allow(h.authKey(r, task)) {
+		return true
+	}
+	w.Header().Set("Retry-After", "5")
+	fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
+	return false
 }

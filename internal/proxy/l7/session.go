@@ -19,7 +19,7 @@ const AuthPath = "/_auth"
 
 // handoff turns a platform link into the proxy's own cookie and sends the
 // browser to a safe device destination, so the token leaves the URL.
-func (h *Handler) handoff(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, task string) {
 	host := requestHost(r)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
@@ -32,6 +32,10 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request) {
 	claims, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
 	if err != nil {
 		h.expired(w, r)
+		return
+	}
+	// Only a link that verifies is counted: a flood of garbage costs one cheap rejection each and uses up nobody's budget.
+	if !h.throttleHandoff(w, r, task) {
 		return
 	}
 	// The session ends at the link's sess, but not later than sessionMax from now; it is valid for sessionIdle,
