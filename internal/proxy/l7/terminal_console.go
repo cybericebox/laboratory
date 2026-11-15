@@ -67,6 +67,9 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 		fail(w, r, http.StatusMethodNotAllowed, pageGone, "method not allowed")
 		return
 	}
+	if !h.throttlePreAuth(w, r) {
+		return
+	}
 	raw := r.URL.Query().Get("t")
 	if raw == "" || len(h.secret) == 0 {
 		h.expired(w, r)
@@ -79,7 +82,7 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 		h.expired(w, r)
 		return
 	}
-	if !h.throttleHandoff(w, r, task) {
+	if !h.throttleHandoff(w, r, task, hc.GroupID+"|"+hc.client()) {
 		return
 	}
 	abs := time.Unix(hc.Session, 0)
@@ -105,6 +108,9 @@ func (h *Handler) consoleOpen(w http.ResponseWriter, r *http.Request, task strin
 
 // consoleSocket opens the console WebSocket of a page that holds a console session token.
 func (h *Handler) consoleSocket(w http.ResponseWriter, r *http.Request, task string) {
+	if !h.throttlePreAuth(w, r) {
+		return
+	}
 	token, ok := subprotocolToken(r.Header.Values("Sec-WebSocket-Protocol"), ConsoleSubprotocol)
 	if !ok {
 		h.expired(w, r)

@@ -35,7 +35,7 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, task string) {
 		return
 	}
 	// Only a link that verifies is counted: a flood of garbage costs one cheap rejection each and uses up nobody's budget.
-	if !h.throttleHandoff(w, r, task) {
+	if !h.throttleHandoff(w, r, task, claims.GroupID+"|"+claims.client()) {
 		return
 	}
 	// The session ends at the link's sess, but not later than sessionMax from now; it is valid for sessionIdle,

@@ -55,8 +55,9 @@ type Handler struct {
 	live    *liveSet
 	liveMax time.Duration
 	// caps bound the requests in flight (see LiveCaps); authLimit limits the handoff path.
-	caps      LiveCaps
-	authLimit *bucketSet
+	caps         LiveCaps
+	authLimit    *bucketSet
+	preAuthLimit *bucketSet
 	// accessLog, when set, writes a line per proxied request (see accesslog.go).
 	accessLog *accessLog
 	// terminal, when set, serves the console on a host of its own per device (see terminal.go).
@@ -137,6 +138,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == AuthPath {
+		if !h.throttlePreAuth(w, r) {
+			return
+		}
 		h.handoff(w, r, task)
 		return
 	}

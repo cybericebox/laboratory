@@ -1,8 +1,6 @@
 package l7
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net"
 	"net/http"
 	"sync"
@@ -52,6 +50,7 @@ type bucketSet struct {
 	max         int
 	keys        map[string]*bkt
 	all         bkt
+	allMul      float64 // the shared bucket is this many times a key's
 	now         func() time.Time
 }
 
@@ -61,7 +60,7 @@ type bkt struct {
 }
 
 func newBucketSet(rate float64, burst, maxKeys int) *bucketSet {
-	return &bucketSet{rate: rate, burst: float64(burst), max: maxKeys, keys: map[string]*bkt{}, now: time.Now}
+	return &bucketSet{rate: rate, burst: float64(burst), max: maxKeys, keys: map[string]*bkt{}, allMul: 20, now: time.Now}
 }
 
 func (b *bkt) take(now time.Time, rate, burst float64) bool {
@@ -88,16 +87,13 @@ func (b *bucketSet) allow(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
-	if !b.all.take(now, b.rate*20, b.burst*20) {
+	if !b.all.take(now, b.rate*b.allMul, b.burst*b.allMul) {
 		return false
 	}
 	k, ok := b.keys[key]
 	if !ok {
 		if len(b.keys) >= b.max {
-			for old := range b.keys { // forget one: a new source is never refused for the table being full
-				delete(b.keys, old)
-				break
-			}
+			b.evict(now)
 		}
 		k = &bkt{}
 		b.keys[key] = k
@@ -105,32 +101,65 @@ func (b *bucketSet) allow(key string) bool {
 	return k.take(now, b.rate, b.burst)
 }
 
-// WithAuthRateLimit limits the handoff path (/_auth), which verifies a signature and may issue a session: per lab, client address and session cookie (rate per second
-// and burst), and all of them together at twenty times that. Over it the answer is 429.
+// evict makes room: it drops the buckets that have been idle long enough to be full again (the same as no bucket), and when none is, one
+// more, so the table never exceeds its cap whatever keys an attacker picks. A new source is never refused for the table being full.
+func (b *bucketSet) evict(now time.Time) {
+	refill := time.Duration(b.burst / b.rate * float64(time.Second))
+	for key, k := range b.keys {
+		if now.Sub(k.at) >= refill {
+			delete(b.keys, key)
+		}
+	}
+	for old := range b.keys {
+		if len(b.keys) < b.max {
+			break
+		}
+		delete(b.keys, old)
+	}
+}
+
+// WithAuthRateLimit limits the handoff path (/_auth) twice. Before anything is verified, every attempt costs its client address (whatever it
+// sends: no lab, no cookie in that key) a token of a bucket of preAuthRate per second and preAuthBurst, so garbage cannot make the proxy verify
+// signatures without end and one address cannot hold back another. After a link verifies, the lab, the address and the verified session
+// (group and client of the link) share a bucket of rate per second and burst. Over either the answer is 429. Both tables are capped.
 func (h *Handler) WithAuthRateLimit(rate float64, burst int) *Handler {
 	h.authLimit = newBucketSet(rate, burst, 100000)
+	if rate > 0 {
+		h.preAuthLimit = newBucketSet(preAuthRate, preAuthBurst, 100000)
+		h.preAuthLimit.allMul = 200 // the shared bucket only bounds the whole proxy; a normal user never meets it
+	}
 	return h
 }
 
-// authKey is the handoff limit key: the lab, the client address and the session cookie presented (hashed), if any. The address is the one the
-// proxy resolved for the connection (the PROXY protocol header of the trusted edge, else the peer), so a flood from one address spends only
-// its own budget and cannot hold back a valid link of another client.
-func (h *Handler) authKey(r *http.Request, task string) string {
-	sum := ""
-	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
-		d := sha256.Sum256([]byte(c.Value))
-		sum = hex.EncodeToString(d[:8])
-	}
+// The pre-verification bucket of one client address: a normal user opens a handful of links; a few per second sustained is far above that.
+const (
+	preAuthRate  = 3.0
+	preAuthBurst = 20
+)
+
+// preAuthClientIP is the client address the proxy resolved for the connection (the PROXY protocol header of the trusted edge, else the peer).
+func preAuthClientIP(r *http.Request) string {
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
 	}
-	return task + "|" + ip + "|" + sum
+	return ip
 }
 
-// throttleHandoff counts a handoff link that has already verified against the budget of its key and answers 429 when it is over.
-func (h *Handler) throttleHandoff(w http.ResponseWriter, r *http.Request, task string) bool {
-	if h.authLimit.allow(h.authKey(r, task)) {
+// throttlePreAuth charges the caller's address one attempt, before the link is looked at. It answers 429 itself when the address is over.
+func (h *Handler) throttlePreAuth(w http.ResponseWriter, r *http.Request) bool {
+	if h.preAuthLimit.allow(preAuthClientIP(r)) {
+		return true
+	}
+	w.Header().Set("Retry-After", "5")
+	fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
+	return false
+}
+
+// throttleHandoff counts a handoff link that has already verified against the budget of its lab, address and verified session, and answers
+// 429 when it is over. session is built from the verified claims, never from a raw cookie.
+func (h *Handler) throttleHandoff(w http.ResponseWriter, r *http.Request, task, session string) bool {
+	if h.authLimit.allow(task + "|" + preAuthClientIP(r) + "|" + session) {
 		return true
 	}
 	w.Header().Set("Retry-After", "5")
