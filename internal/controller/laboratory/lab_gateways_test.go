@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -589,5 +590,32 @@ func TestUpdateThatDeniesADeviceOnTheInternetNetworkCutsItOff(t *testing.T) {
 	}
 	if len(left.Items) != 1 || left.Items[0].Name != toUser.Name {
 		t.Fatalf("only the connection of the denied device is cut: %+v", left.Items)
+	}
+}
+
+// The cut does not wait for the rest of the validation: a spec that turns a device to deny AND has another error still loses the path.
+func TestInternetCutHappensEvenWhenAnotherValidationErrorComesFirst(t *testing.T) {
+	s := pruneScheme(t)
+	eps := []laboratoryv1alpha1.EndpointSpec{endpoint("out", "eth0"), endpoint("r1", "eth0")}
+	old := &laboratoryv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: connectionName("lab1", eps), Namespace: "team-alpha", Labels: map[string]string{names.LabelLab: "lab1"}},
+		Spec: laboratoryv1alpha1.ConnectionSpec{LabRef: "lab1", Endpoints: eps}}
+	l := gatewayGraphLab()
+	l.Name, l.Namespace = "lab1", "team-alpha"
+	l.Spec.Devices[0].Internet = laboratoryv1alpha1.InternetDeny
+	l.Spec.Connections = []laboratoryv1alpha1.ConnectionTemplate{{Endpoints: eps}}
+	// the other error: a second gateway with the name of the first (caught by the gateway validation, before the graph)
+	l.Spec.Gateways = append(l.Spec.Gateways, vpnGateway("attack"))
+	if err := (&LabReconciler{}).validateGateways(l); err == nil {
+		t.Fatal("the fixture must have another validation error")
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(l, old).Build()
+	r := &LabReconciler{Client: c, Scheme: s}
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "lab1"}})
+	var left laboratoryv1alpha1.ConnectionList
+	if err := c.List(context.Background(), &left, client.InNamespace("team-alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if len(left.Items) != 0 {
+		t.Fatalf("the denied device is still wired to the internet gateway: %+v", left.Items)
 	}
 }

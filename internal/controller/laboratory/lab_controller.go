@@ -124,6 +124,14 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return r.reconcileDelete(ctx, &lab)
 	}
 
+	// Fail closed first, on the raw spec: whatever else is wrong with it (or whatever returns early below), a device that must not reach the
+	// internet is cut off from an Internet gateway's network.
+	if conflicts := lab.Spec.InternetConflicts(); len(conflicts) > 0 {
+		if err := r.cutInternetDenied(ctx, &lab, conflicts); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if !controllerutil.ContainsFinalizer(&lab, names.FinalizerLab) {
 		controllerutil.AddFinalizer(&lab, names.FinalizerLab)
 		if err := r.Update(ctx, &lab); err != nil {
@@ -184,9 +192,6 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			validationErr = fmt.Errorf("derive VPN client subnet: %w", err)
 		}
 		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
-	}
-	if err := r.failClosedOnInternetDenied(ctx, &lab, validationErr); err != nil {
-		return ctrl.Result{}, err
 	}
 	if validationErr != nil {
 		// Surface the specific validation reason — it was previously discarded,
