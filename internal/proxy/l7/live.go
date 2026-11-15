@@ -21,6 +21,9 @@ type liveEntry struct {
 	cancel                     context.CancelFunc
 	// valid, when set, is asked at every live check: false ends the request (the key that signed a gRPC token is gone).
 	valid func() bool
+	// runningOnly: the request has no client of the group (a gRPC-kind tunnel): the live check asks that the lab still runs instead of
+	// asking the access policy.
+	runningOnly bool
 
 	mu     sync.Mutex
 	conn   net.Conn
@@ -124,14 +127,17 @@ func (h *Handler) liveDeadline(abs int64) time.Time {
 func (h *Handler) CheckLive() int {
 	now := h.now()
 	closed := 0
-	type binding struct{ group, client, lab, tenant string }
+	type binding struct {
+		group, client, lab, tenant string
+		runningOnly                bool
+	}
 	permissions := map[binding]bool{}
 	owners := map[string]AccessGroup{}
 	checked := map[string]bool{}
 	for _, e := range h.live.snapshot() {
 		stop := !now.Before(e.deadline) || (e.valid != nil && !e.valid())
 		if !stop {
-			key := binding{e.group, e.client, e.lab, e.tenant}
+			key := binding{e.group, e.client, e.lab, e.tenant, e.runningOnly}
 			allowed, seen := permissions[key]
 			if !seen {
 				allowed = true
@@ -151,7 +157,11 @@ func (h *Handler) CheckLive() int {
 					allowed = exists && group.Tenant == e.tenant
 					if allowed {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						allowed = h.access.Allowed(ctx, group.Namespace, e.client, e.lab)
+						if e.runningOnly {
+							allowed = h.access.LabRunning(ctx, group.Namespace, e.lab)
+						} else {
+							allowed = h.access.Allowed(ctx, group.Namespace, e.client, e.lab)
+						}
 						cancel()
 					}
 				} else {

@@ -22,10 +22,6 @@ package v1alpha1
 //
 // LabGroupClientSpec defines the desired state of LabGroupClient.
 type LabGroupClientSpecApplyConfiguration struct {
-	// AccessOnly makes the client a name for the access policy and the L7 proxy only: it has no WireGuard peer, no tunnel address and no
-	// config, and the operator allocates nothing for it. The proxy lets such a client in (the gRPC access of an AI opponent, whose control
-	// is out-of-band) when the group policy allows it, exactly as for a VPN client. Fixed at creation.
-	AccessOnly *bool `json:"accessOnly,omitempty"`
 	// PublicKey is the client's WireGuard public key.
 	// If empty, operator generates a keypair and stores private key in Secret client-<name>.
 	PublicKey *string `json:"publicKey,omitempty"`
@@ -35,14 +31,6 @@ type LabGroupClientSpecApplyConfiguration struct {
 // apply.
 func LabGroupClientSpec() *LabGroupClientSpecApplyConfiguration {
 	return &LabGroupClientSpecApplyConfiguration{}
-}
-
-// WithAccessOnly sets the AccessOnly field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AccessOnly field is set to the value of the last call.
-func (b *LabGroupClientSpecApplyConfiguration) WithAccessOnly(value bool) *LabGroupClientSpecApplyConfiguration {
-	b.AccessOnly = &value
-	return b
 }
 
 // WithPublicKey sets the PublicKey field in the declarative configuration to the given value

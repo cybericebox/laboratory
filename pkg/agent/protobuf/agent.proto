@@ -320,9 +320,8 @@ message LabGroupClientItem {
   string lab_group = 1;
   string name = 2;
   map<string, string> labels = 3;
-  // access_only (contract 2.3): a client for the access policy and the L7 proxy only (the gRPC access of an AI opponent): no WireGuard key
-  // is made, no tunnel address or config exists (the answer has no config), and it has no VPN peer. Fixed at creation.
-  bool access_only = 4;
+  reserved 4;   // was access_only (a client with no WireGuard peer, removed again before any release: the driven device is not a lab client)
+  reserved "access_only";
 }
 message CreateLabGroupClientsRequest {
   map<string, string> labels = 1;

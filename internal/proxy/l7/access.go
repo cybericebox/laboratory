@@ -159,3 +159,30 @@ func CompactCacheObject(in any) (any, error) {
 	out.SetManagedFields(nil)
 	return out, nil
 }
+
+// LabRunning says the lab exists, is not being deleted and is not stopped. The tunnel of a gRPC-kind device asks no policy (the driven
+// device is not a client of the group): the tenant's own handoff, the group and the running lab are what it needs.
+func (a *AccessReader) LabRunning(ctx context.Context, namespace, labName string) bool {
+	var target lab.Lab
+	if err := a.Reader.Get(ctx, types.NamespacedName{Name: labName, Namespace: namespace}, &target); err != nil {
+		return false
+	}
+	return target.DeletionTimestamp.IsZero() && !target.Spec.Lifecycle.IsStopped()
+}
+
+// TunnelRoute is the route of the gRPC-kind Service named task in a group namespace: the address of its port, for a TCP dial, and the lab.
+func (a *AccessReader) TunnelRoute(ctx context.Context, task, namespace string) (AccessRoute, error) {
+	var svc corev1.Service
+	if err := a.Reader.Get(ctx, types.NamespacedName{Name: task, Namespace: namespace}, &svc); err != nil {
+		return AccessRoute{}, err
+	}
+	if !svc.DeletionTimestamp.IsZero() || svc.Labels[names.LabelLab] == "" || svc.Labels[names.LabelDevice] == "" ||
+		svc.Labels[names.LabelAccessKind] != names.AccessKindGRPC || len(svc.Spec.Ports) == 0 {
+		return AccessRoute{}, fmt.Errorf("service is not a gRPC-kind access of a lab device")
+	}
+	declared := svc.Spec.Ports[0]
+	if declared.Port < 1 || declared.Port > 65535 || declared.Protocol != "" && declared.Protocol != corev1.ProtocolTCP {
+		return AccessRoute{}, fmt.Errorf("service has an invalid gRPC-kind port")
+	}
+	return AccessRoute{fmt.Sprintf("%s.%s.svc.cluster.local:%d", task, namespace, declared.Port), svc.Labels[names.LabelLab]}, nil
+}

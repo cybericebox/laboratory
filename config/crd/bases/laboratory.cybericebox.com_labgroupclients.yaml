@@ -39,25 +39,12 @@ spec:
           spec:
             description: LabGroupClientSpec defines the desired state of LabGroupClient.
             properties:
-              accessOnly:
-                description: |-
-                  AccessOnly makes the client a name for the access policy and the L7 proxy only: it has no WireGuard peer, no tunnel address and no
-                  config, and the operator allocates nothing for it. The proxy lets such a client in (the gRPC access of an AI opponent, whose control
-                  is out-of-band) when the group policy allows it, exactly as for a VPN client. Fixed at creation.
-                type: boolean
               publicKey:
                 description: |-
                   PublicKey is the client's WireGuard public key.
                   If empty, operator generates a keypair and stores private key in Secret client-<name>.
                 type: string
             type: object
-            x-kubernetes-validations:
-            - message: accessOnly cannot be changed
-              rule: (has(self.accessOnly) && self.accessOnly) == (has(oldSelf.accessOnly)
-                && oldSelf.accessOnly)
-            - message: an access-only client has no public key
-              rule: '!has(self.accessOnly) || !self.accessOnly || !has(self.publicKey)
-                || self.publicKey == '''''
           status:
             description: LabGroupClientStatus defines the observed state of LabGroupClient.
             properties:

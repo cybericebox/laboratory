@@ -81,7 +81,6 @@ func Run() {
 
 	access := &l7.AccessReader{Reader: mgr.GetClient()}
 	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName, nil).
-		WithGRPCTokenMaxLifetime(cfg.GRPCTokenMaxTTL).
 		WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).
 		WithAccounting(meter, nil).WithAccessReader(access).WithLiveMaxLifetime(cfg.LiveMaxLifetime).
 		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst).
