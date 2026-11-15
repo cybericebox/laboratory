@@ -30,7 +30,7 @@ func selfSigned(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-// The HTTPS server of the proxy negotiates h2 (the gRPC access of a device needs it) and still serves HTTP/1.1 clients.
+// The HTTPS server of the proxy negotiates h2 and still serves HTTP/1.1 clients (the tunnel WebSocket is HTTP/1.1).
 func TestHTTPServerNegotiatesH2AndHTTP11(t *testing.T) {
 	cfg := shortLimits()
 	srv := NewHTTPServer(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

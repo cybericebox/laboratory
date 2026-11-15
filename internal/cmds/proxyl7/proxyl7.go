@@ -142,7 +142,7 @@ func Run() {
 	httpsSrv := proxy.NewHTTPServer(cfg, handler, &tls.Config{
 		GetCertificate: certWatcher.GetCertificate,
 		MinVersion:     tls.VersionTLS12,
-		// h2 is what the gRPC access of a device needs (see l7/grpc.go); a browser takes it as well.
+		// a browser takes h2; the WebSocket of the tunnel and of the console is HTTP/1.1.
 		NextProtos: []string{"h2", "http/1.1"},
 	})
 

@@ -212,24 +212,22 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Что считать выполненным:** Lab без записи `access` вида `http` → Service не существует → 404; никакой отдельной authz-проверки не
   нужно.
 
-#### REQ-PX-019B: gRPC access of a device (EDA web-direct, programmatic level)
+#### REQ-PX-019B: gRPC kind of a device, a byte tunnel over a WebSocket (EDA web-direct, programmatic level)
 
 - **Статус:** ✅ Implemented
-- **Реализация:** `internal/proxy/l7/grpc.go`, `grpc_auth.go`. A host whose first label ends in `g` (`names.ParseAccessHost`, kind `grpc`) is handled
-  before any cookie logic. HTTP/2 over TLS from the client (ALPN `h2, http/1.1`, `proxy.NewHTTPServer`), h2c with prior knowledge to
-  `http://<service>.<ns>.svc.cluster.local:<port>` (stdlib `http.Transport` with `Protocols.UnencryptedHTTP2`, ping every 30s), `httputil.ReverseProxy`
-  with `FlushInterval=-1`: messages and trailers pass as they come. `SetReadDeadline/SetWriteDeadline(0)` per call: neither `READ_TIMEOUT` nor
-  `IDLE_TIMEOUT` cuts a stream. Cancelling a call closes the request body too (the h2 transport otherwise stays in a read of an idle stream).
-- **Auth:** the metadata key `x-lab-access` holds an EdDSA JWT, verified like a handoff link behind `GRPCVerifier` (`accessKeyFunc`): `iss`/`kid`,
-  aud exactly `laboratory-proxy-grpc`, `token_use`=`kind`=`grpc`, iat+nbf+exp, `host` = the host label, `group_id`, `sub`, `run`; `exp - iat <=
-  GRPC_TOKEN_MAX_TTL` (12h, not above LIVE_MAX_LIFETIME); the group belongs to the issuer. The proxy strips it; `authorization` and the rest pass
-  unchanged. No cookie, no `/_auth` (which refuses these tokens).
-- **Live:** one `liveEntry` per call (deadline = the earlier of token `exp` and the live lifetime cap, `valid` = the signing key is still registered); `CheckLive` re-runs the group, lab, client
-  and policy checks. A cut call ends with `grpc-status` in the trailers (7 access ended, 16 token expired).
-- **Errors:** gRPC trailers-only answers: 16 token problems, 5 unknown route or policy refusal, 14 device or `prepare` failure, 8 caps and repeated bad
-  tokens, 13 internal; `415` plain text for a non-gRPC request. Metered and paced like a web request.
-- **Не делает:** vnc and rdp (monitor) and the management web UI are later; for them the proxy would need a WebSocket/guacd-like bridge with its own
-  host letters (`v`, `r` are reserved), a per-kind upstream (RFB/RDP is not HTTP), and the device side (a framebuffer, a VM).
+- **Реализация:** `internal/proxy/l7/tunnel.go`; client `pkg/labtunnel`; protocol `docs/tunnel-access.md`. Хост `<device>-<code>g` обрабатывается до cookie-логики
+  (`serveOwnAuthKind`). Три пути: `POST /_access/exchange`, `POST /_access/refresh`, `GET /_tunnel`. Любой запрос с заголовком `Origin` получает 403.
+- **Handoff:** тот же JWT на 60 с (`verifyHandoff`, полное имя хоста), но с `use: "tunnel"`; `/_auth` веб и консольных хостов требует `use` пустым,
+  обмен тоннеля требует `tunnel`. **Токен:** HS256 секретом прокси, `use=tunnel`, `host`, группа, тенант, `kid` ключа тенанта, `abs` (конец сессии ссылки,
+  не позже `SESSION_MAX_TTL`); живёт `DefaultTunnelTokenTTL` (1 ч), обновляется `refresh` не дальше `abs` (`max_until`).
+- **Тоннель:** WebSocket с подпротоколами `cib.tunnel.v1, <token>` (отвечает только первым); бинарные сообщения это байты TCP-соединения с портом Service
+  (`AccessReader.TunnelRoute`). Прокси не знает прикладной протокол: gRPC, TLS и mTLS проходят насквозь.
+- **Live:** `liveEntry` с `runningOnly` (нет клиента группы и политики) и `valid` (ключ тенанта зарегистрирован, Service вида на месте); `CheckLive` проверяет
+  группу и тенанта и что лаборатория существует и не остановлена; дедлайн `LIVE_MAX_LIFETIME`/`abs`. Остановка прокси закрывает тоннели статусом 1001.
+- **Учёт и пейсинг:** как у веб-запроса, по (namespace, `sub` ссылки, lab). Токены в логи не попадают (на пути тоннеля нет записей в лог).
+- **Удалено:** HTTP/2-прокси с h2c до устройства, `x-lab-access`, `GRPCVerifier`, `GRPC_TOKEN_MAX_TTL`, access-only LabGroupClient.
+- **Не делает:** vnc и rdp (монитор) и management web UI позже; для них прокси нужен был бы мост не-HTTP протоколов (RFB/RDP), свои буквы хоста (`v`, `r`
+  зарезервированы) и сторона устройства (framebuffer, VM).
 
 #### REQ-PX-019: Internal upstream — http (default) или https
 
