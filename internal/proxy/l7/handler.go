@@ -137,12 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == AuthPath {
-		if !h.authLimit.allow(h.authKey(r, task)) {
-			w.Header().Set("Retry-After", "5")
-			fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
-			return
-		}
-		h.handoff(w, r)
+		h.handoff(w, r, task)
 		return
 	}
 	claims, err := validateCookie(r, h.secret, h.cookieName, h.now)
