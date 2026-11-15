@@ -36,7 +36,7 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 	policy := &lab.LabGroupAccessPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: ns, Generation: 1},
 		Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{
-			Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"},
+			Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"}, GatewayNames: []string{"vpn"},
 		}}},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).

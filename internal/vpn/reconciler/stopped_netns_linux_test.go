@@ -51,7 +51,7 @@ func TestNetnsStoppedIntentRevokesEstablishedBothDirectionsAndPreservesSibling(t
 	b.UID = "lab-b"
 	b.Status.Gateways[0].CIDR, b.Status.Gateways[0].NetworkIndex = "10.8.2.0/24", 2
 	p := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "g"}, Status: lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"}}
-	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "g", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{OperationID: "acl", Revision: 1, ExpectedGroupUID: "group-uid", Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
+	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "g", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{OperationID: "acl", Revision: 1, ExpectedGroupUID: "group-uid", Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, LabNames: []string{"a", "b"}, GatewayNames: []string{"vpn"}}}}}
 	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("a", "vpn"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{Kind: "Lab", UID: a.UID}}}, Spec: lab.LabVPNSpec{LabName: "a", Device: "vpn", NetworkIndex: 1}}
 	second := leg.DeepCopy()
 	second.Name = names.LabVPNObjectName("b", "vpn")

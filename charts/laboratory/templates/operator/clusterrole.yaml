@@ -49,7 +49,7 @@ rules:
   resources: [connections, devices, labgateways, labgroupclients, labgroups, labs, labvpns]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [laboratory.cybericebox.com]
-  resources: [labtrafficreports]
+  resources: [labgroupaccesspolicies, labtrafficreports]
   verbs: [get, list, watch]
 # Image prepull requests the scheduler makes and the node-agents answer (see DEPLOY.md, "Scheduler").
 - apiGroups: [laboratory.cybericebox.com]

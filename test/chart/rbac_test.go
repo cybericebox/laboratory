@@ -91,6 +91,35 @@ func TestOperatorClusterRoleIsLeastPrivilege(t *testing.T) {
 	}
 }
 
+// The LabGroupClient controller recomputes the WireGuard AllowedIPs of a client from the group's access policy, so it watches
+// LabGroupAccessPolicy cluster-wide, read-only.
+func TestOperatorReadsAccessPolicies(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	found := false
+	for _, r := range rulesOf(t, docs(t, out)[0]) {
+		if !has(r.APIGroups, "laboratory.cybericebox.com") || !has(r.Resources, "labgroupaccesspolicies") {
+			continue
+		}
+		found = true
+		for _, v := range []string{"get", "list", "watch"} {
+			if !has(r.Verbs, v) {
+				t.Errorf("labgroupaccesspolicies: verb %q missing in %+v", v, r)
+			}
+		}
+		for _, v := range r.Verbs {
+			if v != "get" && v != "list" && v != "watch" {
+				t.Errorf("labgroupaccesspolicies must be read-only for the operator: %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the operator ClusterRole has no rule for labgroupaccesspolicies")
+	}
+}
+
 func TestOperatorNamespacedRoleAndItsBindings(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole-namespaced.yaml", "-s", "templates/operator/rolebinding-namespaced.yaml", "-s", "templates/tenants-namespace.yaml")
 	if err != nil {

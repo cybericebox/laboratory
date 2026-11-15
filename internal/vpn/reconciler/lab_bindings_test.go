@@ -104,7 +104,7 @@ func TestResumedVPNPodDoesNotOpenAStoppedLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snaps, allowLabs("a", "b", "l1"))
+	rules := vpn.BuildAccessRules([]vpn.ClientAccessSnapshot{{Name: "c", AssignedIP: "10.8.0.2/32"}}, snaps, allowLabs("a", "b", "l1", "stopped", "running"))
 	allowed := map[string]bool{}
 	for _, r := range rules {
 		if r.Action == vpn.AccessAllow {
