@@ -527,3 +527,7 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
 ## Приватный реестр образов
 
 `IMAGE_PULL_SECRETS` (чарт: `imagePullSecrets`, список `- name: <secret>`) перечисляет Secret'ы типа `kubernetes.io/dockerconfigjson` в namespace оператора (`laboratory-system`); сами Secret'ы создаются вне чарта. Оператор копирует их в namespace каждой группы при каждом reconcile LabGroup и ставит `imagePullSecrets` на VPN-, gateway- и device-поды. Отсутствующий источник или Secret другого типа — ошибка reconcile, без подстановок. Поды самого чарта (оператор, прокси, node-agent, агент) берут тот же список; прокси и агент живут в своих namespace, Secret'ы нужны и там.
+
+## Доступ клиентов VPN (гранулярный)
+
+Контроллер `LabGroupClient` пишет в `status.config` `AllowedIPs` = достижимое множество клиента: подсети коннекторов (и их `include`), которые открывают allow-правила `LabGroupAccessPolicy` группы (см. [vpn.md REQ-VPN-023](./vpn.md)). Контроллер следит за политикой и за gateway-ями лабораторий и пересобирает конфиг при их изменении. Коннектор = плоская /24 gateway, которую выделяет оператор; в правилах подсети задаются относительно неё.

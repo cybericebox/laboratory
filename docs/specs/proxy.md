@@ -513,3 +513,7 @@ demux — `LabGroup.Status.VPN.PublicKey`.
   `vpn.labgroup-<UID>.svc`): [vpn.md REQ-VPN-010](./vpn.md#req-vpn-010-кластерная-нога-pod-а-для-демукс-форварда)
 - NetworkPolicy на web-устройстве — ingress только от
   `proxy-system/app=proxy`: [operator.md REQ-OP-028](./operator.md#req-op-028-web-exposure--service--networkpolicy)
+
+## Политика доступа и браузерный доступ
+
+Прокси читает `LabGroupAccessPolicy` по лаборатории (`clientNames`, `labNames`); `gatewayNames` и `include` относятся только к VPN-коннекторам и на браузерный доступ (консоль, мониторинг) не влияют. Allow-правило без `gatewayNames` даёт браузерный доступ к лаборатории и не даёт VPN-доступа. Подробнее: [vpn.md REQ-VPN-023](./vpn.md).
