@@ -1,16 +1,17 @@
-// Package labtunnel is the client of the gRPC-kind access of a lab device (EDA web-direct, programmatic level): a byte tunnel over a
-// WebSocket through the lab proxy to the TCP port of the device service. The proxy never looks at the bytes, so the application's own
-// authentication (TLS, mTLS, tokens) runs end to end over the tunnel.
+// Package labtunnel is the client of the gRPC-kind access of a lab device (EDA web-direct, programmatic level): a byte
+// tunnel over a WebSocket through the lab proxy to the TCP port of the device service. The proxy never looks at the
+// bytes, so the application's own authentication (TLS, mTLS, tokens) runs end to end over the tunnel.
 //
 //	conn, err := grpc.NewClient("passthrough:///"+host+":443",
 //	    grpc.WithContextDialer(labtunnel.Dialer(getHandoff)),
 //	    grpc.WithTransportCredentials(yourOwnCredentials))
 //
-// getHandoff asks the platform for a handoff link for the device's host (a JWT valid for 60 seconds, with use "tunnel"; the platform
-// signs it with the tenant's access key). The dialer exchanges it for a tunnel token on first use, refreshes the token before it expires,
-// and on a dropped tunnel (a proxy replica restarted, a network blip) reconnects, possibly to another replica, with the token it still
-// holds. It asks for a new handoff only when the token cannot be refreshed (past max_until) or the proxy answers 401. The protocol for
-// other languages is in docs/tunnel-access.md.
+// getHandoff asks the platform for a handoff link for the device's host (a JWT valid for 60 seconds, with use
+// "tunnel"; the platform signs it with the tenant's access key). The dialer exchanges it for a tunnel token on first
+// use, refreshes the token before it expires, and on a dropped tunnel (a proxy replica restarted, a network blip)
+// reconnects, possibly to another replica, with the token it still holds. It asks for a new handoff only when the
+// token cannot be refreshed (past max_until) or the proxy answers 401. The protocol for other languages is in
+// docs/tunnel-access.md.
 package labtunnel
 
 import (
@@ -67,8 +68,9 @@ type options struct {
 // Option configures a Dialer.
 type Option func(*options)
 
-// WithTLSConfig sets the TLS configuration of the connection to the proxy (the system roots by default). It is the proxy's certificate
-// that it checks; the application's own TLS over the tunnel is the caller's gRPC transport credentials.
+// WithTLSConfig sets the TLS configuration of the connection to the proxy (the system roots by default). It is the
+// proxy's certificate that it checks; the application's own TLS over the tunnel is the caller's gRPC transport
+// credentials.
 func WithTLSConfig(cfg *tls.Config) Option {
 	return func(o *options) {
 		o.client = &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, Proxy: http.ProxyFromEnvironment}}
@@ -78,8 +80,9 @@ func WithTLSConfig(cfg *tls.Config) Option {
 // WithHTTPClient sets the HTTP client used for the exchange, the refresh and the WebSocket (its Timeout must be zero).
 func WithHTTPClient(c *http.Client) Option { return func(o *options) { o.client = c } }
 
-// WithEndpoint sends the requests to a base URL ("https://proxy.example:8443", or "http://127.0.0.1:9000" in a test) instead of
-// https://<addr>. The Host header stays the host of addr, because the proxy tells the devices apart by host name.
+// WithEndpoint sends the requests to a base URL ("https://proxy.example:8443", or "http://127.0.0.1:9000" in a test)
+// instead of https://<addr>. The Host header stays the host of addr, because the proxy tells the devices apart by host
+// name.
 func WithEndpoint(baseURL string) Option { return func(o *options) { o.endpoint = baseURL } }
 
 // withClock replaces the clock (tests).
@@ -99,9 +102,12 @@ type dialer struct {
 	sessions   map[string]*session
 }
 
-// Dialer returns a dial function for grpc.WithContextDialer (and for any code that wants a net.Conn to a device service): addr is the
-// host and port of the device's gRPC-kind host on the lab proxy, as gRPC passes it.
-func Dialer(getHandoff func(ctx context.Context) (string, error), opts ...Option) func(ctx context.Context, addr string) (net.Conn, error) {
+// Dialer returns a dial function for grpc.WithContextDialer (and for any code that wants a net.Conn to a device
+// service): addr is the host and port of the device's gRPC-kind host on the lab proxy, as gRPC passes it.
+// DialFunc opens a tunnel to the gRPC-kind host addr (host:port); it is the shape grpc.WithContextDialer takes.
+type DialFunc = func(ctx context.Context, addr string) (net.Conn, error)
+
+func Dialer(getHandoff func(ctx context.Context) (string, error), opts ...Option) DialFunc {
 	d := &dialer{getHandoff: getHandoff, sessions: map[string]*session{}}
 	d.o.now = time.Now
 	for _, opt := range opts {
@@ -141,7 +147,8 @@ func (d *dialer) dial(ctx context.Context, addr string) (net.Conn, error) {
 		}
 		var he *HTTPError
 		if attempt == 0 && errors.As(err, &he) && he.Status == http.StatusUnauthorized {
-			// the proxy does not know the token (its secret changed, the key was rotated): forget it and start again from a handoff
+			// the proxy does not know the token (its secret changed, the key was rotated): forget it and start again from a
+			// handoff
 			d.forget(addr)
 			continue
 		}
@@ -155,8 +162,8 @@ func (d *dialer) forget(addr string) {
 	d.mu.Unlock()
 }
 
-// token returns a token that is good now: the held one while it is, a refreshed one when it is about to end, a new one from a handoff when
-// there is none or it cannot be refreshed. fresh forces the handoff.
+// token returns a token that is good now: the held one while it is, a refreshed one when it is about to end, a new one
+// from a handoff when there is none or it cannot be refreshed. fresh forces the handoff.
 func (d *dialer) token(ctx context.Context, addr, base, host string, fresh bool) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -219,7 +226,7 @@ func (d *dialer) post(ctx context.Context, base, host, path string, body any) (t
 	if err != nil {
 		return tokenAnswer{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		var e struct {
 			Error string `json:"error"`
@@ -234,7 +241,8 @@ func (d *dialer) post(ctx context.Context, base, host, path string, body any) (t
 	return out, nil
 }
 
-// open upgrades to the tunnel and returns it as a net.Conn: Read and Write carry the bytes, deadlines and Close work as on a TCP connection.
+// open upgrades to the tunnel and returns it as a net.Conn: Read and Write carry the bytes, deadlines and Close work
+// as on a TCP connection.
 func (d *dialer) open(ctx context.Context, base, host, token string) (net.Conn, error) {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -248,7 +256,8 @@ func (d *dialer) open(ctx context.Context, base, host, token string) (net.Conn, 
 	}
 	u.Path = tunnelPath
 	ws, resp, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{
-		HTTPClient: d.o.client, Host: host, Subprotocols: []string{Subprotocol, token}, CompressionMode: websocket.CompressionDisabled,
+		HTTPClient: d.o.client, Host: host, Subprotocols: []string{Subprotocol, token},
+		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
 		if resp != nil {

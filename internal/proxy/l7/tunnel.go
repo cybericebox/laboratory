@@ -259,7 +259,7 @@ func (h *Handler) tunnelSocket(w http.ResponseWriter, r *http.Request, task stri
 		tunnelError(w, http.StatusBadGateway, "device_unavailable")
 		return
 	}
-	defer device.Close()
+	defer func() { _ = device.Close() }()
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{TunnelSubprotocol}, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {

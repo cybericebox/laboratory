@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	goerrors "errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -186,12 +185,8 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
 	}
-	var denied *internetDeniedError
-	if goerrors.As(validationErr, &denied) {
-		// Fail closed: the wiring of the last good spec must not keep a denied device on the Internet gateway's network.
-		if err := r.cutInternetDenied(ctx, &lab, denied.conflicts); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.failClosedOnInternetDenied(ctx, &lab, validationErr); err != nil {
+		return ctrl.Result{}, err
 	}
 	if validationErr != nil {
 		// Surface the specific validation reason — it was previously discarded,
