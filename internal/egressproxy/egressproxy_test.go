@@ -528,3 +528,60 @@ func TestHostRatePerLabAndPerGateway(t *testing.T) {
 		t.Fatalf("without limits everything passes: %q", take2)
 	}
 }
+
+// The per-address rows exist only with Detail, are summed per (lab, source, destination, port) and bounded.
+func TestCollectorFlowRowsNeedDetailAndAreBounded(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 30, 0, time.UTC)
+	off := NewCollector("g")
+	off.Now = func() time.Time { return now }
+	off.Flow("lab-a", "10.9.1.5", "1.2.3.4", 443, 1, 2)
+	now = now.Add(time.Minute)
+	if got := off.Since(time.Time{}); len(got.Minutes) != 0 {
+		t.Fatalf("flow rows without Detail: %+v", got)
+	}
+
+	now = time.Date(2026, 11, 1, 12, 0, 30, 0, time.UTC)
+	c := NewCollector("g")
+	c.Detail = true
+	c.Now = func() time.Time { return now }
+	c.Flow("lab-a", "10.9.1.5", "1.2.3.4", 443, 10, 20)
+	c.Flow("lab-a", "10.9.1.5", "1.2.3.4", 443, 5, 5)
+	c.Flow("lab-a", "10.9.1.6", "1.2.3.4", 443, 1, 1)
+	for i := 0; i < MaxFlowRows+10; i++ {
+		c.Flow("lab-b", "10.9.2.5", netip.AddrFrom4([4]byte{9, byte(i >> 16), byte(i >> 8), byte(i)}).String(), 80, 1, 1)
+	}
+	now = now.Add(time.Minute)
+	m := c.Since(time.Time{}).Minutes[0]
+	if len(m.Flows) != MaxFlowRows {
+		t.Fatalf("flow rows = %d, want the cap %d", len(m.Flows), MaxFlowRows)
+	}
+	var a FlowRow
+	for _, f := range m.Flows {
+		if f.Lab == "lab-a" && f.Source == "10.9.1.5" {
+			a = f
+		}
+	}
+	if a.Conns != 2 || a.Up != 15 || a.Down != 25 || a.Dest != "1.2.3.4" || a.Port != 443 || a.FirstMs == 0 {
+		t.Fatalf("row = %+v", a)
+	}
+}
+
+// A connection through the proxy leaves one flow row: the lab's source address, the address and port that were dialled, the bytes.
+func TestProxyLeavesAFlowRow(t *testing.T) {
+	f := newFixture(t)
+	f.stats.Detail = true
+	if out, err := httpGet(f.httpAddr, "allowed.test"); err != nil || !strings.Contains(out, "200 OK") {
+		t.Fatalf("%q %v", out, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	f.stats.mu.Lock()
+	defer f.stats.mu.Unlock()
+	if len(f.stats.flows) != 1 {
+		t.Fatalf("flows = %+v", f.stats.flows)
+	}
+	for _, r := range f.stats.flows {
+		if r.Lab != "lab-a" || r.Source != "127.0.0.1" || r.Dest != "127.0.0.1" || r.Port == 0 || r.Conns != 1 || r.Up == 0 || r.Down == 0 {
+			t.Fatalf("flow row = %+v", r)
+		}
+	}
+}

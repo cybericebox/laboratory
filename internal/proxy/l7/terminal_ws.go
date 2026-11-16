@@ -2,6 +2,8 @@ package l7
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 )
 
@@ -80,7 +83,11 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	browser.SetReadLimit(wire.MaxFrame)
 	defer func() { _ = browser.CloseNow() }()
 
+	id := newSessionID()
+	opened := time.Now()
+	h.reportConsole(sess, id, opened, time.Time{})
 	reason := h.relayConsole(ctx, browser, sess, entry)
+	h.reportConsole(sess, id, opened, time.Now())
 	// The console is over for everything that looks it up before the browser has even acknowledged the close.
 	t.remove(sess)
 	t.cfg.Log.Info("console end", "reason", reason, "lab", sess.lab, "device", sess.dev, "namespace", sess.namespace, "client", sess.client, "group", sess.group,
@@ -286,4 +293,25 @@ func (s *consoleSession) waitWindow(ctx context.Context, n int64) bool {
 	}
 	s.sent.Add(n)
 	return true
+}
+
+// newSessionID is the identifier the open and the close fact of one console session share.
+func newSessionID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// reportConsole hands the opening (closed is zero) or the closing of a console session to the activity ring of its group namespace. With
+// activity reports off the hub is nil and nothing happens.
+func (h *Handler) reportConsole(sess *consoleSession, id string, opened, closed time.Time) {
+	if h.activity == nil {
+		return
+	}
+	ev := laboratoryv1alpha1.ActivityEvent{Kind: laboratoryv1alpha1.ActivityConsole, LabName: sess.lab, Client: sess.client, Device: sess.dev,
+		SessionID: id, OpenedAtMs: opened.UnixMilli(), AtMs: opened.UnixMilli()}
+	if !closed.IsZero() {
+		ev.ClosedAtMs, ev.AtMs = closed.UnixMilli(), closed.UnixMilli()
+	}
+	h.activity.Add(sess.namespace, ev)
 }

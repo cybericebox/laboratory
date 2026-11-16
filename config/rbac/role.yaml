@@ -127,6 +127,7 @@ rules:
   resources:
   - connections
   - devices
+  - labactivityreports
   - labgateways
   - labgroupclients
   - labgroups
@@ -157,6 +158,7 @@ rules:
   resources:
   - connections/status
   - devices/status
+  - labactivityreports/status
   - labgateways/status
   - labgroupclients/status
   - labgroups/status

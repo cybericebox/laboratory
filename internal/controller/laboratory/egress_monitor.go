@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/egressproxy"
 	"github.com/cybericebox/laboratory/internal/names"
 )
@@ -52,6 +53,9 @@ var (
 func init() {
 	metrics.Registry.MustRegister(egressLabsFlagged, egressMinutesPulled, egressPullFailures)
 }
+
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labactivityreports,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labactivityreports/status,verbs=get;update;patch
 
 // EgressLogRow is one line of the connection log: a lab's traffic to one host name in one minute. No content and no address of a person.
 type EgressLogRow struct {
@@ -88,6 +92,8 @@ type EgressMonitor struct {
 	CapMinutes        int
 	Window            time.Duration
 	Now               func() time.Time
+	// Activity receives, as raw facts, the source/destination/port rows the gateways report when activity reports are on (nil: off).
+	Activity *activity.Hub
 
 	mu      sync.Mutex
 	last    map[string]time.Time // gateway pod UID -> start of the last minute taken
@@ -256,6 +262,17 @@ func accept(s *egressproxy.Summaries, since, now time.Time) []egressproxy.Minute
 		if len(min.Denials) > maxRowsPerMinute {
 			min.Denials = min.Denials[:maxRowsPerMinute]
 		}
+		if len(min.Flows) > egressproxy.MaxFlowRows {
+			min.Flows = min.Flows[:egressproxy.MaxFlowRows]
+		}
+		flows := min.Flows[:0:0]
+		for _, f := range min.Flows {
+			if len(f.Lab) > maxNameLen || len(f.Source) > 45 || len(f.Dest) > 45 || f.Conns < 0 || f.Up < 0 || f.Down < 0 || f.Port < 0 || f.Port > 65535 {
+				continue
+			}
+			flows = append(flows, f)
+		}
+		min.Flows = flows
 		rows := min.Rows[:0:0]
 		for _, r := range min.Rows {
 			if len(r.Lab) > maxNameLen || len(r.Host) > maxNameLen || r.Conns < 0 || r.Up < 0 || r.Down < 0 {
@@ -369,6 +386,12 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 			}
 			for _, c := range min.Caps {
 				mm.caps[labKey{p.Namespace, c.Lab}] = true
+			}
+			for _, f := range min.Flows {
+				m.Activity.Add(p.Namespace, laboratoryv1alpha1.ActivityEvent{
+					AtMs: min.Start.Add(time.Minute).UnixMilli(), Kind: laboratoryv1alpha1.ActivityEgress, LabName: f.Lab, SourceAddr: f.Source, DstAddr: f.Dest,
+					DstPort: int32(f.Port), Protocol: "tcp", BytesUp: f.Up, BytesDown: f.Down, Connections: f.Conns, FirstSeenMs: f.FirstMs, LastSeenMs: f.LastMs,
+				})
 			}
 			m.mu.Lock()
 			m.minutes = append(m.minutes, mm)

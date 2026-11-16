@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -832,4 +833,43 @@ func TestConsoleSocketIsNotAffectedByAPreAuthFlood(t *testing.T) {
 		}
 	}
 	f.openConsole("kali")
+}
+
+// A console session is handed to the activity ring of its group namespace twice: when it opens and when it ends, with one session id.
+func TestConsoleSessionIsReportedAsActivity(t *testing.T) {
+	f := newTermFixture(t, nil)
+	hub := activity.New(f.cluster, "proxy-test")
+	f.h.WithActivity(hub)
+	c := f.openConsole("kali")
+	var open []lab.ActivityEvent
+	waitFor(t, func() bool { open = hub.Events(termNS); return len(open) == 1 })
+	if e := open[0]; e.Kind != lab.ActivityConsole || e.LabName != "lab1" || e.Device != "kali" || e.Client != "p-u1" || e.SessionID == "" || e.OpenedAtMs == 0 || e.ClosedAtMs != 0 {
+		t.Fatalf("open event = %+v", e)
+	}
+	_ = c.Close(websocket.StatusNormalClosure, "")
+	var both []lab.ActivityEvent
+	waitFor(t, func() bool { both = hub.Events(termNS); return len(both) == 2 })
+	if cl := both[1]; cl.SessionID != both[0].SessionID || cl.ClosedAtMs == 0 || cl.OpenedAtMs != both[0].OpenedAtMs || cl.Seq <= both[0].Seq {
+		t.Fatalf("events = %+v", both)
+	}
+}
+
+// With activity reports off nothing is kept.
+func TestConsoleSessionIsNotReportedWithoutAHub(t *testing.T) {
+	f := newTermFixture(t, nil)
+	f.openConsole("kali")
+	if f.h.activity != nil {
+		t.Fatal("the hub must be off by default")
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if ok() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("condition not met")
 }

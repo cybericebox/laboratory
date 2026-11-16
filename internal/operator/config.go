@@ -29,7 +29,10 @@ type Config struct {
 	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled (the same two the management agent reads):
 	// the options of lab checks and the browser terminal. Nothing in the operator acts on them yet; the checker and the terminal
 	// components will.
-	ChecksEnabled   bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	ChecksEnabled bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	// ActivityReports is the chart's activityReports.enabled: the VPN and gateway pods made from now on keep the raw activity facts (the
+	// operator itself reads the same variable for the egress facts).
+	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).

@@ -29,6 +29,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/egressproxy"
 	"github.com/cybericebox/laboratory/internal/gateway"
@@ -166,6 +167,7 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 	deny := egressproxy.NewDenylist(suffixes)
 	pod, _ := os.Hostname()
 	stats := egressproxy.NewCollector(pod)
+	stats.Detail = activity.Enabled() // the per-address rows are kept only when activity reports are on
 	proxy := &egressproxy.Proxy{
 		Labs: labs, Resolver: resolver, Deny: deny, Stats: stats, Log: log.WithName("egress-proxy"),
 		MaxConnAge:       time.Duration(cfg.EgressMaxConnSeconds) * time.Second,

@@ -33,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -102,6 +103,17 @@ func Run() {
 		tc.Devices = access.Device
 		tc.Services = l7.EndpointDirectory(mgr.GetClient(), cfg.TerminalNamespace, names.DeviceAccessApp, cfg.TerminalPort)
 		handler.WithTerminal(tc)
+	}
+	if activity.Enabled() {
+		// Console sessions are handed, as raw facts, to the agent through a ring in the group namespace; off by default (activityReports.enabled).
+		hub := activity.New(mgr.GetClient(), "proxy-"+instance)
+		hub.Reader = mgr.GetAPIReader()
+		hub.OnError = func(err error) { log.Error(err, "write activity report") }
+		handler.WithActivity(hub)
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error { hub.Run(ctx, 30*time.Second); return nil })); err != nil {
+			log.Error(err, "add activity writer")
+			os.Exit(1)
+		}
 	}
 	// Register all required informers before the manager starts: readiness must
 	// wait for each cache used by authorization, rather than an empty cache set.

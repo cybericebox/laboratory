@@ -42,6 +42,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/cybericebox/laboratory/internal/health"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -50,6 +51,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/admissioncheck"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
@@ -241,6 +243,7 @@ func Run() {
 		WGDemuxMode:                 cfg.WGDemuxMode,
 		LabBaseNetwork:              cfg.LabBaseNetwork,
 		VPNFirewall:                 cfg.VPNFirewall,
+		ActivityReports:             cfg.ActivityReports,
 		GatewayMaxConnectionsPerLab: cfg.GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab: cfg.GatewayNewConnectionsPerSecondPerLab,
 		GatewayEgressEnv:        gatewayEgressEnv(cfg),
 		VPNImage:                cfg.VPNImage,
@@ -466,11 +469,23 @@ func Run() {
 		os.Exit(1)
 	}
 	if cfg.EgressMonitorEnabled {
-		if err = mgr.Add(&laboratorycontroller.EgressMonitor{
+		monitor := &laboratorycontroller.EgressMonitor{
 			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorderFor("egress"), Log: ctrl.Log.WithName("egress-monitor"),
 			Port: cfg.EgressStatsPort, LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
 			HostLabsThreshold: cfg.EgressSignalHostLabs, CapMinutes: cfg.EgressSignalCapMinutes,
-		}); err != nil {
+		}
+		if activity.Enabled() {
+			// The gateways' per-address rows go, as raw facts, to the agent through a ring in each group namespace (activityReports.enabled).
+			hub := activity.New(mgr.GetClient(), "egress")
+			hub.Reader = mgr.GetAPIReader()
+			hub.OnError = func(err error) { setupLog.Error(err, "write activity report") }
+			monitor.Activity = hub
+			if err = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error { hub.Run(ctx, 30*time.Second); return nil })); err != nil {
+				setupLog.Error(err, "unable to add the activity writer")
+				os.Exit(1)
+			}
+		}
+		if err = mgr.Add(monitor); err != nil {
 			setupLog.Error(err, "unable to add the egress monitor")
 			os.Exit(1)
 		}
@@ -512,6 +527,9 @@ func gatewayEgressEnv(cfg *operator.Config) []corev1.EnvVar {
 		if e.value != "" {
 			env = append(env, corev1.EnvVar{Name: e.name, Value: e.value})
 		}
+	}
+	if cfg.ActivityReports {
+		env = append(env, corev1.EnvVar{Name: "ACTIVITY_REPORTS", Value: "true"})
 	}
 	if cfg.Bandwidth.LabInternetCapMbit > 0 {
 		env = append(env, corev1.EnvVar{Name: "GATEWAY_DOWNLOAD_KBPS", Value: fmt.Sprint(cfg.Bandwidth.LabInternetCapMbit * 1000)})

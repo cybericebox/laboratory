@@ -58,6 +58,8 @@ type LabGroupReconciler struct {
 	GatewayEgressEnv []corev1.EnvVar
 	// VPNFirewall is how the VPN pods created from now on forward: "nft" (no connection tracking) or "" / "iptables".
 	VPNFirewall string
+	// ActivityReports puts ACTIVITY_REPORTS=true in the VPN pod of a NEW group (a pod that exists keeps what it was made with).
+	ActivityReports bool
 	client.Client
 	// Reader provides direct identity reads for lifecycle side effects.
 	Reader                 client.Reader
@@ -839,6 +841,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		// restart it and drop the WireGuard sessions of the group).
 		c := &d.Spec.Template.Spec.Containers[0]
 		c.Env = append(c.Env, corev1.EnvVar{Name: "VPN_FIREWALL", Value: "nft"})
+	}
+	if r.ActivityReports {
+		c := &d.Spec.Template.Spec.Containers[0]
+		c.Env = append(c.Env, corev1.EnvVar{Name: "ACTIVITY_REPORTS", Value: "true"})
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps, r.TerminationGraceSeconds)
 	return r.Create(ctx, d)
