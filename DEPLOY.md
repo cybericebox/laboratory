@@ -169,8 +169,11 @@ re-handshake), and the next group starts when the previous one's pods are rolled
 hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
 With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).
 
+**The gateway pod follows the labs.** The gateway pod of a group serves nothing but the Internet gateways of its labs (their DHCP, the DNS answerer, the NAT, the web proxy and the egress filter); a lab has no DHCP of its own, only its gateways do. The operator therefore counts the labs of the group and records the answer in `LabGroup.status.gatewayPod`: while at least one lab has an Internet gateway the group runs the gateway pod, and with none it runs no gateway Deployment at all (and no scheduling record for it). A lab with an Internet gateway that is added to a running group makes the pod (it is queued like any pod of the group when the scheduler is on, so the lab becomes Ready when the pod does); removing the last such lab removes the pod once the lab itself is gone (a lab that is being deleted still counts: the pod removes its LabGateway first). A group the operator has not counted yet, or one made before the field, keeps the pod until the first count. The VPN pod is **not** counted this way: it follows `spec.vpn.disabled`, which the platform sets, because the platform treats a group as ready only with its VPN registered. What this changes for the platform: `status.pods`, the group's requests and the usage report list the gateway pod only while it exists, and a reservation counts it once the operator has counted the group (a short delay after the first lab with an Internet gateway is created). Servers outside the lab's own devices (the L7 proxy, the node-agents) are not affected.
+
 **Slim install: what changed in the defaults (upgrade notes).**
 - **The agent runs one replica** (`agent.replicas: 1`, was 2). A values file that sets more than one is refused until `agent.multiReplicaAck=true` states that the backend does not use reservations through the agent (the quota and fit checks are serialized inside one process); the PodDisruptionBudget is rendered only with more than one replica.
+- **A group runs its gateway pod only while a lab of it has an Internet gateway.** After the upgrade the operator counts every group's labs: a group with no Internet gateway in any lab loses its gateway Deployment (its pod); the VPN pod is untouched.
 - **The registry (zot) is installed only when `registry.cache.enabled`, `devices.statePersistence.enabled` or `registry.platform.enabled` is on.** An install that had none of them on loses the zot Deployment, Service, ConfigMap, Secret and network policy on upgrade; the volume claim stays (`helm.sh/resource-policy: keep`). The node-agent stops the `127.0.0.1:5035` relay, the agent and the operator lose their registry settings.
 
 ---
@@ -2696,7 +2699,7 @@ they are recreated: the operator does not roll them for this.
 
 ### Sizing of a group's own pods
 
-The VPN and the gateway pod of a group are sized by the platform, not by the chart alone:
+The VPN and the gateway pod of a group are sized by the platform, not by the chart alone. The gateway pod exists only while some lab of the group has an Internet gateway (see "The gateway pod follows the labs"):
 
 - **The agent reports how** (`GetFeatures`, `group_pods`): for the VPN `base + per_user * users`, at most `max_users` users; for the gateway
   `base + per_unit * labs` that use the internet, at most `max_labs` labs; CPU and memory both; the maximum size is the base plus the per-unit
@@ -2787,7 +2790,7 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
-   - apart from step 2, nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
+   - apart from step 2, nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent restarts as before (one replica by default) and the node-agents roll one at a time.
 
 ### Device resources (R-2)
 

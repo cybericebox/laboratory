@@ -214,6 +214,13 @@ spec:
                   type: object
                 maxItems: 5000
                 type: array
+              gatewayPod:
+                description: |-
+                  GatewayPod says whether the group runs its gateway pod: the operator sets it from the labs of the group, true while some lab has an
+                  Internet gateway (the pod serves their DHCP, DNS, NAT and egress filter and nothing else), false while none has. Absent for a group
+                  the operator has not counted yet, or one that predates the field: it keeps the gateway pod. The VPN pod is not counted this way:
+                  it follows spec.vpn.disabled, which the platform sets.
+                type: boolean
               imageWarning:
                 description: |-
                   ImageWarning names the VPN or gateway image that could not be pinned to a

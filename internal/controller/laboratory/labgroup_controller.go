@@ -28,10 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
@@ -264,6 +266,12 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
+	// The gateway pod exists only while some lab of the group has an Internet gateway (the VPN pod follows spec.vpn.disabled).
+	gatewayWanted, err := r.settleGatewayPod(ctx, &lg, ns)
+	if err != nil {
+		logger.Error(err, "count the labs that need the gateway pod")
+		return ctrl.Result{}, err
+	}
 	if err = r.ensureGroupScheduling(ctx, &lg); err != nil {
 		logger.Error(err, "ensure scheduling state")
 		return ctrl.Result{}, err
@@ -281,19 +289,24 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	if err = r.ensureServiceAccount(ctx, ns, names.ComponentGateway); err != nil {
-		logger.Error(err, "ensure gateway service account")
-		return ctrl.Result{}, err
-	}
-	if err = r.ensureRoleBinding(ctx, ns, names.ComponentGateway, names.RoleGatewayName); err != nil {
-		logger.Error(err, "ensure gateway role binding")
-		return ctrl.Result{}, err
-	}
-	if !r.groupPodQueued(&lg, names.ComponentGateway) {
-		if err = r.ensureGatewayDeployment(ctx, ns, false, lg.Spec.Gateway.Size); err != nil {
-			logger.Error(err, "ensure gateway deployment")
+	if gatewayWanted {
+		if err = r.ensureServiceAccount(ctx, ns, names.ComponentGateway); err != nil {
+			logger.Error(err, "ensure gateway service account")
 			return ctrl.Result{}, err
 		}
+		if err = r.ensureRoleBinding(ctx, ns, names.ComponentGateway, names.RoleGatewayName); err != nil {
+			logger.Error(err, "ensure gateway role binding")
+			return ctrl.Result{}, err
+		}
+		if !r.groupPodQueued(&lg, names.ComponentGateway) {
+			if err = r.ensureGatewayDeployment(ctx, ns, false, lg.Spec.Gateway.Size); err != nil {
+				logger.Error(err, "ensure gateway deployment")
+				return ctrl.Result{}, err
+			}
+		}
+	} else if err = r.deleteGroupDeployment(ctx, ns, names.ComponentGateway); err != nil {
+		logger.Error(err, "delete the gateway deployment no lab needs")
+		return ctrl.Result{}, err
 	}
 
 	// An image update waits its turn (one group at a time) and the next group starts when this one's pods are rolled out.
@@ -1341,6 +1354,59 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 	return r.Status().Update(ctx, p)
 }
 
+// settleGatewayPod counts the labs of the group that need its gateway pod (those with an Internet gateway) and records the answer in
+// status.gatewayPod. A record that says the pod is not wanted also drops the scheduling record of the pod, so a pod wanted again is
+// queued afresh instead of starting at once. It returns whether the pod is wanted.
+func (r *LabGroupReconciler) settleGatewayPod(ctx context.Context, lg *laboratoryv1alpha1.LabGroup, ns string) (bool, error) {
+	var labs laboratoryv1alpha1.LabList
+	if err := r.List(ctx, &labs, client.InNamespace(ns)); err != nil {
+		return false, err
+	}
+	need := grouppods.GatewayNeeded(labs.Items)
+	changed := lg.Status.GatewayPod == nil || *lg.Status.GatewayPod != need
+	if !need {
+		kept := lg.Status.Pods[:0:0]
+		for _, p := range lg.Status.Pods {
+			if p.Name != names.ComponentGateway {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) != len(lg.Status.Pods) {
+			lg.Status.Pods, changed = kept, true
+		}
+	}
+	if !changed {
+		return need, nil
+	}
+	lg.Status.GatewayPod = &need
+	if need {
+		ctrl.LoggerFrom(ctx).Info("a lab has an Internet gateway: the group runs its gateway pod", "namespace", ns)
+	} else {
+		ctrl.LoggerFrom(ctx).Info("no lab has an Internet gateway: the group runs no gateway pod", "namespace", ns)
+	}
+	return need, r.Status().Update(ctx, lg)
+}
+
+// groupOfLab maps a lab to the LabGroup that owns its namespace: the gateway pod of the group follows its labs, so a lab that appears, goes
+// or changes its gateways re-reconciles the group.
+func (r *LabGroupReconciler) groupOfLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var nsObj corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: obj.GetNamespace()}, &nsObj); err != nil {
+		return nil
+	}
+	owner := nsObj.Labels[names.LabelGroup]
+	if owner == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner}}}
+}
+
+// deleteGroupDeployment removes a Deployment of the group (and with it its pod); a missing one is fine.
+func (r *LabGroupReconciler) deleteGroupDeployment(ctx context.Context, ns, name string) error {
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	return client.IgnoreNotFound(r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationBackground)))
+}
+
 func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Re-reconcile LabGroup when its VPN Pod changes (ready, restart, new IP).
 	vpnPodMap := func(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -1362,6 +1428,7 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroup{}).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(vpnPodMap)).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.groupOfLab), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(reconcileutil.Quiet(r))
 }
 

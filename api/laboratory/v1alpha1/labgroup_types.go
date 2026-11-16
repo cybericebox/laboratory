@@ -90,6 +90,12 @@ type LabGroupStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Pods []NamedPodSchedule `json:"pods,omitempty"`
+	// GatewayPod says whether the group runs its gateway pod: the operator sets it from the labs of the group, true while some lab has an
+	// Internet gateway (the pod serves their DHCP, DNS, NAT and egress filter and nothing else), false while none has. Absent for a group
+	// the operator has not counted yet, or one that predates the field: it keeps the gateway pod. The VPN pod is not counted this way:
+	// it follows spec.vpn.disabled, which the platform sets.
+	// +optional
+	GatewayPod *bool `json:"gatewayPod,omitempty"`
 }
 
 // LabGroupVPNStatus exposes VPN server connection details.

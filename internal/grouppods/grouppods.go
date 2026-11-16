@@ -94,13 +94,37 @@ func sized(size *laboratoryv1alpha1.GroupPodSize) corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{Requests: l.DeepCopy(), Limits: l}
 }
 
-// PodNames are the pods a LabGroup runs itself: the VPN (unless disabled) and the gateway.
+// Wanted says which of the pods a group runs itself exist for it. The VPN pod follows spec.vpn.disabled (the platform sets it: a group's
+// readiness on the platform side needs the VPN registered). The gateway pod follows status.gatewayPod, which the operator sets from the
+// labs of the group (GatewayNeeded); a group with no record (not counted yet, or made before the record existed) keeps the gateway pod.
+func Wanted(lg *laboratoryv1alpha1.LabGroup) (vpn, gateway bool) {
+	gateway = lg.Status.GatewayPod == nil || *lg.Status.GatewayPod
+	return !lg.Spec.VPN.Disabled, gateway
+}
+
+// GatewayNeeded says whether any of the labs has an Internet gateway: the gateway pod serves nothing else (the DHCP, the DNS answerer, the
+// NAT and the egress filter of the Internet gateways of the labs). A lab that is being deleted still counts: its gateway objects are removed
+// by the pod, so the pod stays until the lab is gone.
+func GatewayNeeded(labs []laboratoryv1alpha1.Lab) bool {
+	for i := range labs {
+		if labs[i].Spec.HasInternet() {
+			return true
+		}
+	}
+	return false
+}
+
+// PodNames are the pods a LabGroup runs itself: the VPN (unless disabled) and the gateway (while some lab needs it, see Wanted).
 func PodNames(lg *laboratoryv1alpha1.LabGroup) []string {
 	var out []string
-	if !lg.Spec.VPN.Disabled {
+	vpn, gateway := Wanted(lg)
+	if vpn {
 		out = append(out, names.ComponentVPN)
 	}
-	return append(out, names.ComponentGateway)
+	if gateway {
+		out = append(out, names.ComponentGateway)
+	}
+	return out
 }
 
 // Requests is what the named pod of the group requests (its size, else the chart's default); nil for another name.
