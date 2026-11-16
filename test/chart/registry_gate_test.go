@@ -249,7 +249,7 @@ func TestRegistryGateAllowedListWithTheE2EFlags(t *testing.T) {
 		"--set", "registry.cache.extraRegistries[2].name=off", "--set", "registry.cache.extraRegistries[2].url=http://upstream-pub.laboratory-system.svc:5000",
 	)
 	got := envOf(*containerNamed(spec, "gate"))["GATE_ALLOWED_REGISTRIES"].Value
-	list := ","+got+","
+	list := "," + got + ","
 	for _, want := range []string{",pub,", ",priv,"} {
 		if !strings.Contains(list, want) {
 			t.Errorf("GATE_ALLOWED_REGISTRIES = %q misses %s", got, want)
