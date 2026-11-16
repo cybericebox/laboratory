@@ -2211,14 +2211,23 @@ and FOWNER capabilities and a read-only root file system, and does nothing else.
 
 ### The registry gate
 
-The registry pod has two containers: **zot** (the storage) and the **gate** (`/node registry-gate`, the image of the node). The Service `laboratory-registry:5000` targets the gate's port 5000; zot listens on
-`127.0.0.1:5001` of the pod only, so there is no path to zot that does not pass the gate (and no kubelet probe on zot: the gate's `/readyz`, on port 5002, answers only while zot accepts a connection, so a pod
-whose zot is down is not ready and the Service stops sending it requests). The relay on the nodes (`127.0.0.1:5035`), the operator and the agent are unchanged; they reach the same Service name and port.
+The registry pod has two containers: **zot** (the storage) and the **gate** (`/node registry-gate`, the image of the node). The Service `laboratory-registry` targets the gate; zot listens on `127.0.0.1:5001` of the pod
+only, so there is no path to zot that does not pass the gate (and no kubelet probe on zot: the gate's `/readyz`, on port 5002, answers only while zot accepts a connection, and its `/healthz` only while zot answers `/v2/`).
+The relay on the nodes (`127.0.0.1:5035`), the operator and the agent reach the same Service name; with the image cache on the relay uses the TLS port 5443, the others the plain port 5000.
 
-What the gate does today: it passes every request under `/v2` to zot unchanged, with the client's own `Authorization` (zot's accounts decide), keeping the client's `Host` (zot builds the `Location` of an upload
-from it), streaming blobs and never buffering them. It answers `400` to a path that two components could read differently (a `.` or `..` segment, an empty segment, an encoded slash, backslash or dot, a control
-character, anything outside `/v2`) and `502` when zot is down. It reads no Secret, mounts no volume and writes nothing. Resources: `registry.gate.resources`. The per-pull check of the image cache, the fill and the decision
-table are built on this (docs/research/2026-11-16-zot-tenant-cache.md); zot's own sync still fills the cache until then.
+What the gate does for every request outside the cache: it passes it under `/v2` to zot unchanged, with the client's own `Authorization` (zot's accounts decide), keeping the client's `Host` (zot builds the `Location` of an upload from it), streaming blobs and never buffering them. It answers `400` to a path that two components could read differently (a `.` or `..` segment, an empty segment, an encoded slash, backslash or dot, a control character, anything outside `/v2`) and `502` when zot is down.
+
+What it does for the image cache (`registry.cache.enabled`, requests under `/v2/c/<registry>/<repo>/...`, only `GET` and `HEAD` of manifests and blobs; everything else of that path is refused): for every pull the check of **5.2** of the design (`docs/research/2026-11-16-zot-tenant-cache.md`).
+
+| Request | The gate does |
+| --- | --- |
+| registry not in the list | `403`, `IMAGE_REGISTRY_NOT_ALLOWED` |
+| no `Authorization` | asks the upstream registry anonymously (token, then `HEAD`); public: serves; not public: `401` with a Basic challenge, so containerd comes back with the pod's credentials |
+| Basic `<tenant>~<user>:<secret>` | `HMAC(key, registry, user, secret)` and the repository give the decision; a verified tenant is served for `decisionMaxAge` (2m) and then served while it is checked again in the background; a new tenant for the same credentials is always checked first; a refusal is repeated for `deniedFor` (30s) and clears every tenant of those credentials at once |
+| a check | one token request (when the registry asks for one) and one `HEAD` of the object with the pull's credentials: `200` allowed, `401`/`403`/`404` denied, `429`/`5xx`/timeout unreachable (not a denial: see `staleIfError`) |
+| a tag | resolved upstream with the pull's credentials on every request (one `HEAD`); the answer carries the digest |
+
+The decisions live in the memory of the gate (a restart costs one check per repository and credential; it can never allow what was not allowed). Credentials are in memory only, never in a log, a metric label, a header or on disk. The key of the hash and the gate's account in zot are in the registry Secret (`gateKey`, `gatePassword`) and mounted into the gate container alone. Resources: `registry.gate.resources`.
 
 ### Registry volume: keep the data when the claim goes
 
@@ -2650,10 +2659,12 @@ of the chart's `crds/`, `helm upgrade` does not apply them) and the new agent pr
 ## Image cache (optional)
 
 Every lab pulls its images (device images, the VPN and gateway images, the netconfig init container) from their
-registries on every node. With the image cache on, the platform registry (zot) sits in between as a
-pull-through cache: the first node that needs an image makes zot fetch it from the upstream registry (on-demand
-sync), and every other node pulls it from zot, inside the cluster. It saves upstream bandwidth and rate limits
-(Docker Hub) and speeds up a burst of labs.
+registries on every node. With the image cache on, the platform registry sits in between as a shared cache: the
+first pull of an image makes the **registry gate** fetch it from the upstream registry and store it in zot, and every
+other node pulls it from zot, inside the cluster. Every pull is proved against the upstream registry with **its own
+credentials** (the pull secret of the lab), so a cached private image is never served to a credential that has no
+right to it. It saves upstream bandwidth and rate limits (Docker Hub) and speeds up a burst of labs. The gate and the
+decisions it makes are described in "The registry gate" above.
 
 ```yaml
 registry:
@@ -2666,28 +2677,38 @@ registry:
 ```
 
 **The registry is installed only when something needs it:** at least one of `registry.cache.enabled`, `devices.statePersistence.enabled` and `registry.platform.enabled`. With all three off (the default) the chart renders no zot Deployment, Service, Secret, ConfigMap or network policy, the node-agent starts no `127.0.0.1:5035` relay (`REGISTRY_ENABLED=false`), the agent has no registry address (a snapshot export is refused, PrewarmImages is off), the operator and the agent get no registry Secret reference, and their network policies have no rule for it. Switching the last feature off removes the zot Deployment but not the volume claim (`helm.sh/resource-policy: keep`), so the snapshots and the cache are found again when a feature is switched back on; delete the claim by hand when the data is not wanted. The registry Secret (the generated passwords) is removed and made again with new passwords: a writer outside the release that holds the old `laboratory-registry-platform` password gets the new one from the Secret the chart renders again. `statePersistence.enabled` turns the device snapshots on, `cache.enabled` the image cache (the full zot image, about 70 MB
-compressed on amd64 and arm64; the cache needs its sync extension), `platform.enabled` the platform images; any of them can be on together. Needs `nodeAgent.enabled`.
+compressed on amd64 and arm64), `platform.enabled` the platform images; any of them can be on together. Needs `nodeAgent.enabled`.
 
 - **How the nodes reach it.** As for snapshots: the node-agent relays `127.0.0.1:5035` on every node
   to the registry Service, and containerd reads `localhost:<port>` as a plain-HTTP registry, so nothing is configured
-  on the host.
+  on the host. With the cache on, the relay dials the gate's **TLS** port (5443 of the Service) and trusts only the
+  authority the chart made for it (`laboratory-registry-tls`, key `ca.crt`): the credentials of a pull cross the
+  cluster network in that hop. The gate serves the cache on that port only. To rotate the certificate, delete the
+  Secret `laboratory-registry-tls` and upgrade the release.
 - **What is rewritten.** The operator rewrites `REG/repo:tag` (and `@sha256:` references) into
-  `localhost:<port>/REG/repo:tag`, for registries in `registry.cache.registries` and `extraRegistries` only. Names
+  `localhost:<port>/c/REG/repo:tag`, for registries in `registry.cache.registries` and `extraRegistries` only. Names
   follow Docker rules: `nginx` is `docker.io/library/nginx:latest`. Snapshot images and images of other registries
-  are pulled directly. zot maps the `REG/` prefix back to the upstream registry (one sync entry per upstream, with
-  the destination `/REG`).
+  are pulled directly. The gate maps `REG` back to the upstream registry of its list (the ConfigMap
+  `laboratory-registry-gate`, reloaded within seconds when it changes: no restart of the gate and none of zot); a
+  registry that is not in the list is refused with `403` (`IMAGE_REGISTRY_NOT_ALLOWED`). zot keeps the cache under the
+  repositories `c/REG/repo`, readable and writable by the gate's account alone.
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.
 - **Scheduler.** With the cache on, the prepull request lists the rewritten images, so the first node warms
   zot and the others pull from it.
-- **Snapshots.** The base layers of a device snapshot are mounted from the cached repository of the base image
-  instead of being uploaded.
-- **Upstream credentials.** zot reads them from a Secret in its sync credentials format. The chart builds it from
-  `imagePullSecrets` (dockerconfigjson Secrets in the release namespace) with `lookup`, which sees nothing under
-  `helm template` or GitOps renderers; there, create your own Secret with the key `credentials.json`
-  (`{"ghcr.io": {"username": "...", "password": "..."}}`; Docker Hub is `registry-1.docker.io`) and set
-  `registry.cache.credentialsSecret`. Restart the registry pod after the credentials change.
+- **Snapshots.** The cache tree `c/` belongs to the gate alone, so the snapshot account cannot read it: the base layers
+  of a device snapshot are uploaded once to the shared `base` repository (and linked from there), not linked from the
+  cached repository of the base image.
+- **Upstream credentials.** They are the pull's own: the pull secret of the lab carries them, containerd sends them
+  to the gate after its `401` challenge, and the gate uses them for the check and for the fill. The chart keeps no
+  credentials of its own and `imagePullSecrets` of the chart do not feed the cache any more
+  (`registry.cache.credentialsSecret` is refused). For rate-limit relief on **public** images set
+  `registry.cache.anonymousFill` to the name of a `kubernetes.io/dockerconfigjson` Secret of the release namespace:
+  the gate uses it only to fill an image it proved readable without credentials (never for a private image, never to
+  prove anything). The pull secret must be written for the cache: the registry key `localhost:5035/c/<registry>` and
+  the username `<tenant>~<user>`; the platform's operator and agent do that (a later phase), and until then only
+  images that are public work through the cache.
 - **Digest pinning.** A tag can move upstream during an event. When a lab is created with the cache on, the operator
   asks the upstream registry (directly, with the pull secrets; not through zot, which would answer from its store)
   for the digest of each device image and of the netconfig image, once, and the lab's pods pull
@@ -2698,16 +2719,29 @@ compressed on amd64 and arm64; the cache needs its sync extension), `platform.en
   Both warnings reach the management agent (`LabStatus.image_warning`, `LabGroupStatus.image_warning`). An image whose digest cannot be resolved is pulled by its
   tag and named in `Lab.status.imageWarning` (and a Warning event on the Lab). The operator needs HTTPS egress to the
   upstream registries for this (the chart's operator network policy allows it when the cache is on).
-- **Platforms.** zot syncs a whole multi-platform image index, Windows variants included (the `pause` image alone is
-  about 550 MB across all platforms). So when every lab node has one architecture the operator pins the digest of that
-  platform's manifest instead of the index, and the cache fetches that one image. With several architectures it pins
-  the index. An image pulled by tag (unpinned fallback) always fetches the whole index. zot runs with
-  `http.compat: [docker2s2]` and `preserveDigest` so that the digests of Docker-format images stay what the upstream
-  registry says; without them a pull by digest of such an image fails.
+- **Platforms.** The gate stores only what a pull reads: the image manifest of the pulled platform and its blobs. An
+  index of several platforms is answered from the gate's memory (zot refuses an index whose children it does not hold,
+  and only one platform is ever pulled), so it is fetched from upstream once after a restart of the gate. When every
+  lab node has one architecture the operator pins the digest of that platform's manifest instead of the index. zot runs
+  with `http.compat: [docker2s2]` so that Docker-format manifests keep the digest the upstream registry says.
+- **What the gate stores, and when.** zot refuses a manifest whose blobs it does not hold, and a pull reads the manifest
+  first: the gate keeps the manifest in memory and stores it in zot (by digest and under a tag of its own, which is what
+  zot's retention works on) when the last blob it lists is stored. A blob is stored while it is streamed to the pod; a
+  second pull of the same layer, also at the same time, waits for that one download. A layer that another cached
+  repository holds is linked in without a download, but only when a manifest of this repository, fetched with a proof,
+  lists it.
+- **A full volume.** Above `registry.cache.diskHighWater` percent of the volume the gate stores nothing new: a miss is
+  streamed through from the upstream registry with the pull's credentials, hits are still served. Pods keep starting,
+  slower.
+- **An upstream outage.** A pull of a tenant already verified for those credentials is served for
+  `registry.cache.staleIfError` (10m); an older one, and any tenant never verified, gets `503`
+  (`IMAGE_REGISTRY_UNAVAILABLE`, so the pod shows `ImagePullBackOff`); an image that was public stays served for the whole
+  outage. The metrics of the gate are on its health port (`:5002/metrics`).
 - **Retention.** The cache is not an archive. zot's retention policy deletes a cached image that nobody pulled for
-  `registry.cache.unusedTTL` (default 48h, counted from the last pull, so an image in use is never deleted), and its
-  garbage collection frees the blobs; the image is simply fetched again on the next pull. Snapshot repositories
-  (`lab/...`) are never touched by it.
+  `registry.cache.unusedTTL` (default 48h, counted from the last pull of the manifest, so an image in use is not
+  deleted), and its garbage collection frees the blobs; the image is simply fetched again on the next pull. Only
+  `c/**` is subject to it: snapshot repositories (`lab/...`) are never touched. (A later phase makes the operator report
+  the images of live labs to the gate, which keeps them from expiring.)
 - **Size.** The registry volume (`registry.size`) holds the cached images as well: plan for the images of the labs you
   run, next to the snapshots.
 
