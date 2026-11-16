@@ -21,6 +21,10 @@ spec:
       maxUnavailable: 1
   template:
     metadata:
+      {{- with include "laboratory.scrapeAnnotations" (dict "metrics" .Values.nodeAgent.metrics) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
       labels:
         app: node-agent
         {{- include "laboratory.labels" . | nindent 8 }}
@@ -174,6 +178,11 @@ spec:
             # The probes' address: the loopback only (the node-agent is on the host network).
             - name: HEALTH_ADDR
               value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
+            {{- if .Values.nodeAgent.metrics.enabled }}
+            # The metrics endpoint (nodeAgent.metrics): on the node's address, since the node-agent is on the host network.
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (.Values.nodeAgent.metrics.port | int) | quote }}
+            {{- end }}
             {{- if .Values.bandwidth.enabled }}
             # The bandwidth protection: the Geneve traffic of the node is held to the ceilings the operator wrote for it (the ConfigMap volume).
             - name: BANDWIDTH_ENABLED

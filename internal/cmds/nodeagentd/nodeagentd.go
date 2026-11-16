@@ -112,8 +112,9 @@ func Run() {
 	mgr, err := ctrl.NewManager(
 		restCfg, ctrl.Options{
 			Scheme: scheme,
-			// No metrics endpoint: the node-agent is on the host network, so it would be open on the node's address.
-			Metrics: metricsserver.Options{BindAddress: "0"},
+			// No metrics endpoint unless METRICS_ADDR (chart nodeAgent.metrics) asks for one: the node-agent is on the host network, so
+			// it is open on the node's address, in plain HTTP.
+			Metrics: metricsserver.Options{BindAddress: cfg.MetricsAddr},
 			// Probes: liveness is "OVS answers" (a node-agent whose channels to it hang is restarted, not left dark), readiness adds
 			// "the caches have synced" (the controllers can read what they wire).
 			HealthProbeBindAddress: cfg.HealthAddr,

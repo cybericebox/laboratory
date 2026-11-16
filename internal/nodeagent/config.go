@@ -24,7 +24,10 @@ type Config struct {
 	// HealthAddr is where the readiness and liveness probes are served. The node-agent is on the host network, so it is the loopback
 	// only (the probes name host 127.0.0.1): the port is not open on the node's address.
 	HealthAddr string `env:"HEALTH_ADDR" envDefault:"127.0.0.1:9440"`
-	CRISock    string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
+	// MetricsAddr is where the Prometheus endpoint is served ("0": none, the default). It is on the host network, so an address without a
+	// host is open on the node's address: the chart sets it only with nodeAgent.metrics.enabled.
+	MetricsAddr string `env:"METRICS_ADDR" envDefault:"0"`
+	CRISock     string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
 	// DevicePluginDir is the kubelet's device-plugins directory (the kubelet hardcodes /var/lib/kubelet/device-plugins, also on k0s);
 	// the node-agent registers the extended resource cybericebox.com/tun there. TunSlots is how many devices of that
 	// resource a node advertises (each is the same /dev/net/tun, the count only bounds the extended devices per node).

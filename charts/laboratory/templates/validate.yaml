@@ -152,6 +152,12 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "registry.cache.pinConcurrency must be between 1 and 64 (got %v)" .Values.registry.cache.pinConcurrency) }}
 {{- end }}
 
+{{- range $name, $m := dict "operator.metrics" .Values.operator.metrics "nodeAgent.metrics" .Values.nodeAgent.metrics "agent.metrics" .Values.agent.metrics }}
+{{- if or (lt (int $m.port) 1) (gt (int $m.port) 65535) }}
+{{- fail (printf "%s.port must be a TCP port (got %v)" $name $m.port) }}
+{{- end }}
+{{- end }}
+
 {{- /* Scheduler values: the operator refuses to start on bad ones, so fail at install time. */ -}}
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}

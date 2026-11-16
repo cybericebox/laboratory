@@ -69,6 +69,15 @@ operator:
 
   leaderElection: true
 
+  # The operator's Prometheus endpoint (/metrics, plain HTTP): controller-runtime's work queues and reconcile times, the scheduler's queue and
+  # slots, the launch stages of device pods (laboratory_*, see DEPLOY.md "Metrics"). Off by default. scrapeAnnotations adds the
+  # prometheus.io/scrape, port and path annotations to the pod for a Prometheus that discovers pods by annotation (no ServiceMonitor needed).
+  # The port carries no authentication: keep it inside the cluster.
+  metrics:
+    enabled: false
+    port: 8080
+    scrapeAnnotations: false
+
   # A starting value for the default workers (operator.workers) and API rate (operator.api): set it from the load run.
   resources:
     limits:
@@ -714,6 +723,15 @@ certManager:
 nodeAgent:
   enabled: true
 
+  # The node-agent's Prometheus endpoint (/metrics, plain HTTP): the wiring of device pods (SetupNetworks and per interface times, the wait
+  # for and hold of the node's wiring lock) and the prepull image times. Off by default. The node-agent is on the host network, so the port
+  # is open on the node's address: enable it only where the node firewall or the network keeps it to the Prometheus.
+  # scrapeAnnotations adds the prometheus.io/* annotations to the pod.
+  metrics:
+    enabled: false
+    port: 9442
+    scrapeAnnotations: false
+
   # Probes of the node-agent: /readyz (Open vSwitch answers, the caches have synced) and /healthz (Open vSwitch answers) on the loopback of the node
   # (it is on the host network) at healthPort; a DaemonSet rollout waits minReadySeconds after a node-agent is Ready before it moves to the next
   # node (a restart drops the node's flows until they are programmed again).
@@ -1288,6 +1306,12 @@ agent:
   nodeSelector: {}
   tolerations: []
   enabled: false
+  # The agent's Prometheus endpoint (/metrics, plain HTTP): CreateLabs per-item latency and the wait for the group admission lock. Off by
+  # default. scrapeAnnotations adds the prometheus.io/* annotations to the pod. With agent.networkPolicy.enabled the port is opened to the cluster.
+  metrics:
+    enabled: false
+    port: 9443
+    scrapeAnnotations: false
   # Namespace of the management agent (the operator binds its ServiceAccount in every LabGroup namespace).
   namespace: laboratory-agent
   # Stable identity of this agent: makes the monitoring observations idempotent at the platform boundary.

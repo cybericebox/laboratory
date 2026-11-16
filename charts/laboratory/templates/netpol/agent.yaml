@@ -43,6 +43,11 @@ spec:
         - protocol: TCP
           port: {{ .Values.agent.grpcPort }}
     {{- end }}
+    {{- if .Values.agent.metrics.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.agent.metrics.port }}
+    {{- end }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -62,6 +67,15 @@ spec:
         - ports:
             - port: {{ .Values.agent.grpcPort | quote }}
               protocol: TCP
+  {{- if .Values.agent.metrics.enabled }}
+    # The metrics port (agent.metrics): scraped from inside the cluster.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: {{ .Values.agent.metrics.port | quote }}
+              protocol: TCP
+  {{- end }}
   egress:
     - toEntities:
         - kube-apiserver

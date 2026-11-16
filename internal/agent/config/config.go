@@ -66,6 +66,8 @@ type Config struct {
 	RequiredSnapshotAdvertised bool   `env:"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	RequiredSnapshotAvailable  bool   `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	GRPCPort                   string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	// MetricsAddr is where the Prometheus endpoint (/metrics, plain HTTP) is served; empty: none (chart agent.metrics).
+	MetricsAddr string `env:"AGENT_METRICS_ADDR"`
 	// AgentID is a stable, deployment-scoped identity used to make monitoring
 	// observations idempotent at the platform boundary.
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`

@@ -63,6 +63,9 @@ func Run() {
 	if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(k8s.Discovery()), 60*time.Second, func(err error) { log.Printf("%v", err) }); err != nil {
 		log.Fatalf("%v", err)
 	}
+	if cfg.MetricsAddr != "" {
+		serveMetrics(cfg.MetricsAddr)
+	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
 	h.EnableReadCache()

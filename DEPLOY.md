@@ -622,6 +622,44 @@ reservation.
 
 The operator needs `get/list/watch` on nodes; the chart's ClusterRole has them.
 
+## Metrics (where the launch time goes)
+
+Three endpoints, all off by default, plain HTTP at `/metrics`, no authentication (keep them inside the cluster):
+
+| Component | Chart values | Port |
+|---|---|---|
+| Operator | `operator.metrics.enabled`, `.port`, `.scrapeAnnotations` | 8080 |
+| Node-agent (host network: open on the node's address, restrict it with the node firewall) | `nodeAgent.metrics.*` | 9442 |
+| Agent | `agent.metrics.*` (with `agent.networkPolicy.enabled` the port is opened to the cluster) | 9443 |
+
+`scrapeAnnotations: true` puts `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` on the pod, for a Prometheus that finds
+pods by annotation; no ServiceMonitor is needed. No metric has a lab, pod, device, namespace or group name as a label; the labels are the
+fixed stages, results and lock names listed here.
+
+**Operator** (besides the Go and process metrics and controller-runtime's own: `workqueue_depth`, `workqueue_adds_total`,
+`workqueue_queue_duration_seconds`, `workqueue_work_duration_seconds`, `controller_runtime_reconcile_time_seconds`,
+`controller_runtime_reconcile_total`, `controller_runtime_reconcile_errors_total`, `controller_runtime_active_workers` and
+`controller_runtime_max_concurrent_reconciles`, all with a `controller` label: lab, device, connection, labgroup...):
+- `laboratory_device_launch_stage_seconds{stage}` histogram, once per device when it is Started. Stages, in order: `queue_wait` (queued ->
+  dispatched), `pod_create`, `schedule` (-> PodScheduled), `sandbox` (-> PodReadyToStartContainers, Kubernetes 1.29 and later: sandbox and CNI),
+  `init` (-> Initialized: the init containers, so their image pulls), `containers` (-> ContainersReady: the device image pull and start),
+  `ready_probe` (-> Ready), `device_ready` (pod Ready -> the scheduler saw the Device Ready), and `total` (dispatched -> Device Ready). The
+  pull of the device image is inside `containers` (the kubelet does not time it); `laboratory_image_pull_seconds` below times the prepull.
+- `laboratory_lab_ready_seconds` histogram: a Lab's Ready condition went False (first reconcile, or a restart) -> every device and connection Ready.
+- Scheduler: `laboratory_scheduler_slots_max`, `_slots_used`, `_queued_pods`, `_queued_objects`, `_queued_deploy_groups` (gauges),
+  `_prepull_in_progress` (gauge), `_dispatched_pods_total`, `_tick_seconds`, and `laboratory_scheduler_prepull_wait_seconds{outcome}`
+  (done, partial, timeout): how long a prepull barrier held a group.
+- Digest pinning: `laboratory_image_pin_lookups_total{result}` (hit, pending, miss), `laboratory_image_pin_resolve_seconds{result}`
+  (ok, error) and `laboratory_image_pin_pending` (resolutions running or queued).
+
+**Node-agent**: `laboratory_nodeagent_setup_networks_seconds{result}` (one CNI ADD), `laboratory_nodeagent_wire_interface_seconds{result}` (one
+interface, lock wait included), `laboratory_nodeagent_lock_wait_seconds{lock}`, `laboratory_nodeagent_lock_hold_seconds{lock,holder}` (the
+node's wiring lock `veth`, and the function that held it), `laboratory_image_pull_seconds{result}` (present, pulled, error: one image of a
+prepull) and the existing `laboratory_nodeagent_vni_orphans_*`.
+
+**Agent**: `laboratory_agent_create_lab_seconds{state}` (one lab of a CreateLabs call, the group lock wait included),
+`laboratory_agent_group_lock_wait_seconds`, and the pinning metrics above.
+
 ## Operator concurrency and API rate
 
 The operator reconciles several labs, devices and connections at the same time: `operator.workers.lab` (8), `operator.workers.device` (16) and
