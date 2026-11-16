@@ -42,6 +42,11 @@ func TestDecisionTable(t *testing.T) {
 	if got := s.Lookup(key, "b"); got != Check {
 		t.Fatalf("a new tenant for the hash is a mandatory fresh check, whatever the age: %v", got)
 	}
+	c.advance(9 * time.Minute)
+	if got := s.Lookup(key, "a"); got != Check {
+		t.Fatalf("older than stale-if-error even a verified tenant is checked before it is served: %v", got)
+	}
+	s.Record(key, "a", Allowed)
 	s.Record(key, "a", Allowed)
 	if got := s.Lookup(key, "b"); got != Check {
 		t.Fatalf("a fresh record of tenant a does not verify tenant b: %v", got)
@@ -131,6 +136,9 @@ func TestAnonymousDecisions(t *testing.T) {
 		t.Fatal("stale: serve and revalidate")
 	}
 	c.advance(10 * time.Hour)
+	if s.Lookup(anon, "") != Check {
+		t.Fatal("very old: a fresh check, which in an outage is answered by the earlier allow")
+	}
 	if !s.Record(anon, "", Unreachable) {
 		t.Fatal("an anonymous image allowed earlier is served for the whole outage")
 	}

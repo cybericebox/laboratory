@@ -184,6 +184,10 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if strings.Contains(r.URL.Path, "/manifests/") {
+		sum := sha256.Sum256(body)
+		w.Header().Set("Docker-Content-Digest", "sha256:"+hex.EncodeToString(sum[:]))
+	}
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)

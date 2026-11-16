@@ -58,6 +58,7 @@ type Object struct {
 	Kind   string // manifests or blobs
 	Ref    string
 	Accept string // the client's Accept header (manifest media types)
+	Range  string // the client's Range header, for a blob streamed through without being stored
 }
 
 func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.Ref }
@@ -67,20 +68,26 @@ func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.
 // no proof (Docker Hub gives an empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials
 // in the token cache (the HMAC hash, never the secret).
 func (u *Upstream) Check(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, error) {
+	out, _, err := u.Head(ctx, reg, o, c, credKey)
+	return out, err
+}
+
+// Head is Check that also returns the headers of the answer (Docker-Content-Digest of a tag, Content-Length of a blob).
+func (u *Upstream) Head(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, http.Header, error) {
 	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
-		return Denied, nil
+		return Denied, nil, nil
 	}
 	if err != nil {
-		return Unreachable, err
+		return Unreachable, nil, err
 	}
 	defer drain(resp)
-	return classify(resp.StatusCode), nil
+	return classify(resp.StatusCode), resp.Header.Clone(), nil
 }
 
 func classify(code int) Outcome {
 	switch {
-	case code == http.StatusOK, code >= 300 && code < 400:
+	case code == http.StatusOK, code == http.StatusPartialContent, code >= 300 && code < 400:
 		// a redirect for a blob is given only to a caller that is allowed (the CDN is reached after the registry said yes)
 		return Allowed
 	case code == http.StatusUnauthorized, code == http.StatusForbidden, code == http.StatusNotFound:
@@ -127,7 +134,7 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 // allowInsecure lets a redirect stay on plain http only inside the upstream's own host when that upstream is itself plain http (a
 // registry of the same cluster, and the tests); a redirect to another host over http is refused.
 func (u *Upstream) allowInsecure(reg Registry, loc *url.URL) bool {
-	return reg.URL.Scheme == "http" && loc.Scheme == "http" && loc.Host == reg.URL.Host
+	return reg.URL.Scheme == schemeHTTP && loc.Scheme == schemeHTTP && loc.Host == reg.URL.Host
 }
 
 // do sends the request, answers a challenge, and returns the response that is not a challenge.
@@ -143,6 +150,9 @@ func (u *Upstream) do(ctx context.Context, method string, reg Registry, o Object
 		if o.Accept != "" {
 			req.Header.Set("Accept", o.Accept)
 		}
+		if o.Range != "" {
+			req.Header.Set("Range", o.Range)
+		}
 		if auth != "" {
 			req.Header.Set("Authorization", auth)
 		}
@@ -154,6 +164,9 @@ func (u *Upstream) do(ctx context.Context, method string, reg Registry, o Object
 			return resp, nil
 		}
 		challenge := resp.Header.Get("Www-Authenticate")
+		if challenge == "" {
+			return resp, nil // a plain 401: a refusal, with nothing to answer
+		}
 		drain(resp)
 		if auth, err = u.answer(ctx, challenge, o.Repo, c, tokenKey); err != nil {
 			return nil, err
@@ -191,7 +204,7 @@ func (u *Upstream) answer(ctx context.Context, challenge, repo string, c Creds, 
 	case "bearer":
 		realm := params["realm"]
 		ru, err := url.Parse(realm)
-		if err != nil || realm == "" || ru.Scheme != "https" && ru.Scheme != "http" {
+		if err != nil || realm == "" || ru.Scheme != "https" && ru.Scheme != schemeHTTP {
 			return "", fmt.Errorf("bad token realm %q", realm)
 		}
 		q := ru.Query()
