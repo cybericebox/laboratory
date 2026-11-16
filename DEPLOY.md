@@ -167,7 +167,9 @@ WireGuard handling), so after a chart upgrade the operator brings every existing
 `vpn.resources` reaches only new groups. The gateway is the same until it is rolled: a gateway that restarts anyway (the image, a security setting) takes the size of the day in that same roll (a group created with a size of its own gets that size again), so the proxy and DNS code of a new image never runs at the old forwarding-only size; a changed `inetGateway.resources` alone restarts nothing and reaches new groups and the next roll of the old ones. It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
 re-handshake), and the next group starts when the previous one's pods are rolled out and available, or after 10 minutes if they never become so (a bad image does not
 hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
-With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).
+With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`). The resolving runs in the
+background (`registry.cache.pinConcurrency` at a time, one resolution per image however many labs ask): a new lab waits for its digests
+without holding an operator worker. A tag that cannot be resolved is pulled by its tag, as before.
 
 ### The group's servers: the VPN and internet switches
 

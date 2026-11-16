@@ -268,6 +268,7 @@ STATE_MAX_ENTRIES: {{ .Values.devices.statePersistence.maxEntries | quote }}
 STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
 IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
 IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
+IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
 IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
 {{- end }}
 

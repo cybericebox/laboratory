@@ -26,8 +26,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devices"
@@ -83,9 +85,12 @@ type LabReconciler struct {
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
 	Mirror imagecache.Rewriter
-	// Resolver pins image tags to digests for a lab created with the image
-	// cache on; nil pins nothing.
-	Resolver imagecache.Resolver
+	// Pinner resolves image tags to digests, in the background, for a lab created with the image cache on; nil pins nothing. A lab
+	// whose digests are not all there yet waits (it is woken through PinEvents).
+	Pinner *imagecache.AsyncResolver
+	// PinEvents wakes a lab when a resolution it waited for is done (the Pinner's Notify sends the lab's key here); nil: the lab looks
+	// again after pinningRecheck.
+	PinEvents <-chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab]
 	// NetConfigImage is the image of the device netconfig init-container, pinned
 	// together with the device images.
 	NetConfigImage string
@@ -1379,7 +1384,7 @@ func labOwnerHandler(scheme *runtime.Scheme, mapper meta.RESTMapper) handler.Eve
 }
 
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Lab{}).
 		Watches(&laboratoryv1alpha1.Device{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.Connection{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
@@ -1387,8 +1392,11 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
-		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)}).
-		Complete(reconcileutil.Quiet(r))
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)})
+	if r.PinEvents != nil {
+		b = b.WatchesRawSource(source.Channel(r.PinEvents, &handler.TypedEnqueueRequestForObject[*laboratoryv1alpha1.Lab]{}))
+	}
+	return b.Complete(reconcileutil.Quiet(r))
 }
 
 func deviceTypeIsSwitch(deviceType laboratoryv1alpha1.DeviceType) bool {

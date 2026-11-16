@@ -358,3 +358,21 @@ func TestLoadConfigAPIRate(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigPinConcurrency(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.Cache.PinConcurrency != 8 {
+		t.Fatalf("default: %v %v", cfg, err)
+	}
+	for _, v := range []string{"0", "65"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("IMAGE_CACHE_PIN_CONCURRENCY", v)
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("IMAGE_CACHE_PIN_CONCURRENCY=%s must be refused", v)
+			}
+		})
+	}
+}
