@@ -149,16 +149,16 @@ func TestCheckerEndToEnd(t *testing.T) {
 	eventually(t, "the acknowledgement", 30*time.Second, func() bool { return getLab(t, c, lab).Status.ChecksRunAck == 3 })
 
 	// The pod goes NotReady: no run is made and the result is kept.
-	opened = backend.opened
+	opened = backend.openedCount()
 	mine.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
 	if err := c.Status().Update(ctx, mine); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(2500 * time.Millisecond)
-	settled := backend.opened
+	settled := backend.openedCount()
 	time.Sleep(3 * time.Second)
-	if backend.opened != settled || settled > opened+1 {
-		t.Fatalf("runs continued on a device that is not ready: %d -> %d -> %d", opened, settled, backend.opened)
+	if backend.openedCount() != settled || settled > opened+1 {
+		t.Fatalf("runs continued on a device that is not ready: %d -> %d -> %d", opened, settled, backend.openedCount())
 	}
 	if state().State != laboratoryv1alpha1.CheckPassed {
 		t.Fatalf("the result was changed: %+v", state())
