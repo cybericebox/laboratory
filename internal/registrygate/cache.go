@@ -169,20 +169,24 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 			c.settleMissing(ctx, reg, key, who, up)
 			return "", statusOf(NotFound, who.hash == "")
 		}
-		serve := c.Store.Record(key, who.tenant, out, started)
+		var kn *knownRef
+		d := hdr.Get("Docker-Content-Digest")
+		if out == Allowed { // the tag resolves to its digest; without one the tag itself is what a later check asks about
+			kn = &knownRef{kindManifests, d, up.Accept}
+			if !reDigest.MatchString(d) {
+				kn = &knownRef{kindManifests, up.Ref, up.Accept}
+			}
+		}
+		serve := c.Store.Record(key, who.tenant, out, started, kn)
 		if !serve {
 			return "", statusOf(out, who.hash == "")
 		}
 		if out != Allowed {
 			return "", http.StatusServiceUnavailable // a tag cannot be resolved without upstream
 		}
-		d := hdr.Get("Docker-Content-Digest")
 		if !reDigest.MatchString(d) {
-			// the allow was recorded: it must be re-checkable, so the tag itself is the known ref
-			c.Store.Know(key, kindManifests, up.Ref, up.Accept)
 			return "", http.StatusBadGateway
 		}
-		c.Store.Know(key, kindManifests, d, up.Accept)
 		return d, http.StatusOK
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -229,10 +233,7 @@ func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, w
 		}
 		out = Denied // the ref that was proven is gone for these credentials
 	}
-	if out == Allowed {
-		defer c.Store.Know(key, up.Kind, up.Ref, up.Accept)
-	}
-	if c.Store.Record(key, who.tenant, out, started) {
+	if c.Store.Record(key, who.tenant, out, started, &knownRef{up.Kind, up.Ref, up.Accept}) {
 		return http.StatusOK
 	}
 	return statusOf(out, who.hash == "")
@@ -242,28 +243,23 @@ func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, w
 // for a short while. What it never does is deny the repository because of the caller's ref: a 404 on a ref of an attacker's choosing
 // must not deny it for everybody who shares the hash (or the anonymous key). But when the key holds an Allowed record, a ref that was
 // already proven for it is asked about, and that is OUR ref, so the re-check is safe for any key, the anonymous one included (a public
-// image that turned private must stop being served from the cache): 401, 403 or 404 on it denies the key. An Allowed record without a
-// known ref cannot be re-checked: it is dropped (fail closed), so no stale answer is ever served from it. With no Allowed record
-// (a first contact, a refused key) nothing is recorded about the repository.
+// image that turned private must stop being served from the cache): 401, 403 or 404 on it denies the key, in one atomic step of the
+// store. An Allowed record always has a known ref (the store refuses an allow without one). With no Allowed record (a first contact,
+// a refused key) nothing is recorded about the repository.
 func (c *Cache) settleMissing(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object) {
 	c.Store.NoteMissing(MissKey{Hash: who.hash, Repo: key.Repo, Kind: up.Kind, Ref: up.Ref})
-	allowed, kg, ok := c.Store.Holds(key)
-	switch {
-	case !allowed:
-		return
-	case !ok:
-		c.Store.Drop(key)
-		return
-	case kg.Kind == up.Kind && kg.Ref == up.Ref:
-		c.Store.Record(key, who.tenant, Denied, c.Store.Now()) // the proven ref itself is gone
-		return
+	kg, ok := c.Store.Known(key)
+	if !ok {
+		return // no allowed record: nothing to re-check (an allowed record always has a known ref)
 	}
 	started := c.Store.Now()
+	if kg.Kind == up.Kind && kg.Ref == up.Ref {
+		c.Store.SettleMissing(key, started, NotFound) // the proven ref itself is gone
+		return
+	}
 	out, _ := c.Up.Check(ctx, reg, Object{Repo: up.Repo, Kind: kg.Kind, Ref: kg.Ref, Accept: kg.Accept}, who.creds, who.hash)
 	c.M.checks.WithLabelValues("recheck_" + outcomeName(out)).Inc()
-	if out == Denied || out == NotFound {
-		c.Store.Record(key, who.tenant, Denied, started)
-	}
+	c.Store.SettleMissing(key, started, out)
 }
 
 // statusOf is the answer to a request that may not be served. An outage is a 503 with a stable body, so a pod shows ImagePullBackOff and

@@ -633,21 +633,15 @@ func TestAPublicImageThatTurnedPrivateIsNoLongerServed(t *testing.T) {
 	}
 }
 
-// An allowed record with no known ref cannot be re-checked: a 404 drops it (fail closed).
-func TestAllowedWithoutAKnownRefIsDroppedOnA404(t *testing.T) {
+// An allow without a known ref is never recorded: no such state exists, so a 404 cannot find one.
+func TestAnAllowWithoutAKnownRefIsRefused(t *testing.T) {
 	r := newRig(t)
 	key := r.key("alice")
-	r.cache.Store.Record(key, "t1", Allowed, r.cache.Store.Now())
-	reg, _ := r.cache.Registries.Get("up")
-	who := caller{tenant: "t1", creds: Creds{"alice", "pw"}, hash: key.Hash}
-	r.cache.settleMissing(t.Context(), reg, key, who, Object{Repo: "org/private", Kind: "manifests", Ref: "bogus"})
-	if ok, _, _ := r.cache.Store.Holds(key); ok {
-		t.Fatal("the record is gone")
+	if r.cache.Store.Record(key, "t1", Allowed, r.cache.Store.Now(), nil) {
+		t.Fatal("an allow without a known ref is not served")
 	}
-	r.clock.advance(5 * time.Minute)
-	r.up.setFail(503)
 	if got := r.cache.Store.Lookup(key, "t1"); got != Check {
-		t.Fatalf("no stale answer from a dropped record: %v", got)
+		t.Fatalf("and nothing is recorded: %v", got)
 	}
 }
 
@@ -662,8 +656,7 @@ func TestATagWithoutADigestStillLeavesAKnownRef(t *testing.T) {
 		t.Fatalf("%d", code)
 	}
 	key := r.key("alice")
-	ok, kg, has := r.cache.Store.Holds(key)
-	if ok && (!has || kg.Ref != "latest") {
-		t.Fatalf("an allow without a known ref: %v %+v", has, kg)
+	if kg, ok := r.cache.Store.Known(key); !ok || kg.Ref != "latest" {
+		t.Fatalf("the allow is recorded with the tag as its known ref: %v %+v", ok, kg)
 	}
 }
