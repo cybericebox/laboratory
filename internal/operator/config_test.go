@@ -314,3 +314,29 @@ func TestLoadConfigLabNetwork(t *testing.T) {
 		t.Fatalf("raised: %+v %v", cfg, err)
 	}
 }
+
+func TestLoadConfigReconcileWorkers(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LabWorkers != 8 || cfg.DeviceWorkers != 16 || cfg.ConnectionWorkers != 8 {
+		t.Fatalf("defaults: %d %d %d", cfg.LabWorkers, cfg.DeviceWorkers, cfg.ConnectionWorkers)
+	}
+	t.Setenv("LAB_RECONCILE_WORKERS", "1")
+	t.Setenv("DEVICE_RECONCILE_WORKERS", "64")
+	if cfg, err = LoadConfig(); err != nil || cfg.LabWorkers != 1 || cfg.DeviceWorkers != 64 {
+		t.Fatalf("bounds are allowed: %+v %v", cfg, err)
+	}
+	for _, kv := range [][2]string{{"LAB_RECONCILE_WORKERS", "0"}, {"DEVICE_RECONCILE_WORKERS", "65"}, {"CONNECTION_RECONCILE_WORKERS", "-1"}} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}

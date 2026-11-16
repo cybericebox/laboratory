@@ -1,6 +1,8 @@
 package laboratory
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cybericebox/laboratory/internal/devices"
@@ -231,6 +233,108 @@ var _ = Describe(
 					),
 				).To(Succeed())
 				Expect(devList.Items).To(BeEmpty())
+			},
+		)
+	},
+)
+
+var _ = Describe(
+	"Lab controller with several workers", func() {
+		It(
+			"gives every lab of one namespace its devices, connection VNI and a device code of its own", func() {
+				const (
+					ns       = "default"
+					count    = 12
+					timeout  = 30 * time.Second
+					interval = 250 * time.Millisecond
+				)
+				labNames := make([]string, count)
+				for i := range labNames {
+					labNames[i] = fmt.Sprintf("par-%d", i)
+					Expect(k8sClient.Create(ctx, &laboratoryv1alpha1.Lab{
+						ObjectMeta: metav1.ObjectMeta{Name: labNames[i], Namespace: ns},
+						Spec: laboratoryv1alpha1.LabSpec{
+							Devices: []laboratoryv1alpha1.DeviceTemplate{
+								{Name: "a", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:latest", Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}},
+								{Name: "b", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:latest", Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}},
+							},
+							Connections: []laboratoryv1alpha1.ConnectionTemplate{{Endpoints: []laboratoryv1alpha1.EndpointSpec{{Device: "a", Interface: "eth0"}, {Device: "b", Interface: "eth0"}}}},
+						},
+					})).To(Succeed())
+				}
+				DeferCleanup(func() {
+					for _, n := range labNames {
+						var devList laboratoryv1alpha1.DeviceList
+						_ = k8sClient.List(ctx, &devList, client.InNamespace(ns), client.MatchingLabels{names.LabelLab: n})
+						for i := range devList.Items {
+							devList.Items[i].Finalizers = nil
+							_ = k8sClient.Update(ctx, &devList.Items[i])
+						}
+						var connList laboratoryv1alpha1.ConnectionList
+						_ = k8sClient.List(ctx, &connList, client.InNamespace(ns), client.MatchingLabels{names.LabelLab: n})
+						for i := range connList.Items {
+							connList.Items[i].Finalizers = nil
+							_ = k8sClient.Update(ctx, &connList.Items[i])
+						}
+						var l laboratoryv1alpha1.Lab
+						if err := k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: ns}, &l); err == nil {
+							l.Finalizers = nil
+							_ = k8sClient.Update(ctx, &l)
+							_ = k8sClient.Delete(ctx, &l)
+						}
+					}
+				})
+
+				Eventually(func() (string, error) {
+					var list laboratoryv1alpha1.DeviceList
+					if err := k8sClient.List(ctx, &list, client.InNamespace(ns)); err != nil {
+						return "", err
+					}
+					codes, mine := map[string]string{}, 0
+					for _, d := range list.Items {
+						if !strings.HasPrefix(d.Spec.LabRef, "par-") {
+							continue
+						}
+						mine++
+						workload := d.Spec.Name + "-" + d.Spec.Code
+						if d.Spec.Code == "" {
+							return "a device has no code", nil
+						}
+						if other, dup := codes[workload]; dup {
+							return fmt.Sprintf("%s and %s share %s", other, d.Name, workload), nil
+						}
+						codes[workload] = d.Name
+					}
+					if mine != count*2 {
+						return fmt.Sprintf("%d devices of %d", mine, count*2), nil
+					}
+					return "ok", nil
+				}, timeout, interval).Should(Equal("ok"))
+
+				Eventually(func() (string, error) {
+					var list laboratoryv1alpha1.ConnectionList
+					if err := k8sClient.List(ctx, &list, client.InNamespace(ns)); err != nil {
+						return "", err
+					}
+					vnis, mine := map[uint]string{}, 0
+					for _, c := range list.Items {
+						if !strings.HasPrefix(c.Spec.LabRef, "par-") {
+							continue
+						}
+						mine++
+						if c.Status.VNI == nil {
+							return fmt.Sprintf("%s has no VNI yet", c.Name), nil
+						}
+						if other, dup := vnis[*c.Status.VNI]; dup {
+							return fmt.Sprintf("%s and %s share VNI %d", other, c.Name, *c.Status.VNI), nil
+						}
+						vnis[*c.Status.VNI] = c.Name
+					}
+					if mine != count {
+						return fmt.Sprintf("%d connections of %d", mine, count), nil
+					}
+					return "ok", nil
+				}, timeout, interval).Should(Equal("ok"))
 			},
 		)
 	},

@@ -127,6 +127,7 @@ var _ = BeforeSuite(
 		Expect(err).NotTo(HaveOccurred())
 
 		err = (&LabReconciler{
+			Workers:        8,
 			Client:         mgr.GetClient(),
 			Scheme:         mgr.GetScheme(),
 			Recorder:       mgr.GetEventRecorderFor("lab"),

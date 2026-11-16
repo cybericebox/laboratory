@@ -20,7 +20,10 @@ import (
 // The code is drawn once, when the device is first needed, and then lives in
 // Device.spec.code. Uniqueness in the namespace is checked against the codes of
 // the other devices and the Services, with reads from the API server: the lab
-// reconciler is the only one that draws codes and it runs one lab at a time.
+// reconciler is the only one that draws codes, and the labs of one namespace draw
+// them one after another (LabReconciler.codeLocks, held from the first read to the
+// last write of materializeDevices and ensureWebServices); labs of other namespaces
+// run in parallel.
 
 func (r *LabReconciler) reader() client.Reader {
 	if r.Reader != nil {

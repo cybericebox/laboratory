@@ -18,6 +18,9 @@ import (
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
+// MaxReconcileWorkers is the most workers one controller may be given: more than that only queues behind the client rate limit.
+const MaxReconcileWorkers = 64
+
 type Config struct {
 	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the operator writes the bandwidth ceilings onto the
 	// gateway, demux and L7 proxy pods (see package bandwidth).
@@ -47,6 +50,13 @@ type Config struct {
 	VNIQuarantine    time.Duration `env:"VNI_QUARANTINE" envDefault:"10m"`
 	VNISweepInterval time.Duration `env:"VNI_SWEEP_INTERVAL" envDefault:"5m"`
 	VNIRetireFlush   time.Duration `env:"VNI_RETIRE_FLUSH" envDefault:"2s"`
+
+	// LabWorkers, DeviceWorkers and ConnectionWorkers are how many objects of that kind are reconciled at the same time
+	// (LAB_RECONCILE_WORKERS, DEVICE_RECONCILE_WORKERS, CONNECTION_RECONCILE_WORKERS; chart operator.workers). One object is never
+	// worked on twice at once. The LabGroup controller always has one worker: its duplicate-key check depends on it.
+	LabWorkers        int `env:"LAB_RECONCILE_WORKERS" envDefault:"8"`
+	DeviceWorkers     int `env:"DEVICE_RECONCILE_WORKERS" envDefault:"16"`
+	ConnectionWorkers int `env:"CONNECTION_RECONCILE_WORKERS" envDefault:"8"`
 
 	// The egress monitor pulls the per-minute summaries of the gateways (EGRESS_MONITOR_ENABLED), on their summaries port (EGRESS_STATS_PORT),
 	// keeps the connection log in the operator log and, with EGRESS_LOG_DIR, in daily files for EGRESS_LOG_RETENTION, and flags a lab when
@@ -389,6 +399,11 @@ func LoadConfig() (*Config, error) {
 	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
 		if err := checkExactImage(image); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", name, image, err)
+		}
+	}
+	for name, v := range map[string]int{"LAB_RECONCILE_WORKERS": cfg.LabWorkers, "DEVICE_RECONCILE_WORKERS": cfg.DeviceWorkers, "CONNECTION_RECONCILE_WORKERS": cfg.ConnectionWorkers} {
+		if v < 1 || v > MaxReconcileWorkers {
+			return nil, fmt.Errorf("%s must be between 1 and %d (got %d)", name, MaxReconcileWorkers, v)
 		}
 	}
 	if cfg.SchedulerMaxPods < 0 {

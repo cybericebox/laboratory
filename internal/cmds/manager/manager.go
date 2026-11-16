@@ -298,6 +298,7 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
+		Workers:                   cfg.LabWorkers,
 		CheckerEnabled:            cfg.ChecksEnabled,
 		VNI:                       vniRetirer,
 		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
@@ -382,6 +383,7 @@ func Run() {
 		microVMRuntimeClass = cfg.Profiles.MicroVMRuntimeClass
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
+		Workers:                 cfg.DeviceWorkers,
 		Scheduled:               cfg.SchedulerEnabled,
 		Recorder:                mgr.GetEventRecorderFor("device"),
 		MirrorRegistries:        mirror.Registries,
@@ -413,6 +415,7 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.ConnectionReconciler{
+		Workers:  cfg.ConnectionWorkers,
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("connection"),

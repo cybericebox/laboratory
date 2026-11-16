@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -31,6 +32,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
+	"github.com/cybericebox/laboratory/internal/keylock"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
@@ -87,6 +89,12 @@ type LabReconciler struct {
 	// NetConfigImage is the image of the device netconfig init-container, pinned
 	// together with the device images.
 	NetConfigImage string
+	// Workers is how many labs are reconciled at once (0 = 1). A lab is never reconciled by two workers at once; what the
+	// reconciles of different labs share (the codes of one namespace, the pools) is guarded, see device_code.go.
+	Workers int
+	// codeLocks makes the labs of one namespace take their device codes one after another: the check that a code is free reads
+	// the namespace, and the Device or Service that makes the code taken is written after it.
+	codeLocks keylock.Set
 }
 
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
@@ -459,6 +467,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec, snapshots ...*labServiceSnapshot) error {
 	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	defer r.codeLocks.Lock(lab.Namespace)()
 	codes := r.newCodeAllocator(lab, snapshots...)
 	wantLabels := userLabels(lab.Labels)
 	ten, err := r.tenantOf(ctx, lab)
@@ -1235,6 +1244,7 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) error {
 	services := r.serviceSnapshot(lab, snapshots...)
+	defer r.codeLocks.Lock(lab.Namespace)()
 	codes := r.newCodeAllocator(lab, services)
 	for _, d := range lab.Spec.Devices {
 		web := laboratoryv1alpha1.HTTPAccess(d.Access)
@@ -1377,6 +1387,7 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)}).
 		Complete(reconcileutil.Quiet(r))
 }
 
