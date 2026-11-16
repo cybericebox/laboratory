@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -42,6 +43,8 @@ import (
 // DeviceReconciler reconciles a Device object.
 type DeviceReconciler struct {
 	client.Client
+	// Workers is how many devices are reconciled at once (0 = 1). A device is never reconciled by two workers at once.
+	Workers         int
 	Scheme          *runtime.Scheme
 	LabNodeSelector map[string]string
 	LabTolerations  []corev1.Toleration
@@ -752,6 +755,7 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.
 		Watches(&laboratoryv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.devicesForConnection)).
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)}).
 		Complete(reconcileutil.Quiet(r))
 }
 

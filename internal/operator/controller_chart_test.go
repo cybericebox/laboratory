@@ -85,3 +85,37 @@ func TestControllerChartKeepsDisabledSchedulerAndLeaderVariant(t *testing.T) {
 		t.Fatal("variant probe contract changed")
 	}
 }
+
+func renderChart(t *testing.T, extra ...string) (string, error) {
+	t.Helper()
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("Helm not installed")
+	}
+	chart, err := filepath.Abs("../../charts/laboratory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"template", "workers", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test"}
+	data, err := exec.Command(helm, append(args, extra...)...).CombinedOutput()
+	return string(data), err
+}
+
+func TestChartPassesReconcileWorkers(t *testing.T) {
+	out, err := renderChart(t)
+	if err != nil {
+		t.Fatal(out)
+	}
+	for _, want := range []string{`LAB_RECONCILE_WORKERS: "8"`, `DEVICE_RECONCILE_WORKERS: "16"`, `CONNECTION_RECONCILE_WORKERS: "8"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%s missing from the operator settings", want)
+		}
+	}
+	out, err = renderChart(t, "--set", "operator.workers.device=4")
+	if err != nil || !strings.Contains(out, `DEVICE_RECONCILE_WORKERS: "4"`) {
+		t.Fatalf("the chart value is not passed on: %v", err)
+	}
+	if _, err = renderChart(t, "--set", "operator.workers.lab=0"); err == nil {
+		t.Fatal("zero workers must be refused at install time")
+	}
+}

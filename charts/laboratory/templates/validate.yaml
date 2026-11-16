@@ -138,6 +138,12 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 
+{{- range $k, $v := .Values.operator.workers }}
+{{- if or (lt (int $v) 1) (gt (int $v) 64) }}
+{{- fail (printf "operator.workers.%s must be between 1 and 64 (got %v)" $k $v) }}
+{{- end }}
+{{- end }}
+
 {{- /* Scheduler values: the operator refuses to start on bad ones, so fail at install time. */ -}}
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}

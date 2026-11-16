@@ -620,6 +620,14 @@ reservation.
 
 The operator needs `get/list/watch` on nodes; the chart's ClusterRole has them.
 
+## Operator concurrency and API rate
+
+The operator reconciles several labs, devices and connections at the same time: `operator.workers.lab` (8), `operator.workers.device` (16) and
+`operator.workers.connection` (8), each 1 to 64. An object is never worked on by two workers at once; the LabGroup controller always has one
+worker. The device codes of one namespace are drawn one lab after another, and the pools hand out indexes one at a time per process, so a
+burst of labs does not race. All workers share the API client of the operator; raise the numbers in steps and watch the API server latency
+and the operator CPU (the operator limit in `operator.resources` is the first thing a busy burst hits).
+
 ## Maximum capacity and node autoscaling
 
 The operator knows nothing about an autoscaler. It knows two capacities of the lab nodes:

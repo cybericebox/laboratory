@@ -44,6 +44,15 @@ operator:
   # A lab with more is refused when it is created. The backend and the catalog hold the rule 10 for task authors and do not ask.
   maxLabGateways: 10
 
+  # How many objects of a kind the operator reconciles at the same time (1 to 64). One object is never worked on twice at once, so
+  # raising a number only lets different labs, devices and connections go in parallel (the launch of a burst of labs). The
+  # LabGroup controller always has one worker. Each worker that is busy uses the API client of the operator (operator.apiQps), so
+  # watch the API server latency when raising them.
+  workers:
+    lab: 8
+    device: 16
+    connection: 8
+
   # Comma-separated CIDRs of proxy source IPs for hostNetwork proxy (e.g. Kind).
   # Leave empty in standard clusters.
   proxySourceCIDRs: ""

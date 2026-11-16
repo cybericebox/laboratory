@@ -246,6 +246,9 @@ EGRESS_MAX_CONN_SECONDS: {{ .Values.internetEgress.proxy.maxConnSeconds | quote 
 EGRESS_TUNNEL_SUFFIXES: {{ .Values.internetEgress.proxy.tunnelSuffixes | quote }}
 EGRESS_ICMP_PER_SECOND: {{ .Values.internetEgress.icmpPerSecond | quote }}
 VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
+LAB_RECONCILE_WORKERS: {{ .Values.operator.workers.lab | quote }}
+DEVICE_RECONCILE_WORKERS: {{ .Values.operator.workers.device | quote }}
+CONNECTION_RECONCILE_WORKERS: {{ .Values.operator.workers.connection | quote }}
 MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
 ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}

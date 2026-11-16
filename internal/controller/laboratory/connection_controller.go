@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -26,6 +27,8 @@ type ConnectionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// Workers is how many connections are reconciled at once (0 = 1). A connection is never reconciled by two workers at once.
+	Workers int
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=connections,verbs=get;list;watch;create;update;patch;delete
@@ -84,6 +87,7 @@ func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Connection{}).
 		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.connectionsForLab)).
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)}).
 		Complete(reconcileutil.Quiet(r))
 }
 
