@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -106,15 +107,25 @@ func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d 
 	if image == "" { // not configured (tests): nothing to converge to
 		return false
 	}
-	want := r.cachedImage(ctx, ns, image)
+	want, err := r.cachedImage(ctx, ns, image)
+	if err != nil {
+		log.FromContext(ctx).Info("group image left as it is: it cannot be pulled through the image cache", "image", image, "err", err.Error())
+		return false
+	}
 	policy := pullPolicyFor(want)
-	if c.Image == want && c.ImagePullPolicy == policy {
+	// With the cache on the pods carry the re-keyed secret (a Deployment made before the cache was switched on still has the raw ones).
+	secrets := r.groupPullSecretRefs()
+	secretsOK := !r.Mirror.Enabled() || equalPullSecretRefs(d.Spec.Template.Spec.ImagePullSecrets, secrets)
+	if c.Image == want && c.ImagePullPolicy == policy && secretsOK {
 		return false
 	}
 	if !r.rollout.try(ns) {
 		return false
 	}
 	c.Image, c.ImagePullPolicy = want, policy
+	if r.Mirror.Enabled() {
+		d.Spec.Template.Spec.ImagePullSecrets = secrets
+	}
 	return true
 }
 
@@ -151,4 +162,17 @@ func rolledOut(d *appsv1.Deployment) bool {
 	}
 	s := d.Status
 	return s.ObservedGeneration >= d.Generation && s.UpdatedReplicas == want && s.Replicas == want && s.AvailableReplicas == want
+}
+
+// equalPullSecretRefs compares two lists of pull secret references by name; nil and empty are the same.
+func equalPullSecretRefs(a, b []corev1.LocalObjectReference) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name {
+			return false
+		}
+	}
+	return true
 }

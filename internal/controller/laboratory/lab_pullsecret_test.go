@@ -167,26 +167,24 @@ func TestStateDeviceWaitsForTheLabsPullSecret(t *testing.T) {
 	}
 }
 
-// A lab with its own pull secret pulls straight from its registry, like a tenant with one:
-// the shared cache would fetch its private images with the platform's credentials.
-func TestLabWithOwnPullSecretBypassesTheImageCache(t *testing.T) {
+// A lab with its own pull secret goes through the cache like every other: the gate proves each pull with the pull's own credentials, so
+// the shared cache never fetches its private images with anyone else's. Its tags are not pinned (the operator's pull secrets could not
+// read a private image; the gate resolves a tag at each pull with the pull's credentials).
+func TestLabWithOwnPullSecretUsesTheImageCacheWithoutPinning(t *testing.T) {
 	ctx := context.Background()
-	for _, tc := range []struct {
-		secret string
-		cache  bool
-	}{{"l-registry", false}, {"", true}} {
+	for _, secret := range []string{"l-registry", ""} {
 		lab := newLab("l")
-		lab.Spec.ImagePullSecret = tc.secret
+		lab.Spec.ImagePullSecret = secret
 		r := cachedLabReconciler(t, true, lab)
 		r.Mirror = imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 		if _, err := r.ensureModes(ctx, lab); err != nil {
 			t.Fatal(err)
 		}
-		if *lab.Status.ImageCache != tc.cache {
-			t.Errorf("secret %q: cache=%v, want %v", tc.secret, *lab.Status.ImageCache, tc.cache)
+		if !*lab.Status.ImageCache {
+			t.Errorf("secret %q: every lab goes through the cache when it is on", secret)
 		}
-		if !tc.cache && len(lab.Status.ImageDigests) != 0 {
-			t.Errorf("no pinning through the platform keychain: %v", lab.Status.ImageDigests)
+		if secret != "" && len(lab.Status.ImageDigests) != 0 {
+			t.Errorf("no pinning through the platform keychain for a lab with credentials: %v", lab.Status.ImageDigests)
 		}
 	}
 }

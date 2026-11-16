@@ -119,24 +119,24 @@ func TestDevicePodsGetTheTenantsPullSecretOnly(t *testing.T) {
 	}
 }
 
-// A tenant with registry credentials of its own pulls directly: its lab does not use the shared cache.
-func TestTenantWithOwnCredentialsBypassesTheImageCache(t *testing.T) {
+// A tenant with registry credentials of its own goes through the cache too (the gate proves its pulls with them), unpinned.
+func TestTenantWithOwnCredentialsUsesTheImageCache(t *testing.T) {
 	ctx := context.Background()
-	for _, tc := range []struct {
-		tenant string
-		cache  bool
-	}{{"acme", false}, {"plain", true}, {"", true}} {
-		lab := newLab("l-" + tc.tenant)
-		if tc.tenant != "" {
-			lab.Labels = map[string]string{names.LabelTenant: tc.tenant}
+	for _, tenant := range []string{"acme", "plain", ""} {
+		lab := newLab("l-" + tenant)
+		if tenant != "" {
+			lab.Labels = map[string]string{names.LabelTenant: tenant}
 		}
 		r := cachedLabReconciler(t, true, lab, tenantWithPullSecret("acme", "acme-registry"), tenantWithPullSecret("plain", ""))
 		r.Mirror = imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 		if _, err := r.ensureModes(ctx, lab); err != nil {
 			t.Fatal(err)
 		}
-		if *lab.Status.ImageCache != tc.cache {
-			t.Errorf("tenant %q: cache=%v, want %v", tc.tenant, *lab.Status.ImageCache, tc.cache)
+		if !*lab.Status.ImageCache {
+			t.Errorf("tenant %q: every lab goes through the cache when it is on", tenant)
+		}
+		if tenant == "acme" && len(lab.Status.ImageDigests) != 0 {
+			t.Errorf("a tenant with credentials: no pinning: %v", lab.Status.ImageDigests)
 		}
 	}
 }
