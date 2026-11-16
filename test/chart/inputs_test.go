@@ -193,7 +193,7 @@ func TestTuningKnobsStayValues(t *testing.T) {
 	}
 	naEnv := envOf(main)
 	for k, want := range map[string]string{"OVS_SOCK": "/run/ovs-x/db.sock", "GRPC_SOCK": "/run/cice/na.sock", "OVS_BRIDGE": "br-x",
-		"HEALTH_ADDR": "127.0.0.1:9555", "DEVICE_PLUGIN_DIR": "/var/lib/kubelet/dp-x", "STATE_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5000"} {
+		"HEALTH_ADDR": "127.0.0.1:9555", "DEVICE_PLUGIN_DIR": "/var/lib/kubelet/dp-x", "STATE_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443"} {
 		if naEnv[k].Value != want {
 			t.Errorf("node-agent %s = %q, want %q", k, naEnv[k].Value, want)
 		}

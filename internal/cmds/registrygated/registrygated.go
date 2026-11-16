@@ -30,6 +30,12 @@ type Config struct {
 	// Zot is where zot listens: the loopback of the pod.
 	Zot string `env:"GATE_ZOT_ADDR" envDefault:"127.0.0.1:5001"`
 
+	// TLSListen, with the certificate and its private key, is the TLS port of the gate: the cache path is served there only, because the
+	// pull's credentials travel in it from the relay of a node.
+	TLSListen   string `env:"GATE_TLS_LISTEN"`
+	TLSCertFile string `env:"GATE_TLS_CERT_FILE" envDefault:"/etc/gate-tls/tls.crt"`
+	TLSKeyFile  string `env:"GATE_TLS_KEY_FILE" envDefault:"/etc/gate-tls/tls.key"`
+
 	// CacheEnabled turns the cache path (/v2/c/...) on. Off, that path answers 404 and the rest is the pass-through.
 	CacheEnabled bool `env:"GATE_CACHE_ENABLED" envDefault:"false"`
 	// RegistriesFile is the list of upstream registries the cache may call (JSON), reloaded when it changes.
@@ -82,15 +88,26 @@ func Run() {
 	gate.Metrics = metrics.Handler()
 	if cfg.CacheEnabled {
 		gate.Cache = buildCache(ctx, cfg, metrics, log)
+		gate.CacheTLSOnly = cfg.TLSListen != ""
 	}
 
 	servers := []*http.Server{
 		registrygate.NewServer(cfg.Listen, gate),
 		registrygate.NewServer(cfg.HealthListen, gate.HealthHandler()),
 	}
+	if cfg.TLSListen != "" {
+		servers = append(servers, registrygate.NewServer(cfg.TLSListen, gate))
+	}
 	errs := make(chan error, len(servers))
-	for _, s := range servers {
-		go func() { errs <- s.ListenAndServe() }()
+	for i, s := range servers {
+		tlsPort := i == 2
+		go func() {
+			if tlsPort {
+				errs <- s.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+				return
+			}
+			errs <- s.ListenAndServe()
+		}()
 	}
 	log.Info("registry gate", "listen", cfg.Listen, "health", cfg.HealthListen, "zot", cfg.Zot, "cache", cfg.CacheEnabled)
 	select {

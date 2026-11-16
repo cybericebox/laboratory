@@ -14,4 +14,10 @@ spec:
     - name: registry
       port: 5000
       targetPort: registry
+    {{- if .Values.registry.cache.enabled }}
+    # The image cache is served here only (TLS): the pull's credentials are in the requests.
+    - name: registry-tls
+      port: 5443
+      targetPort: registry-tls
+    {{- end }}
 {{- end }}

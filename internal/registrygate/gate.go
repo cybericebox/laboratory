@@ -20,6 +20,8 @@ type Gate struct {
 	Metrics http.Handler
 	// Cache is the cache path (/v2/c/...). Without it that path is refused: zot is never reached by it.
 	Cache http.Handler
+	// CacheTLSOnly refuses the cache path on a connection that is not TLS: the pull's credentials are in it.
+	CacheTLSOnly bool
 }
 
 // New makes the gate for a zot at addr (host:port, plain HTTP, on the loopback of the pod).
@@ -52,6 +54,10 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isCache(r) {
 		if g.Cache == nil {
 			refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "the image cache is off", false)
+			return
+		}
+		if g.CacheTLSOnly && r.TLS == nil {
+			refuse(w, http.StatusForbidden, "DENIED", "the image cache is served over TLS only", false)
 			return
 		}
 		g.Cache.ServeHTTP(w, r)

@@ -2,6 +2,7 @@ package registrygate
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,5 +99,30 @@ func TestGateAnswers502WhenZotIsDownAndReadyzFollows(t *testing.T) {
 func TestNewRejectsABadAddress(t *testing.T) {
 	if _, err := New(""); err == nil {
 		t.Fatal("an empty zot address must be refused")
+	}
+}
+
+// The cache path carries the pull's credentials: with CacheTLSOnly a plain connection is refused before anything is read.
+func TestCachePathNeedsTLSWhenAsked(t *testing.T) {
+	g, _ := newGate(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	served := false
+	g.Cache = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })
+	g.CacheTLSOnly = true
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://x/v2/c/docker.io/library/nginx/manifests/latest", nil))
+	if w.Code != http.StatusForbidden || served {
+		t.Fatalf("plain: %d served %v", w.Code, served)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://x/v2/c/docker.io/library/nginx/manifests/latest", nil)
+	req.TLS = &tls.ConnectionState{}
+	g.ServeHTTP(httptest.NewRecorder(), req)
+	if !served {
+		t.Fatal("over TLS the cache path is served")
+	}
+	// the rest of the registry is not affected
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://x/v2/lab/a/manifests/x", nil))
+	if w.Code == http.StatusForbidden {
+		t.Fatal("the pass-through is served on the plain port")
 	}
 }

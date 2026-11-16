@@ -23,6 +23,11 @@ spec:
         - ports:
             - port: "5000"
               protocol: TCP
+            {{- if .Values.registry.cache.enabled }}
+            # the relay of a node reaches the image cache on the gate's TLS port
+            - port: "5443"
+              protocol: TCP
+            {{- end }}
     - fromEndpoints:
         - matchLabels:
             control-plane: controller-manager
