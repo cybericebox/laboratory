@@ -94,6 +94,11 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	for id, v := range variants {
+		if h.features.CacheEnabled {
+			if err := requireUsernames(fmt.Sprintf("variant %q: ", id), v.creds); err != nil {
+				return nil, err
+			}
+		}
 		if err := gatewayspec.Validate(&v.spec, h.maxLabGateways()); err != nil {
 			return nil, invalid("variant %q: %v", id, err)
 		}
