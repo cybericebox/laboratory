@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -152,4 +153,52 @@ func TestGroupLockExcludesOnlyTheSameGroup(t *testing.T) {
 	if h.resLocks.held() != 0 {
 		t.Fatalf("%d group locks left behind", h.resLocks.held())
 	}
+}
+
+// The lock wait and the creation of each lab are timed.
+func TestCreateLabsMetrics(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	readyGroup(t, h, k8s, "team-m", "team-m", nil)
+	created := sampleCount(t, createLabSeconds, "state", "ITEM_STATE_CREATED")
+	waits := sampleCount(t, groupLockWaitSeconds)
+	res, err := h.CreateLabs(context.Background(), &protobuf.CreateLabsRequest{
+		Variants: []*protobuf.LabVariant{{VariantId: "plain", SpecJson: specJSON("box")}},
+		Items:    []*protobuf.LabItem{{LabGroup: "team-m", Name: "c1", VariantId: "plain"}, {LabGroup: "team-m", Name: "c2", VariantId: "plain"}},
+	})
+	wantStates(t, res, err, stCreated, stCreated)
+	if got := sampleCount(t, createLabSeconds, "state", "ITEM_STATE_CREATED") - created; got != 2 {
+		t.Fatalf("%d creations timed, want 2", got)
+	}
+	if got := sampleCount(t, groupLockWaitSeconds) - waits; got != 2 {
+		t.Fatalf("%d lock waits timed, want 2", got)
+	}
+}
+
+func sampleCount(t *testing.T, c prometheus.Collector, labels ...string) uint64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n uint64
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			ok := true
+			for i := 0; i+1 < len(labels); i += 2 {
+				found := false
+				for _, l := range m.GetLabel() {
+					found = found || (l.GetName() == labels[i] && l.GetValue() == labels[i+1])
+				}
+				ok = ok && found
+			}
+			if ok && m.GetHistogram() != nil {
+				n += m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return n
 }

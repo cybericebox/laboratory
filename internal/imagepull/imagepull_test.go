@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -204,4 +206,54 @@ func TestCRIPullerPullsThroughTheImageService(t *testing.T) {
 	if _, ok := f.auth["ghcr.io/o/held:1"]; ok {
 		t.Fatal("a held image is not pulled again")
 	}
+}
+
+// Each image is timed by what became of it; no image name is a label.
+func TestPullTimesEachImageByResult(t *testing.T) {
+	before := func(r string) uint64 { return sampleCount(t, pullSeconds, "result", r) }
+	present, pulled, failed := before("present"), before("pulled"), before("error")
+	p := &fakePuller{have: map[string]bool{"ghcr.io/o/held:1": true}, fail: map[string]error{"ghcr.io/o/broken:1": errors.New("manifest unknown")}}
+	Pull(context.Background(), p, []string{"ghcr.io/o/held:1", "ghcr.io/o/new:1", "ghcr.io/o/broken:1"}, Options{})
+	if got := before("present") - present; got != 1 {
+		t.Fatalf("present: %d", got)
+	}
+	if got := before("pulled") - pulled; got != 1 {
+		t.Fatalf("pulled: %d", got)
+	}
+	if got := before("error") - failed; got != 1 {
+		t.Fatalf("error: %d", got)
+	}
+}
+
+func sampleCount(t *testing.T, c prometheus.Collector, labels ...string) uint64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n uint64
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			ok := true
+			for i := 0; i+1 < len(labels); i += 2 {
+				found := false
+				for _, l := range m.GetLabel() {
+					found = found || (l.GetName() == labels[i] && l.GetValue() == labels[i+1])
+				}
+				ok = ok && found
+			}
+			if ok {
+				if h := m.GetHistogram(); h != nil {
+					n += h.GetSampleCount()
+				} else if c := m.GetCounter(); c != nil {
+					n += uint64(c.GetValue())
+				}
+			}
+		}
+	}
+	return n
 }

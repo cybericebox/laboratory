@@ -53,6 +53,16 @@ func (s *NodeAgentServer) SetupNetworks(
 	ctx context.Context,
 	req *nodev1.SetupNetworksRequest,
 ) (*nodev1.SetupNetworksResponse, error) {
+	started := time.Now()
+	resp, err := s.setupNetworks(ctx, req)
+	setupNetworksSeconds.WithLabelValues(resultOf(err)).Observe(since(started))
+	return resp, err
+}
+
+func (s *NodeAgentServer) setupNetworks(
+	ctx context.Context,
+	req *nodev1.SetupNetworksRequest,
+) (*nodev1.SetupNetworksResponse, error) {
 	s.k8sMu.RLock()
 	k8s := s.k8s
 	reader := s.reader
@@ -233,28 +243,34 @@ func (s *NodeAgentServer) SetK8sReader(r client.Reader) {
 func (s *NodeAgentServer) setupOVSAttachments(ctx context.Context, req *nodev1.SetupNetworksRequest, reader client.Reader, cache client.Reader, pod *corev1.Pod, attachments []NetAttachment) error {
 	ownerGuard := &NetworkAttachReconciler{Reader: reader, NodeName: pod.Spec.NodeName, OVS: s.ovs, Flows: s.flows}
 	for _, att := range attachments {
-		stableKey := names.DevicePortKey(req.Namespace, req.Name, att.Iface)
-
-		// Reads and the retirement of a dead owner's port first, with no lock held across them.
-		if err := ownerGuard.ensurePodPortOwner(ctx, pod, stableKey); err != nil {
-			return err
-		}
-		err := s.ovs.withVethLock(ctx, "SetupNetworks", func() error {
-			// The plan: this incarnation wires this key. Re-checked now that the lock is ours (the cache, not the API: the exact
-			// read was made before the lock was asked for).
-			if err := podStillCurrent(ctx, cache, pod); err != nil {
-				return err
-			}
-			if err := s.ovs.requireFreeOrOwned(stableKey, pod.UID); err != nil {
-				return err
-			}
-			return s.wireOVSAttachment(req, ownerGuard, pod, stableKey, att)
-		})
-		if err != nil {
+		if err := s.setupOVSAttachment(ctx, req, ownerGuard, cache, pod, att); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// setupOVSAttachment wires one interface and times it.
+func (s *NodeAgentServer) setupOVSAttachment(ctx context.Context, req *nodev1.SetupNetworksRequest, ownerGuard *NetworkAttachReconciler, cache client.Reader, pod *corev1.Pod, att NetAttachment) (err error) {
+	started := time.Now()
+	defer func() { wireInterfaceSeconds.WithLabelValues(resultOf(err)).Observe(since(started)) }()
+	stableKey := names.DevicePortKey(req.Namespace, req.Name, att.Iface)
+
+	// Reads and the retirement of a dead owner's port first, with no lock held across them.
+	if err := ownerGuard.ensurePodPortOwner(ctx, pod, stableKey); err != nil {
+		return err
+	}
+	return s.ovs.withVethLock(ctx, "SetupNetworks", func() error {
+		// The plan: this incarnation wires this key. Re-checked now that the lock is ours (the cache, not the API: the exact
+		// read was made before the lock was asked for).
+		if err := podStillCurrent(ctx, cache, pod); err != nil {
+			return err
+		}
+		if err := s.ovs.requireFreeOrOwned(stableKey, pod.UID); err != nil {
+			return err
+		}
+		return s.wireOVSAttachment(req, ownerGuard, pod, stableKey, att)
+	})
 }
 
 // wireOVSAttachment is the mutation of one interface; the caller holds the node's wiring lock.

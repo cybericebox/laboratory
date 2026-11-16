@@ -7,7 +7,23 @@ import (
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
+
+var (
+	pinLookups = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "laboratory_image_pin_lookups_total",
+		Help: "Lookups of an image digest by a new lab. result: hit (a kept answer), pending (joined a running resolution), miss (started a resolution).",
+	}, []string{"result"})
+	pinResolveSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "laboratory_image_pin_resolve_seconds",
+		Help:    "Duration of one tag resolution against the registry, queue wait for a free slot included. result: ok or error.",
+		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30},
+	}, []string{"result"})
+)
+
+func init() { metrics.Registry.MustRegister(pinLookups, pinResolveSeconds) }
 
 // OperatorSource is the credential source of the operator's own pull secrets, the only one the operator resolves tags with today.
 const OperatorSource = "operator"
@@ -112,11 +128,14 @@ func (a *AsyncResolver) Lookup(ctx context.Context, source, ref, waiter string) 
 		switch {
 		case !e.done:
 			e.waiters[waiter] = true
+			pinLookups.WithLabelValues("pending").Inc()
 			return Lookup{Pending: true}
 		case e.err == nil && now.Sub(e.at) < a.successTTL():
+			pinLookups.WithLabelValues("hit").Inc()
 			return Lookup{Digest: e.digest}
 		case e.err != nil && now.Sub(e.at) < a.failureTTL():
 			e.waiters[waiter] = true
+			pinLookups.WithLabelValues("hit").Inc()
 			return Lookup{Err: e.err}
 		}
 		delete(a.entries, key) // too old: ask again
@@ -133,6 +152,7 @@ func (a *AsyncResolver) Lookup(ctx context.Context, source, ref, waiter string) 
 	e := &asyncEntry{waiters: map[string]bool{waiter: true}}
 	a.entries[key] = e
 	a.inflight++
+	pinLookups.WithLabelValues("miss").Inc()
 	go a.run(e, inner, ref)
 	return Lookup{Pending: true}
 }
@@ -179,10 +199,16 @@ func (a *AsyncResolver) prune(now time.Time) {
 }
 
 func (a *AsyncResolver) run(e *asyncEntry, inner Resolver, ref string) {
+	started := time.Now()
 	a.sem <- struct{}{}
 	// No caller's context: the answer is for everybody that asks, and the resolver has its own timeout.
 	digest, err := inner.Resolve(context.Background(), ref)
 	<-a.sem
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	pinResolveSeconds.WithLabelValues(result).Observe(time.Since(started).Seconds())
 
 	a.mu.Lock()
 	e.digest, e.err, e.done, e.at = digest, err, true, a.now()

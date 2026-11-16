@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type capturedLog struct {
@@ -110,4 +112,58 @@ func TestHeldMutexUnlockOfUnlockedPanics(t *testing.T) {
 	}()
 	var m heldMutex
 	m.Unlock()
+}
+
+// Waiting for and holding the lock are measured: a free lock is a zero wait, a held one a real wait, and the holder is named.
+func TestHeldMutexMetrics(t *testing.T) {
+	waits0 := sampleCount(t, lockWaitSeconds, "lock", "metrics-test")
+	holds0 := sampleCount(t, lockHoldSeconds, "lock", "metrics-test", "holder", "nodeagent.holdLockForTest")
+	m := heldMutex{name: "metrics-test"}
+	done := make(chan struct{})
+	go func() { holdLockForTest(&m, 100*time.Millisecond); close(done) }()
+	time.Sleep(20 * time.Millisecond)
+	m.Lock() // waits for the holder
+	took := time.Now()
+	m.Unlock()
+	_ = took
+	<-done
+	if got := sampleCount(t, lockWaitSeconds, "lock", "metrics-test") - waits0; got != 2 {
+		t.Fatalf("%d waits observed, want 2 (the holder's free take and the waiter's)", got)
+	}
+	if got := sampleCount(t, lockHoldSeconds, "lock", "metrics-test", "holder", "nodeagent.holdLockForTest") - holds0; got != 1 {
+		t.Fatalf("%d holds of holdLockForTest observed, want 1", got)
+	}
+}
+
+func sampleCount(t *testing.T, c prometheus.Collector, labels ...string) uint64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n uint64
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			ok := true
+			for i := 0; i+1 < len(labels); i += 2 {
+				found := false
+				for _, l := range m.GetLabel() {
+					found = found || (l.GetName() == labels[i] && l.GetValue() == labels[i+1])
+				}
+				ok = ok && found
+			}
+			if ok {
+				if h := m.GetHistogram(); h != nil {
+					n += h.GetSampleCount()
+				} else if c := m.GetCounter(); c != nil {
+					n += uint64(c.GetValue())
+				}
+			}
+		}
+	}
+	return n
 }

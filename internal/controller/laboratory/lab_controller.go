@@ -936,6 +936,10 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	// Reflect readiness as a condition; on the Ready edge emit a Normal event.
 	wasReady := labstatus.IsReady(lab.Status.Conditions)
+	var provisioningSince time.Time
+	if c := meta.FindStatusCondition(lab.Status.Conditions, labstatus.ConditionReady); c != nil && c.Status == metav1.ConditionFalse {
+		provisioningSince = c.LastTransitionTime.Time
+	}
 	if allReady {
 		labstatus.SetReady(
 			&lab.Status.Conditions,
@@ -995,6 +999,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return ctrl.Result{}, err
+	}
+	if allReady && !wasReady && !provisioningSince.IsZero() {
+		labReadySeconds.Observe(max(time.Since(provisioningSince), 0).Seconds())
 	}
 	if newPhase != laboratoryv1alpha1.PhaseReady {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
