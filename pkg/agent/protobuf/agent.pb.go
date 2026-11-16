@@ -1086,14 +1086,24 @@ func (x *StringList) GetValues() []string {
 }
 
 type LabGroupItem struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Name                string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Labels              map[string]string      `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	DeployGroup         string                 `protobuf:"bytes,3,opt,name=deploy_group,json=deployGroup,proto3" json:"deploy_group,omitempty"`
-	DeployAfter         []string               `protobuf:"bytes,4,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
-	Suspended           bool                   `protobuf:"varint,5,opt,name=suspended,proto3" json:"suspended,omitempty"`
-	VpnDisabled         bool                   `protobuf:"varint,6,opt,name=vpn_disabled,json=vpnDisabled,proto3" json:"vpn_disabled,omitempty"`
-	ProbeWhileSuspended bool                   `protobuf:"varint,7,opt,name=probe_while_suspended,json=probeWhileSuspended,proto3" json:"probe_while_suspended,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Labels      map[string]string      `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DeployGroup string                 `protobuf:"bytes,3,opt,name=deploy_group,json=deployGroup,proto3" json:"deploy_group,omitempty"`
+	DeployAfter []string               `protobuf:"bytes,4,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
+	Suspended   bool                   `protobuf:"varint,5,opt,name=suspended,proto3" json:"suspended,omitempty"`
+	// The old VPN switch (true = no VPN server). Deprecated: send vpn_enabled. Still honoured: true means vpn_enabled false (and sending
+	// vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing (the VPN server is off unless vpn_enabled
+	// says otherwise: see below).
+	VpnDisabled         bool `protobuf:"varint,6,opt,name=vpn_disabled,json=vpnDisabled,proto3" json:"vpn_disabled,omitempty"`
+	ProbeWhileSuspended bool `protobuf:"varint,7,opt,name=probe_while_suspended,json=probeWhileSuspended,proto3" json:"probe_while_suspended,omitempty"`
+	// The switches of the group's two servers (contract 2.7). The pod of a server exists only while its switch is on, so a group that needs
+	// no VPN and no internet costs neither pod. A lab with a VPN gateway, and a LabGroupClient, are refused (reason GROUP_VPN_OFF) in a group
+	// whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. Both are OFF unless
+	// set to true here: an unset field is off for a NEW group (an older caller that sends neither gets a group with no VPN server and no
+	// gateway). A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
+	VpnEnabled      *bool `protobuf:"varint,13,opt,name=vpn_enabled,json=vpnEnabled,proto3,oneof" json:"vpn_enabled,omitempty"`
+	InternetEnabled *bool `protobuf:"varint,14,opt,name=internet_enabled,json=internetEnabled,proto3,oneof" json:"internet_enabled,omitempty"`
 	// The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group
 	// may have, the gateway for the labs of the group that use the internet). The pods are created Guaranteed at exactly that size
 	// and never resized. Unset = the chart's default size. A set size must have both values positive and be within the maximum
@@ -1190,6 +1200,20 @@ func (x *LabGroupItem) GetVpnDisabled() bool {
 func (x *LabGroupItem) GetProbeWhileSuspended() bool {
 	if x != nil {
 		return x.ProbeWhileSuspended
+	}
+	return false
+}
+
+func (x *LabGroupItem) GetVpnEnabled() bool {
+	if x != nil && x.VpnEnabled != nil {
+		return *x.VpnEnabled
+	}
+	return false
+}
+
+func (x *LabGroupItem) GetInternetEnabled() bool {
+	if x != nil && x.InternetEnabled != nil {
+		return *x.InternetEnabled
 	}
 	return false
 }
@@ -1335,11 +1359,17 @@ func (x *CreateLabGroupsRequest) GetItems() []*LabGroupItem {
 }
 
 type LabGroupChanges struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Labels              *LabelChanges          `protobuf:"bytes,1,opt,name=labels,proto3" json:"labels,omitempty"`
-	Suspended           *bool                  `protobuf:"varint,2,opt,name=suspended,proto3,oneof" json:"suspended,omitempty"`
-	VpnDisabled         *bool                  `protobuf:"varint,3,opt,name=vpn_disabled,json=vpnDisabled,proto3,oneof" json:"vpn_disabled,omitempty"`
-	ProbeWhileSuspended *bool                  `protobuf:"varint,4,opt,name=probe_while_suspended,json=probeWhileSuspended,proto3,oneof" json:"probe_while_suspended,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Labels    *LabelChanges          `protobuf:"bytes,1,opt,name=labels,proto3" json:"labels,omitempty"`
+	Suspended *bool                  `protobuf:"varint,2,opt,name=suspended,proto3,oneof" json:"suspended,omitempty"`
+	// The old VPN switch; see LabGroupItem.vpn_disabled. vpn_enabled wins when both are sent.
+	VpnDisabled         *bool `protobuf:"varint,3,opt,name=vpn_disabled,json=vpnDisabled,proto3,oneof" json:"vpn_disabled,omitempty"`
+	ProbeWhileSuspended *bool `protobuf:"varint,4,opt,name=probe_while_suspended,json=probeWhileSuspended,proto3,oneof" json:"probe_while_suspended,omitempty"`
+	// The switches of the group's servers (contract 2.7). Turning one OFF while a lab of the group uses it (a lab with a VPN gateway for
+	// the VPN, an Internet gateway for the internet) is refused with GROUP_SERVER_IN_USE and nothing changes; turning one on makes its
+	// pod. Turning the VPN off does not delete the group's clients (they stay, unserved, and the VPN comes back with the switch).
+	VpnEnabled      *bool `protobuf:"varint,6,opt,name=vpn_enabled,json=vpnEnabled,proto3,oneof" json:"vpn_enabled,omitempty"`
+	InternetEnabled *bool `protobuf:"varint,7,opt,name=internet_enabled,json=internetEnabled,proto3,oneof" json:"internet_enabled,omitempty"`
 	// Attach only: puts a group that runs under no reservation under this one (same tenant, not ended). No fit check
 	// (running work is never refused) and only the label changes. Another id on a group that has one is
 	// RESERVATION_MISMATCH; the same id is a no-op.
@@ -1402,6 +1432,20 @@ func (x *LabGroupChanges) GetVpnDisabled() bool {
 func (x *LabGroupChanges) GetProbeWhileSuspended() bool {
 	if x != nil && x.ProbeWhileSuspended != nil {
 		return *x.ProbeWhileSuspended
+	}
+	return false
+}
+
+func (x *LabGroupChanges) GetVpnEnabled() bool {
+	if x != nil && x.VpnEnabled != nil {
+		return *x.VpnEnabled
+	}
+	return false
+}
+
+func (x *LabGroupChanges) GetInternetEnabled() bool {
+	if x != nil && x.InternetEnabled != nil {
+		return *x.InternetEnabled
 	}
 	return false
 }
@@ -3189,8 +3233,13 @@ type LabGroup struct {
 	GatewaySize   *PodSize            `protobuf:"bytes,17,opt,name=gateway_size,json=gatewaySize,proto3" json:"gateway_size,omitempty"`
 	// The reservation the group runs under, as given; empty = unreserved.
 	ReservationId string `protobuf:"bytes,19,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The switches of the group's servers as they are now (contract 2.7; a group that predates them reports both on): a server that is off
+	// has no pod, no entry in status.pods, and for the VPN no vpn_registered and no current_vpn_boot_*. The group is Ready (status.phase)
+	// without a VPN server when its VPN is off.
+	VpnEnabled      bool `protobuf:"varint,20,opt,name=vpn_enabled,json=vpnEnabled,proto3" json:"vpn_enabled,omitempty"`
+	InternetEnabled bool `protobuf:"varint,21,opt,name=internet_enabled,json=internetEnabled,proto3" json:"internet_enabled,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *LabGroup) Reset() {
@@ -3305,6 +3354,20 @@ func (x *LabGroup) GetReservationId() string {
 		return x.ReservationId
 	}
 	return ""
+}
+
+func (x *LabGroup) GetVpnEnabled() bool {
+	if x != nil {
+		return x.VpnEnabled
+	}
+	return false
+}
+
+func (x *LabGroup) GetInternetEnabled() bool {
+	if x != nil {
+		return x.InternetEnabled
+	}
+	return false
 }
 
 type LabGroupStatus struct {
@@ -13354,7 +13417,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"$\n" +
 	"\n" +
 	"StringList\x12\x16\n" +
-	"\x06values\x18\x01 \x03(\tR\x06values\"\xb1\x04\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\xac\x05\n" +
 	"\fLabGroupItem\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
 	"\x06labels\x18\x02 \x03(\v2$.labmanager.LabGroupItem.LabelsEntryR\x06labels\x12!\n" +
@@ -13362,7 +13425,10 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\fdeploy_after\x18\x04 \x03(\tR\vdeployAfter\x12\x1c\n" +
 	"\tsuspended\x18\x05 \x01(\bR\tsuspended\x12!\n" +
 	"\fvpn_disabled\x18\x06 \x01(\bR\vvpnDisabled\x122\n" +
-	"\x15probe_while_suspended\x18\a \x01(\bR\x13probeWhileSuspended\x12.\n" +
+	"\x15probe_while_suspended\x18\a \x01(\bR\x13probeWhileSuspended\x12$\n" +
+	"\vvpn_enabled\x18\r \x01(\bH\x00R\n" +
+	"vpnEnabled\x88\x01\x01\x12.\n" +
+	"\x10internet_enabled\x18\x0e \x01(\bH\x01R\x0finternetEnabled\x88\x01\x01\x12.\n" +
 	"\bvpn_size\x18\b \x01(\v2\x13.labmanager.PodSizeR\avpnSize\x126\n" +
 	"\fgateway_size\x18\t \x01(\v2\x13.labmanager.PodSizeR\vgatewaySize\x12%\n" +
 	"\x0eexpected_users\x18\v \x01(\x05R\rexpectedUsers\x12#\n" +
@@ -13371,7 +13437,9 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	" \x01(\tR\rreservationId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0e\n" +
+	"\f_vpn_enabledB\x13\n" +
+	"\x11_internet_enabled\"S\n" +
 	"\aPodSize\x12%\n" +
 	"\x0ecpu_millicores\x18\x01 \x01(\x03R\rcpuMillicores\x12!\n" +
 	"\fmemory_bytes\x18\x02 \x01(\x03R\vmemoryBytes\"\xcb\x01\n" +
@@ -13380,17 +13448,22 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x05items\x18\x02 \x03(\v2\x18.labmanager.LabGroupItemR\x05items\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xba\x03\n" +
 	"\x0fLabGroupChanges\x120\n" +
 	"\x06labels\x18\x01 \x01(\v2\x18.labmanager.LabelChangesR\x06labels\x12!\n" +
 	"\tsuspended\x18\x02 \x01(\bH\x00R\tsuspended\x88\x01\x01\x12&\n" +
 	"\fvpn_disabled\x18\x03 \x01(\bH\x01R\vvpnDisabled\x88\x01\x01\x127\n" +
-	"\x15probe_while_suspended\x18\x04 \x01(\bH\x02R\x13probeWhileSuspended\x88\x01\x01\x12*\n" +
-	"\x0ereservation_id\x18\x05 \x01(\tH\x03R\rreservationId\x88\x01\x01B\f\n" +
+	"\x15probe_while_suspended\x18\x04 \x01(\bH\x02R\x13probeWhileSuspended\x88\x01\x01\x12$\n" +
+	"\vvpn_enabled\x18\x06 \x01(\bH\x03R\n" +
+	"vpnEnabled\x88\x01\x01\x12.\n" +
+	"\x10internet_enabled\x18\a \x01(\bH\x04R\x0finternetEnabled\x88\x01\x01\x12*\n" +
+	"\x0ereservation_id\x18\x05 \x01(\tH\x05R\rreservationId\x88\x01\x01B\f\n" +
 	"\n" +
 	"_suspendedB\x0f\n" +
 	"\r_vpn_disabledB\x18\n" +
-	"\x16_probe_while_suspendedB\x11\n" +
+	"\x16_probe_while_suspendedB\x0e\n" +
+	"\f_vpn_enabledB\x13\n" +
+	"\x11_internet_enabledB\x11\n" +
 	"\x0f_reservation_id\"_\n" +
 	"\x12UpdateLabGroupItem\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
@@ -13563,7 +13636,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"bySelector\"d\n" +
 	"\x14RescueDevicesRequest\x124\n" +
 	"\adevices\x18\x01 \x01(\v2\x1a.labmanager.DevicesRequestR\adevices\x12\x16\n" +
-	"\x06enable\x18\x02 \x01(\bR\x06enable\"\xb4\x04\n" +
+	"\x06enable\x18\x02 \x01(\bR\x06enable\"\x80\x05\n" +
 	"\bLabGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
 	"\x06status\x18\x02 \x01(\v2\x1a.labmanager.LabGroupStatusR\x06status\x128\n" +
@@ -13579,7 +13652,10 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\tlifecycle\x18\x12 \x01(\v2\x1e.labmanager.GroupLifecycleSpecR\tlifecycle\x12.\n" +
 	"\bvpn_size\x18\x10 \x01(\v2\x13.labmanager.PodSizeR\avpnSize\x126\n" +
 	"\fgateway_size\x18\x11 \x01(\v2\x13.labmanager.PodSizeR\vgatewaySize\x12%\n" +
-	"\x0ereservation_id\x18\x13 \x01(\tR\rreservationId\x1a9\n" +
+	"\x0ereservation_id\x18\x13 \x01(\tR\rreservationId\x12\x1f\n" +
+	"\vvpn_enabled\x18\x14 \x01(\bR\n" +
+	"vpnEnabled\x12)\n" +
+	"\x10internet_enabled\x18\x15 \x01(\bR\x0finternetEnabled\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xae\x05\n" +
@@ -15100,6 +15176,7 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 		return
 	}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[5].OneofWrappers = []any{}
+	file_pkg_agent_protobuf_agent_proto_msgTypes[9].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[12].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[25].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[30].OneofWrappers = []any{}

@@ -55,36 +55,21 @@ func TestDefaultsAreTheMeasuredOnes(t *testing.T) {
 	}
 }
 
-func TestGatewayPodFollowsTheLabsAndTheVPNFollowsTheSwitch(t *testing.T) {
-	internet := laboratoryv1alpha1.Lab{Spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "out", Kind: laboratoryv1alpha1.GatewayKindInternet}}}}
-	vpn := laboratoryv1alpha1.Lab{Spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "in", Kind: laboratoryv1alpha1.GatewayKindVPN}}}}
-	plain := laboratoryv1alpha1.Lab{}
+// The pods a group runs follow its two switches; a group made before them keeps both unless its VPN is disabled; Enabled wins over Disabled.
+func TestPodNamesFollowTheSwitches(t *testing.T) {
+	on, off := true, false
 	for name, tc := range map[string]struct {
-		labs []laboratoryv1alpha1.Lab
-		want bool
-	}{
-		"no labs":            {nil, false},
-		"a lab without any":  {[]laboratoryv1alpha1.Lab{plain}, false},
-		"only a vpn gateway": {[]laboratoryv1alpha1.Lab{vpn}, false},
-		"an internet one":    {[]laboratoryv1alpha1.Lab{plain, vpn, internet}, true},
-	} {
-		if got := GatewayNeeded(tc.labs); got != tc.want {
-			t.Errorf("%s: GatewayNeeded = %v, want %v", name, got, tc.want)
-		}
-	}
-
-	f, tr := false, true
-	for name, tc := range map[string]struct {
-		lg   laboratoryv1alpha1.LabGroup
+		spec laboratoryv1alpha1.LabGroupSpec
 		want []string
 	}{
-		"not counted yet keeps both": {laboratoryv1alpha1.LabGroup{}, []string{names.ComponentVPN, names.ComponentGateway}},
-		"counted: no gateway":        {laboratoryv1alpha1.LabGroup{Status: laboratoryv1alpha1.LabGroupStatus{GatewayPod: &f}}, []string{names.ComponentVPN}},
-		"counted: gateway":           {laboratoryv1alpha1.LabGroup{Status: laboratoryv1alpha1.LabGroupStatus{GatewayPod: &tr}}, []string{names.ComponentVPN, names.ComponentGateway}},
-		"vpn disabled, gateway":      {laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true}}, Status: laboratoryv1alpha1.LabGroupStatus{GatewayPod: &tr}}, []string{names.ComponentGateway}},
-		"vpn disabled, no gateway":   {laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true}}, Status: laboratoryv1alpha1.LabGroupStatus{GatewayPod: &f}}, nil},
+		"nothing set (a group made before the switches)": {laboratoryv1alpha1.LabGroupSpec{}, []string{names.ComponentVPN, names.ComponentGateway}},
+		"old disabled":               {laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true}}, []string{names.ComponentGateway}},
+		"enabled wins over disabled": {laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true, Enabled: &on}}, []string{names.ComponentVPN, names.ComponentGateway}},
+		"both off":                   {laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Enabled: &off}, Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &off}}, nil},
+		"only the gateway":           {laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Enabled: &off}, Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &on}}, []string{names.ComponentGateway}},
+		"only the VPN":               {laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Enabled: &on}, Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &off}}, []string{names.ComponentVPN}},
 	} {
-		got := PodNames(&tc.lg)
+		got := PodNames(&laboratoryv1alpha1.LabGroup{Spec: tc.spec})
 		if len(got) != len(tc.want) {
 			t.Errorf("%s: PodNames = %v, want %v", name, got, tc.want)
 			continue
@@ -95,10 +80,13 @@ func TestGatewayPodFollowsTheLabsAndTheVPNFollowsTheSwitch(t *testing.T) {
 			}
 		}
 	}
-	// the need of the group follows the pods it runs
-	g := laboratoryv1alpha1.LabGroup{Status: laboratoryv1alpha1.LabGroupStatus{GatewayPod: &f}}
+	// what a group requests follows the pods it runs
 	c := Config{VPNCPU: "100m", VPNMemory: "64Mi", GatewayCPU: "50m", GatewayMemory: "32Mi"}
-	if o := c.Need(&g); o.CPU != 100 || o.Memory != 64<<20 {
-		t.Errorf("a group without a gateway pod requests only the VPN pod: %+v", o)
+	vpnOnly := laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &off}}}
+	if o := c.Need(&vpnOnly); o.CPU != 100 || o.Memory != 64<<20 {
+		t.Errorf("a group with no gateway pod requests only the VPN pod: %+v", o)
+	}
+	if o := c.Need(&laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Enabled: &off}, Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &off}}}); o.CPU != 0 || o.Memory != 0 {
+		t.Errorf("a group with both servers off requests nothing: %+v", o)
 	}
 }

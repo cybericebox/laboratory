@@ -15,6 +15,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -81,6 +82,9 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	}
 	if currentGroup.Annotations[names.AnnotationLifecycleRetirement] != "" {
 		return failedResult(ref, fmt.Errorf("retired group cannot create clients")), nil
+	}
+	if !currentGroup.VPNEnabled() {
+		return failedResult(ref, refusal(client.ReasonGroupVPNOff, "the VPN of group %s is off: a client has no server to connect to; turn it on (vpn_enabled) first", it.GetLabGroup())), nil
 	}
 	name := crName(it.GetName())
 	priv, err := wgtypes.GeneratePrivateKey()

@@ -22,7 +22,7 @@ func (h *Handler) projectCurrentVPNBoot(ctx context.Context, g *lab.LabGroup, ou
 	out.CurrentVpnBootId = ""
 	out.CurrentVpnBootAvailable = false
 	out.CurrentVpnBootObservedUnixMs = 0
-	if h.cs == nil || h.k8s == nil || g.UID == "" || g.Status.Namespace == "" || g.Spec.VPN.Disabled || !g.DeletionTimestamp.IsZero() {
+	if h.cs == nil || h.k8s == nil || g.UID == "" || g.Status.Namespace == "" || !g.VPNEnabled() || !g.DeletionTimestamp.IsZero() {
 		return
 	}
 	report, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(g.Status.Namespace).Get(ctx, flowacct.ReportName, metav1.GetOptions{})

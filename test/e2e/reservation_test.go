@@ -231,8 +231,7 @@ var _ = Describe(
 						By("making a group for the labs")
 						apply(labGroupManifest(group, ""))
 						ns := groupNamespace(group)
-						// a group with no lab has no Internet gateway to serve: it runs its VPN pod only
-						Eventually(groupPodsStarted(group, 1), 90*time.Second).Should(BeTrue())
+						Eventually(groupPodsStarted(group), 90*time.Second).Should(BeTrue())
 
 						By("occupying the room of a lab node with an unreserved lab")
 						apply(labManifest(ns, "gang-hold", "", "", "dev-hold", labCPU, holdMemory))
@@ -418,12 +417,12 @@ func groupNamespace(group string) string {
 	return ns
 }
 
-// groupPodsStarted says that the want pods of a group (its VPN pod, and its gateway pod while a lab has an Internet gateway) have started.
-func groupPodsStarted(group string, want int) func() bool {
+// groupPodsStarted says that the VPN and gateway pods of a group have started.
+func groupPodsStarted(group string) func() bool {
 	return func() bool {
 		out := kubectlJSONPath("labgroup", group, "", `{range .status.pods[*]}{.state}{"\n"}{end}`)
 		states := utils.GetNonEmptyLines(out)
-		if len(states) != want {
+		if len(states) != 2 {
 			return false
 		}
 		for _, s := range states {

@@ -66,3 +66,17 @@ const (
 // unavailable_reason). Nothing is created or started; the text carries only the fixed reason (`<CODE>:<n>/<m>`).
 // Not retryable until the cluster is repaired.
 const ReasonPersistenceUnavailable = "PERSISTENCE_UNAVAILABLE"
+
+// Reasons of a FAILED item for the switches of a LabGroup's servers (LabGroupItem.vpn_enabled,
+// internet_enabled; contract 2.7).
+const (
+	// ReasonGroupVPNOff: a lab with a VPN gateway, or a LabGroupClient, in a group whose VPN is off. Not retryable
+	// until the group's vpn_enabled is turned on (UpdateLabGroups).
+	ReasonGroupVPNOff = "GROUP_VPN_OFF"
+	// ReasonGroupInternetOff: a lab with an Internet gateway in a group whose internet is off. Not retryable until the
+	// group's internet_enabled is turned on.
+	ReasonGroupInternetOff = "GROUP_INTERNET_OFF"
+	// ReasonGroupServerInUse: a switch turned off while a lab of the group uses that server (a VPN gateway, an Internet
+	// gateway). The text names the labs; nothing changed. Delete the labs first.
+	ReasonGroupServerInUse = "GROUP_SERVER_IN_USE"
+)

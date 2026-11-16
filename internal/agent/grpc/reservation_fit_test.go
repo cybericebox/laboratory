@@ -43,7 +43,7 @@ func reserve(t *testing.T, h *Handler, id string, cpu int64, from time.Duration)
 func reservedGroup(t *testing.T, h *Handler, k8s kubernetes.Interface, name, reservation string) {
 	t.Helper()
 	ctx := context.Background()
-	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: name, ReservationId: reservation}}})
+	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: name, ReservationId: reservation, VpnEnabled: proto.Bool(true), InternetEnabled: proto.Bool(true)}}})
 	wantStates(t, res, err, stCreated)
 	mustNamespace(t, k8s, name)
 	g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, name, metav1.GetOptions{})
@@ -170,7 +170,9 @@ func fitGroupSizesCountInFit(t *testing.T, h *Handler, k8s kubernetes.Interface,
 	// the chart default: VPN 100m and gateway 10m
 	reserve(t, h, n("r1"), 200, -time.Hour)
 	res, err := h.CreateLabGroups(context.Background(), &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{
-		{Name: n("g1"), ReservationId: n("r1")}, {Name: n("g2"), ReservationId: n("r1")}, {Name: n("g3"), ReservationId: n("r1"), VpnDisabled: true}}})
+		{Name: n("g1"), ReservationId: n("r1"), VpnEnabled: proto.Bool(true), InternetEnabled: proto.Bool(true)},
+		{Name: n("g2"), ReservationId: n("r1"), VpnEnabled: proto.Bool(true), InternetEnabled: proto.Bool(true)},
+		{Name: n("g3"), ReservationId: n("r1"), VpnDisabled: true, InternetEnabled: proto.Bool(true)}}})
 	wantStates(t, res, err, stCreated, stFailed, stCreated)
 	wantReason(t, res.GetResults()[1], client.ReasonReservationFull, true)
 	want := h.groupNeedOf(&laboratoryv1alpha1.LabGroup{})

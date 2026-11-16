@@ -49,7 +49,7 @@ func TestTenantsAreIsolated(t *testing.T) {
 	h, _ := newFinalizerHandler(t)
 	a, b := asClient("tenant-a"), asClient("tenant-b")
 
-	res, err := h.CreateLabGroups(a, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "g-a", Labels: map[string]string{"team": "x"}}}})
+	res, err := h.CreateLabGroups(a, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "g-a", Labels: map[string]string{"team": "x"}, VpnEnabled: protoBool(true)}}})
 	wantStates(t, res, err, stCreated)
 	g, _ := h.cs.LaboratoryV1alpha1().LabGroups().Get(a, "g-a", metav1.GetOptions{})
 	if g.Labels[names.LabelTenant] != "tenant-a" {

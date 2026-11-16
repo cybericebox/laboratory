@@ -22,6 +22,11 @@ package v1alpha1
 //
 // LabGroupGatewaySpec holds the internet gateway configuration.
 type LabGroupGatewaySpecApplyConfiguration struct {
+	// Enabled is the switch of the group's internet gateway pod: the pod exists only while it is on. A lab with an Internet gateway
+	// (spec.gateways, kind internet) is refused while it is off, and it cannot be turned off while a lab of the group has one. Absent
+	// (a group made before the field) means on, so existing groups keep their gateway pod. The agent writes it explicitly, off unless the
+	// caller asks for it.
+	Enabled *bool `json:"enabled,omitempty"`
 	// Size is the size of the gateway pod; absent = the chart's default. Fixed once set.
 	Size *GroupPodSizeApplyConfiguration `json:"size,omitempty"`
 }
@@ -30,6 +35,14 @@ type LabGroupGatewaySpecApplyConfiguration struct {
 // apply.
 func LabGroupGatewaySpec() *LabGroupGatewaySpecApplyConfiguration {
 	return &LabGroupGatewaySpecApplyConfiguration{}
+}
+
+// WithEnabled sets the Enabled field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Enabled field is set to the value of the last call.
+func (b *LabGroupGatewaySpecApplyConfiguration) WithEnabled(value bool) *LabGroupGatewaySpecApplyConfiguration {
+	b.Enabled = &value
+	return b
 }
 
 // WithSize sets the Size field in the declarative configuration to the given value
