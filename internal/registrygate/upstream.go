@@ -89,10 +89,10 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 		return Unreachable, nil, err
 	}
 	defer drain(resp)
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		return Allowed, resp.Header.Clone(), nil
-	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
 		return Denied, nil, nil
 	}
 	return Unreachable, nil, nil // 3xx included: inconclusive
