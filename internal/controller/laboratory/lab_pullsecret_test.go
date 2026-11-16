@@ -168,9 +168,9 @@ func TestStateDeviceWaitsForTheLabsPullSecret(t *testing.T) {
 }
 
 // A lab with its own pull secret goes through the cache like every other: the gate proves each pull with the pull's own credentials, so
-// the shared cache never fetches its private images with anyone else's. Its tags are not pinned (the operator's pull secrets could not
-// read a private image; the gate resolves a tag at each pull with the pull's credentials).
-func TestLabWithOwnPullSecretUsesTheImageCacheWithoutPinning(t *testing.T) {
+// the shared cache never fetches its private images with anyone else's. (Its tags are pinned with those credentials: see
+// TestLabWithCredentialsIsPinnedWithItsOwnCredentials.)
+func TestLabWithOwnPullSecretUsesTheImageCache(t *testing.T) {
 	ctx := context.Background()
 	for _, secret := range []string{"l-registry", ""} {
 		lab := newLab("l")
@@ -182,9 +182,6 @@ func TestLabWithOwnPullSecretUsesTheImageCacheWithoutPinning(t *testing.T) {
 		}
 		if !*lab.Status.ImageCache {
 			t.Errorf("secret %q: every lab goes through the cache when it is on", secret)
-		}
-		if secret != "" && len(lab.Status.ImageDigests) != 0 {
-			t.Errorf("no pinning through the platform keychain for a lab with credentials: %v", lab.Status.ImageDigests)
 		}
 	}
 }

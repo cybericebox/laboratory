@@ -38,7 +38,8 @@ const OperatorSource = "operator"
 //   - A success is kept for SuccessTTL (labs of one wave run one image even when the tag moves); a failure is kept until every
 //     caller that waited for it has seen it (Done) and at most FailureTTL, then the next Lookup tries again.
 type AsyncResolver struct {
-	// Sources maps a credential source to the resolver that resolves with its credentials.
+	// Sources maps a credential source to the resolver that resolves with its credentials. Read only once the resolver is in use;
+	// EnsureSource adds the sources of a lab's own credentials.
 	Sources map[string]Resolver
 	// Scope returns the platform scope of a resolution (see PlatformScope); nil: none. It is part of the key.
 	Scope func(ctx context.Context) string
@@ -54,6 +55,7 @@ type AsyncResolver struct {
 	Now func() time.Time
 
 	mu       sync.Mutex
+	dynamic  map[string]time.Time // the sources EnsureSource made, and when each was last asked for
 	entries  map[string]*asyncEntry
 	inflight int
 	sem      chan struct{}
@@ -73,6 +75,58 @@ type Lookup struct {
 	Pending bool
 	Digest  string
 	Err     error
+}
+
+// maxDynamicSources bounds the resolvers of labs' own credentials kept in memory: past it the least recently used goes.
+const maxDynamicSources = 512
+
+// CredentialSource is the name of the source for the credentials with this fingerprint (a hash of the pull documents, never the secret).
+// Labs with the same credentials share it, and an answer got with one set of credentials is never given to another: the key of an
+// entry carries the source.
+func CredentialSource(fingerprint string) string { return "creds:" + fingerprint }
+
+// EnsureSource makes the source name known: make is called once, the first time, and builds the resolver that resolves with that
+// credential set only. It is kept in memory (it holds the credentials) while it is asked for, and dropped when unused for twice the
+// success time or when too many are held. The built-in sources are never replaced.
+func (a *AsyncResolver) EnsureSource(name string, make func() Resolver) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	if a.dynamic == nil {
+		a.dynamic = map[string]time.Time{}
+	}
+	if _, ok := a.dynamic[name]; ok {
+		a.dynamic[name] = now
+		return
+	}
+	if _, builtin := a.Sources[name]; builtin {
+		return
+	}
+	a.dropUnusedSourcesLocked(now)
+	if len(a.dynamic) >= maxDynamicSources {
+		oldest, at := "", now
+		for n, t := range a.dynamic {
+			if oldest == "" || t.Before(at) {
+				oldest, at = n, t
+			}
+		}
+		delete(a.dynamic, oldest)
+		delete(a.Sources, oldest)
+	}
+	if a.Sources == nil {
+		a.Sources = map[string]Resolver{}
+	}
+	a.Sources[name] = make()
+	a.dynamic[name] = now
+}
+
+func (a *AsyncResolver) dropUnusedSourcesLocked(now time.Time) {
+	for n, t := range a.dynamic {
+		if now.Sub(t) > 2*a.successTTL() {
+			delete(a.dynamic, n)
+			delete(a.Sources, n)
+		}
+	}
 }
 
 func (a *AsyncResolver) now() time.Time {
@@ -111,10 +165,6 @@ func (a *AsyncResolver) Lookup(ctx context.Context, source, ref, waiter string) 
 	if d := DigestOf(ref); d != "" {
 		return Lookup{Digest: d}
 	}
-	inner, ok := a.Sources[source]
-	if !ok {
-		return Lookup{Err: fmt.Errorf("no credential source %q", source)}
-	}
 	scope := ""
 	if a.Scope != nil {
 		scope = a.Scope(ctx)
@@ -123,6 +173,13 @@ func (a *AsyncResolver) Lookup(ctx context.Context, source, ref, waiter string) 
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	inner, ok := a.Sources[source]
+	if !ok {
+		return Lookup{Err: fmt.Errorf("no credential source %q", source)}
+	}
+	if _, dyn := a.dynamic[source]; dyn {
+		a.dynamic[source] = a.now()
+	}
 	now := a.now()
 	if e, ok := a.entries[key]; ok {
 		switch {

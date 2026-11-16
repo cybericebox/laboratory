@@ -2721,8 +2721,12 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
   for the digest of each device image and of the netconfig image, once, and the lab's pods pull
   `localhost:<port>/REG/repo@sha256:...`. The digests are recorded in `Lab.status.imageDigests` and copied to
   `Device.spec.imageDigests`; the prepull uses them. A lab with registry credentials of its own, or whose tenant has some,
-  is **not** pinned: the operator resolves with its own pull secrets, which could not read a private image, and the gate
-  resolves a tag at each pull with the pull's credentials, so such a lab's images follow their tags. A resolved digest is remembered for `registry.cache.pinTTL`
+  is pinned with **those** credentials: the operator reads the lab's Secret (and the tenant's), keeps a resolver made of them in
+  memory for as long as it is asked for (one per fingerprint of the documents; labs with the same credentials share it and
+  another credential set never gets its answers), and records the digest, so every device of the lab pulls the same content
+  through the gate by digest, with the same credentials. The operator's own pull secrets never resolve a tenant's image, and the
+  netconfig image (the platform's) is always resolved with them. The lab waits (briefly) for its own Secret, which the agent writes
+  right after the Lab. A failed resolution falls back to the tag and is named in `Lab.status.imageWarning`. A resolved digest is remembered for `registry.cache.pinTTL`
   (default 30m), so labs created in the same wave get the same image. The VPN and gateway images of a group are
   pinned the same way when the group's pods are created; a failure there is recorded in `LabGroup.status.imageWarning`.
   Both warnings reach the management agent (`LabStatus.image_warning`, `LabGroupStatus.image_warning`). An image whose digest cannot be resolved is pulled by its
@@ -2777,8 +2781,10 @@ directly) to this one:
 4. **Agent.** The Secret `laboratory-registry-ca` is created in the agent's namespace by the chart and mounted at
    `/registry-ca`; the agent's `PrewarmImages` uses the gate's TLS port. An agent from before this release still reads zot on
    port 5000, which refuses the cache path.
-5. **Tags of labs with credentials** are no longer pinned to a digest (see "Digest pinning"), so two devices of one lab started
-   minutes apart can run different content if the upstream tag moved in between. Pin by digest in the topology when that matters.
+5. **Credentials without a username** are refused when a lab is created (`CREDENTIAL_NOT_SUPPORTED`, `InvalidArgument`, the
+   registry named) and in `PrewarmImages`, while the cache is on: the cache writes the tenant into the username, so a token-only
+   credential could not pull through it. A tenant's `images.pullSecret` is not checked at creation (the agent cannot read it); an
+   entry without a username there is dropped from the re-keyed Secret, and the pull of that registry is anonymous.
 6. **Cached data.** Nothing to migrate: the gate fills the cache itself, from the first pull on. Objects the old cache stored
    under `REG/repo` (without `c/`) are not read; delete them with the registry's garbage collection or leave them to the volume.
 
