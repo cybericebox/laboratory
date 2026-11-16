@@ -81,6 +81,13 @@ func (b *fakeBackend) Open(_ context.Context, pod PodInfo) (Observer, func(), er
 	return b.obs, func() {}, nil
 }
 
+// openedCount is the number of Opens so far, read under the lock (the engine opens from its own goroutines).
+func (b *fakeBackend) openedCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.opened
+}
+
 var lab1 = LabKey{Namespace: "ns", Name: "lab1"}
 
 type rig struct {
