@@ -486,6 +486,9 @@ func Run() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		TTL:    cfg.TenantEnrollmentTTL,
+		// the credentials of images.pullSecret must be usable with the cache
+		CacheEnabled: cfg.Cache.Enabled,
+		Recorder:     mgr.GetEventRecorderFor("tenant"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Tenant")
 		os.Exit(1)

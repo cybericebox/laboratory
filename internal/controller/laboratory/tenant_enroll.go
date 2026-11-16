@@ -6,18 +6,24 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants,verbs=get;list;watch;update;patch
@@ -39,7 +45,14 @@ type TenantReconciler struct {
 	TTL time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// CacheEnabled: the image cache is on, so the credentials of images.pullSecret must be usable with it (see checkImageCredentials).
+	CacheEnabled bool
+	// Recorder says it in an event; nil: no events.
+	Recorder record.EventRecorder
 }
+
+// credentialRecheck is how often a tenant's pull Secret is read again for checkImageCredentials: the operator cannot watch Secrets.
+const credentialRecheck = 5 * time.Minute
 
 func (r *TenantReconciler) now() time.Time {
 	if r.Now != nil {
@@ -65,6 +78,65 @@ func HashEnrollmentToken(token string) string {
 }
 
 func (r *TenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcileEnrollment(ctx, req)
+	if err != nil {
+		return res, err
+	}
+	var t laboratoryv1alpha1.Tenant
+	if err := r.Get(ctx, req.NamespacedName, &t); err != nil || t.DeletionTimestamp != nil {
+		return res, client.IgnoreNotFound(err)
+	}
+	if err := r.checkImageCredentials(ctx, &t); err != nil {
+		return res, err
+	}
+	if r.CacheEnabled && t.Spec.Images.PullSecret != "" && (res.RequeueAfter == 0 || res.RequeueAfter > credentialRecheck) {
+		res.RequeueAfter = credentialRecheck
+	}
+	return res, nil
+}
+
+// checkImageCredentials makes the condition ImageCredentials of a tenant say whether the credentials of its images.pullSecret can be
+// carried by the image cache. The cache writes the tenant into the username ("<tenant>~<user>"), so an entry without a username can
+// never pull through it: the condition is False (reason CredentialNotSupported, message CREDENTIAL_NOT_SUPPORTED naming the registries)
+// and a Warning event says it once, instead of the pods silently pulling anonymously and failing later. Labs of the tenant are refused
+// with the same reason (LabReconciler.tenantCredentialRefusal, and the agent at creation). With the cache off, or no Secret, the
+// condition is removed; a Secret that cannot be read changes nothing (the group reports it).
+func (r *TenantReconciler) checkImageCredentials(ctx context.Context, t *laboratoryv1alpha1.Tenant) error {
+	var bad []string
+	if r.CacheEnabled && t.Spec.Images.PullSecret != "" {
+		var s corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Namespace: names.TenantsNamespace, Name: t.Spec.Images.PullSecret}, &s); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		bad, _ = imagecache.WithoutUsername(s.Data[corev1.DockerConfigJsonKey])
+	}
+	orig := t.DeepCopy()
+	if len(bad) == 0 {
+		if !meta.RemoveStatusCondition(&t.Status.Conditions, laboratoryv1alpha1.TenantConditionImageCredentials) {
+			return nil
+		}
+	} else {
+		msg := CredentialRefusalMessage(bad)
+		if c := meta.FindStatusCondition(t.Status.Conditions, laboratoryv1alpha1.TenantConditionImageCredentials); c != nil && c.Status == metav1.ConditionFalse && c.Message == msg {
+			return nil
+		}
+		meta.SetStatusCondition(&t.Status.Conditions, metav1.Condition{
+			Type: laboratoryv1alpha1.TenantConditionImageCredentials, Status: metav1.ConditionFalse,
+			Reason: labstatus.ReasonCredentialNotSupported, Message: msg, ObservedGeneration: t.Generation,
+		})
+		if r.Recorder != nil {
+			r.Recorder.Event(t, corev1.EventTypeWarning, labstatus.ReasonCredentialNotSupported, msg)
+		}
+	}
+	return r.Status().Patch(ctx, t, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{}))
+}
+
+// CredentialRefusalMessage is the text of the refusal of credentials the image cache cannot carry, with the stable reason first.
+func CredentialRefusalMessage(registries []string) string {
+	return "CREDENTIAL_NOT_SUPPORTED: registry " + strings.Join(registries, ", ") + ": credentials need a username for the image cache"
+}
+
+func (r *TenantReconciler) reconcileEnrollment(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t laboratoryv1alpha1.Tenant
 	if err := r.Get(ctx, req.NamespacedName, &t); err != nil {
 		if apierrors.IsNotFound(err) {

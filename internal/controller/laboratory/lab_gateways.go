@@ -2,10 +2,12 @@ package laboratory
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -15,6 +17,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/gatewayspec"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
@@ -65,6 +68,9 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 	}
 	if refusal = r.validateRegistries(lab); refusal != nil {
 		return refusal, false, nil
+	}
+	if refusal, err = r.tenantCredentialRefusal(ctx, lab); refusal != nil || err != nil {
+		return refusal, false, err
 	}
 	off, err := r.groupServerOff(ctx, lab)
 	return off, off != nil, err
@@ -442,4 +448,26 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns, name string, obj c
 // gatewayEndpoint says whether a connection endpoint names a gateway of the lab, and which. A gateway has one port, eth0.
 func gatewayEndpoint(lab *laboratoryv1alpha1.Lab, ep laboratoryv1alpha1.EndpointSpec) (laboratoryv1alpha1.GatewayTemplate, bool) {
 	return lab.Spec.Gateway(ep.Device)
+}
+
+// tenantCredentialRefusal refuses a lab of a tenant whose images.pullSecret holds an entry without a username while the image cache is on:
+// the cache carries the tenant in the username, so such a credential could never pull, and the pods would fail later with a message that
+// does not say why. The Tenant says the same in its condition ImageCredentials; the lab starts by itself once the Secret is fixed.
+func (r *LabReconciler) tenantCredentialRefusal(ctx context.Context, lab *laboratoryv1alpha1.Lab) (refusal error, err error) {
+	if !r.Mirror.Enabled() {
+		return nil, nil
+	}
+	secret, err := tenantPullSecret(ctx, r, names.TenantOf(lab.Labels))
+	if err != nil || secret == "" {
+		return nil, err
+	}
+	var s corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: names.TenantsNamespace, Name: secret}, &s); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	bad, _ := imagecache.WithoutUsername(s.Data[corev1.DockerConfigJsonKey])
+	if len(bad) == 0 {
+		return nil, nil
+	}
+	return stderrors.New(CredentialRefusalMessage(bad)), nil
 }

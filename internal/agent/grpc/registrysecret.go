@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -72,14 +73,19 @@ func validateRegistryCredentials(creds []*protobuf.RegistryCredential) error {
 func requireUsernames(prefix string, creds []*protobuf.RegistryCredential) error {
 	for _, c := range creds {
 		if c.GetUsername() == "" {
-			st := status.Newf(codes.InvalidArgument, "%s%s: registry %s: credentials need a username for the image cache", prefix, client.ReasonCredentialNotSupported, c.GetRegistry())
-			if withInfo, err := st.WithDetails(&errdetails.ErrorInfo{Reason: client.ReasonCredentialNotSupported, Domain: client.ErrorDomain}); err == nil {
-				st = withInfo
-			}
-			return st.Err()
+			return credentialRefusal(fmt.Sprintf("%s%s: registry %s: credentials need a username for the image cache", prefix, client.ReasonCredentialNotSupported, c.GetRegistry()))
 		}
 	}
 	return nil
+}
+
+// credentialRefusal is the InvalidArgument status with the stable reason CREDENTIAL_NOT_SUPPORTED and the given message.
+func credentialRefusal(message string) error {
+	st := status.New(codes.InvalidArgument, message)
+	if withInfo, err := st.WithDetails(&errdetails.ErrorInfo{Reason: client.ReasonCredentialNotSupported, Domain: client.ErrorDomain}); err == nil {
+		st = withInfo
+	}
+	return st.Err()
 }
 
 type dockerAuth struct {
