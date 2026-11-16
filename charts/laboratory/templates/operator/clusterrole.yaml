@@ -46,7 +46,7 @@ rules:
   resources: [pools/status]
   verbs: [get, patch, update]
 - apiGroups: [laboratory.cybericebox.com]
-  resources: [connections, devices, labgateways, labgroupclients, labgroups, labs, labvpns]
+  resources: [connections, devices, labactivityreports, labgateways, labgroupclients, labgroups, labs, labvpns]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [laboratory.cybericebox.com]
   resources: [labgroupaccesspolicies, labtrafficreports]
@@ -59,7 +59,7 @@ rules:
   resources: [connections/finalizers, devices/finalizers, labgateways/finalizers, labgroupclients/finalizers, labgroups/finalizers, labs/finalizers, labvpns/finalizers]
   verbs: [update]
 - apiGroups: [laboratory.cybericebox.com]
-  resources: [connections/status, devices/status, labgateways/status, labgroupclients/status, labgroups/status, labs/status, labvpns/status]
+  resources: [connections/status, devices/status, labactivityreports/status, labgateways/status, labgroupclients/status, labgroups/status, labs/status, labvpns/status]
   verbs: [get, patch, update]
 # Tenants: the persistence policy of a lab's tenant, the quotas the scheduler enforces, and the
 # enrollment token (its hash goes to the status; the annotation asking for a new one is removed).

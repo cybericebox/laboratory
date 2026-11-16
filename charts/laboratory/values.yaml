@@ -109,6 +109,15 @@ profileLabels:
   # On: container devices (and the VPN and gateway pods) select cybericebox.com/profile-container=true. Off (default): scheduling as before,
   # so a cluster whose nodes carry no profile labels is unchanged. Turn it on only after every container node carries the label.
   enabled: false
+# Activity reports (off by default). When on, the laboratory keeps, for a short time (at most 1000 events and one hour per writer), the RAW facts
+# of what happened in a lab group: the internet egress of its labs (source and destination address, port, bytes, per minute), the console
+# sessions (when each opened and closed), and the lab addresses the VPN clients reached (bytes per minute; needs vpn.firewall iptables). The
+# management agent hands them to your own platform when it calls GetLabGroupActivity. They are data handed only to your own platform through the
+# agent API; the laboratory sends nothing anywhere by itself, aggregates nothing and stores nothing longer. When off, nothing is collected and
+# the call answers FailedPrecondition "activity reports disabled". The egress facts also need internetEgress.monitor.enabled. The VPN and gateway
+# pods of a group keep the setting they were made with: it reaches a group's VPN pod and gateway when they are next created.
+activityReports:
+  enabled: false
 # Optional parts of the laboratory (two independent options, both off by default). The management agent refuses a lab that carries
 # the matching feature while its option is off, and reports both in GetFeatures (features.checks.enabled, features.terminal.enabled).
 # checks.enabled also renders the lab checker, a DaemonSet of its own (apart from the node-agent). The terminal component is built later

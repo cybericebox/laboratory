@@ -239,6 +239,7 @@ EGRESS_ICMP_PER_SECOND: {{ .Values.internetEgress.icmpPerSecond | quote }}
 VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
+ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
 TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
 TERMINAL_SERVED: {{ .Values.terminal.enabled | quote }}
 CHECKS_MAX_TIME_LIMIT_SECONDS: {{ .Values.checks.maxTimeLimitSeconds | quote }}
