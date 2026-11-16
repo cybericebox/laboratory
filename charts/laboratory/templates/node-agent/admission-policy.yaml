@@ -55,7 +55,7 @@ spec:
     - expression: "variables.newAnnotations.all(k, k in {{ $annotationKeys }} || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k in {{ $annotationKeys }} || k in variables.newAnnotations)"
       message: "the node-agent may change only the annotation cybericebox.com/runtime-observation of its node"
       reason: Forbidden
-    - expression: "variables.newAnnotations.all(k, !(k in {{ $annotationKeys }}) || variables.newAnnotations[k].matches('^(ready|disabled|unavailable: [A-Z_]+: .{0,500})$'))"
+    - expression: "variables.newAnnotations.all(k, !(k in {{ $annotationKeys }}) || variables.newAnnotations[k].matches('^(ready|disabled|unavailable: [A-Z0-9_]+: .{0,500})$'))"
       message: "the check annotations are ready, disabled or unavailable: CODE: detail"
       reason: Forbidden
     - expression: "variables.newLabels.all(k, k == '{{ $key }}' ? variables.newLabels[k] == 'true' : (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k]))"
