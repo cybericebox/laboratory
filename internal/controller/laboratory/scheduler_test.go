@@ -1106,3 +1106,65 @@ func setDeviceResources(t *testing.T, f *schedFixture, lab string, r *laboratory
 		t.Fatal(err)
 	}
 }
+
+// labReader counts the reads of Labs that go past the cache and can show a lab as stopped, the way the API server would after the
+// cache has gone stale.
+type labReader struct {
+	client.Reader
+	gets, lists int
+	stopped     map[string]bool
+}
+
+func (r *labReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	err := r.Reader.Get(ctx, key, obj, opts...)
+	if l, ok := obj.(*laboratoryv1alpha1.Lab); ok {
+		r.gets++
+		if err == nil && r.stopped[key.Name] {
+			l.Spec.Lifecycle = &laboratoryv1alpha1.LabLifecycleSpec{DesiredState: "Stopped"}
+		}
+	}
+	return err
+}
+
+func (r *labReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*laboratoryv1alpha1.LabList); ok {
+		r.lists++
+	}
+	return r.Reader.List(ctx, list, opts...)
+}
+
+// A pass lists the labs from the cache; the stop fence before a dispatch is one read past the cache per lab, not one per pod.
+func TestSchedulerListsLabsFromTheCacheAndFencesOncePerLab(t *testing.T) {
+	cfg := schedCfg()
+	cfg.MaxPods = 10
+	f := newSchedFixture(t, cfg)
+	rd := &labReader{Reader: f.c}
+	f.s.Reader = rd
+	f.addLab("a", "", nil, "web", "db", "cache")
+	f.addLab("b", "", nil, "web", "db")
+	f.tick()
+	f.wantStates("a/cache=S a/db=S a/web=S b/db=S b/web=S")
+	if rd.lists != 0 {
+		t.Fatalf("%d lists of the labs past the cache", rd.lists)
+	}
+	if rd.gets != 2 {
+		t.Fatalf("%d fence reads for 2 labs with 5 pods dispatched", rd.gets)
+	}
+	before := rd.gets
+	f.tick() // nothing to dispatch: nothing is read past the cache
+	if rd.gets != before || rd.lists != 0 {
+		t.Fatalf("an idle pass read past the cache: %d gets, %d lists", rd.gets-before, rd.lists)
+	}
+}
+
+// The cache still shows the lab running; the API server says it is stopped: no pod of it is dispatched, the others are.
+func TestSchedulerFenceCatchesAStopTheCacheHasNotSeen(t *testing.T) {
+	cfg := schedCfg()
+	cfg.MaxPods = 10
+	f := newSchedFixture(t, cfg)
+	f.s.Reader = &labReader{Reader: f.c, stopped: map[string]bool{"a": true}}
+	f.addLab("a", "", nil, "web", "db")
+	f.addLab("b", "", nil, "web")
+	f.tick()
+	f.wantStates("a/db=Q a/web=Q b/web=S")
+}
