@@ -8075,14 +8075,20 @@ func (x *FeaturesResponse) GetActivity() *ActivityFeature {
 
 // ActivityFeature: enabled is true when the cluster keeps raw activity facts for GetLabGroupActivity (the chart value
 // activityReports.enabled). max_events and ring_minutes bound what the laboratory keeps per writer; a platform that pulls less often than
-// every ring_minutes may lose events (the response says so in gap).
+// every ring_minutes may lose events (the response says so in gap). console_max_lifetime_s (contract 2.6) is the longest a console session
+// lives (terminal.limits.maxLifetime; 0 when the console is off): a console_session still open longer than that after its opening event ended
+// without a closing event (its proxy replica died). device_touch (contract 2.6) is true only when this cluster produces device_touch events:
+// activity reports are on and the VPN firewall keeps connection tracking (iptables); with nft there are none, so a platform reports "not
+// reported" (null) for the devices-touched figure and not zero.
 type ActivityFeature struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	MaxEvents     int32                  `protobuf:"varint,2,opt,name=max_events,json=maxEvents,proto3" json:"max_events,omitempty"`
-	RingMinutes   int32                  `protobuf:"varint,3,opt,name=ring_minutes,json=ringMinutes,proto3" json:"ring_minutes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Enabled             bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	MaxEvents           int32                  `protobuf:"varint,2,opt,name=max_events,json=maxEvents,proto3" json:"max_events,omitempty"`
+	RingMinutes         int32                  `protobuf:"varint,3,opt,name=ring_minutes,json=ringMinutes,proto3" json:"ring_minutes,omitempty"`
+	ConsoleMaxLifetimeS int32                  `protobuf:"varint,4,opt,name=console_max_lifetime_s,json=consoleMaxLifetimeS,proto3" json:"console_max_lifetime_s,omitempty"`
+	DeviceTouch         bool                   `protobuf:"varint,5,opt,name=device_touch,json=deviceTouch,proto3" json:"device_touch,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ActivityFeature) Reset() {
@@ -8134,6 +8140,20 @@ func (x *ActivityFeature) GetRingMinutes() int32 {
 		return x.RingMinutes
 	}
 	return 0
+}
+
+func (x *ActivityFeature) GetConsoleMaxLifetimeS() int32 {
+	if x != nil {
+		return x.ConsoleMaxLifetimeS
+	}
+	return 0
+}
+
+func (x *ActivityFeature) GetDeviceTouch() bool {
+	if x != nil {
+		return x.DeviceTouch
+	}
+	return false
 }
 
 // VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
@@ -14056,12 +14076,14 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\tbootstrap\x18\x13 \x01(\v2\x1c.labmanager.BootstrapFeatureR\tbootstrap\x12(\n" +
 	"\x03vpn\x18\x14 \x01(\v2\x16.labmanager.VPNFeatureR\x03vpn\x121\n" +
 	"\x06access\x18\x15 \x01(\v2\x19.labmanager.AccessFeatureR\x06access\x127\n" +
-	"\bactivity\x18\x16 \x01(\v2\x1b.labmanager.ActivityFeatureR\bactivityJ\x04\b\x12\x10\x13R\bterminal\"m\n" +
+	"\bactivity\x18\x16 \x01(\v2\x1b.labmanager.ActivityFeatureR\bactivityJ\x04\b\x12\x10\x13R\bterminal\"\xc5\x01\n" +
 	"\x0fActivityFeature\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
 	"max_events\x18\x02 \x01(\x05R\tmaxEvents\x12!\n" +
-	"\fring_minutes\x18\x03 \x01(\x05R\vringMinutes\"`\n" +
+	"\fring_minutes\x18\x03 \x01(\x05R\vringMinutes\x123\n" +
+	"\x16console_max_lifetime_s\x18\x04 \x01(\x05R\x13consoleMaxLifetimeS\x12!\n" +
+	"\fdevice_touch\x18\x05 \x01(\bR\vdeviceTouch\"`\n" +
 	"\n" +
 	"VPNFeature\x12/\n" +
 	"\x13reverse_connections\x18\x01 \x01(\bR\x12reverseConnections\x12!\n" +

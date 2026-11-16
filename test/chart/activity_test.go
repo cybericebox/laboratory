@@ -14,6 +14,13 @@ func TestActivityReportsAreOffByDefaultAndOneValueTurnsThemOn(t *testing.T) {
 	if v := operatorConfig(t, "--set", "activityReports.enabled=true")["ACTIVITY_REPORTS"]; v != "true" {
 		t.Fatalf("enabled ACTIVITY_REPORTS = %q", v)
 	}
+	// what the agent reports about the console and the touches comes from two settings the chart already has
+	if v := operatorConfig(t)["TERMINAL_MAX_LIFETIME"]; v != "8h" {
+		t.Fatalf("TERMINAL_MAX_LIFETIME = %q, want terminal.limits.maxLifetime", v)
+	}
+	if v := operatorConfig(t, "--set", "vpn.firewall=nft")["VPN_FIREWALL"]; v != "nft" {
+		t.Fatalf("VPN_FIREWALL = %q", v)
+	}
 	proxyEnv := func(extra ...string) string {
 		out, err := helmTemplate(t, append(extra, "-s", "templates/proxy/deployment.yaml")...)
 		if err != nil {

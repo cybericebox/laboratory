@@ -81,6 +81,10 @@ type Features struct {
 	CheckerRequired bool
 	// ActivityReports is the chart's activityReports.enabled: the cluster keeps raw activity facts and GetLabGroupActivity answers.
 	ActivityReports bool
+	// TerminalMaxLifetime is the longest console session (chart terminal.limits.maxLifetime); VPNFirewall is the chart's vpn.firewall ("nft"
+	// keeps no connection tracking, so no devices-touched events).
+	TerminalMaxLifetime time.Duration
+	VPNFirewall         string
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
