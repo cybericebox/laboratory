@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
@@ -17,6 +19,12 @@ import (
 func push(addr, repo string, auth authn.Authenticator) (string, error) {
 	img, err := random.Image(4096, 2)
 	if err != nil {
+		return "", err
+	}
+	// A command in the image config: without one containerd cannot make the container spec ("no command specified") and the pod
+	// stays in CreateContainerError. With one the container is created and then fails to start (the layers are random bytes),
+	// which is fine: the E2E asks whether the image reached the node.
+	if img, err = mutate.Config(img, v1.Config{Entrypoint: []string{"/e2e-noop"}}); err != nil {
 		return "", err
 	}
 	ref, err := name.NewTag(addr+"/"+repo+":seed", name.Insecure)
