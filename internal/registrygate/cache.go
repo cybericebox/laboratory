@@ -178,6 +178,8 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 		}
 		d := hdr.Get("Docker-Content-Digest")
 		if !reDigest.MatchString(d) {
+			// the allow was recorded: it must be re-checkable, so the tag itself is the known ref
+			c.Store.Know(key, kindManifests, up.Ref, up.Accept)
 			return "", http.StatusBadGateway
 		}
 		c.Store.Know(key, kindManifests, d, up.Accept)
@@ -237,20 +239,23 @@ func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, w
 }
 
 // settleMissing handles a 404 on the proof of a ref the caller chose: the request is not served and the ref alone is noted missing
-// for a short while. The repository is denied for the key only when a ref that was already proven for it answers 401, 403 or 404 too
-// (real revocation, or a registry that hides the repository). A first contact (nothing proven yet) and the anonymous key record
-// nothing about the repository: a 404 on a ref of an attacker's choosing must not deny it for everybody who shares the hash.
+// for a short while. What it never does is deny the repository because of the caller's ref: a 404 on a ref of an attacker's choosing
+// must not deny it for everybody who shares the hash (or the anonymous key). But when the key holds an Allowed record, a ref that was
+// already proven for it is asked about, and that is OUR ref, so the re-check is safe for any key, the anonymous one included (a public
+// image that turned private must stop being served from the cache): 401, 403 or 404 on it denies the key. An Allowed record without a
+// known ref cannot be re-checked: it is dropped (fail closed), so no stale answer is ever served from it. With no Allowed record
+// (a first contact, a refused key) nothing is recorded about the repository.
 func (c *Cache) settleMissing(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object) {
 	c.Store.NoteMissing(MissKey{Hash: who.hash, Repo: key.Repo, Kind: up.Kind, Ref: up.Ref})
-	if who.hash == "" {
+	allowed, kg, ok := c.Store.Holds(key)
+	switch {
+	case !allowed:
 		return
-	}
-	kg, ok := c.Store.Known(key)
-	if !ok {
+	case !ok:
+		c.Store.Drop(key)
 		return
-	}
-	if kg.Kind == up.Kind && kg.Ref == up.Ref {
-		c.Store.Record(key, who.tenant, Denied, c.Store.Now())
+	case kg.Kind == up.Kind && kg.Ref == up.Ref:
+		c.Store.Record(key, who.tenant, Denied, c.Store.Now()) // the proven ref itself is gone
 		return
 	}
 	started := c.Store.Now()

@@ -607,3 +607,63 @@ func TestARedirectedBlobProofMountsNothing(t *testing.T) {
 		t.Fatal("an inconclusive proof means the blob is downloaded for this repository, not mounted")
 	}
 }
+
+// A public image that turned private must stop being served from the cache: the known ref of the anonymous record answers 404 now, a 404
+// for any other ref re-checks it, and neither the denied window nor stale-if-error serves the old record afterwards.
+func TestAPublicImageThatTurnedPrivateIsNoLongerServed(t *testing.T) {
+	r := newRig(t)
+	r.putTag("library/nginx", "latest", []byte("public manifest"))
+	if code, _, _ := r.pull("GET", mpath("library/nginx", "latest"), "", "", nil); code != 200 {
+		t.Fatalf("%d", code)
+	}
+	anon := DecisionKey{Repo: "up/library/nginx"}
+	r.up.mu.Lock()
+	r.up.headStatus = http.StatusNotFound // it turned private: the registry hides it
+	r.up.mu.Unlock()
+	if code, _, _ := r.pull("GET", mpath("library/nginx", "bogus"), "", "", nil); code == 200 {
+		t.Fatalf("%d", code)
+	}
+	if got := r.cache.Store.Lookup(anon, ""); got != Refuse {
+		t.Fatalf("the anonymous record is denied through its known ref: %v", got)
+	}
+	r.clock.advance(5 * time.Minute)
+	r.up.setFail(503) // and the registry is down on top of it
+	if code, _, _ := r.pull("GET", mpath("library/nginx", "latest"), "", "", nil); code == 200 {
+		t.Fatalf("stale-if-error must not serve an image that was found private: %d", code)
+	}
+}
+
+// An allowed record with no known ref cannot be re-checked: a 404 drops it (fail closed).
+func TestAllowedWithoutAKnownRefIsDroppedOnA404(t *testing.T) {
+	r := newRig(t)
+	key := r.key("alice")
+	r.cache.Store.Record(key, "t1", Allowed, r.cache.Store.Now())
+	reg, _ := r.cache.Registries.Get("up")
+	who := caller{tenant: "t1", creds: Creds{"alice", "pw"}, hash: key.Hash}
+	r.cache.settleMissing(t.Context(), reg, key, who, Object{Repo: "org/private", Kind: "manifests", Ref: "bogus"})
+	if ok, _, _ := r.cache.Store.Holds(key); ok {
+		t.Fatal("the record is gone")
+	}
+	r.clock.advance(5 * time.Minute)
+	r.up.setFail(503)
+	if got := r.cache.Store.Lookup(key, "t1"); got != Check {
+		t.Fatalf("no stale answer from a dropped record: %v", got)
+	}
+}
+
+// The tag path that records an allow but gets no digest (502) still leaves a known ref behind.
+func TestATagWithoutADigestStillLeavesAKnownRef(t *testing.T) {
+	r := newRig(t)
+	r.putTag("org/private", "latest", []byte("manifest"))
+	r.up.mu.Lock()
+	r.up.noDigestHeader = true
+	r.up.mu.Unlock()
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), alice, "pw", nil); code != 502 {
+		t.Fatalf("%d", code)
+	}
+	key := r.key("alice")
+	ok, kg, has := r.cache.Store.Holds(key)
+	if ok && (!has || kg.Ref != "latest") {
+		t.Fatalf("an allow without a known ref: %v %+v", has, kg)
+	}
+}

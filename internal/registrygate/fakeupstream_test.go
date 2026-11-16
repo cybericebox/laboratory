@@ -35,6 +35,7 @@ type fakeUpstream struct {
 	plainCDN   bool // ... to the plain-http one
 	// redirectManifests: manifests redirect to the CDN too, whoever asks (a registry that redirects without looking at who asks).
 	redirectManifests bool
+	noDigestHeader    bool // manifests are answered without Docker-Content-Digest
 	headStatus        int  // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
 	redirectHeads     bool // blob HEADs redirect too (not only the GET)
 	cdnStatus         int  // when set, the CDN answers this instead of the object
@@ -189,7 +190,7 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	body, found := f.objects[r.URL.Path]
-	redirect, redirectHeads, headStatus := f.redirect, f.redirectHeads, f.headStatus
+	redirect, redirectHeads, headStatus, noDigest := f.redirect, f.redirectHeads, f.headStatus, f.noDigestHeader
 	f.mu.Unlock()
 	if headStatus != 0 && r.Method == http.MethodHead {
 		w.WriteHeader(headStatus)
@@ -210,7 +211,7 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if strings.Contains(r.URL.Path, "/manifests/") {
+	if strings.Contains(r.URL.Path, "/manifests/") && !noDigest {
 		sum := sha256.Sum256(body)
 		w.Header().Set("Docker-Content-Digest", "sha256:"+hex.EncodeToString(sum[:]))
 	}
