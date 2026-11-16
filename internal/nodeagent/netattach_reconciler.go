@@ -85,7 +85,7 @@ func (r *NetworkAttachReconciler) DelVethWithFlowsOwned(key string, ownerUID typ
 	return r.delVethWithFlowsOwned(key, ownerUID)
 }
 
-// The reconciler and CNI already hold the Pod wiring lock.
+// The caller holds the Pod wiring lock.
 func (r *NetworkAttachReconciler) delVethWithFlowsOwned(key string, ownerUID types.UID) error {
 	if ownerUID == "" {
 		return ErrPortOwnerUnknown
@@ -129,10 +129,9 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// Different Pod names share group stable keys. Hold the node's wiring
-	// lock through direct identity checks and all netns mutations.
-	r.OVS.vethMu.Lock()
-	defer r.OVS.vethMu.Unlock()
+	// Different Pod names share group stable keys. The node's wiring lock is NOT held here: every read below (API, CRI, port rows) is
+	// made without it, and the mutations (port retirement, wiring a leg) take it themselves and re-check the plan under it (pod
+	// incarnation, port owner); a plan that no longer holds comes back as ErrPortOwnerChanged and the pass is retried.
 
 	// The VPN and gateway pod of a group: the lab interfaces come from the group's LabVPN and LabGateway objects (see GroupPodAttachments),
 	// not from the pod's annotation, so a lab added or removed never changes the Deployment. A device pod lists its interfaces in the
@@ -169,7 +168,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				} else if retiring {
 					continue
 				}
-				if err := r.delVethWithFlowsOwned(key, pod.UID); err != nil {
+				if err := r.lockedDelVethOwned(ctx, "NetAttach.Reconcile", key, pod.UID); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -301,8 +300,19 @@ func moveLegIn(log logr.Logger, netnsPath, podSide, targetIface, mac string) boo
 	return true
 }
 
+// legResult is what one leg's wiring says about the rest of the pass.
+type legResult struct {
+	stop     bool          // the pass ends here (requeue after `requeue`)
+	requeue  time.Duration // for stop
+	cooldown bool          // for stop: the leg is in the recreation cooldown (see wireLegs)
+	recreate bool          // the veth is stale: retire it, after the lock is released
+}
+
 // wireLegs wires the attachments of a pod into its netns, one leg at a time. A leg that cannot be wired is logged with its key and does not
 // hold back the others; the first such error is returned at the end, so the pass is retried with back-off and the leg heals by itself.
+//
+// The wiring lock is held per leg and only for the mutation (the port row, the move and the rename into the netns); what the leg
+// needs to read first (the owner of its key) is read before the lock, and the plan is checked again under it.
 func (r *NetworkAttachReconciler) wireLegs(ctx context.Context, pod *corev1.Pod, component string, attachments []NetAttachment, netnsPath string) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	recreated := false
@@ -325,103 +335,44 @@ func (r *NetworkAttachReconciler) wireLegs(ctx context.Context, pod *corev1.Pod,
 			log.Info("NetAttach: not a port key of the platform, ignored", cniNameKey, stableKey)
 			continue
 		}
-		podSide := VethPeerName(stableKey)
-		targetIface := att.Iface
-		if targetIface == "" {
-			targetIface = stableKey
-		}
 
+		// Reads (the API, the port rows) and the retirement of a dead owner's port: no lock held across them.
 		if err := r.ensurePodPortOwner(ctx, pod, stableKey); err != nil {
 			failed(stableKey, err)
 			continue
 		}
-		// Ensure the veth host-side is registered in OVS.
-		_, exists, err := r.OVS.FindPortByKey(stableKey)
+
+		var res legResult
+		err := r.OVS.withVethLock(ctx, "NetAttach.wireLeg", func() error {
+			// The plan: this incarnation wires this key. Re-checked now that the lock is ours.
+			if err := podStillCurrent(ctx, r.cacheReader(), pod); err != nil {
+				return err
+			}
+			if err := r.OVS.requireFreeOrOwned(stableKey, pod.UID); err != nil {
+				return err
+			}
+			var err error
+			res, err = r.wireLeg(log, pod, stableKey, att, netnsPath)
+			return err
+		})
 		if err != nil {
-			failed(stableKey, fmt.Errorf("find veth port %q: %w", stableKey, err))
+			failed(stableKey, err)
 			continue
 		}
-		log.Info(
-			"NetAttach: attachment",
-			"key",
-			stableKey,
-			"podSide",
-			podSide,
-			"targetIface",
-			targetIface,
-			"existsInOVS",
-			exists,
-		)
-		if exists {
-			// A port made before the policing setting (or under another value) gets it now; a no-op when it already has it.
-			if err := r.OVS.EnsurePolicing(stableKey); err != nil {
-				log.Error(err, "NetAttach: police veth port", "key", stableKey)
+		if res.stop {
+			if res.cooldown && recreated {
+				// Restore peers already retired in this pass before entering
+				// this peer's cooldown; the capped peer remains untouched.
+				return ctrl.Result{RequeueAfter: time.Second}, firstErr
 			}
+			return ctrl.Result{RequeueAfter: res.requeue}, firstErr
 		}
-		if !exists {
-			if err := r.OVS.AddVethPortOwned(stableKey, pod.UID); err != nil {
-				failed(stableKey, fmt.Errorf("add veth port %q: %w", stableKey, err))
-				continue
+		if res.recreate {
+			log.Info("NetAttach: stale veth, recreating", "key", stableKey)
+			if err := r.cleanupPodPort(ctx, pod, stableKey); err != nil {
+				return ctrl.Result{}, err
 			}
-			log.Info("NetAttach: created veth pair", "hostSide", stableKey, "podSide", podSide)
-		}
-
-		// Check whether pod-side veth is still in root netns.
-		podSideInRoot := peerInRoot(podSide, !exists)
-		log.Info("NetAttach: pod-side location", "podSide", podSide, "inRootNetns", podSideInRoot)
-
-		if podSideInRoot {
-			if !moveLegIn(log, netnsPath, podSide, targetIface, att.MAC) {
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
-			}
-		} else {
-			// Pod-side not in root netns — already moved or stale.
-			underTarget := CheckInNetNS(netnsPath, targetIface)
-			if underTarget == nil {
-				// Already in pod netns under correct name — ensure UP.
-				if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
-					log.Error(err, "BringUpInNetNS (steady-state) failed, requeueing", "iface", targetIface)
-					return ctrl.Result{RequeueAfter: 5 * time.Second}, firstErr
-				}
-				log.Info("NetAttach: already in pod netns, ensured UP", "iface", targetIface)
-			} else if CheckInNetNS(netnsPath, podSide) == nil {
-				// Partial: moved to pod netns but not yet renamed.
-				if podSide != targetIface {
-					if err := RenameInNetNS(netnsPath, podSide, targetIface); err != nil {
-						log.Error(
-							err,
-							"RenameInNetNS (recovery) failed, requeueing",
-							"from",
-							podSide,
-							"to",
-							targetIface,
-						)
-						return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
-					}
-					log.Info("NetAttach: recovery rename OK", "from", podSide, "to", targetIface)
-				}
-				if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
-					log.Error(err, "BringUpInNetNS (recovery) failed, requeueing", "iface", targetIface)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, firstErr
-				}
-			} else {
-				// Not in root netns, not in pod netns — stale veth, recreate. A pod that makes this happen again and again (it can delete its
-				// own interface when it has NET_ADMIN) is left alone for a while instead.
-				if ok, wait := r.mayRecreate(string(pod.UID) + "/" + stableKey); !ok {
-					log.Info("NetAttach: the veth of this pod was recreated too often, waiting", "key", stableKey, "wait", wait.String())
-					// Restore peers already retired in this pass before entering
-					// this peer's cooldown; the capped peer remains untouched.
-					if recreated {
-						return ctrl.Result{RequeueAfter: time.Second}, firstErr
-					}
-					return ctrl.Result{RequeueAfter: wait}, firstErr
-				}
-				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
-				if err := r.cleanupPodPort(ctx, pod, stableKey); err != nil {
-					return ctrl.Result{}, err
-				}
-				recreated = true
-			}
+			recreated = true
 		}
 	}
 
@@ -440,6 +391,94 @@ func (r *NetworkAttachReconciler) wireLegs(ctx context.Context, pod *corev1.Pod,
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// wireLeg is the mutation of one leg; the caller holds the wiring lock. A returned error is the leg's (the others go on).
+func (r *NetworkAttachReconciler) wireLeg(log logr.Logger, pod *corev1.Pod, stableKey string, att NetAttachment, netnsPath string) (legResult, error) {
+	podSide := VethPeerName(stableKey)
+	targetIface := att.Iface
+	if targetIface == "" {
+		targetIface = stableKey
+	}
+
+	// Ensure the veth host-side is registered in OVS.
+	_, exists, err := r.OVS.FindPortByKey(stableKey)
+	if err != nil {
+		return legResult{}, fmt.Errorf("find veth port %q: %w", stableKey, err)
+	}
+	log.Info(
+		"NetAttach: attachment",
+		"key",
+		stableKey,
+		"podSide",
+		podSide,
+		"targetIface",
+		targetIface,
+		"existsInOVS",
+		exists,
+	)
+	if exists {
+		// A port made before the policing setting (or under another value) gets it now; a no-op when it already has it.
+		if err := r.OVS.EnsurePolicing(stableKey); err != nil {
+			log.Error(err, "NetAttach: police veth port", "key", stableKey)
+		}
+	}
+	if !exists {
+		if err := r.OVS.AddVethPortOwned(stableKey, pod.UID); err != nil {
+			return legResult{}, fmt.Errorf("add veth port %q: %w", stableKey, err)
+		}
+		log.Info("NetAttach: created veth pair", "hostSide", stableKey, "podSide", podSide)
+	}
+
+	// Check whether pod-side veth is still in root netns.
+	podSideInRoot := peerInRoot(podSide, !exists)
+	log.Info("NetAttach: pod-side location", "podSide", podSide, "inRootNetns", podSideInRoot)
+
+	if podSideInRoot {
+		if !moveLegIn(log, netnsPath, podSide, targetIface, att.MAC) {
+			return legResult{stop: true, requeue: 2 * time.Second}, nil
+		}
+		return legResult{}, nil
+	}
+	// Pod-side not in root netns — already moved or stale.
+	if CheckInNetNS(netnsPath, targetIface) == nil {
+		// Already in pod netns under correct name — ensure UP.
+		if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
+			log.Error(err, "BringUpInNetNS (steady-state) failed, requeueing", "iface", targetIface)
+			return legResult{stop: true, requeue: 5 * time.Second}, nil
+		}
+		log.Info("NetAttach: already in pod netns, ensured UP", "iface", targetIface)
+		return legResult{}, nil
+	}
+	if CheckInNetNS(netnsPath, podSide) == nil {
+		// Partial: moved to pod netns but not yet renamed.
+		if podSide != targetIface {
+			if err := RenameInNetNS(netnsPath, podSide, targetIface); err != nil {
+				log.Error(
+					err,
+					"RenameInNetNS (recovery) failed, requeueing",
+					"from",
+					podSide,
+					"to",
+					targetIface,
+				)
+				return legResult{stop: true, requeue: 2 * time.Second}, nil
+			}
+			log.Info("NetAttach: recovery rename OK", "from", podSide, "to", targetIface)
+		}
+		if err := BringUpInNetNS(netnsPath, targetIface); err != nil {
+			log.Error(err, "BringUpInNetNS (recovery) failed, requeueing", "iface", targetIface)
+			return legResult{stop: true, requeue: 2 * time.Second}, nil
+		}
+		return legResult{}, nil
+	}
+	// Not in root netns, not in pod netns — stale veth, recreate. A pod that makes this happen again and again (it can delete its
+	// own interface when it has NET_ADMIN) is left alone for a while instead.
+	if ok, wait := r.mayRecreate(string(pod.UID) + "/" + stableKey); !ok {
+		log.Info("NetAttach: the veth of this pod was recreated too often, waiting", "key", stableKey, "wait", wait.String())
+		return legResult{stop: true, requeue: wait, cooldown: true}, nil
+	}
+	return legResult{recreate: true}, nil
 }
 
 // resolveOVSPort returns the stable OVS port key for an attachment.

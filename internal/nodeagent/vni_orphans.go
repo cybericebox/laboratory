@@ -182,6 +182,11 @@ func (r *VNIOrphanReconciler) Sweep(ctx context.Context) (dropped, undecided int
 }
 
 // drop removes the flows of the number under the lock of the pod wiring, after reading the slot again.
+//
+// The reads of the sweep (ledger, flows, the slot of every candidate) are made before and without the lock; the lock is taken only for a
+// number that was judged an orphan, which is rare. The slot is read again under it on purpose: a lease that lands between the verdict
+// and the removal must stop the removal, and the removal races with the wiring of the pods on exactly this lock. That re-read is the
+// check of the plan, so it stays inside; do not move it out.
 func (r *VNIOrphanReconciler) drop(ctx context.Context, v uint) (bool, error) {
 	r.OVS.vethMu.Lock()
 	defer r.OVS.vethMu.Unlock()

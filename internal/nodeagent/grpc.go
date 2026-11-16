@@ -128,22 +128,12 @@ func (s *NodeAgentServer) SetupNetworks(
 		return &nodev1.SetupNetworksResponse{DefaultNetwork: "real"}, nil
 	}
 
-	// The hook gives up when kubelet does (its CNI call is cancelled): kubelet retries, and a stuck hook is not left waiting for good.
-	if err := s.ovs.vethMu.LockCtx(ctx); err != nil {
-		return nil, err
-	}
-	defer s.ovs.vethMu.Unlock()
-	if err := reader.Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
-		return nil, err
-	}
-	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
-		return nil, ErrPortOwnerChanged
-	}
-
-	// Device pod or EDA pod: wire all OVS interfaces synchronously.
+	// Device pod or EDA pod: wire all OVS interfaces synchronously. The node's wiring lock is taken per interface and only for the
+	// mutation; the reads (the owner of a key, the API) are made before it. The hook gives up when kubelet does (its CNI call is
+	// cancelled): kubelet retries, and a stuck hook is not left waiting for good.
 	attachments := ParseNetworkAnnotation(pod.Annotations[names.AnnotationNetworks])
 	log.Info("wiring OVS interfaces synchronously", "count", len(attachments))
-	if err := s.setupOVSAttachments(ctx, req, reader, &pod, attachments); err != nil {
+	if err := s.setupOVSAttachments(ctx, req, reader, k8s, &pod, attachments); err != nil {
 		return nil, err
 	}
 
@@ -240,65 +230,85 @@ func (s *NodeAgentServer) SetK8sReader(r client.Reader) {
 	s.k8sMu.Unlock()
 }
 
-func (s *NodeAgentServer) setupOVSAttachments(ctx context.Context, req *nodev1.SetupNetworksRequest, reader client.Reader, pod *corev1.Pod, attachments []NetAttachment) error {
+func (s *NodeAgentServer) setupOVSAttachments(ctx context.Context, req *nodev1.SetupNetworksRequest, reader client.Reader, cache client.Reader, pod *corev1.Pod, attachments []NetAttachment) error {
+	ownerGuard := &NetworkAttachReconciler{Reader: reader, NodeName: pod.Spec.NodeName, OVS: s.ovs, Flows: s.flows}
 	for _, att := range attachments {
 		stableKey := names.DevicePortKey(req.Namespace, req.Name, att.Iface)
-		podSide := VethPeerName(stableKey)
-		targetIface := att.Iface
 
-		ownerGuard := &NetworkAttachReconciler{Reader: reader, NodeName: pod.Spec.NodeName, OVS: s.ovs, Flows: s.flows}
+		// Reads and the retirement of a dead owner's port first, with no lock held across them.
 		if err := ownerGuard.ensurePodPortOwner(ctx, pod, stableKey); err != nil {
 			return err
 		}
-		created := false
-		if _, exists, err := s.ovs.FindPortByKey(stableKey); err != nil {
-			return fmt.Errorf("find veth port %q: %w", stableKey, err)
-		} else if !exists {
-			if err := s.ovs.AddVethPortOwned(stableKey, pod.UID); err != nil {
-				return fmt.Errorf("add veth port %q: %w", stableKey, err)
-			}
-			created = true
-		}
-
-		podSideInRoot := peerInRoot(podSide, created)
-		if podSideInRoot {
-			if CheckInNetNS(req.NetnsPath, targetIface) == nil {
-				_ = DeleteInNetNS(req.NetnsPath, targetIface)
-			}
-			if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
-				return fmt.Errorf("move %q to netns: %w", podSide, err)
-			}
-			if podSide != targetIface {
-				if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
-					return fmt.Errorf("rename %q → %q: %w", podSide, targetIface, err)
-				}
-			}
-		} else if CheckInNetNS(req.NetnsPath, targetIface) == nil {
-			// Already in pod netns under correct name — idempotent, fall through to BringUp.
-		} else if CheckInNetNS(req.NetnsPath, podSide) == nil {
-			// Moved but not yet renamed.
-			if podSide != targetIface {
-				if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
-					return fmt.Errorf("rename (recovery) %q → %q: %w", podSide, targetIface, err)
-				}
-			}
-		} else {
-			// Not in root netns and not in pod netns — veth lost, recreate.
-			if err := ownerGuard.delVethWithFlowsOwned(stableKey, pod.UID); err != nil {
+		err := s.ovs.withVethLock(ctx, "SetupNetworks", func() error {
+			// The plan: this incarnation wires this key. Re-checked now that the lock is ours (the cache, not the API: the exact
+			// read was made before the lock was asked for).
+			if err := podStillCurrent(ctx, cache, pod); err != nil {
 				return err
 			}
-			return fmt.Errorf("veth %q lost (not in root or pod netns); recreate triggered", stableKey)
+			if err := s.ovs.requireFreeOrOwned(stableKey, pod.UID); err != nil {
+				return err
+			}
+			return s.wireOVSAttachment(req, ownerGuard, pod, stableKey, att)
+		})
+		if err != nil {
+			return err
 		}
-		if att.MAC != "" {
-			if err := SetMACInNetNS(req.NetnsPath, targetIface, att.MAC); err != nil {
-				return fmt.Errorf("set MAC on %q: %w", targetIface, err)
+	}
+	return nil
+}
+
+// wireOVSAttachment is the mutation of one interface; the caller holds the node's wiring lock.
+func (s *NodeAgentServer) wireOVSAttachment(req *nodev1.SetupNetworksRequest, ownerGuard *NetworkAttachReconciler, pod *corev1.Pod, stableKey string, att NetAttachment) error {
+	podSide := VethPeerName(stableKey)
+	targetIface := att.Iface
+	created := false
+	if _, exists, err := s.ovs.FindPortByKey(stableKey); err != nil {
+		return fmt.Errorf("find veth port %q: %w", stableKey, err)
+	} else if !exists {
+		if err := s.ovs.AddVethPortOwned(stableKey, pod.UID); err != nil {
+			return fmt.Errorf("add veth port %q: %w", stableKey, err)
+		}
+		created = true
+	}
+
+	podSideInRoot := peerInRoot(podSide, created)
+	if podSideInRoot {
+		if CheckInNetNS(req.NetnsPath, targetIface) == nil {
+			_ = DeleteInNetNS(req.NetnsPath, targetIface)
+		}
+		if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
+			return fmt.Errorf("move %q to netns: %w", podSide, err)
+		}
+		if podSide != targetIface {
+			if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
+				return fmt.Errorf("rename %q → %q: %w", podSide, targetIface, err)
 			}
 		}
-		if err := BringUpInNetNS(req.NetnsPath, targetIface); err != nil {
-			return fmt.Errorf("bring up %q: %w", targetIface, err)
+	} else if CheckInNetNS(req.NetnsPath, targetIface) == nil {
+		// Already in pod netns under correct name — idempotent, fall through to BringUp.
+	} else if CheckInNetNS(req.NetnsPath, podSide) == nil {
+		// Moved but not yet renamed.
+		if podSide != targetIface {
+			if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
+				return fmt.Errorf("rename (recovery) %q → %q: %w", podSide, targetIface, err)
+			}
 		}
-		// node-agent is L2 only: veth moved in, renamed, MAC set, link up.
-		// IP/route configuration is the device init-container's job.
+	} else {
+		// Not in root netns and not in pod netns — veth lost, recreate.
+		if err := ownerGuard.delVethWithFlowsOwned(stableKey, pod.UID); err != nil {
+			return err
+		}
+		return fmt.Errorf("veth %q lost (not in root or pod netns); recreate triggered", stableKey)
 	}
+	if att.MAC != "" {
+		if err := SetMACInNetNS(req.NetnsPath, targetIface, att.MAC); err != nil {
+			return fmt.Errorf("set MAC on %q: %w", targetIface, err)
+		}
+	}
+	if err := BringUpInNetNS(req.NetnsPath, targetIface); err != nil {
+		return fmt.Errorf("bring up %q: %w", targetIface, err)
+	}
+	// node-agent is L2 only: veth moved in, renamed, MAC set, link up.
+	// IP/route configuration is the device init-container's job.
 	return nil
 }
