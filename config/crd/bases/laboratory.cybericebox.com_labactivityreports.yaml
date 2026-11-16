@@ -1,0 +1,141 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: labactivityreports.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: LabActivityReport
+    listKind: LabActivityReportList
+    plural: labactivityreports
+    shortNames:
+    - lar
+    singular: labactivityreport
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          LabActivityReport is a bounded ring of raw activity facts one writer (the VPN pod, a proxy replica, the operator for the internet egress)
+          keeps in the group namespace until the agent hands them to the platform. It exists only when activity reports are enabled. The facts are
+          handed only to your own platform through the agent API; the laboratory sends nothing anywhere by itself.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LabActivityReportSpec names the writer of a report; nothing
+              here configures behaviour.
+            properties:
+              writer:
+                description: 'Writer is the writing process: "vpn", "egress", or "proxy-<pod>".'
+                type: string
+            type: object
+          status:
+            description: LabActivityReportStatus is the ring of one writer. It keeps
+              at most 1000 events and one hour of them.
+            properties:
+              droppedThrough:
+                description: |-
+                  DroppedThrough is the highest Seq the writer dropped to keep the ring within its bounds (zero: none). A reader whose cursor is below it
+                  has missed events.
+                format: int64
+                type: integer
+              events:
+                items:
+                  description: |-
+                    ActivityEvent is one raw fact of the ring of a LabActivityReport. Seq grows by one per event of a writer; a writer never reuses it. The
+                    fields that do not belong to the Kind are empty. Times are Unix milliseconds. Egress and touch events are deltas of the minute that ends at
+                    AtMs, so a reader sums them.
+                  properties:
+                    atMs:
+                      format: int64
+                      type: integer
+                    bytesDown:
+                      format: int64
+                      type: integer
+                    bytesUp:
+                      format: int64
+                      type: integer
+                    client:
+                      description: Client is the LabGroupClient (touch) or the client
+                        of the console session.
+                      type: string
+                    closedAtMs:
+                      format: int64
+                      type: integer
+                    connections:
+                      format: int64
+                      type: integer
+                    device:
+                      description: Device is the device of a console session.
+                      type: string
+                    dstAddress:
+                      type: string
+                    dstPort:
+                      format: int32
+                      type: integer
+                    firstSeenMs:
+                      format: int64
+                      type: integer
+                    kind:
+                      description: ActivityKind names the fact an ActivityEvent carries.
+                      enum:
+                      - egress
+                      - console
+                      - touch
+                      type: string
+                    labName:
+                      description: LabName is the lab the fact belongs to.
+                      type: string
+                    lastSeenMs:
+                      format: int64
+                      type: integer
+                    openedAtMs:
+                      format: int64
+                      type: integer
+                    protocol:
+                      type: string
+                    seq:
+                      format: int64
+                      type: integer
+                    sessionID:
+                      description: SessionID identifies a console session; the open
+                        and the close event of one session carry the same value.
+                      type: string
+                    sourceAddress:
+                      type: string
+                  required:
+                  - atMs
+                  - kind
+                  - seq
+                  type: object
+                type: array
+              updatedMs:
+                description: UpdatedMs is the last write of the writer.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

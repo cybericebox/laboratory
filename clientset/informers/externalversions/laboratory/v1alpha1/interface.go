@@ -29,6 +29,8 @@ type Interface interface {
 	Devices() TypedDeviceInformer
 	// Labs returns a LabInformer.
 	Labs() TypedLabInformer
+	// LabActivityReports returns a LabActivityReportInformer.
+	LabActivityReports() TypedLabActivityReportInformer
 	// LabGateways returns a LabGatewayInformer.
 	LabGateways() TypedLabGatewayInformer
 	// LabGroups returns a LabGroupInformer.
@@ -73,6 +75,11 @@ func (v *version) Devices() TypedDeviceInformer {
 // Labs returns a TypedLabInformer.
 func (v *version) Labs() TypedLabInformer {
 	return &labInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// LabActivityReports returns a TypedLabActivityReportInformer.
+func (v *version) LabActivityReports() TypedLabActivityReportInformer {
+	return &labActivityReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // LabGateways returns a TypedLabGatewayInformer.
