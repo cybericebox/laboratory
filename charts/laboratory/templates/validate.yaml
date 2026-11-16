@@ -208,6 +208,9 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.restartThreshold) 1 }}
 {{- fail "scheduler.restartThreshold must be at least 1" }}
 {{- end }}
+{{- if dig "cache" "credentialsSecret" "" .Values.registry }}
+{{- fail "registry.cache.credentialsSecret was removed: the gate proves every pull with the credentials of the pull itself (the lab's pull secret). For rate-limit relief on public images set registry.cache.anonymousFill (a dockerconfigjson Secret). See DEPLOY.md, \"The registry gate\"." }}
+{{- end }}
 {{- if include "laboratory.registryEnabled" . }}
 {{- if not .Values.nodeAgent.enabled }}
 {{- fail "the platform registry (installed because the image cache, state persistence or platform images is on) needs nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}

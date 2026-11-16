@@ -273,23 +273,8 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	var zotCfg corev1.ConfigMap
 	render(t, "templates/registry/configmap.yaml", &zotCfg, cache...)
 	var zc struct {
-		Extensions struct {
-			Sync struct {
-				Enable          bool   `json:"enable"`
-				CredentialsFile string `json:"credentialsFile"`
-				Registries      []struct {
-					URLs           []string `json:"urls"`
-					OnDemand       bool     `json:"onDemand"`
-					PreserveDigest bool     `json:"preserveDigest"`
-					Content        []struct {
-						Prefix      string `json:"prefix"`
-						Destination string `json:"destination"`
-						StripPrefix bool   `json:"stripPrefix"`
-					} `json:"content"`
-				} `json:"registries"`
-			} `json:"sync"`
-		} `json:"extensions"`
-		HTTP struct {
+		Extensions map[string]any `json:"extensions"`
+		HTTP       struct {
 			Compat []string `json:"compat"`
 		} `json:"http"`
 		Storage struct {
@@ -306,17 +291,22 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	if err := json.Unmarshal([]byte(zotCfg.Data["config.json"]), &zc); err != nil {
 		t.Fatal(err)
 	}
-	sync := zc.Extensions.Sync
-	if !sync.Enable || sync.CredentialsFile != "/etc/zot-sync/credentials.json" || len(sync.Registries) != 4 {
-		t.Fatalf("sync %+v", sync)
+	// zot only stores: the fill and the check of every pull are the gate's, so zot has no sync (no upstream list, no credentials file)
+	if _, hasSync := zc.Extensions["sync"]; hasSync {
+		t.Fatalf("zot runs no sync extension: %v", zc.Extensions)
 	}
-	want := map[string]string{"/docker.io": "https://registry-1.docker.io", "/ghcr.io": "https://ghcr.io", "/quay.io": "https://quay.io", "/registry.k8s.io": "https://registry.k8s.io"}
-	for _, r := range sync.Registries {
-		c := r.Content[0]
-		if !r.PreserveDigest || !r.OnDemand || c.Prefix != "**" || c.StripPrefix || want[c.Destination] != r.URLs[0] {
+	var gateCfg corev1.ConfigMap
+	render(t, "templates/registry/gate-configmap.yaml", &gateCfg, cache...)
+	var list []struct{ Name, URL string }
+	if err := json.Unmarshal([]byte(gateCfg.Data["registries.json"]), &list); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"docker.io": "https://registry-1.docker.io", "ghcr.io": "https://ghcr.io", "quay.io": "https://quay.io", "registry.k8s.io": "https://registry.k8s.io"}
+	for _, r := range list {
+		if want[r.Name] != r.URL {
 			t.Errorf("registry entry %+v", r)
 		}
-		delete(want, c.Destination)
+		delete(want, r.Name)
 	}
 	if len(want) != 0 {
 		t.Errorf("missing upstreams %v", want)
@@ -326,7 +316,7 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 		t.Errorf("http.compat must allow docker2s2 manifests: %v", zc.HTTP.Compat)
 	}
 	pol := zc.Storage.Retention.Policies[0]
-	if pol.KeepTags[0].PulledWithin != "48h" || len(pol.Repositories) != 4 || pol.Repositories[0] != "docker.io/**" {
+	if pol.KeepTags[0].PulledWithin != "48h" || len(pol.Repositories) != 1 || pol.Repositories[0] != "c/**" {
 		t.Errorf("retention %+v", pol)
 	}
 
@@ -336,12 +326,6 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	if dep.Spec.Template.Spec.Containers[0].Image != "ghcr.io/project-zot/zot:v2.1.21" {
 		t.Errorf("the cache needs the full zot image, got %s", dep.Spec.Template.Spec.Containers[0].Image)
 	}
-	var sec corev1.Secret
-	render(t, "templates/registry/sync-secret.yaml", &sec, cache...)
-	if sec.StringData["credentials.json"] != "{}" {
-		t.Errorf("no pull secrets, no upstream credentials: %q", sec.StringData["credentials.json"])
-	}
-
 	var opCfg corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &opCfg, cache...)
 	if opCfg.Data["IMAGE_CACHE_PIN_TTL"] != "30m" || opCfg.Data["IMAGE_CACHE_ENABLED"] != "true" || opCfg.Data["IMAGE_CACHE_PREFIX"] != "" ||
@@ -367,13 +351,13 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	}
 }
 
-func TestImageCacheCustomRegistriesAndCredentialsSecret(t *testing.T) {
+func TestImageCacheCustomRegistriesAndAnonymousFill(t *testing.T) {
 	extra := []string{
 		"--set", "registry.cache.enabled=true",
 		"--set", "registry.cache.registries={docker.io}",
 		"--set", "registry.cache.extraRegistries[0].name=registry.example.com",
 		"--set", "registry.cache.extraRegistries[0].url=https://registry.example.com",
-		"--set", "registry.cache.credentialsSecret=my-sync-creds",
+		"--set", "registry.cache.anonymousFill=my-fill-login",
 		"--set", "registry.cache.unusedTTL=12h",
 		"--set", "registry.cache.pinTTL=5m",
 	}
@@ -391,15 +375,19 @@ func TestImageCacheCustomRegistriesAndCredentialsSecret(t *testing.T) {
 	render(t, "templates/registry/deployment.yaml", &dep, extra...)
 	found := false
 	for _, v := range dep.Spec.Template.Spec.Volumes {
-		if v.Name == "sync-credentials" && v.Secret.SecretName == "my-sync-creds" {
+		if v.Name == "gate-anonymous-fill" && v.Secret.SecretName == "my-fill-login" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("an own credentials Secret must be mounted")
+		t.Errorf("the anonymous-fill login must be mounted into the gate")
 	}
-	if out, err := helmTemplate(t, append(extra, "-s", "templates/registry/sync-secret.yaml")...); err == nil && strings.Contains(out, "kind: Secret") {
-		t.Errorf("no generated credentials Secret with credentialsSecret set:\n%s", out)
+	gate := containerNamed(dep.Spec.Template.Spec, "gate")
+	if envOf(*gate)["GATE_ANONYMOUS_FILL_FILE"].Value == "" {
+		t.Errorf("the gate is told where the login is")
+	}
+	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "--set", "registry.cache.credentialsSecret=old"); err == nil || !strings.Contains(out, "credentialsSecret was removed") {
+		t.Errorf("the old value is refused loudly: %v\n%s", err, out)
 	}
 	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "--set", "registry.cache.registries={nope.io}"); err == nil {
 		t.Errorf("an unknown built-in registry must be refused:\n%s", out)
