@@ -70,7 +70,9 @@ kubectl -n "$NS" rollout status deploy/upstream-pub deploy/upstream-priv --timeo
 kubectl -n "$NS" port-forward svc/upstream-pub 15101:5000 >/dev/null 2>&1 &
 kubectl -n "$NS" port-forward svc/upstream-priv 15102:5000 >/dev/null 2>&1 &
 sleep 3
-DIGESTS=$(go run ./hack/registry-gate-e2e/seed --pub localhost:15101 --priv localhost:15102 --user alice --pass pw) || exit 2
+goarch=$(go env GOARCH)
+GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$OUT/sleeper" ./hack/registry-gate-p0/sleeper || exit 2
+DIGESTS=$(go run ./hack/registry-gate-e2e/seed --sleeper "$OUT/sleeper" --arch "$goarch" --pub localhost:15101 --priv localhost:15102 --user alice --pass pw) || exit 2
 PUB=$(jq -r .pub <<<"$DIGESTS")
 PRIV=$(jq -r .priv <<<"$DIGESTS")
 say "pub $PUB priv $PRIV"
