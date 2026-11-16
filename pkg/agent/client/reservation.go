@@ -67,6 +67,21 @@ const (
 // Not retryable until the cluster is repaired.
 const ReasonPersistenceUnavailable = "PERSISTENCE_UNAVAILABLE"
 
+// Reasons of a FAILED item for the feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled,
+// proxy.enabled and its accesses, checks.enabled; contract 2.8). Not retryable: the laboratory does not serve it.
+const (
+	// ReasonVPNUnavailable: the lab has a VPN gateway, or a LabGroupClient / LabGroupAccessPolicy / a group's VPN
+	// switch is asked for, and this laboratory runs no VPN.
+	ReasonVPNUnavailable = "VPN_UNAVAILABLE"
+	// ReasonInternetUnavailable: the lab has an Internet gateway, or a group's internet switch is asked for, and this
+	// laboratory has no internet gateway.
+	ReasonInternetUnavailable = "INTERNET_UNAVAILABLE"
+	// ReasonAccessUnavailable: a device asks for an access (http, terminal, rdp, vnc) this laboratory does not serve.
+	ReasonAccessUnavailable = "ACCESS_UNAVAILABLE"
+	// ReasonChecksUnavailable: the lab has checks and this laboratory runs no lab checker.
+	ReasonChecksUnavailable = "CHECKS_UNAVAILABLE"
+)
+
 // Reasons of a FAILED item for the switches of a LabGroup's servers (LabGroupItem.vpn_enabled,
 // internet_enabled; contract 2.7).
 const (

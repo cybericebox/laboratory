@@ -15,7 +15,7 @@ demux forwards to the group's VPN pod). The namespaces are dynamic, but the oper
 laboratory.cybericebox.com/group (internal/names/labels.go:LabelGroup), which Cilium folds into every endpoint identity as
 k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group. Everything else is denied.
 */}}
-{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled .Values.proxy.networkPolicy.enabled (not (include "laboratory.wgHostNetwork" .)) }}
+{{- if and (include "laboratory.wgEnabled" .) .Values.proxy.networkPolicy.enabled (not (include "laboratory.wgHostNetwork" .)) }}
 {{- $wgPort := include "laboratory.wgPort" . | int }}
 {{- $healthPort := include "laboratory.wgHealthPort" . | int }}
 {{- $metricsPort := include "laboratory.wgMetricsPort" . | int }}

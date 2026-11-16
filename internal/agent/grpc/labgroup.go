@@ -69,7 +69,7 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 	for i, it := range items {
 		ids[i] = it.GetReservationId()
 		lg := &laboratoryv1alpha1.LabGroup{}
-		lg.Spec.VPN.Enabled, lg.Spec.Gateway.Enabled = switchesOf(it)
+		lg.Spec.VPN.Enabled, lg.Spec.Gateway.Enabled, _ = h.clusterSwitchesOf(it)
 		lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
 		fit[i] = fitItem{reservation: it.GetReservationId(), need: h.groupNeedOf(lg), deployGroup: names.DeployKey(it.GetDeployGroup())}
 		if _, err := h.getGroup(ctx, it.GetName()); err == nil {
@@ -105,7 +105,10 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
 	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	lg.Spec.Suspended = it.GetSuspended()
-	lg.Spec.VPN.Enabled, lg.Spec.Gateway.Enabled = switchesOf(it)
+	var refused error
+	if lg.Spec.VPN.Enabled, lg.Spec.Gateway.Enabled, refused = h.clusterSwitchesOf(it); refused != nil {
+		return failedResult(ref, refused)
+	}
 	lg.Spec.VPN.Disabled = !*lg.Spec.VPN.Enabled // the old switch says the same, for whatever still reads it
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
 	lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
@@ -369,6 +372,9 @@ func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p g
 			}
 		}
 		set(&cur.Spec.Suspended, p.suspended)
+		if c := h.cluster(); (p.vpnEnabled != nil && *p.vpnEnabled && !c.VPN) || (p.internetEnabled != nil && *p.internetEnabled && !c.Internet) {
+			return h.switchOnRefusal(p)
+		}
 		if p.vpnEnabled != nil && cur.VPNEnabled() != *p.vpnEnabled {
 			if !*p.vpnEnabled {
 				if err := h.refuseServerInUse(ctx, cur, kindServerVPN); err != nil {
@@ -535,6 +541,36 @@ func switchesOf(it *protobuf.LabGroupItem) (vpn, internet *bool) {
 		v, i = it.VpnEnabled != nil && *it.VpnEnabled, it.InternetEnabled != nil && *it.InternetEnabled
 	}
 	return &v, &i
+}
+
+// clusterSwitchesOf is switchesOf under what the laboratory serves: a server the laboratory does not run is off, and asking for it
+// explicitly is refused (VPN_UNAVAILABLE, INTERNET_UNAVAILABLE); an item in the old shape just gets it off.
+func (h *Handler) clusterSwitchesOf(it *protobuf.LabGroupItem) (vpn, internet *bool, err error) {
+	vpn, internet = switchesOf(it)
+	c := h.cluster()
+	off := false
+	if !c.VPN {
+		if it.VpnEnabled != nil && *it.VpnEnabled {
+			return nil, nil, refusal(client.ReasonVPNUnavailable, "this laboratory runs no VPN (vpn.enabled is off): the group's VPN cannot be turned on")
+		}
+		vpn = &off
+	}
+	if !c.Internet {
+		if it.InternetEnabled != nil && *it.InternetEnabled {
+			return nil, nil, refusal(client.ReasonInternetUnavailable, "this laboratory has no internet gateway (inetGateway.enabled is off): the group's internet cannot be turned on")
+		}
+		off2 := false
+		internet = &off2
+	}
+	return vpn, internet, nil
+}
+
+// switchOnRefusal is the refusal of an update that turns on a server the laboratory does not run.
+func (h *Handler) switchOnRefusal(p groupPlan) error {
+	if p.vpnEnabled != nil && *p.vpnEnabled && !h.cluster().VPN {
+		return refusal(client.ReasonVPNUnavailable, "this laboratory runs no VPN (vpn.enabled is off): the group's VPN cannot be turned on")
+	}
+	return refusal(client.ReasonInternetUnavailable, "this laboratory has no internet gateway (inetGateway.enabled is off): the group's internet cannot be turned on")
 }
 
 // groupSwitches validates the switches of an item and returns them.

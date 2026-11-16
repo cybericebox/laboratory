@@ -83,6 +83,9 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	if currentGroup.Annotations[names.AnnotationLifecycleRetirement] != "" {
 		return failedResult(ref, fmt.Errorf("retired group cannot create clients")), nil
 	}
+	if !h.cluster().VPN {
+		return failedResult(ref, refusal(client.ReasonVPNUnavailable, "this laboratory runs no VPN (vpn.enabled is off): a client has no server to connect to")), nil
+	}
 	if !currentGroup.VPNEnabled() {
 		return failedResult(ref, refusal(client.ReasonGroupVPNOff, "the VPN of group %s is off: a client has no server to connect to; turn it on (vpn_enabled) first", it.GetLabGroup())), nil
 	}

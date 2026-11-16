@@ -200,6 +200,43 @@ A LabGroup runs two servers of its own: the **VPN server** (WireGuard for the cl
 - **A group's VPN server and internet gateway run only while their switches are on** (`LabGroup.spec.vpn.enabled`, `spec.gateway.enabled`, see above). Existing groups keep what they have (an absent switch is on; a disabled VPN stays off) and the VPN pod of a disabled group, which was a Deployment at zero replicas, is now deleted. A caller that sends neither switch (the daemon of today) still gets the old shape; a caller that sends either gets the explicit meaning (the other off).
 - **The registry (zot) is installed only when `registry.cache.enabled`, `devices.statePersistence.enabled` or `registry.platform.enabled` is on.** An install that had none of them on loses the zot Deployment, Service, ConfigMap, Secret and network policy on upgrade; the volume claim stays (`helm.sh/resource-policy: keep`). The node-agent stops the `127.0.0.1:5035` relay, the agent and the operator lose their registry settings.
 
+### Feature switches of the laboratory
+
+What a laboratory serves is set in the chart, once for the whole cluster. A lab (or a client, or a policy) that needs something that is off is **refused with a stable reason**, at three layers that say the same thing:
+
+1. **The API server** (`ValidatingAdmissionPolicy` `laboratory-feature-lab`, `-group`, `-vpn-objects`, rendered by `templates/operator/feature-policy.yaml`). The real guard: it works with no agent and no operator running, also for `kubectl apply`. A rule is rendered only for a switch that is off, and it denies CREATE, and UPDATE that changes `spec`. An update that does not touch `spec` (a finalizer, a label) and a delete are never refused, so what was made before a switch went off can still be cleaned up.
+2. **The management agent**: `GetFeatures` reports the truth (`vpn.enabled`, `internet.enabled`, `access.http/terminal/rdp/vnc`, `checks.enabled`, contract 2.8) and `CreateLabs`, `CreateLabGroupClients`, `SetLabGroupAccess`, `CreateLabGroups`, `UpdateLabGroups` refuse early, with the same reason in `ItemResult.reason`. This unloads the operator and the API server.
+3. **The operator**: a Lab or a LabGroupClient that got through (made before the switch, or with the policy deleted) becomes `Failed` / `Ready=false` with the reason in the message and a `ValidationFailed` event.
+
+| Chart value | Default | Off means | Reason (stable) |
+|---|---|---|---|
+| `vpn.enabled` | on | no WireGuard demultiplexer (`templates/wg`), no VPN pod in any group. Refused: a Lab with a VPN gateway, a `LabGroupClient`, a `LabGroupAccessPolicy` (only when the L7 proxy is off too, because the proxy reads it), `LabGroup.spec.vpn.enabled=true` | `VPN_UNAVAILABLE` |
+| `inetGateway.enabled` | on | no internet gateway pod in any group. Refused: a Lab with an Internet gateway, `LabGroup.spec.gateway.enabled=true` | `INTERNET_UNAVAILABLE` |
+| `proxy.enabled` + `proxy.l7.enabled` | on | no L7 proxy at all. Refused: every device access (http, terminal, rdp, vnc). HTTP(S) is served whenever the proxy is on | `ACCESS_UNAVAILABLE` |
+| `terminal.enabled` | off | the console: no device access DaemonSet, no console route. Refused: a `terminal` access | `ACCESS_UNAVAILABLE` |
+| `proxy.rdp.enabled`, `proxy.vnc.enabled` | off | not served (the chart refuses to render them on without the L7 proxy). Refused: an `rdp` / `vnc` access | `ACCESS_UNAVAILABLE` |
+| `checks.enabled` | off | no checker DaemonSet. Refused: a Lab with `spec.checks` | `CHECKS_UNAVAILABLE` |
+| `scheduler.enabled` | on | every pod starts as soon as it exists. Not a refusal: nothing is asked of it by a user object | - |
+
+The device access service (`terminal.enabled`) and the checker (`checks.enabled`) stay two separate DaemonSets. The VPN switch is independent of the proxy: `proxy.enabled=false` does not take the WireGuard demultiplexer away (`vpn.enabled` owns it).
+
+**The switches of a group** (`spec.vpn.enabled`, `spec.gateway.enabled`) are checked by the same policies. The operator copies them onto the group's namespace as the labels `laboratory.cybericebox.com/vpn-enabled` and `/internet-enabled` (`"true"` / `"false"`); the policy reads `namespaceObject`, and only the operator may set these labels (`laboratory-group-namespace-label`). A namespace without the labels (a group made before them, or one not made by the operator) is not checked at the API server; the agent and the operator still check. Reasons: `GROUP_VPN_OFF`, `GROUP_INTERNET_OFF`.
+
+**Which CRD is guarded by what** (audit: `docs/research/2026-11-16-lab-crd-audit.md` in the project root):
+
+| CRD | Needs | API server (policy) | Agent | Operator |
+|---|---|---|---|---|
+| `Lab` | VPN, internet, proxy accesses, checks | yes (cluster and group switches) | yes | yes (`validateGateways`) |
+| `LabGroup` | VPN, internet (switches on) | yes (cluster switches) | yes | pod is not made when off |
+| `LabGroupClient` | VPN | yes (cluster and group) | yes | yes (`Ready=false`, event) |
+| `LabGroupAccessPolicy` | VPN or the L7 proxy | yes (both off) | yes | no controller to refuse; not enforced by a missing consumer |
+| `LabVPN`, `LabGateway`, `Device`, `Connection`, `Pool`, `ImagePull`, `LabTrafficReport`, `LabActivityReport` | made by our components after the user object was admitted | not guarded (a check here would only risk the teardown) | - | not created when the feature is off |
+| `Reservation`, `Tenant`, `MaintenanceWindow` | core | - | - | - |
+
+**What the daemon must read** (contract 2.8, additive): `GetFeatures.vpn.enabled`, `internet.enabled`, `access.rdp`, `access.vnc`; the reasons `VPN_UNAVAILABLE`, `INTERNET_UNAVAILABLE`, `ACCESS_UNAVAILABLE`, `CHECKS_UNAVAILABLE` of `CreateLabs`, `CreateLabGroupClients`, `SetLabGroupAccess`, `CreateLabGroups` and `UpdateLabGroups` are a planning error, not a retry. A `CreateLabGroups` item in the old shape (neither switch) on a laboratory without a VPN or without an internet gateway is not refused: it gets those servers off.
+
+**Upgrade note.** Turning a switch off on a running laboratory removes the component. Objects that already exist keep their `spec` and can be deleted and have metadata changed, but a change of the `spec` of a Lab that needs the feature is refused, and a group that has the server on stays as it is (only turning it on is refused). Turn the group switches off first (the agent refuses while a lab uses the server), then the chart switch.
+
 ---
 
 ## 5. Use

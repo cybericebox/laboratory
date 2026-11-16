@@ -16,6 +16,11 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+	// LabelGroupVPN and LabelGroupInternet are the switches of a LabGroup's servers (spec.vpn.enabled, spec.gateway.enabled), copied by the
+	// operator onto the group's namespace as "true" or "false": the admission policies read them there (a policy cannot read the LabGroup).
+	// Only the operator may set them (policy laboratory-group-namespace-label).
+	LabelGroupVPN      = "laboratory.cybericebox.com/vpn-enabled"
+	LabelGroupInternet = "laboratory.cybericebox.com/internet-enabled"
 	// LabelLabUID and LabelDeviceUID mark the pod of a device with the UIDs of its Lab and its Device. The node-agent reads them
 	// from the runtime to attribute containers; they replace the environment variables the containers used to carry (a participant
 	// sees the environment, never the labels).

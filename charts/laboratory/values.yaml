@@ -295,6 +295,11 @@ labScheduler:
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
+  # The VPN of the whole laboratory. Off: no WireGuard demultiplexer, no VPN pod in any group, and everything that needs a VPN is refused
+  # with a reason: a lab with a VPN gateway, a LabGroupClient, a LabGroupAccessPolicy, and turning a group's VPN switch on
+  # (spec.vpn.enabled). The refusal is made by the API server itself (admission policies rendered by this chart), by the management agent
+  # (GetFeatures reports it) and, for anything that slips through, by the operator. On by default.
+  enabled: true
   # How the VPN pod forwards between the participants and the labs. iptables: the relation chains with connection tracking. nft: nftables sets
   # without connection tracking for the labs that may start connections towards participants (reverseConnections of a VPN gateway); the other labs, the
   # default, are tracked, because only conntrack tells a reply from a new connection (a pair is allowed in both directions at once, statelessly, in an open lab; one lookup per packet whatever the number of pairs;
@@ -337,6 +342,10 @@ vpn:
 # Gateway pod image (created at runtime by operator per LabGroup)
 # ============================================================
 inetGateway:
+  # The internet access of the whole laboratory. Off: no internet gateway pod in any group, and a lab with an Internet gateway, and turning
+  # a group's internet switch on (spec.gateway.enabled), are refused with a reason (API server, agent and operator, as for vpn.enabled).
+  # On by default.
+  enabled: true
   # What one lab may do towards the outside through the gateway (its /24): the most connections held open, the most NEW connections in a
   # second. Only a NEW connection is looked at, after the established traffic has passed; 0 = no limit. Applied to the gateway pods created
   # after the change (a pod that exists would be restarted by a change of its environment).
@@ -423,7 +432,17 @@ internetEgress:
 # Proxy: the L7 proxy (unprivileged Deployment or DaemonSet) and the WireGuard demux (its own DaemonSet, namespace laboratory-wg)
 # ============================================================
 proxy:
+  # The master switch of the L7 proxy. Off: no L7 proxy at all, and every access that goes through it is refused with a reason: a device
+  # with an http, terminal, rdp or vnc access (HTTP and HTTPS are served whenever the proxy is on). Under it, separately: terminal.enabled
+  # (the console and its device access service), rdp.enabled and vnc.enabled below. The WireGuard demultiplexer does not depend on it (see
+  # vpn.enabled and proxy.wg.enabled).
   enabled: true
+  # RDP and VNC accesses of devices: nothing serves them yet, so a device that asks for one is refused (reason ACCESS_UNAVAILABLE) until the
+  # proxy does. They need the L7 proxy.
+  rdp:
+    enabled: false
+  vnc:
+    enabled: false
 
   # Kubernetes namespace for the L7 proxy Deployment/Service/ServiceAccount/NetworkPolicy
   # and its own dedicated Namespace object. The demux lives in the fixed namespace

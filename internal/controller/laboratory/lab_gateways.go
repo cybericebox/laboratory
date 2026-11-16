@@ -55,6 +55,12 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 	if refusal = r.validateGateways(lab); refusal != nil {
 		return refusal, false, nil
 	}
+	// what the laboratory does not serve at all (the API server's admission policies and the agent refuse the same; this catches the rest)
+	if r.Switches != nil {
+		if rf := r.Switches.Refuse(&lab.Spec); rf != nil {
+			return fmt.Errorf("%s: %s", rf.Reason, rf.Text), false, nil
+		}
+	}
 	off, err := r.groupServerOff(ctx, lab)
 	return off, off != nil, err
 }

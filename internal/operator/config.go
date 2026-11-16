@@ -15,6 +15,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
+	"github.com/cybericebox/laboratory/internal/switches"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -40,6 +41,13 @@ type Config struct {
 	// operator itself reads the same variable for the egress facts).
 	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// The feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled, proxy.enabled with proxy.rdp.enabled and
+	// proxy.vnc.enabled): what a Lab may ask for. The VPN and the internet are on by default, RDP and VNC are not (nothing serves them).
+	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
+	InternetEnabled bool `env:"INTERNET_ENABLED" envDefault:"true"`
+	ProxyL7Enabled  bool `env:"PROXY_L7_ENABLED" envDefault:"true"`
+	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"false"`
+	ProxyVNCEnabled bool `env:"PROXY_VNC_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).
 	GatewayMaxConnectionsPerLab          int `env:"GATEWAY_MAX_CONNECTIONS_PER_LAB" envDefault:"0"`
@@ -544,4 +552,9 @@ func validateThroughput(cfg *Config) error {
 		return fmt.Errorf("IMAGE_CACHE_PIN_CONCURRENCY must be between 1 and 64 (got %d)", cfg.Cache.PinConcurrency)
 	}
 	return nil
+}
+
+// Switches is what the laboratory serves, from the chart: the rule that says what a Lab may ask for (package switches).
+func (c *Config) Switches() switches.Cluster {
+	return switches.Cluster{VPN: c.VPNEnabled, Internet: c.InternetEnabled, L7: c.ProxyL7Enabled, Terminal: c.TerminalEnabled, RDP: c.ProxyRDPEnabled, VNC: c.ProxyVNCEnabled, Checks: c.ChecksEnabled}
 }

@@ -1,4 +1,4 @@
-{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+{{- if include "laboratory.wgEnabled" . }}
 {{- /*
 The demux reads its own Service (the entry address and node port the clients' handshakes arrive at) in its namespace only, and publishes
 its aggregated errors as Events in the release namespace only (the error journal).

@@ -38,6 +38,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
+	"github.com/cybericebox/laboratory/internal/switches"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
@@ -68,6 +69,9 @@ type LabReconciler struct {
 	LabBaseNetwork string
 	// MaxLabGateways is the most gateways one lab may have (0 = 10). The agent refuses more at creation; this is the second check.
 	MaxLabGateways int
+	// Switches is what the laboratory serves (the chart's vpn.enabled, inetGateway.enabled, proxy.enabled and its accesses, checks.enabled):
+	// a Lab that asks for what is off is refused (Failed, ValidationFailed) whoever made it. Nil: nothing is checked.
+	Switches *switches.Cluster
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would hand out a device code twice.
 	Reader client.Reader

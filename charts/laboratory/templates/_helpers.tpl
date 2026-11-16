@@ -192,7 +192,7 @@ RESERVATION_ENDING_NOTICE_SECONDS: {{ .Values.reservations.endingNoticeSeconds |
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
 {{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}
-WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (and .Values.proxy.enabled .Values.proxy.wg.enabled) | quote }}
+WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (ne (include "laboratory.wgEnabled" .) "") | quote }}
 IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
 LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
@@ -264,6 +264,12 @@ CONNECTION_RECONCILE_WORKERS: {{ .Values.operator.workers.connection | quote }}
 API_QPS: {{ .Values.operator.api.qps | quote }}
 API_BURST: {{ .Values.operator.api.burst | quote }}
 MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
+{{- /* The feature switches of the laboratory: what the operator and the agent refuse when it is off (see "Feature switches" in DEPLOY.md). */}}
+VPN_ENABLED: {{ .Values.vpn.enabled | quote }}
+INTERNET_ENABLED: {{ .Values.inetGateway.enabled | quote }}
+PROXY_L7_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled | quote }}
+PROXY_RDP_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.rdp.enabled | quote }}
+PROXY_VNC_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.vnc.enabled | quote }}
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
 ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
 TERMINAL_MAX_LIFETIME: {{ .Values.terminal.limits.maxLifetime | quote }}
@@ -282,6 +288,14 @@ IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
 IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
 IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
 IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
+{{- end }}
+
+{{/*
+Non-empty when the WireGuard demultiplexer is deployed: the VPN of the laboratory (vpn.enabled) and its demux (proxy.wg.enabled). It does not
+depend on the L7 proxy (proxy.enabled).
+*/}}
+{{- define "laboratory.wgEnabled" -}}
+{{- if and .Values.vpn.enabled .Values.proxy.wg.enabled -}}true{{- end -}}
 {{- end }}
 
 {{/*

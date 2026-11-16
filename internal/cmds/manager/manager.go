@@ -60,6 +60,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/admissioncheck"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/operator"
@@ -301,12 +302,14 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
 	}
+	clusterSwitches := cfg.Switches()
 	if err = (&laboratorycontroller.LabGroupClientReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
 		Reader:         mgr.GetAPIReader(),
 		LabBaseNetwork: cfg.LabBaseNetwork,
+		Switches:       &clusterSwitches,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
@@ -327,8 +330,10 @@ func Run() {
 		setupLog.Error(err, "unable to add the VNI retirer")
 		os.Exit(1)
 	}
+	grouppods.SetCluster(cfg.VPNEnabled, cfg.InternetEnabled)
 	if err = (&laboratorycontroller.LabReconciler{
 		Workers:                   cfg.LabWorkers,
+		Switches:                  &clusterSwitches,
 		CheckerEnabled:            cfg.ChecksEnabled,
 		VNI:                       vniRetirer,
 		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
