@@ -130,6 +130,34 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		Expect(op.Create(ctx, hardenedPod("vpn-like", "adm-users"))).To(Succeed())
 	})
 
+	It("refuses a pod whose image is from a registry that is not allowed (registry.allowedRegistries)", func() {
+		groupNamespace("adm-registry")
+		image := func(name, img string) *corev1.Pod {
+			p := hardenedPod(name, "adm-registry")
+			p.Spec.Containers[0].Image = img
+			return p
+		}
+		for i, img := range []string{"nginx", "acme/web:1", "docker.io/library/nginx@sha256:" + strings.Repeat("a", 64), "index.docker.io/library/nginx",
+			"GHCR.io/acme/web:1", "quay.io/acme/web", "registry.k8s.io/pause:3.9", "localhost:5035/c/ghcr.io/acme/web:1", "localhost:5035/platform/tool@sha256:" + strings.Repeat("b", 64)} {
+			Expect(op.Create(ctx, image(fmt.Sprintf("img-ok-%d", i), img))).To(Succeed(), img)
+		}
+		for i, img := range []string{"gcr.io/acme/web", "mcr.microsoft.com/windows", "registry.example.com:5000/x", "localhost/x", "localhost:5036/x", "ghcr.io.evil.example/x"} {
+			err := op.Create(ctx, image(fmt.Sprintf("img-bad-%d", i), img))
+			denied(err)
+			Expect(err.Error()).To(ContainSubstring("REGISTRY_NOT_ALLOWED"), img)
+		}
+		// an init container counts too
+		withInit := image("img-init", "nginx")
+		withInit.Spec.InitContainers = []corev1.Container{*withInit.Spec.Containers[0].DeepCopy()}
+		withInit.Spec.InitContainers[0].Name, withInit.Spec.InitContainers[0].Image = "init", "gcr.io/acme/init"
+		denied(op.Create(ctx, withInit))
+		// the labels of a running pod can still be patched whatever its image is
+		var running corev1.Pod
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: "adm-registry", Name: "img-ok-0"}, &running)).To(Succeed())
+		running.Labels = map[string]string{"touched": "yes"}
+		Expect(op.Update(ctx, &running)).To(Succeed())
+	})
+
 	It("lets the operator create the namespace of a LabGroup and write in it", func() {
 		groupNamespace("adm-group")
 		Expect(op.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "adm-group"}})).To(Succeed())

@@ -238,6 +238,17 @@ The device access service (`terminal.enabled`) and the checker (`checks.enabled`
 
 **Upgrade note.** Turning a switch off on a running laboratory removes the component. Objects that already exist keep their `spec` and can be deleted and have metadata changed, but a change of the `spec` of a Lab that needs the feature is refused, and a group that has the server on stays as it is (only turning it on is refused). Turn the group switches off first (the agent refuses while a lab uses the server), then the chart switch.
 
+### Allowed registries
+
+`registry.allowedRegistries` is the list of registries lab images may come from. It is separate from the image cache and applies whether the cache is on or off. The default is the four registries the cache knows (`docker.io`, `ghcr.io`, `quay.io`, `registry.k8s.io`). That is a change for an install that ran images from other registries (gcr.io, mcr.microsoft.com, a private one): add the registry to the list before the upgrade, or put `"*"` there to allow every registry (the list then checks nothing). An image that names no registry is `docker.io`; the Docker Hub spellings (`index.docker.io`, ...) are `docker.io`; a host with a port (`registry.example.com:5000`) is a registry of its own. The registries of the platform's own images (`vpn.image`, `inetGateway.image`, `nodeAgent.image`: the VPN, gateway and netconfig/probe pods) are added by the chart, so the list cannot lock the platform out.
+
+Three layers, as for the feature switches:
+1. **The management agent** refuses `CreateLabs` and `PrewarmImages` for an image from another registry: `PermissionDenied`, `ErrorInfo` reason `REGISTRY_NOT_ALLOWED` (`client.IsRegistryNotAllowed`), the message names the variant, the device, the image and its registry. A tenant's own `images.allow` can only narrow the list, never widen it. `GetFeatures.allowed_registries` reports it (`any` true for `"*"`, otherwise the canonical hosts, the platform's own included). Platform references (`platform:<name>@sha256:...`) are not looked at.
+2. **The operator** fails a Lab made by hand whose device image is from another registry (`Failed`, message `REGISTRY_NOT_ALLOWED: device "web": ...`, `ValidationFailed` event). An image of the node's forwarder (`localhost:5035/...`: the cache, the platform registry, snapshots) is not looked at.
+3. **The API server**: the policy `laboratory-operator-pods` denies a pod the operator creates (a device, the VPN or gateway pod) when an image or init-container image is from a registry that is not on the list; `localhost:5035` always passes. The rule is not rendered with `"*"`. A change of the list is a `helm upgrade`: the policy and the environment of the agent and operator change together, the pods restart.
+
+Contract 2.8 adds `GetFeatures.allowed_registries`; the daemon should read it and show a task whose image is from another registry as not deployable here, and map `REGISTRY_NOT_ALLOWED` to a planning error, not a retry.
+
 ---
 
 ## 5. Use

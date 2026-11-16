@@ -29,6 +29,51 @@ type Policy struct {
 	// PlatformPrefix is host:port of the platform registry as the nodes see it (names.RegistryNodePrefix). It is where Map sends a
 	// platform reference, and the only host a node-form platform reference may name.
 	PlatformPrefix string
+	// Registries is the list of registries this laboratory pulls from (the chart's registry.allowedRegistries): an image from another
+	// registry is refused with ErrRegistryNotAllowed, whatever the tenant's own list says. Empty or containing "*": every registry.
+	Registries []string
+}
+
+// CanonicalRegistry is a registry host in the form Check compares: lowercase, no trailing dot or default port, Docker Hub as docker.io.
+func CanonicalRegistry(host string) string {
+	full, _ := canonicalHost(host)
+	return full
+}
+
+// ReasonRegistryNotAllowed is the stable reason of a refusal for a registry that is not allowed (pkg/agent/client has the same constant).
+const ReasonRegistryNotAllowed = "REGISTRY_NOT_ALLOWED"
+
+// ErrRegistryNotAllowed is what Check wraps when the registry of the image is not on the laboratory's list of allowed registries.
+var ErrRegistryNotAllowed = errors.New("registry is not allowed")
+
+// AnyRegistry is the entry of Registries that allows every registry.
+const AnyRegistry = "*"
+
+// RegistryAllowed says whether the registry of an image reference ("host[:port]" in its canonical form, Docker Hub spelled in any
+// way) is on the list. An empty list and "*" allow everything. The platform's own images (platform:..., the node form) are not looked at here.
+func RegistryAllowed(registries []string, ref string) error {
+	if len(registries) == 0 {
+		return nil
+	}
+	for _, r := range registries {
+		if strings.TrimSpace(r) == AnyRegistry {
+			return nil
+		}
+	}
+	repo, _, err := normalize(ref)
+	if err != nil {
+		return err
+	}
+	host := repo
+	if k := strings.Index(repo, "/"); k >= 0 {
+		host = repo[:k]
+	}
+	for _, r := range registries {
+		if full, _ := canonicalHost(r); full != "" && full == host {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: image %q comes from %s, which is not on this laboratory's list of allowed registries", ErrRegistryNotAllowed, ref, host)
 }
 
 // ErrNotPlatform is what Check wraps when PlatformOnly is on and the image is not a platform image by digest.
@@ -282,6 +327,9 @@ func (p Policy) Check(ref string) error {
 	}
 	if why := refusedHost(bare); why != "" {
 		return fmt.Errorf("image %q %s: name the original image on a public registry", ref, why)
+	}
+	if err := RegistryAllowed(p.Registries, ref); err != nil {
+		return err
 	}
 	// The platform's own registry and cache, in any spelling: by host, whatever the port.
 	for _, c := range p.CachePrefixes {

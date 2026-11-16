@@ -954,6 +954,21 @@ registry:
     # Narrows the network policy to the pods of those namespaces that carry all of these labels. Empty: every pod of the namespace.
     writerPodLabels: {}
 
+  # The registries lab images may come from, whatever the cache does (cache on or off): an image from any other registry is refused at
+  # three places: the management agent (CreateLabs and PrewarmImages: PermissionDenied with the reason REGISTRY_NOT_ALLOWED; GetFeatures
+  # reports the list), the operator (a Lab made by hand is Failed with a ValidationFailed event) and the API server (the policy
+  # laboratory-operator-pods denies a pod of a lab namespace whose image is from another registry; the node's own forwarder
+  # localhost:5035 passes, it serves the cache and the platform registry). Entries are registry hosts ("docker.io", "registry.example.com:5000");
+  # an image that names no registry is docker.io. The registries of the platform's own images (vpn.image, inetGateway.image,
+  # nodeAgent.image) are added by the chart, so the list can never lock the platform out. "*" (alone or among others) allows every registry.
+  # The default is the four registries the cache knows, so a lab with an image from another registry (gcr.io, mcr.microsoft.com, a
+  # private one) is refused until its registry is added here.
+  allowedRegistries:
+    - docker.io
+    - ghcr.io
+    - quay.io
+    - registry.k8s.io
+
   # Pull-through cache of the lab images. The operator rewrites REG/repo:tag of the
   # devices, VPN and gateway pods of labs created while the cache is on into
   # localhost:5035/REG/repo:tag; zot fetches each image from REG on the first

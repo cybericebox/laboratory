@@ -137,7 +137,22 @@ spec:
     # judged when it is created, and on the template of a Deployment or DaemonSet whenever that changes.
     - name: podUpdate
       expression: "request.resource.resource == 'pods' && request.operation == 'UPDATE'"
+{{- $registries := include "laboratory.allowedRegistries" . }}
+{{- if ne $registries "*" }}
+    # registry.allowedRegistries: the registry of an image is its first path part when that looks like a host (a dot, a port or localhost),
+    # docker.io otherwise; the Docker Hub spellings are docker.io. The node's forwarder (localhost:5035) serves the cache and the
+    # platform registry and always passes.
+    - name: imageHosts
+      expression: >-
+        variables.containers.map(c, c.image.contains('/') && (c.image.split('/')[0].contains('.') || c.image.split('/')[0].contains(':') || c.image.split('/')[0] == 'localhost')
+        ? c.image.split('/')[0].lowerAscii() : 'docker.io').map(h, h in ['index.docker.io', 'registry-1.docker.io', 'registry.hub.docker.com'] ? 'docker.io' : h)
+{{- end }}
   validations:
+{{- if ne $registries "*" }}
+    - expression: "variables.podUpdate || variables.imageHosts.all(h, h == 'localhost:5035' || h in [{{ range $i, $r := splitList "," $registries }}{{ if $i }}, {{ end }}{{ printf "'%s'" $r }}{{ end }}])"
+      message: "REGISTRY_NOT_ALLOWED: the operator may create only pods whose images come from the registries of registry.allowedRegistries"
+      reason: Forbidden
+{{- end }}
     - expression: "!(has(variables.podSpec.hostNetwork) && variables.podSpec.hostNetwork) && !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) && !(has(variables.podSpec.hostIPC) && variables.podSpec.hostIPC)"
       message: the operator may not create a pod that uses the host's network, PID or IPC namespace
       reason: Forbidden

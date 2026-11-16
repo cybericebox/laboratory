@@ -334,6 +334,7 @@ func Run() {
 	if err = (&laboratorycontroller.LabReconciler{
 		Workers:                   cfg.LabWorkers,
 		Switches:                  &clusterSwitches,
+		AllowedRegistries:         cfg.AllowedRegistries,
 		CheckerEnabled:            cfg.ChecksEnabled,
 		VNI:                       vniRetirer,
 		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},

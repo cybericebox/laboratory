@@ -185,6 +185,9 @@ type Config struct {
 	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's
 	// private repositories); a tenant's own allow list narrows the rest.
 	ImageDeny []string `env:"AGENT_IMAGE_DENY" envSeparator:","`
+	// AllowedRegistries are the registries lab images may come from (the chart's registry.allowedRegistries, with the registries of
+	// the platform's own images added); an image from another registry is refused with REGISTRY_NOT_ALLOWED. "*" allows every registry.
+	AllowedRegistries []string `env:"ALLOWED_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 	// ImagePlatformOnly makes every tenant run only the images of the platform registry, pinned by digest
 	// (platform:<name>@sha256:<hex>); any other reference is refused with the reason IMAGE_NOT_PLATFORM. A tenant can also be
 	// platform-only on its own (Tenant.spec.images.platformOnly). The registry address the nodes pull from is the constant

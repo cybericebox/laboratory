@@ -26,7 +26,8 @@ func (h *Handler) imagePolicy(ctx context.Context) (imagepolicy.Policy, *laborat
 			return imagepolicy.Policy{}, nil, err
 		}
 	}
-	p := imagepolicy.Policy{Deny: h.imageDeny, CachePrefixes: h.imageCache, PlatformOnly: h.platformOnly, PlatformPrefix: h.platformPrefix}
+	p := imagepolicy.Policy{Deny: h.imageDeny, CachePrefixes: h.imageCache, PlatformOnly: h.platformOnly, PlatformPrefix: h.platformPrefix,
+		Registries: h.allowedRegistries}
 	if p.PlatformPrefix == "" {
 		p.PlatformPrefix = names.RegistryNodePrefix
 	}
@@ -64,8 +65,15 @@ func mapSpecImages(p imagepolicy.Policy, spec *laboratoryv1alpha1.LabSpec) {
 // where only those run, the reason IMAGE_NOT_PLATFORM (the message names the variant, the device and the image).
 func imageRefusal(prefix string, err error) error {
 	st := status.New(codes.PermissionDenied, prefix+err.Error())
-	if errors.Is(err, imagepolicy.ErrNotPlatform) {
-		if withInfo, derr := st.WithDetails(&errdetails.ErrorInfo{Reason: client.ReasonImageNotPlatform, Domain: client.ErrorDomain}); derr == nil {
+	reason := ""
+	switch {
+	case errors.Is(err, imagepolicy.ErrNotPlatform):
+		reason = client.ReasonImageNotPlatform
+	case errors.Is(err, imagepolicy.ErrRegistryNotAllowed):
+		reason = client.ReasonRegistryNotAllowed
+	}
+	if reason != "" {
+		if withInfo, derr := st.WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: client.ErrorDomain}); derr == nil {
 			st = withInfo
 		}
 	}

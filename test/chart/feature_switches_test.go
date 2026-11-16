@@ -86,3 +86,32 @@ func TestFeaturePolicyFollowsTheSwitches(t *testing.T) {
 		t.Error("the group rules stay: a group may switch its servers off whatever the cluster serves")
 	}
 }
+
+// registry.allowedRegistries reaches the components with the registries of the platform's own images added, "*" wins, and the pod policy
+// carries the same list.
+func TestAllowedRegistriesReachTheComponents(t *testing.T) {
+	if got := operatorConfig(t)["ALLOWED_REGISTRIES"]; got != "docker.io,ghcr.io,quay.io,registry.k8s.io" {
+		t.Errorf("default list: %q", got)
+	}
+	got := operatorConfig(t, "--set", "registry.allowedRegistries={Index.docker.io,reg.example.com:5000}",
+		"--set", "vpn.image.repository=ghcr.io/own/lab", "--set", "nodeAgent.image.repository=own.example.com/node")["ALLOWED_REGISTRIES"]
+	if got != "docker.io,ghcr.io,own.example.com,reg.example.com:5000" {
+		t.Errorf("own registries are added and the Hub spelling is docker.io: %q", got)
+	}
+	if got := operatorConfig(t, "--set", "registry.allowedRegistries={docker.io,*}")["ALLOWED_REGISTRIES"]; got != "*" {
+		t.Errorf("star: %q", got)
+	}
+	policy := func(extra ...string) string {
+		out, err := helmTemplate(t, append(extra, "-s", "templates/operator/admission-policy.yaml")...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return out
+	}
+	if p := policy(); !strings.Contains(p, "REGISTRY_NOT_ALLOWED") || !strings.Contains(p, "'ghcr.io'") || !strings.Contains(p, "localhost:5035") {
+		t.Error("the pod policy must carry the list and the node's forwarder")
+	}
+	if p := policy("--set", "registry.allowedRegistries={*}"); strings.Contains(p, "REGISTRY_NOT_ALLOWED") {
+		t.Error("with * there is no image rule")
+	}
+}
