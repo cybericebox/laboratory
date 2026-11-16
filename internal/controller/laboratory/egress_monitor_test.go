@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/egressproxy"
 	"github.com/cybericebox/laboratory/internal/names"
 )
@@ -288,5 +289,41 @@ func TestEgressMonitorBodyAndTableAreBounded(t *testing.T) {
 	_ = f.m.Pull(context.Background())
 	if len(f.m.minutes) > maxKeptMinutes+1 {
 		t.Fatalf("the table of minutes grew to %d", len(f.m.minutes))
+	}
+}
+
+// With activity reports on, the gateways' per-address rows become raw facts in the ring of the group namespace; the connection log of the
+// administrator is the same as before (no address in it). With them off nothing is kept.
+func TestEgressMonitorHandsFlowRowsToTheActivityRing(t *testing.T) {
+	f := newMonitorFixture(t, "l1")
+	f.m.Activity = activity.New(f.c, "egress")
+	f.m.Activity.Now = f.m.now
+	min := time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC)
+	*f.minutes = []egressproxy.Minute{{Start: min,
+		Rows:  []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 2, Up: 10, Down: 20}},
+		Flows: []egressproxy.FlowRow{{Lab: "l1", Source: "10.9.1.5", Dest: "151.101.0.223", Port: 443, Conns: 2, Up: 10, Down: 20, FirstMs: 1, LastMs: 2}, {Lab: "l1", Source: "x", Dest: "y", Port: 70000}}}}
+	if err := f.m.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.m.Activity.Events("lg-a")
+	if len(got) != 1 {
+		t.Fatalf("events = %+v (a row with an impossible port is dropped)", got)
+	}
+	e := got[0]
+	if e.Kind != laboratoryv1alpha1.ActivityEgress || e.LabName != "l1" || e.SourceAddr != "10.9.1.5" || e.DstAddr != "151.101.0.223" || e.DstPort != 443 ||
+		e.BytesUp != 10 || e.BytesDown != 20 || e.Connections != 2 || e.AtMs != min.Add(time.Minute).UnixMilli() {
+		t.Fatalf("event = %+v", e)
+	}
+}
+
+func TestEgressMonitorKeepsNoActivityWhenOff(t *testing.T) {
+	f := newMonitorFixture(t, "l1")
+	min := time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC)
+	*f.minutes = []egressproxy.Minute{{Start: min, Flows: []egressproxy.FlowRow{{Lab: "l1", Source: "10.9.1.5", Dest: "1.2.3.4", Port: 443, Conns: 1}}}}
+	if err := f.m.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.m.Activity != nil {
+		t.Fatal("the hub must be off by default")
 	}
 }

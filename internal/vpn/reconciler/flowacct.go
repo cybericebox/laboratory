@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/names"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -41,6 +42,14 @@ func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Confi
 	reader, cached := mgr.GetAPIReader(), mgr.GetClient()
 	collector := flowacct.New(dump, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
 	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings, BeforeShutdown: ipt.Quiesce}
+	if activity.Enabled() && source != nil {
+		// The per-address facts need the connection tracking of the iptables forwarding.
+		collector.EnableTouches()
+		hub := activity.New(cached, "vpn")
+		hub.Reader = reader
+		hub.OnError = func(err error) { ctrl.Log.WithName("activity").Error(err, "write activity report") }
+		reporter.Activity = hub
+	}
 	reporter.OnPublish = func(ctx context.Context, report flowacct.Report) error {
 		return publishAccessTotals(ctx, cached, cfg.Namespace, report)
 	}

@@ -252,6 +252,9 @@ func (p *Proxy) handle(ctx context.Context, c net.Conn, isTLS bool) {
 	defer func() {
 		if p.Stats != nil {
 			p.Stats.End(lab, name, atomic.LoadInt64(&sent), atomic.LoadInt64(&got))
+			if dst, ok := up.RemoteAddr().(*net.TCPAddr); ok {
+				p.Stats.Flow(lab, remoteAddr(c).Unmap().String(), dst.IP.String(), dst.Port, atomic.LoadInt64(&sent), atomic.LoadInt64(&got))
+			}
 		}
 	}()
 	if _, err := up.Write(raw); err != nil {

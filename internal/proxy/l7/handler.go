@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/bandwidth"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -58,6 +59,7 @@ type Handler struct {
 	// caps bound the requests in flight (see LiveCaps); authLimit limits the handoff path.
 	caps                       LiveCaps
 	authLimit                  *bucketSet
+	activity                   *activity.Hub // console sessions are handed to it (nil: activity reports are off)
 	preAuthFine, preAuthCoarse *bucketSet    // per address, then per network, before anything is verified
 	verifySem                  chan struct{} // handoff verifications in flight (a cap, not a bucket)
 	// accessLog, when set, writes a line per proxied request (see accesslog.go).
@@ -118,6 +120,12 @@ func (h *Handler) WithAccounting(meter *Meter, attribute Attribution) *Handler {
 // handoff is accepted.
 func (h *Handler) WithGroupTenant(g GroupTenant) *Handler {
 	h.groupTenant = g
+	return h
+}
+
+// WithActivity keeps the facts of the console sessions in the ring of the hub (nil: activity reports are off).
+func (h *Handler) WithActivity(hub *activity.Hub) *Handler {
+	h.activity = hub
 	return h
 }
 
