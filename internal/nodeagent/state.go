@@ -18,21 +18,16 @@ import (
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
-// SetupDeviceState adds the platform registry's node side to the manager: the
-// localhost registry forwarder (snapshots and the image cache are both pulled
-// through it) and, with state persistence on, the snapshot engine that follows
-// the snapshot-backed device containers of this node. It does nothing when no
-// registry is configured.
-func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
+// SetupRegistryForwarder adds the platform registry's node side to the manager: the localhost registry forwarder (snapshots and the
+// image cache are both pulled through it, and the node-state DaemonSet pushes the snapshots through it: it has no network path to the
+// registry of its own). The snapshot engine itself is the node-state DaemonSet's (SetupStateEngine). It does nothing when no registry is
+// configured.
+func SetupRegistryForwarder(mgr ctrl.Manager, cfg *Config) error {
 	if cfg.StateRegistryAddr == "" {
 		return nil
 	}
-	log := ctrl.Log.WithName("device-state")
-	if err := os.MkdirAll(cfg.StateWorkDir, 0o700); err != nil {
-		return fmt.Errorf("state work dir: %w", err)
-	}
-
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+	log := ctrl.Log.WithName("registry-forwarder")
+	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		log.Info("registry forwarder", "listen", "127.0.0.1", "port", cfg.StateForwardPort, "target", cfg.StateRegistryAddr)
 		var opts []devicestate.ForwardOption
 		if cfg.StateRegistryReaderUser != "" {
@@ -40,20 +35,16 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 				devicestate.WithHost(fmt.Sprintf("localhost:%d", cfg.StateForwardPort)))
 		}
 		return devicestate.Forward(ctx, fmt.Sprintf("127.0.0.1:%d", cfg.StateForwardPort), cfg.StateRegistryAddr, log, opts...)
-	})); err != nil {
-		return err
-	}
-
-	if !cfg.StatePersistence {
-		return nil // the forwarder alone: the registry serves the image cache
-	}
-	return SetupStateEngine(mgr, cfg)
+	}))
 }
 
-// SetupStateEngine adds the snapshot engine that follows the snapshot-backed device containers of this node. SetupDeviceState calls it
-// when persistence is on; PreflightRetry calls it later when the start-up check passes after it failed (the registry came up).
+// SetupStateEngine adds the snapshot engine that follows the snapshot-backed device containers of this node. The node-state DaemonSet
+// calls it when persistence is on and the start-up check passes (PreflightRetry calls it later when the check passes after it failed).
 func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
 	log := ctrl.Log.WithName("device-state")
+	if err := os.MkdirAll(cfg.StateWorkDir, 0o700); err != nil {
+		return fmt.Errorf("state work dir: %w", err)
+	}
 	local := fmt.Sprintf("localhost:%d", cfg.StateForwardPort)
 	rt, err := devicestate.NewContainerdRuntime(cfg.CRISock, cfg.ContainerdNamespace, cfg.CgroupRoot, log)
 	if err != nil {
@@ -106,10 +97,10 @@ func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
 	if label := devicestate.AppArmorLabel(); devicestate.AppArmorBlocksSnapshots(label) {
 		// The runtime's default profile has `deny mount` and the snapshot filter mounts read-only overlays: every snapshot would
 		// fail with "permission denied". Said once here and on every device, instead of a failure per snapshot.
-		engine.SnapshotsBlocked = fmt.Sprintf("AppArmor blocks snapshots: the node-agent runs under the AppArmor profile %q, "+
-			"which denies mount, so device state is not saved (the node-agent container needs appArmorProfile Unconfined, see DEPLOY.md)", label)
+		engine.SnapshotsBlocked = fmt.Sprintf("AppArmor blocks snapshots: node-state runs under the AppArmor profile %q, "+
+			"which denies mount, so device state is not saved (the node-state container needs appArmorProfile Unconfined, see DEPLOY.md)", label)
 		log.Error(devicestate.ErrSnapshotsBlocked, "state persistence is on but snapshots cannot be taken on this node",
-			"apparmor", label, "fix", "appArmorProfile Unconfined on the node-agent container (chart: devices.statePersistence.enabled)")
+			"apparmor", label, "fix", "appArmorProfile Unconfined on the node-state container (chart: devices.statePersistence.enabled)")
 	}
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		owner, err := devicestate.AcquireCaptureOwner(cfg.StateWorkDir)
