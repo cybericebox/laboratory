@@ -295,8 +295,9 @@ type clusterView struct {
 	reservations []laboratoryv1alpha1.Reservation
 }
 
-// load reads the cluster view of a pass: the labs past the cache, the rest from it; live reads all of it past the cache (the
-// check before an eviction).
+// load reads the cluster view of a pass from the cache; live reads all of it past the cache (the check before an eviction). The
+// labs of a normal pass come from the cache too: a lab that is stopped or not yet started is fenced again, with a read past the
+// cache, at the moment a pod of it is dispatched (tick), so a stale list can only delay a dispatch, never let a stopped lab start.
 func (s *Scheduler) load(ctx context.Context, live bool) (*clusterView, error) {
 	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}, tenants: map[string]*laboratoryv1alpha1.Tenant{}}
 	var r client.Reader = s.Client
@@ -304,7 +305,7 @@ func (s *Scheduler) load(ctx context.Context, live bool) (*clusterView, error) {
 		r = s.directReader()
 	}
 	var labs laboratoryv1alpha1.LabList
-	if err := s.directReader().List(ctx, &labs); err != nil {
+	if err := r.List(ctx, &labs); err != nil {
 		return nil, fmt.Errorf("list labs: %w", err)
 	}
 	for i := range labs.Items {
@@ -800,13 +801,24 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	}
 
 	stamp := metav1.NewTime(now)
+	// The fence before a dispatch (the lab is not stopped and its start is prepared) is a read past the cache, once per lab and
+	// pass however many of its pods go out together: the cache may still show a lab as it was before a stop.
+	fenced := map[client.ObjectKey]bool{}
+	labMayStart := func(key client.ObjectKey) bool {
+		if ok, done := fenced[key]; done {
+			return ok
+		}
+		var currentLab laboratoryv1alpha1.Lab
+		ok := s.directReader().Get(ctx, key, &currentLab) == nil && !currentLab.Spec.Lifecycle.IsStopped() && labStartPrepared(&currentLab)
+		fenced[key] = ok
+		return ok
+	}
 	for _, p := range plan.dispatch {
 		var err error
 		switch p.kind {
 		case kindDevicePod:
 			d := p.ref.(*laboratoryv1alpha1.Device)
-			var currentLab laboratoryv1alpha1.Lab
-			if getErr := s.directReader().Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &currentLab); getErr != nil || currentLab.Spec.Lifecycle.IsStopped() || !labStartPrepared(&currentLab) {
+			if !labMayStart(client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}) {
 				continue
 			}
 			q := d.Status.Scheduling.DeepCopy()
