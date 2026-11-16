@@ -383,30 +383,39 @@ func (p *prewarmer) cacheName(repo, ref string) (name.Reference, error) {
 	return name.ParseReference(fmt.Sprintf("%s/%s%s%s", p.cfg.RegistryAddr, repo, sep, ref), opts...)
 }
 
-// fetch makes the cache hold the image: it asks the gate for the manifest (a tag is resolved by the gate itself with the call's
-// credentials; without any, by the digest the operator will pin labs to), reads every blob through the gate (which stores what it
+// fetch makes the cache hold the image: it asks the gate for the manifest, reads every blob through the gate (which stores what it
 // serves once it proved the pull), then asks the gate whether every blob is in its storage.
+//
+// A tenant's call never learns anything from the platform's credentials: with credentials in the call the gate resolves the tag with
+// them; without, the gate must first serve the tag anonymously (it proves the image is public) and only then does the agent use the
+// digest the operator would pin labs to (the platform manifest of a single-architecture cluster), which it asked with the platform's
+// keychain for an image that is public. The digest reported is the one the gate served, and only after it served it: an image the
+// caller cannot read fails with an error and no digest.
 func (p *prewarmer) fetch(ctx context.Context, img, repo string, auth *callAuth) (string, error) {
 	opts := p.cacheOptions(ctx, auth)
-	ref := ""
-	switch parsed, err := name.ParseReference(img); {
-	case err != nil:
+	parsed, err := name.ParseReference(img)
+	if err != nil {
 		return "", err
-	case auth != nil:
-		ref = parsed.Identifier() // the tag or the digest as named: the gate resolves it with the credentials
-	default:
-		digest := imagecache.DigestOf(img)
+	}
+	ref := parsed.Identifier() // the tag or the digest as named
+	if _, isTag := parsed.(name.Tag); isTag && auth == nil {
+		// The proof that the image is public comes first; the platform's resolver is asked only about an image the gate has served.
+		tagRef, err := p.cacheName(repo, ref)
+		if err != nil {
+			return "", err
+		}
+		if _, err := remote.Head(tagRef, opts...); err != nil {
+			return "", fmt.Errorf("the cache could not fetch %s: %w", tagRef.Name(), err)
+		}
 		if p.cfg.Resolver != nil {
 			d, err := p.cfg.Resolver.Resolve(ctx, img)
 			if err != nil {
 				return "", fmt.Errorf("resolve %s upstream: %w", img, err)
 			}
-			digest = d
-		}
-		if digest == "" {
+			ref = d
+		} else {
 			return "", fmt.Errorf("no resolver: cannot resolve the tag of %s", img)
 		}
-		ref = digest
 	}
 	cref, err := p.cacheName(repo, ref)
 	if err != nil {
@@ -414,10 +423,10 @@ func (p *prewarmer) fetch(ctx context.Context, img, repo string, auth *callAuth)
 	}
 	desc, err := remote.Get(cref, opts...)
 	if err != nil {
-		return ref, fmt.Errorf("the cache could not fetch %s: %w", cref.Name(), err)
+		return "", fmt.Errorf("the cache could not fetch %s: %w", cref.Name(), err)
 	}
 	if err := p.warmManifest(ctx, cref.Context(), repo, desc, opts, auth); err != nil {
-		return desc.Digest.String(), err
+		return "", err
 	}
 	return desc.Digest.String(), nil
 }

@@ -138,6 +138,14 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (z *fakeZot) manifest(w http.ResponseWriter, repo, ref string) {
+	if !strings.HasPrefix(ref, "sha256:") {
+		// a tag: the gate proves the image is readable (here: public) and answers its digest; nothing is fetched or counted
+		w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("0", 64))
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.Header().Set("Content-Length", "2")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	key := repo + "@" + ref
 	z.mu.Lock()
 	z.manifests[key]++
