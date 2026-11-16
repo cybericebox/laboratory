@@ -338,8 +338,29 @@ func TestGatewayRoleReadsLabs(t *testing.T) {
 	}
 }
 
-func TestNodeAgentRBACCapturePatchOnly(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml")
+// The node-agent holds no Pod patch privilege any more (the capture guard is the snapshot engine's, which is node-state's).
+func TestNodeAgentRBACHasNoPodPatch(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-agent/clusterrole.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" {
+			continue
+		}
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "pods") && has(r.Verbs, "patch") {
+				t.Fatalf("the node-agent must not patch Pods: %+v", r)
+			}
+			if has(r.Resources, "secrets") {
+				t.Fatalf("the node-agent must not read Secrets: %+v", r)
+			}
+		}
+	}
+}
+
+func TestNodeStateRBACCapturePatchOnly(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-state/rbac.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +379,7 @@ func TestNodeAgentRBACCapturePatchOnly(t *testing.T) {
 		}
 	}
 	if !patch {
-		t.Fatal("node-agent lacks guarded Pod patch privilege")
+		t.Fatal("node-state lacks guarded Pod patch privilege")
 	}
 }
 

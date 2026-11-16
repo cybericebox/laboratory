@@ -25,12 +25,12 @@ import (
 
 // Real API-server admission must confine the new patch privilege to the bound
 // node's Device-owned Pod annotation, including removal for invalidation.
-func TestNodeAgentCaptureAdmission(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/node-agent/admission-policy.yaml")
+func TestNodeStateCaptureAdmission(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-state/admission-policy.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "name: laboratory-node-agent-capture") {
+	if !strings.Contains(out, "name: laboratory-node-state-capture") {
 		t.Fatal("capture admission policy absent")
 	}
 	dir := os.Getenv("KUBEBUILDER_ASSETS")
@@ -60,7 +60,7 @@ func TestNodeAgentCaptureAdmission(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const user = "system:serviceaccount:laboratory-system:laboratory-node-agent"
+	const user = "system:serviceaccount:laboratory-system:laboratory-node-state"
 	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "capture-test"}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"}, Subjects: []rbacv1.Subject{{Kind: "User", APIGroup: "rbac.authorization.k8s.io", Name: user}}}); err != nil {
 		t.Fatal(err)
 	}

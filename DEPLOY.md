@@ -2277,6 +2277,38 @@ The platform's own resources and Namespaces are cluster-wide because LabGroups, 
 The `config/rbac` kustomize role generated from the kubebuilder markers is for the development install only; the chart's roles are the
 deployed ones.
 
+## node-state (the snapshot engine and the CPU throttle monitor)
+
+`laboratory-node-state` is a DaemonSet of its own, apart from the node-agent, rendered only while `devices.statePersistence.enabled` or
+`lifecycle.runtimeObservation.enabled` is on (and `nodeAgent.enabled`; `lifecycle.profile: full` switches both on). It runs the same image
+(`/node node-state`) on the same nodes (`labWorkloads`), and takes over from the node-agent the work that needs the container runtime's files
+and the host cgroups and is not pod networking:
+
+| What | Where it runs |
+| --- | --- |
+| the snapshot engine of device state, its start-up check and retry, the Node annotation `cybericebox.com/state-persistence` | node-state, only with `devices.statePersistence.enabled` |
+| the CPU throttle monitor (`Device.status.cpuThrottle`) | node-state, whenever it is rendered |
+| the registry relay on `127.0.0.1:5035` (it adds the reader account to the runtime's pulls) | node-agent, always |
+| the runtime observer and its journal, the annotation `cybericebox.com/runtime-observation` | node-agent, with `lifecycle.runtimeObservation.enabled` (it is part of the OVS port and VNI retirement there) |
+
+Why: the node-agent wires every new pod and is `system-node-critical`; the privileges of the snapshot engine are not its. node-state has
+`appArmorProfile: Unconfined`, `DAC_READ_SEARCH`, `SYS_ADMIN`, the containerd root (read-only) and the cgroup tree; the node-agent has none of
+these any more except the cgroup tree and the journal directory of the observer (only with the observation on). node-state is on the host
+network and reaches the registry **only through the node-agent's relay** on `127.0.0.1:5035` (there is no network path from it to zot, and the
+registry check of its start-up uses the relay too). It has its own ServiceAccount: it may read devices, labs, pods and (with persistence) Secrets
+for the pull credentials of a source image, write the status of devices, patch the capture annotation of a Device-owned Pod, and annotate its own
+node; the node and Pod writes are confined by the admission policies `laboratory-node-state-annotation` and `laboratory-node-state-capture`, and
+the `devices/status` guard of native reports (`laboratory-node-agent-device-runtime`) covers it too. Its priority is the platform class (below
+the node-agent's `system-node-critical`), the probe port `nodeState.healthPort` (9441, the loopback of the node), and `nodeState.resources`.
+
+It needs the platform registry and the node-agent (the chart refuses `devices.statePersistence.enabled` without them). If the node-agent (the
+relay) is not up when node-state starts, the persistence check fails with `SNAPSHOT_REGISTRY_UNREACHABLE` and is repeated every 30 s until it
+passes; no snapshot is taken meanwhile. If node-state is down, devices keep running and nothing is snapshotted; a device that ends in that time
+has no exit snapshot. A node that is ready for pods but has not got its `state-persistence` annotation from node-state yet counts as
+`NODE_UNCONFIRMED` for `GetFeatures`. Upgrading from a chart where the node-agent ran the engine: the new node-agent no longer starts it and
+node-state starts it; both hold the capture owner lock of `/var/cache/cybericebox/state` briefly, so node-state may restart once until the old
+node-agent pod is gone.
+
 ## Device state persistence (optional)
 
 By default a device is a container in a Deployment: when it restarts, it starts again from its image and the work
@@ -2321,25 +2353,25 @@ devices:
   (see "State persistence" in the agent API): such a device runs as a bare Pod (`restartPolicy: Never`) that the operator owns
   and recreates, every other device as a Deployment, and one lab may mix both. The choice is stamped on the Device
   (`spec.state`) when it is created and is immutable, so flipping the switch later never changes an existing device;
-- the node-agent runs the snapshot engine whenever persistence is allowed, and snapshots only the devices that run as
-  snapshot-backed Pods.
+- the **node-state** DaemonSet (see "node-state" below) runs the snapshot engine whenever persistence is allowed, and snapshots only the
+  devices that run as snapshot-backed Pods.
 
 Requirements on the nodes (nothing has to be installed or configured on the host):
 
 - containerd 2.x with the default `overlayfs` snapshotter, cgroup v2, and the image layers kept in the content store
   (containerd's CRI option `discard_unpacked_layers` must be `false`, which is the default);
 - TCP port 5035 free on `127.0.0.1` of every node (a constant of the images: the relay port of the registry);
-- the node-agent DaemonSet mounts `containerdRoot` read-only and the host cgroup tree, and gets the
-  `DAC_READ_SEARCH` capability. Set `containerdRoot` to the containerd root of your distribution (k0s:
+- the node-state DaemonSet mounts `containerdRoot` read-only and the host cgroup tree, and gets the
+  `DAC_READ_SEARCH` capability (the node-agent has neither the mount nor the capability). Set `containerdRoot` to the containerd root of your distribution (k0s:
   `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`);
-- the node-agent container runs with `appArmorProfile: Unconfined`. On nodes with AppArmor (Ubuntu, Debian) containerd
+- the node-state container runs with `appArmorProfile: Unconfined` (the node-agent keeps the runtime's default profile). On nodes with AppArmor (Ubuntu, Debian) containerd
   otherwise puts every non-privileged container under its default profile `cri-containerd.apparmor.d`, which has
   `deny mount`; the snapshot filter mounts read-only overlay views of a device's layers, so every snapshot would fail with
-  `failed to mount /tmp/containerd-mount...: permission denied`. The container already has `SYS_ADMIN`, so this adds no
+  `failed to mount /tmp/containerd-mount...: permission denied`. The container has `SYS_ADMIN` for the mounts, so this adds no
   capability. Kubernetes 1.30 or newer is needed for the field. On nodes without AppArmor (kind, SELinux distributions) it
   changes nothing, which is also why kind never shows the failure.
 
-A node-agent that still runs under an enforced `cri-containerd` profile (a chart older than this fix, or a policy that
+A node-state that still runs under an enforced `cri-containerd` profile (a chart older than this fix, or a policy that
 overrides the profile) checks it at startup: it logs one error `state persistence is on but snapshots cannot be taken on
 this node` (it reaches the error journal), puts `AppArmor blocks snapshots: ...` on every device it follows, and takes
 no snapshots there (it never freezes the containers for a snapshot that cannot work). The devices keep running; their
@@ -2431,7 +2463,7 @@ name before the deadline cancels the deletion.
 
 `devices.statePersistence.enabled: false` only stops new devices from using persistence (the agent refuses a topology that asks
 for it). Devices that already run as snapshot-backed Pods keep that mode, but they depend on the registry and on the
-node-agent's snapshot engine, which the switch also removes from the node-agent. Leave the switch on until the last such device is
+snapshot engine of node-state, which the switch also removes (node-state is not rendered then, unless the runtime observation is on). Leave the switch on until the last such device is
 deleted (or accept that they stop being snapshotted).
 
 ### Operating it
@@ -2467,11 +2499,11 @@ kind does not apply AppArmor, so the end-to-end suite cannot catch a profile tha
 release that touches the snapshot path, and on every new node image (distribution, kernel, containerd), run this on a
 real lab node of a test cluster with AppArmor on (for example Ubuntu with k0s):
 
-1. Deploy the chart with `devices.statePersistence.enabled: true`. `cat /proc/1/attr/current` in the node-agent
+1. Deploy the chart with `devices.statePersistence.enabled: true`. `cat /proc/1/attr/current` in the node-state
    container says `unconfined`, and its log has no `snapshots cannot be taken` error.
 2. Create a lab with a persistent device. Inside it: write a file, change a file's mode and owner, delete a file that
    comes from the image, make a symlink and a sparse file.
-3. Within the debounce the node-agent logs `container frozen for the snapshot` with no `snapshot` error after it; the
+3. Within the debounce node-state logs `container frozen for the snapshot` with no `snapshot` error after it; the
    Device's `status.state` has a snapshot (image, size, layers) and no warning; the image is in the registry.
 4. Delete the device's Pod. The operator recreates it with the next incarnation from the snapshot, and every change of
    step 2 is there, with the same owners and modes.
@@ -2479,21 +2511,21 @@ real lab node of a test cluster with AppArmor on (for example Ubuntu with k0s):
 6. Limits: write past `writeQuota` (a warning, the last snapshot stays), past `maxEntries` (the same), and run a
    required capture (it succeeds and records its image).
 7. With more than one lab node: drain the node, the device starts on another node and restores from the registry.
-8. Afterwards: the kernel log has no overlayfs or AppArmor errors from the node-agent, and `mount | grep
-   containerd-mount` in the node-agent container is empty (no mount is left behind).
+8. Afterwards: the kernel log has no overlayfs or AppArmor errors from node-state, and `mount | grep
+   containerd-mount` in the node-state container is empty (no mount is left behind).
 
 ---
 
 ### CPU throttling of a device
 
-A device whose container keeps hitting its CPU limit is slow because of the limit, not because of its work. Every 30 seconds the
-node-agent reads the CFS counters (`nr_periods`, `nr_throttled` of `cpu.stat`, cgroup v2) of the device containers of its node and
+A device whose container keeps hitting its CPU limit is slow because of the limit, not because of its work. Every 30 seconds
+node-state reads the CFS counters (`nr_periods`, `nr_throttled` of `cpu.stat`, cgroup v2) of the device containers of its node and
 keeps the last five minutes of them. The share of throttled periods, rounded to steps of 10, goes to `Device.status.cpuThrottle`
 (`percent`, `windowSeconds`, `observedAt`) when it changes; the lab controller copies it to `Lab.status.devices[].cpuThrottle`, and the
 agent sends it on in the device status of the lab (`LabDeviceStatus.cpu_throttled_percent` and `cpu_throttle_window_seconds`, in
 `ListLabs` and in the monitoring stream). The field is absent (0 on the wire) while the container is not throttled, is idle (the
 counters only run while it is busy), has no CPU limit, or ran for less than about 30 CFS periods. The platform treats a device above
-**50** as starved and may alert staff; the laboratory itself only exposes the data. Nothing is read for a container the node-agent
+**50** as starved and may alert staff; the laboratory itself only exposes the data. Nothing is read for a container node-state
 cannot find in the cgroup tree (`CGROUP_ROOT`, default `/host/sys/fs/cgroup`). Existing clusters need the new CRDs (`kubectl apply`
 of the chart's `crds/`, `helm upgrade` does not apply them) and the new agent proto.
 
@@ -2910,8 +2942,9 @@ as available only while persistence is confirmed by every ready lab node (the sa
 with the code of the reason). **Required means a snapshot for the devices that keep state**: a lab with a persistent database and an ordinary
 web server stops waiting for the snapshot of the database only, the other devices stop without one and never make the request fail; a lab with
 writable devices and none that keeps state has nothing to snapshot, and the request is refused. Set `devices.statePersistence.containerdRoot` to the containerd root of the
-cluster (`/var/lib/containerd`; `/var/lib/k0s/containerd` is the default). The node-agent checks its node at start (the containerd root and
-its snapshotter, the container runtime socket, the snapshot registry; the host cgroup v2 tree) and never hangs or exits for a failure: it
+cluster (`/var/lib/containerd`; `/var/lib/k0s/containerd` is the default). The node-state checks its node for persistence at start (the
+containerd root and its snapshotter, the container runtime socket, the snapshot registry through the node-agent's relay) and the node-agent
+checks the host cgroup v2 tree and the runtime socket for the observation; neither hangs or exits for a failure: it
 switches the feature off in its process, logs it, puts the result in the Node annotations `cybericebox.com/state-persistence` and
 `cybericebox.com/runtime-observation` (`ready`, `disabled` or `unavailable: <reason>`) and tells it in a Warning Event on the Node
 (`LifecyclePreflightFailed`). The containerd root volume has no hostPath type check, so a wrong path reaches this check. `GetFeatures` reports
@@ -2920,7 +2953,7 @@ as a fixed code and a count in `state_persistence.unavailable_reason` and `lifec
 `CONTAINERD_ROOT_MISSING`, `SNAPSHOTTER_MISSING`, `RUNTIME_SOCKET_UNAVAILABLE`, `SNAPSHOT_REGISTRY_UNREACHABLE`, `CGROUP_V2_MISSING`,
 `PERSISTENCE_DISABLED`, `OBSERVATION_DISABLED`, `NODE_UNCONFIRMED`; n lab nodes do not confirm, m were asked). No node names, paths or error
 text leave the cluster; the detail is in the Node annotation (`unavailable: CODE: detail`), the Event and the node-agent log. A node without a
-result (an older node-agent) holds them back (`NODE_UNCONFIRMED`), and with no ready node the configured values stand. The persistence check is repeated every 30 s while it fails (the registry of a fresh cluster is often not up yet): when it passes, the snapshot engine starts in the running node-agent and the annotation turns `ready`; the other checks (and a changed `containerdRoot`) need a restart of the node-agent. The node-agent's right to annotate its node is limited by the admission policy `laboratory-node-agent-label` to the two check annotations (`ready`, `disabled` or `unavailable: CODE: detail`).
+result (an older node-agent) holds them back (`NODE_UNCONFIRMED`), and with no ready node the configured values stand. The persistence check is repeated every 30 s while it fails (the registry of a fresh cluster is often not up yet): when it passes, the snapshot engine starts in the running node-state and the annotation turns `ready`; the other checks (and a changed `containerdRoot`) need a restart of the pod. The annotation `cybericebox.com/state-persistence` is node-state's and `cybericebox.com/runtime-observation` the node-agent's; each one's right to annotate its node is limited by an admission policy (`laboratory-node-state-annotation`, `laboratory-node-agent-label`) to its own annotation (`ready`, `disabled` or `unavailable: CODE: detail`). A node that is ready for pods but whose node-state has not reported yet counts as `NODE_UNCONFIRMED` for a moment after the node starts.
 
 Full group lifecycle completion requires direct UID/revision reads, durable
 pre-scale service inventory and node-owned first-success cleanup acknowledgements.

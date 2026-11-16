@@ -223,30 +223,11 @@ spec:
               value: "false"
           {{- end }}
           {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
-            - name: STATE_PERSISTENCE_ENABLED
-              value: {{ .Values.devices.statePersistence.enabled | quote }}
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
-            # Checked at start (the node-agent tells what its node can do on the Node and in an Event; a wrong path does not hang the pod).
-            - name: CONTAINERD_ROOT
-              value: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-            - name: STATE_MAX_WATCH_DIRS
-              value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
-            # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
-            - name: STATE_MIN_PUSH_INTERVAL
-              value: {{ .Values.devices.statePersistence.minPushInterval | quote }}
-            - name: STATE_PUSH_BUDGET
-              value: {{ .Values.devices.statePersistence.pushBudget | quote }}
-            - name: STATE_PUSH_BUDGET_WINDOW
-              value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
-            - name: STATE_SUPERSEDED_GRACE
-              value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
           {{- if include "laboratory.registryEnabled" . }}
-            - name: STATE_REGISTRY_CAPACITY
-              value: {{ .Values.registry.size | quote }}
-            - name: STATE_REGISTRY_RESERVE
-              value: {{ .Values.devices.statePersistence.registryReserve | quote }}
-            # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image.
+            # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image. The snapshot engine and
+            # its writer account are node-state's (templates/node-state), not the node-agent's.
             - name: STATE_REGISTRY_READER_USER
               valueFrom:
                 secretKeyRef:
@@ -257,27 +238,12 @@ spec:
                 secretKeyRef:
                   name: laboratory-registry
                   key: readerPassword
-            - name: STATE_REGISTRY_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: username
-            - name: STATE_REGISTRY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: password
           {{- end }}
           {{- end }}
           securityContext:
-            {{- if .Values.devices.statePersistence.enabled }}
-            {{- /* The snapshot filter mounts read-only overlays; the runtime's default AppArmor profile has `deny mount` (values.yaml). */}}
-            appArmorProfile:
-              type: Unconfined
-            {{- end }}
+            {{- /* No AppArmor Unconfined and no DAC_READ_SEARCH: those are node-state's (the snapshot engine). */}}
             capabilities:
-              {{- /* DAC_READ_SEARCH: the snapshot watcher reads writable layers owned by the container's own users. */}}
-              add:  [ NET_ADMIN, SYS_ADMIN{{ if .Values.devices.statePersistence.enabled }}, DAC_READ_SEARCH{{ end }} ]
+              add:  [ NET_ADMIN, SYS_ADMIN ]
               drop: [ ALL ]
           # Ready means it serves: Open vSwitch answers over both channels and the informer caches have synced. Liveness restarts a
           # node-agent whose channels to Open vSwitch hang (the watchdog covers a lost one) or whose process does not answer.
@@ -325,14 +291,8 @@ spec:
               # host after this container starts. Without it the container sees an empty
               # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
               mountPropagation: HostToContainer
-          {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
-            # The overlayfs snapshotter's directories, at the same path as on the host:
-            # the writable layers that are snapshotted live below it.
-            - name: containerd-root
-              mountPath: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-              readOnly: true
-            # The host's cgroup v2 tree: a container is frozen through cgroup.freeze
-            # while its layer is diffed.
+          {{- if .Values.lifecycle.runtimeObservation.enabled }}
+            # The host's cgroup v2 tree and the journal of the runtime observer (the observer is the node-agent's).
             - name: host-cgroup
               mountPath: /host/sys/fs/cgroup
             - name: state-work
@@ -389,13 +349,7 @@ spec:
           hostPath:
             path: /run/netns
             type: DirectoryOrCreate
-        {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
-        - name: containerd-root
-          hostPath:
-            path: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-            # No type check on purpose: a wrong path must reach the node-agent's own check (which says so clearly) and not leave the pod
-            # waiting for a volume, with every other pod of the node blocked behind it.
-            type: ""
+        {{- if .Values.lifecycle.runtimeObservation.enabled }}
         - name: host-cgroup
           hostPath:
             path: /sys/fs/cgroup

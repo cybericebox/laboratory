@@ -119,6 +119,15 @@ names no port.
 {{- else -}}Cluster
 {{- end -}}
 {{- end }}
+{{/*
+node-state (the snapshot engine and the CPU throttle monitor, apart from the node-agent) is rendered when one of the two features that
+need the container runtime's files and the host cgroups is on: devices.statePersistence.enabled or lifecycle.runtimeObservation.enabled
+(and the node-agent is). Empty when not. Call after laboratory.lifecycleProfile (the profile sets both flags).
+*/}}
+{{- define "laboratory.nodeState.enabled" -}}
+{{- include "laboratory.lifecycleProfile" . -}}
+{{- if and .Values.nodeAgent.enabled (or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled) -}}true{{- end -}}
+{{- end }}
 {{- define "laboratory.priorityClass.platform" -}}{{ .Values.priorityClasses.platform.name }}{{- end }}
 {{- define "laboratory.priorityClass.group" -}}{{ .Values.priorityClasses.group.name }}{{- end }}
 {{- define "laboratory.priorityClass.device" -}}{{ .Values.priorityClasses.device.name }}{{- end }}

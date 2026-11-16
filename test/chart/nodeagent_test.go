@@ -42,6 +42,19 @@ func nodeAgent(t *testing.T, extra ...string) appsv1.DaemonSet {
 	return ds
 }
 
+func nodeState(t *testing.T, extra ...string) appsv1.DaemonSet {
+	t.Helper()
+	out, err := helmTemplate(t, append(extra, "-s", "templates/node-state/daemonset.yaml")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var ds appsv1.DaemonSet
+	if err := yaml.Unmarshal([]byte(out), &ds); err != nil {
+		t.Fatalf("decode DaemonSet: %v\n%s", err, out)
+	}
+	return ds
+}
+
 func initByName(spec corev1.PodSpec, name string) (int, *corev1.Container) {
 	for i := range spec.InitContainers {
 		if spec.InitContainers[i].Name == name {
@@ -303,10 +316,10 @@ func TestLatestTagIsRefusedAndPullPolicyIsIfNotPresent(t *testing.T) {
 	}
 }
 
-// A node-agent Pod restart must retain required holds even after a force-deleted
+// A node-state Pod restart must retain required holds even after a force-deleted
 // workload's API guard is gone; its journal cannot be an emptyDir.
-func TestNodeAgentCaptureJournalSurvivesPodRestart(t *testing.T) {
-	spec := nodeAgent(t, "--set", "devices.statePersistence.enabled=true").Spec.Template.Spec
+func TestNodeStateCaptureJournalSurvivesPodRestart(t *testing.T) {
+	spec := nodeState(t, "--set", "devices.statePersistence.enabled=true").Spec.Template.Spec
 	found := false
 	for _, v := range spec.Volumes {
 		if v.Name == "state-work" {
