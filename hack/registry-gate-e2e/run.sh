@@ -82,7 +82,7 @@ say "== registry (chart, cache on)"
 helm template x charts/laboratory --namespace "$NS" \
   --set operator.publicVPNEndpoint=vpn.example.com:51820 --set operator.baseDomain=lab.example.com --set operator.supportEmail=a@example.com \
   --set nodeAgent.image.repository=p0e2e/node --set nodeAgent.image.tag=e2e --set nodeAgent.image.pullPolicy=Never \
-  --set registry.cache.enabled=true --set-json 'registry.cache.registries=[]' --set-json 'registry.allowedRegistries=["pub","priv"]' \
+  --set registry.cache.enabled=true --set-json 'registry.cache.registries=["docker.io"]' --set-json 'registry.allowedRegistries=["pub","priv"]' \
   --set 'registry.cache.extraRegistries[0].name=pub' --set "registry.cache.extraRegistries[0].url=http://upstream-pub.$NS.svc:5000" \
   --set 'registry.cache.extraRegistries[1].name=priv' --set "registry.cache.extraRegistries[1].url=http://upstream-priv.$NS.svc:5000" \
   --set 'registry.cache.extraRegistries[2].name=off' --set "registry.cache.extraRegistries[2].url=http://upstream-pub.$NS.svc:5000" \
