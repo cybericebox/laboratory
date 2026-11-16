@@ -338,3 +338,30 @@ func TestClientIsRefusedWhereThereIsNoVPN(t *testing.T) {
 		t.Fatal("no ValidationFailed event")
 	}
 }
+
+// A lab made by hand with an image from a registry that is not on the list is refused with the stable reason; the node's own forwarder,
+// a platform reference and an empty list are not looked at.
+func TestLabIsRefusedForARegistryThatIsNotAllowed(t *testing.T) {
+	r := &LabReconciler{AllowedRegistries: []string{"docker.io", "ghcr.io"}}
+	lab := func(image string) *api.Lab {
+		l := &api.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l", Namespace: "ns"}}
+		l.Spec.Devices = []api.DeviceTemplate{{Name: "web", Type: api.DeviceTypeContainer, Image: image}}
+		return l
+	}
+	for _, ok := range []string{"nginx", "ghcr.io/acme/app:1", "localhost:5035/c/gcr.io/x/y:1", "localhost:5035/platform/t@sha256:" + strings.Repeat("a", 64), ""} {
+		if err := r.validateRegistries(lab(ok)); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	err := r.validateRegistries(lab("gcr.io/acme/web"))
+	if err == nil || !strings.HasPrefix(err.Error(), "REGISTRY_NOT_ALLOWED: device \"web\"") {
+		t.Fatalf("got %v", err)
+	}
+	if err := (&LabReconciler{}).validateRegistries(lab("gcr.io/acme/web")); err != nil {
+		t.Errorf("no list, no refusal: %v", err)
+	}
+	// it is part of the validation the reconciler runs
+	if refusal, off, err := r.validateGatewaysAndServers(context.Background(), lab("gcr.io/acme/web")); err != nil || off || refusal == nil {
+		t.Errorf("validateGatewaysAndServers: %v %v %v", refusal, off, err)
+	}
+}

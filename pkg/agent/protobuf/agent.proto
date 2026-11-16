@@ -1211,6 +1211,16 @@ message FeaturesResponse {
   ActivityFeature activity = 22;
   // The internet gateway (contract 2.8).
   InternetFeature internet = 23;
+  // The registries the laboratory pulls lab images from (chart registry.allowedRegistries; contract 2.8). An image from another registry
+  // is refused (PermissionDenied, ErrorInfo reason REGISTRY_NOT_ALLOWED). Absent = an agent older than the field: no list is enforced.
+  AllowedRegistriesFeature allowed_registries = 24;
+}
+
+// The list of allowed registries. any is true when every registry is allowed (the chart list holds "*"); registries is then empty.
+message AllowedRegistriesFeature {
+  bool any = 1;
+  // Canonical hosts ("docker.io", "ghcr.io", "registry.example.com:5000"), the platform's own image registries included.
+  repeated string registries = 2;
 }
 
 // ActivityFeature: enabled is true when the cluster keeps raw activity facts for GetLabGroupActivity (the chart value

@@ -95,6 +95,8 @@ type LabReconciler struct {
 	// PinEvents wakes a lab when a resolution it waited for is done (the Pinner's Notify sends the lab's key here); nil: the lab looks
 	// again after pinningRecheck.
 	PinEvents <-chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab]
+	// AllowedRegistries are the registries lab images may come from (empty or "*": every one); the agent refuses the same at creation.
+	AllowedRegistries []string
 	// NetConfigImage is the image of the device netconfig init-container, pinned
 	// together with the device images.
 	NetConfigImage string

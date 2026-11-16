@@ -288,6 +288,36 @@ IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
 IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
 IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
 IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
+ALLOWED_REGISTRIES: {{ include "laboratory.allowedRegistries" . | quote }}
+{{- end }}
+
+{{/*
+The registry host of an image repository: the first path part when it looks like a host (a dot, a port or localhost), docker.io otherwise.
+*/}}
+{{- define "laboratory.imageHost" -}}
+{{- $first := first (splitList "/" .) -}}
+{{- if and (contains "/" .) (or (contains "." $first) (contains ":" $first) (eq $first "localhost")) -}}{{ lower $first }}{{- else -}}docker.io{{- end -}}
+{{- end }}
+
+{{/*
+The registries lab images may come from, comma separated: registry.allowedRegistries plus the registries of the platform's own images
+the operator puts in lab namespaces (VPN, gateway, netconfig), so the list can never lock the platform out. "*" alone when the list holds it
+(every registry). Docker Hub is always spelled docker.io.
+*/}}
+{{- define "laboratory.allowedRegistries" -}}
+{{- $hub := list "index.docker.io" "registry-1.docker.io" "registry.hub.docker.com" -}}
+{{- $list := list -}}
+{{- range .Values.registry.allowedRegistries -}}
+{{- $e := lower (trim .) -}}
+{{- if has $e $hub -}}{{- $e = "docker.io" -}}{{- end -}}
+{{- if $e -}}{{- $list = append $list $e -}}{{- end -}}
+{{- end -}}
+{{- if has "*" $list -}}*{{- else -}}
+{{- range list .Values.vpn.image.repository .Values.inetGateway.image.repository .Values.nodeAgent.image.repository -}}
+{{- $list = append $list (include "laboratory.imageHost" .) -}}
+{{- end -}}
+{{- $list | uniq | sortAlpha | join "," -}}
+{{- end -}}
 {{- end }}
 
 {{/*

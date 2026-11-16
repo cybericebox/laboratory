@@ -111,6 +111,8 @@ type Handler struct {
 	// are the addresses of the platform registry and cache (tenants may not name them).
 	imageDeny  []string
 	imageCache []string
+	// allowedRegistries are the registries lab images may come from (empty or "*": every one).
+	allowedRegistries []string
 	// platformOnly: every tenant runs platform images only; platformPrefix is the registry as the nodes see it ("" = the default).
 	platformOnly   bool
 	platformPrefix string
@@ -148,6 +150,10 @@ func (h *Handler) SetImagePolicy(deny []string, cacheAddrs ...string) {
 	h.imageDeny = deny
 	h.imageCache = cacheAddrs
 }
+
+// SetAllowedRegistries sets the registries lab images may come from; an image from another registry is refused with
+// REGISTRY_NOT_ALLOWED. Empty, or a list with "*", allows every registry.
+func (h *Handler) SetAllowedRegistries(registries []string) { h.allowedRegistries = registries }
 
 // SetPlatformImages sets the platform images part of the image policy: the registry address as the nodes see it (empty = the default
 // localhost forwarder) that a platform reference is mapped to, and whether every tenant runs platform images only. A tenant can also be

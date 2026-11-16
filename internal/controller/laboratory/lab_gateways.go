@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -14,6 +15,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/gatewayspec"
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -61,8 +63,26 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 			return fmt.Errorf("%s: %s", rf.Reason, rf.Text), false, nil
 		}
 	}
+	if refusal = r.validateRegistries(lab); refusal != nil {
+		return refusal, false, nil
+	}
 	off, err := r.groupServerOff(ctx, lab)
 	return off, off != nil, err
+}
+
+// validateRegistries refuses a lab with a device image from a registry that is not on the list of allowed registries. An image of the
+// platform registry or the cache (the node's localhost forwarder) is not looked at: the agent has admitted it, and its own rules apply.
+func (r *LabReconciler) validateRegistries(lab *laboratoryv1alpha1.Lab) error {
+	for i := range lab.Spec.Devices {
+		img := lab.Spec.Devices[i].Image
+		if img == "" || strings.HasPrefix(img, names.RegistryNodePrefix+"/") || imagepolicy.IsPlatformScheme(img) {
+			continue
+		}
+		if err := imagepolicy.RegistryAllowed(r.AllowedRegistries, img); err != nil {
+			return fmt.Errorf("%s: device %q: %v", imagepolicy.ReasonRegistryNotAllowed, lab.Spec.Devices[i].Name, err)
+		}
+	}
+	return nil
 }
 
 // groupServerOff is the refusal of a lab that declares a gateway whose server its group has switched off (spec.vpn.enabled for a VPN

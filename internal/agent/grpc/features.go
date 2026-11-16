@@ -14,6 +14,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/gatewayspec"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
@@ -152,16 +153,17 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			}
 			p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
 			base = &protobuf.FeaturesResponse{
-				Tenant:          name,
-				ContractVersion: client.ContractVersion,
-				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
-				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
-				Checks:          h.checksFeature(),
-				Access:          h.accessFeature(),
-				Internet:        &protobuf.InternetFeature{Enabled: h.cluster().Internet},
-				Bootstrap:       bootstrapFeature(),
-				Vpn:             h.vpnFeature(),
-				Activity:        h.activityFeature(),
+				Tenant:            name,
+				ContractVersion:   client.ContractVersion,
+				GroupLimits:       &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
+				Lifecycle:         cloneLifecycleFeature(f.Lifecycle),
+				Checks:            h.checksFeature(),
+				Access:            h.accessFeature(),
+				Internet:          &protobuf.InternetFeature{Enabled: h.cluster().Internet},
+				AllowedRegistries: h.allowedRegistriesFeature(),
+				Bootstrap:         bootstrapFeature(),
+				Vpn:               h.vpnFeature(),
+				Activity:          h.activityFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,
 					DefaultDebounceMs:  f.Debounce.Milliseconds(),
@@ -312,4 +314,21 @@ func (h *Handler) maxLabGateways() int {
 		return h.features.MaxLabGateways
 	}
 	return gatewayspec.DefaultMax
+}
+
+// allowedRegistriesFeature is the list of registries lab images may come from, as GetFeatures reports it: canonical hosts, or any.
+func (h *Handler) allowedRegistriesFeature() *protobuf.AllowedRegistriesFeature {
+	out := &protobuf.AllowedRegistriesFeature{}
+	if len(h.allowedRegistries) == 0 {
+		out.Any = true
+		return out
+	}
+	for _, r := range h.allowedRegistries {
+		if r = strings.TrimSpace(r); r == imagepolicy.AnyRegistry {
+			return &protobuf.AllowedRegistriesFeature{Any: true}
+		} else if r != "" {
+			out.Registries = append(out.Registries, imagepolicy.CanonicalRegistry(r))
+		}
+	}
+	return out
 }
