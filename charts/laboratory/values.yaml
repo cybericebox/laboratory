@@ -69,10 +69,11 @@ operator:
 
   leaderElection: true
 
+  # A starting value for the default workers (operator.workers) and API rate (operator.api): set it from the load run.
   resources:
     limits:
-      cpu: 500m
-      memory: 128Mi
+      cpu: "2"
+      memory: 512Mi
     requests:
       cpu: 10m
       memory: 64Mi

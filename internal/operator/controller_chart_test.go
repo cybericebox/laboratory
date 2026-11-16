@@ -63,7 +63,7 @@ func TestControllerStartupProbeAllowsExistingBootstrapBudgets(t *testing.T) {
 	if manager.LivenessProbe.PeriodSeconds != 20 || manager.ReadinessProbe.PeriodSeconds != 10 || manager.ReadinessProbe.HTTPGet.Path != "/readyz" {
 		t.Fatal("normal probe behavior changed")
 	}
-	if manager.Resources.Limits.Cpu().MilliValue() != 500 || manager.Resources.Limits.Memory().Value() != 128<<20 {
+	if manager.Resources.Limits.Cpu().MilliValue() != 2000 || manager.Resources.Limits.Memory().Value() != 512<<20 {
 		t.Fatal("controller resource limits changed")
 	}
 	scheduler := deployments["laboratory-scheduler"].Spec.Template.Spec.Containers[0]
