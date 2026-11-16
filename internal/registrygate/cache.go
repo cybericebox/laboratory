@@ -43,9 +43,8 @@ type Cache struct {
 	checks, reval, fills flight
 	pending              pendingSet
 
-	mu     sync.Mutex
-	listed map[string]map[string]struct{} // repository -> digests a manifest of it (fetched with a proof) lists
-	where  map[string]map[string]struct{} // digest -> cache repositories that hold it in zot
+	mu    sync.Mutex
+	where map[string]map[string]struct{} // digest -> cache repositories that hold it in zot
 }
 
 // NewCache assembles the cache path.
@@ -54,7 +53,7 @@ func NewCache(regs *RegistrySet, key []byte, up *Upstream, zot *Zot, store *Stor
 		m = NewMetrics()
 	}
 	return &Cache{Registries: regs, Key: key, Up: up, Zot: zot, Store: store, M: m, DiskFull: func() bool { return false },
-		listed: map[string]map[string]struct{}{}, where: map[string]map[string]struct{}{}}
+		where: map[string]map[string]struct{}{}}
 }
 
 type caller struct {
@@ -114,6 +113,10 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.M.refusals.WithLabelValues("unavailable").Inc()
 		refuse(w, status, "UNAVAILABLE", reasonUnavailable, false)
 		return
+	case http.StatusNotFound:
+		c.M.refusals.WithLabelValues("not_found").Inc()
+		refuse(w, status, "NAME_UNKNOWN", "the object is not in the upstream repository", false)
+		return
 	case http.StatusBadGateway:
 		c.M.refusals.WithLabelValues("bad_gateway").Inc()
 		refuse(w, status, "UNAVAILABLE", "the upstream registry gave no digest", false)
@@ -156,9 +159,10 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 	key := DecisionKey{Hash: who.hash, Repo: o.fullRepo()}
 	if o.isTag() {
 		// a tag moves: the one HEAD that resolves it is a fresh check too
+		started := c.Store.Now()
 		out, hdr, _ := c.Up.Head(ctx, reg, up, who.creds, who.hash)
 		c.M.checks.WithLabelValues(outcomeName(out)).Inc()
-		serve := c.Store.Record(key, who.tenant, out)
+		serve := c.Store.Record(key, who.tenant, out, started)
 		if !serve {
 			return "", statusOf(out, who.hash == "")
 		}
@@ -199,9 +203,10 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 }
 
 func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object) int {
+	started := c.Store.Now()
 	out, _ := c.Up.Check(ctx, reg, up, who.creds, who.hash)
 	c.M.checks.WithLabelValues(outcomeName(out)).Inc()
-	if c.Store.Record(key, who.tenant, out) {
+	if c.Store.Record(key, who.tenant, out, started) {
 		return http.StatusOK
 	}
 	return statusOf(out, who.hash == "")
@@ -211,8 +216,11 @@ func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, w
 // not a misleading 401, except for a request without credentials: its 401 makes containerd come back with the pod's credentials, which
 // may still be served from a verified decision.
 func statusOf(o Outcome, anonymous bool) int {
-	if o == Unreachable && !anonymous {
+	switch {
+	case o == Unreachable && !anonymous:
 		return http.StatusServiceUnavailable
+	case o == NotFound && !anonymous:
+		return http.StatusNotFound
 	}
 	return http.StatusUnauthorized
 }
@@ -223,6 +231,8 @@ func outcomeName(o Outcome) string {
 		return "allowed"
 	case Denied:
 		return "denied"
+	case NotFound:
+		return "not_found"
 	}
 	return "unreachable"
 }
@@ -247,31 +257,36 @@ func (c *Cache) holds(repo, digest string) {
 	c.where[digest][repo] = struct{}{}
 }
 
-func (c *Cache) noteListed(repo string, digests []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.listed[repo] == nil {
-		c.listed[repo] = map[string]struct{}{}
-	}
-	for _, d := range digests {
-		c.listed[repo][d] = struct{}{}
-	}
-}
-
-// mountSource is a repository that holds the blob in zot, when a manifest of this repository (fetched with a proof) lists the blob: only
-// then may the blob be linked in without asking upstream.
+// mountSource is a repository that holds the blob in zot. Holding it is not the caller's right to it: a manifest that lists a digest
+// proves nothing (whoever controls an upstream repository can list any digest), so a blob is linked into a repository only after
+// proveBlob.
 func (c *Cache) mountSource(repo, digest string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.listed[repo][digest]; !ok {
-		return ""
-	}
 	for other := range c.where[digest] {
 		if other != repo {
 			return other
 		}
 	}
 	return ""
+}
+
+// proveBlob is the proof that THIS blob is in the requesting repository for the caller: one HEAD upstream with the caller's own
+// credentials, kept for MaxAge per credential, repository and digest. It stands before a blob that was not fetched for this
+// repository is linked in or served.
+func (c *Cache) proveBlob(ctx context.Context, reg Registry, o objectRef, who caller) bool {
+	k := BlobKey{Hash: who.hash, Repo: o.fullRepo(), Digest: o.Ref}
+	if c.Store.BlobProven(k) {
+		return true
+	}
+	started := c.Store.Now()
+	out, _, _ := c.Up.Head(ctx, reg, Object{Repo: o.Repo, Kind: kindBlobs, Ref: o.Ref}, who.creds, who.hash)
+	c.M.checks.WithLabelValues("blob_" + outcomeName(out)).Inc()
+	if out != Allowed {
+		return false
+	}
+	c.Store.BlobProve(k, started)
+	return true
 }
 
 func copyHeaders(w http.ResponseWriter, h http.Header, names ...string) {
@@ -314,7 +329,7 @@ func (c *Cache) serveManifest(w http.ResponseWriter, r *http.Request, reg Regist
 	resp, out, _ := c.Up.Fetch(ctx, reg, up, fc, fk)
 	if resp == nil {
 		c.M.fills.WithLabelValues("manifest", "upstream_"+outcomeName(out)).Inc()
-		c.refuseUpstream(w, out, nil)
+		c.refuseUpstream(w, out, who.hash == "")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -331,7 +346,6 @@ func (c *Cache) serveManifest(w http.ResponseWriter, r *http.Request, reg Regist
 		return
 	}
 	ct := manifestType(body, resp.Header.Get("Content-Type"))
-	c.noteListed(repo, listedDigests(body))
 	c.remember(ctx, repo, o.Ref, ct, body)
 	c.writeManifest(w, r, ct, o.Ref, body)
 }
@@ -361,28 +375,6 @@ func manifestType(body []byte, sent string) string {
 	return "application/vnd.oci.image.manifest.v1+json"
 }
 
-// listedDigests are the blobs a manifest names (its config and layers); the children of an index are manifests, fetched and listed in
-// their own turn.
-func listedDigests(body []byte) []string {
-	var m struct {
-		Config struct{ Digest string }   `json:"config"`
-		Layers []struct{ Digest string } `json:"layers"`
-	}
-	if json.Unmarshal(body, &m) != nil {
-		return nil
-	}
-	var out []string
-	if reDigest.MatchString(m.Config.Digest) {
-		out = append(out, m.Config.Digest)
-	}
-	for _, l := range m.Layers {
-		if reDigest.MatchString(l.Digest) {
-			out = append(out, l.Digest)
-		}
-	}
-	return out
-}
-
 var errFillFailed = errors.New("the blob could not be stored")
 
 func (c *Cache) serveBlob(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller) {
@@ -392,9 +384,9 @@ func (c *Cache) serveBlob(w http.ResponseWriter, r *http.Request, reg Registry, 
 		return
 	}
 	if r.Method == http.MethodHead {
-		out, hdr, err := c.Up.Head(ctx, reg, up, who.creds, who.hash)
+		out, hdr, _ := c.Up.Head(ctx, reg, up, who.creds, who.hash)
 		if out != Allowed {
-			c.refuseUpstream(w, out, err)
+			c.refuseUpstream(w, out, who.hash == "")
 			return
 		}
 		copyHeaders(w, hdr, "Content-Length", "Content-Type")
@@ -403,7 +395,7 @@ func (c *Cache) serveBlob(w http.ResponseWriter, r *http.Request, reg Registry, 
 		return
 	}
 	c.M.cache.WithLabelValues("blob", "miss").Inc()
-	if src := c.mountSource(repo, o.Ref); src != "" {
+	if src := c.mountSource(repo, o.Ref); src != "" && c.proveBlob(ctx, reg, o, who) {
 		if err := c.Zot.Mount(ctx, repo, o.Ref, src); err == nil {
 			c.M.cache.WithLabelValues("blob", "mounted").Inc()
 			c.holds(repo, o.Ref)
@@ -431,7 +423,7 @@ func (c *Cache) serveBlob(w http.ResponseWriter, r *http.Request, reg Registry, 
 		return // streamed to this client while stored (or cut: the connection tells the client)
 	}
 	if leader && err != nil && !errors.Is(err, errFillFailed) {
-		c.refuseFill(w, err) // upstream said no, or could not be reached, before anything was sent
+		c.refuseFill(w, err, who.hash == "") // upstream said no, or could not be reached, before anything was sent
 		return
 	}
 	if c.serveBlobFromZot(w, r, repo, o.Ref) {
@@ -441,22 +433,25 @@ func (c *Cache) serveBlob(w http.ResponseWriter, r *http.Request, reg Registry, 
 	c.streamThrough(w, r, reg, up, o.Ref, who)
 }
 
-func (c *Cache) refuseUpstream(w http.ResponseWriter, out Outcome, _ error) {
-	if out == Denied {
+func (c *Cache) refuseUpstream(w http.ResponseWriter, out Outcome, anonymous bool) {
+	switch statusOf(out, anonymous) {
+	case http.StatusUnauthorized:
 		refuse(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", true)
-		return
+	case http.StatusNotFound:
+		refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "the object is not in the upstream repository", false)
+	default:
+		refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", reasonUnavailable, false)
 	}
-	refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", reasonUnavailable, false)
 }
 
 type fillRefused struct{ out Outcome }
 
 func (e fillRefused) Error() string { return "upstream refused the blob: " + outcomeName(e.out) }
 
-func (c *Cache) refuseFill(w http.ResponseWriter, err error) {
+func (c *Cache) refuseFill(w http.ResponseWriter, err error, anonymous bool) {
 	var fr fillRefused
 	if errors.As(err, &fr) {
-		c.refuseUpstream(w, fr.out, nil)
+		c.refuseUpstream(w, fr.out, anonymous)
 		return
 	}
 	refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", reasonUnavailable, false)
@@ -565,9 +560,9 @@ func (l *lenient) Write(p []byte) (int, error) {
 func (c *Cache) streamThrough(w http.ResponseWriter, r *http.Request, reg Registry, up Object, digest string, who caller) {
 	up.Range = r.Header.Get("Range")
 	fc, fk := c.fillCreds(who, reg.Name)
-	resp, out, err := c.Up.Fetch(r.Context(), reg, up, fc, fk)
+	resp, out, _ := c.Up.Fetch(r.Context(), reg, up, fc, fk)
 	if resp == nil {
-		c.refuseUpstream(w, out, err)
+		c.refuseUpstream(w, out, who.hash == "")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()

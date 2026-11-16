@@ -2728,8 +2728,10 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
   first: the gate keeps the manifest in memory and stores it in zot (by digest and under a tag of its own, which is what
   zot's retention works on) when the last blob it lists is stored. A blob is stored while it is streamed to the pod; a
   second pull of the same layer, also at the same time, waits for that one download. A layer that another cached
-  repository holds is linked in without a download, but only when a manifest of this repository, fetched with a proof,
-  lists it.
+  repository holds is linked in without a download, but only after one `HEAD` of that exact blob in the requesting
+  repository with the caller's own credentials answered 200 (a manifest that lists a digest proves nothing). A `404` for
+  an object is answered `404` and changes no decision; only `401`, `403` or a refused token refuse a repository. A
+  redirect from the upstream registry is never a proof: only a `200` is.
 - **A full volume.** Above `registry.cache.diskHighWater` percent of the volume the gate stores nothing new: a miss is
   streamed through from the upstream registry with the pull's credentials, hits are still served. Pods keep starting,
   slower.

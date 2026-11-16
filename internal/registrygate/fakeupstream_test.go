@@ -33,8 +33,11 @@ type fakeUpstream struct {
 	emptyScope bool
 	redirect   bool // blobs answer 307 to the CDN
 	plainCDN   bool // ... to the plain-http one
-	calls      map[string]*atomic.Int64
-	authSeen   []string // Authorization header of every request to the CDN
+	// redirectManifests: manifests redirect to the CDN too, whoever asks (a registry that redirects without looking at who asks).
+	redirectManifests bool
+	cdnStatus         int // when set, the CDN answers this instead of the object
+	calls             map[string]*atomic.Int64
+	authSeen          []string // Authorization header of every request to the CDN
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
@@ -45,8 +48,13 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		f.mu.Lock()
 		f.authSeen = append(f.authSeen, r.Header.Get("Authorization"))
 		body := f.objects[strings.TrimPrefix(r.URL.Path, "/cdn")]
+		status := f.cdnStatus
 		f.mu.Unlock()
 		f.count("cdn")
+		if status != 0 {
+			w.WriteHeader(status)
+			return
+		}
 		_, _ = w.Write(body)
 	})
 	f.cdn, f.cdnPlain = httptest.NewTLSServer(cdn), httptest.NewServer(cdn)
@@ -146,6 +154,18 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	f.count(r.Method + " " + repo)
 	if fail != 0 {
 		w.WriteHeader(fail)
+		return
+	}
+	f.mu.Lock()
+	redirectManifest := f.redirectManifests
+	f.mu.Unlock()
+	if redirectManifest && strings.Contains(r.URL.Path, "/manifests/") {
+		target := f.cdn.URL
+		if f.plainCDN {
+			target = f.cdnPlain.URL
+		}
+		w.Header().Set("Location", target+"/cdn"+r.URL.Path)
+		w.WriteHeader(http.StatusTemporaryRedirect)
 		return
 	}
 	ok := false

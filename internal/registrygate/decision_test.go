@@ -25,7 +25,7 @@ func TestDecisionTable(t *testing.T) {
 	if got := s.Lookup(key, "a"); got != Check {
 		t.Fatalf("no record: %v", got)
 	}
-	if !s.Record(key, "a", Allowed) {
+	if !s.Record(key, "a", Allowed, c.now()) {
 		t.Fatal("an allow serves")
 	}
 	if got := s.Lookup(key, "a"); got != Serve {
@@ -46,12 +46,12 @@ func TestDecisionTable(t *testing.T) {
 	if got := s.Lookup(key, "a"); got != Check {
 		t.Fatalf("older than stale-if-error even a verified tenant is checked before it is served: %v", got)
 	}
-	s.Record(key, "a", Allowed)
-	s.Record(key, "a", Allowed)
+	s.Record(key, "a", Allowed, c.now())
+	s.Record(key, "a", Allowed, c.now())
 	if got := s.Lookup(key, "b"); got != Check {
 		t.Fatalf("a fresh record of tenant a does not verify tenant b: %v", got)
 	}
-	s.Record(key, "b", Allowed)
+	s.Record(key, "b", Allowed, c.now())
 	if got := s.Lookup(key, "b"); got != Serve {
 		t.Fatalf("tenant b verified: %v", got)
 	}
@@ -62,9 +62,9 @@ func TestDecisionTable(t *testing.T) {
 
 func TestDenyIsClusterWideAndShortLived(t *testing.T) {
 	s, c := newTestStore()
-	s.Record(key, "a", Allowed)
-	s.Record(key, "b", Allowed)
-	if s.Record(key, "a", Denied) {
+	s.Record(key, "a", Allowed, c.now())
+	s.Record(key, "b", Allowed, c.now())
+	if s.Record(key, "a", Denied, c.now()) {
 		t.Fatal("a refusal does not serve")
 	}
 	// the refusal of tenant a applies to tenant b at once: same hash, same repository
@@ -80,15 +80,15 @@ func TestDenyIsClusterWideAndShortLived(t *testing.T) {
 		t.Fatalf("older than 30 s: a fresh check: %v", got)
 	}
 	// the deny cleared the verified set: after an allow, tenant b must be checked again
-	s.Record(key, "a", Allowed)
+	s.Record(key, "a", Allowed, c.now())
 	if got := s.Lookup(key, "b"); got != Check {
 		t.Fatalf("the verified set was cleared by the deny: %v", got)
 	}
 }
 
 func TestDifferentHashOrRepositoryAreOtherDecisions(t *testing.T) {
-	s, _ := newTestStore()
-	s.Record(key, "a", Allowed)
+	s, c := newTestStore()
+	s.Record(key, "a", Allowed, c.now())
 	if s.Lookup(DecisionKey{Hash: "h2", Repo: key.Repo}, "a") != Check {
 		t.Fatal("another credential is another decision")
 	}
@@ -99,23 +99,23 @@ func TestDifferentHashOrRepositoryAreOtherDecisions(t *testing.T) {
 
 func TestStaleIfError(t *testing.T) {
 	s, c := newTestStore()
-	s.Record(key, "a", Allowed)
+	s.Record(key, "a", Allowed, c.now())
 	c.advance(9 * time.Minute)
-	if !s.Record(key, "a", Unreachable) {
+	if !s.Record(key, "a", Unreachable, c.now()) {
 		t.Fatal("a verified tenant inside stale-if-error is served while upstream is unreachable")
 	}
 	c.advance(2 * time.Minute)
-	if s.Record(key, "a", Unreachable) {
+	if s.Record(key, "a", Unreachable, c.now()) {
 		t.Fatal("older than stale-if-error: refused (503), not served")
 	}
-	if s.Record(key, "new", Unreachable) {
+	if s.Record(key, "new", Unreachable, c.now()) {
 		t.Fatal("a new tenant is refused while upstream is unreachable")
 	}
-	if s.Record(DecisionKey{Hash: "other", Repo: key.Repo}, "a", Unreachable) {
+	if s.Record(DecisionKey{Hash: "other", Repo: key.Repo}, "a", Unreachable, c.now()) {
 		t.Fatal("no record: refused")
 	}
 	// an unreachable upstream is not a denial: the record is kept
-	s.Record(key, "a", Allowed)
+	s.Record(key, "a", Allowed, c.now())
 	if got := s.Lookup(key, "a"); got != Serve {
 		t.Fatalf("%v", got)
 	}
@@ -127,7 +127,7 @@ func TestAnonymousDecisions(t *testing.T) {
 	if s.Lookup(anon, "") != Check {
 		t.Fatal("unknown: ask upstream anonymously")
 	}
-	s.Record(anon, "", Allowed)
+	s.Record(anon, "", Allowed, c.now())
 	if s.Lookup(anon, "") != Serve {
 		t.Fatal("public: serve")
 	}
@@ -139,23 +139,104 @@ func TestAnonymousDecisions(t *testing.T) {
 	if s.Lookup(anon, "") != Check {
 		t.Fatal("very old: a fresh check, which in an outage is answered by the earlier allow")
 	}
-	if !s.Record(anon, "", Unreachable) {
+	if !s.Record(anon, "", Unreachable, c.now()) {
 		t.Fatal("an anonymous image allowed earlier is served for the whole outage")
 	}
-	s.Record(anon, "", Denied)
+	s.Record(anon, "", Denied, c.now())
 	if s.Lookup(anon, "") != Refuse {
 		t.Fatal("not public: refused, containerd retries with credentials")
 	}
-	if s.Record(DecisionKey{Repo: "docker.io/never/seen"}, "", Unreachable) {
+	if s.Record(DecisionKey{Repo: "docker.io/never/seen"}, "", Unreachable, c.now()) {
 		t.Fatal("never allowed: refused during the outage")
+	}
+}
+
+// A check that began before another one never replaces what the other found: a slow check that began before a revocation finishes later
+// and must not allow again what a later check refused (and the reverse: a slow refusal does not undo a newer allow).
+func TestAnOlderCheckNeverOverridesANewerRecord(t *testing.T) {
+	s, c := newTestStore()
+	s.Record(key, "a", Allowed, c.now())
+	slowStart := c.now() // check A begins: it will answer "allowed"
+	c.advance(time.Second)
+	fastStart := c.now() // check B begins after the revocation and answers "denied" first
+	if s.Record(key, "a", Denied, fastStart) {
+		t.Fatal("B refuses")
+	}
+	c.advance(time.Second)
+	if s.Record(key, "a", Allowed, slowStart) {
+		t.Fatal("the slow allow that began before the refusal must not serve")
+	}
+	if got := s.Lookup(key, "a"); got != Refuse {
+		t.Fatalf("the record stays denied: %v", got)
+	}
+	if got := s.Lookup(key, "b"); got != Refuse {
+		t.Fatalf("for every tenant of the hash: %v", got)
+	}
+
+	// the reverse: a slow denial that began before a newer allow does not undo it
+	c.advance(time.Minute)
+	slowDeny := c.now()
+	c.advance(time.Second)
+	s.Record(key, "a", Allowed, c.now())
+	if !s.Record(key, "a", Denied, slowDeny) {
+		t.Fatal("the tenant stays verified by the newer allow")
+	}
+	if got := s.Lookup(key, "a"); got != Serve {
+		t.Fatalf("%v", got)
+	}
+	// a check that began later does replace it
+	c.advance(time.Second)
+	s.Record(key, "a", Denied, c.now())
+	if got := s.Lookup(key, "a"); got != Refuse {
+		t.Fatalf("%v", got)
+	}
+}
+
+// A missing object (404) is not a refusal of the repository: it changes no decision and is never served.
+func TestNotFoundLeavesTheDecisionAlone(t *testing.T) {
+	s, c := newTestStore()
+	if s.Record(key, "a", NotFound, c.now()) {
+		t.Fatal("a missing object is not served")
+	}
+	if got := s.Lookup(key, "a"); got != Check {
+		t.Fatalf("no record was made by a 404: %v", got)
+	}
+	s.Record(key, "a", Allowed, c.now())
+	if s.Record(key, "a", NotFound, c.now()) {
+		t.Fatal("a missing object is not served even in an allowed repository")
+	}
+	if got := s.Lookup(key, "a"); got != Serve {
+		t.Fatalf("the allow stands: %v", got)
+	}
+}
+
+// A blob proof belongs to the credential, the repository and the digest, and lasts MaxAge.
+func TestBlobProofs(t *testing.T) {
+	s, c := newTestStore()
+	k := BlobKey{Hash: "h", Repo: "up/org/img", Digest: "sha256:" + string(make([]byte, 0))}
+	if s.BlobProven(k) {
+		t.Fatal("nothing proven yet")
+	}
+	s.BlobProve(k, c.now())
+	if !s.BlobProven(k) {
+		t.Fatal("proven")
+	}
+	for _, o := range []BlobKey{{"h2", k.Repo, k.Digest}, {"h", "up/org/other", k.Digest}, {"h", k.Repo, k.Digest + "x"}} {
+		if s.BlobProven(o) {
+			t.Fatalf("a proof is not transferable: %+v", o)
+		}
+	}
+	c.advance(3 * time.Minute)
+	if s.BlobProven(k) {
+		t.Fatal("a proof is kept for MaxAge")
 	}
 }
 
 func TestForgetKeepsAnonymousAndRecentDecisions(t *testing.T) {
 	s, c := newTestStore()
-	s.Record(key, "a", Allowed)
+	s.Record(key, "a", Allowed, c.now())
 	anon := DecisionKey{Repo: "docker.io/library/nginx"}
-	s.Record(anon, "", Allowed)
+	s.Record(anon, "", Allowed, c.now())
 	c.advance(21 * time.Minute)
 	s.Forget()
 	if s.Len() != 1 {

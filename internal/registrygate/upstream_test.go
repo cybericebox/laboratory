@@ -49,8 +49,8 @@ func TestCheckPublicPrivateAndWrongCredentials(t *testing.T) {
 	if o, _ := u.Check(ctx, reg, obj("org/private", dPriv), Creds{"alice", "wrong"}, "h-wrong"); o != Denied {
 		t.Fatalf("a wrong password is refused by the token endpoint: %v", o)
 	}
-	if o, _ := u.Check(ctx, reg, obj("org/private", "sha256:00"), Creds{"alice", "pw"}, "h-alice"); o != Denied {
-		t.Fatalf("an object that does not exist: %v", o)
+	if o, _ := u.Check(ctx, reg, obj("org/private", "sha256:00"), Creds{"alice", "pw"}, "h-alice"); o != NotFound {
+		t.Fatalf("an object that does not exist is NotFound, not a refusal of the repository: %v", o)
 	}
 }
 
@@ -139,5 +139,37 @@ func TestFetchRefusesARedirectToAnotherHostOverPlainHTTP(t *testing.T) {
 	resp, o, _ := NewUpstream(5*time.Second).Fetch(context.Background(), f.registry("up"), Object{Repo: "org/private", Kind: "blobs", Ref: d}, Creds{"alice", "pw"}, "h")
 	if resp != nil || o == Allowed || f.n("cdn") != 0 {
 		t.Fatalf("a redirect over plain http to another host must not be followed: %v %d", o, f.n("cdn"))
+	}
+}
+
+// A redirect is no proof of access: a registry may redirect without looking at who asks. It is followed without Authorization and only
+// a 200 at the end is Allowed; a CDN that refuses or fails is an outage of the transport, never a denial, and a redirect over plain
+// http to another host is not followed.
+func TestARedirectIsNoProof(t *testing.T) {
+	f := newFakeUpstream(t)
+	f.users["alice"] = "pw"
+	f.repos["org/private"] = map[string]bool{"alice": true}
+	d := f.put("org/private", "manifests", []byte("m"))
+	f.redirectManifests = true
+	u := NewUpstream(5 * time.Second)
+	u.HTTP.Transport = f.cdn.Client().Transport
+	reg := f.registry("up")
+	ctx := context.Background()
+
+	if o, _ := u.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o != Allowed || len(f.authSeen) != 1 || f.authSeen[0] != "" {
+		t.Fatalf("followed without Authorization, 200 at the end: %v %q", o, f.authSeen)
+	}
+	for _, code := range []int{401, 403, 404, 500} {
+		f.cdnStatus = code
+		if o, _ := u.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o != Unreachable {
+			t.Errorf("the CDN answers %d: that is not the registry's word, the outcome is Unreachable, got %v", code, o)
+		}
+	}
+	f.cdnStatus = 0
+	f.plainCDN = true
+	f.redirect = true
+	u2 := NewUpstream(5 * time.Second)
+	if o, _ := u2.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o == Allowed {
+		t.Fatalf("a redirect over plain http to another host is not followed: %v", o)
 	}
 }
