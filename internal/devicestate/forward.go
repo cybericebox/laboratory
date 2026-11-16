@@ -2,10 +2,14 @@ package devicestate
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +37,13 @@ func Forward(ctx context.Context, listen, target string, log logr.Logger, opts .
 	if err != nil {
 		return err
 	}
-	if o.readerUser != "" {
+	if o.tlsCAFile != "" {
+		if err := o.loadTLS(target); err != nil {
+			_ = ln.Close()
+			return err
+		}
+	}
+	if o.readerUser != "" || o.tlsConf != nil {
 		return serveReader(ctx, ln, target, o, log)
 	}
 	go func() {
@@ -87,7 +97,36 @@ func relay(ctx context.Context, client net.Conn, target string, log logr.Logger)
 // ForwardOption configures Forward.
 type ForwardOption func(*forwardOptions)
 
-type forwardOptions struct{ readerUser, readerPassword, host string }
+type forwardOptions struct {
+	readerUser, readerPassword, host string
+	// tlsCAFile makes the relay speak TLS to the registry, trusting only that certificate authority (PEM): the pull credentials of the
+	// image cache pass this relay and must not cross the cluster network in the clear. It is an HTTP-aware relay then, as with a reader.
+	tlsCAFile string
+	tlsConf   *tls.Config
+}
+
+// WithTLS makes the forwarder dial the registry over TLS, trusting only the certificate authority in caFile; the name the server's
+// certificate must carry is the host of the target.
+func WithTLS(caFile string) ForwardOption {
+	return func(o *forwardOptions) { o.tlsCAFile = caFile }
+}
+
+func (o *forwardOptions) loadTLS(target string) error {
+	pem, err := os.ReadFile(o.tlsCAFile)
+	if err != nil {
+		return fmt.Errorf("registry CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return fmt.Errorf("registry CA %s holds no certificate", o.tlsCAFile)
+	}
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		host = target
+	}
+	o.tlsConf = &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}
+	return nil
+}
 
 // WithReader makes the forwarder add the reader account to the reads of the snapshot repositories.
 func WithReader(user, password string) ForwardOption {
@@ -113,11 +152,20 @@ func needsReader(method, path string) bool {
 
 // readerHandler relays registry requests to target, adding the reader account where needsReader says so.
 func readerHandler(target string, o forwardOptions) http.Handler {
+	scheme := "http"
+	var transport http.RoundTripper
+	if o.tlsConf != nil {
+		scheme = "https"
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = o.tlsConf
+		transport = tr
+	}
 	proxy := &httputil.ReverseProxy{
+		Transport: transport,
 		Director: func(r *http.Request) {
 			hostOK := o.host == "" || strings.EqualFold(r.Host, o.host)
-			r.URL.Scheme, r.URL.Host, r.Host = "http", target, target
-			if hostOK && r.Header.Get("Authorization") == "" && needsReader(r.Method, r.URL.Path) {
+			r.URL.Scheme, r.URL.Host, r.Host = scheme, target, target
+			if o.readerUser != "" && hostOK && r.Header.Get("Authorization") == "" && needsReader(r.Method, r.URL.Path) {
 				r.SetBasicAuth(o.readerUser, o.readerPassword)
 			}
 		},

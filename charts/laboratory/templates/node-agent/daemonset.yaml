@@ -224,8 +224,17 @@ spec:
           {{- if include "laboratory.registryEnabled" . }}
             # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
             # containerd reads it as a plain-HTTP localhost registry.
+            {{- if .Values.registry.cache.enabled }}
+            # With the image cache the relay dials the gate's TLS port and trusts only the registry's own authority: the credentials of a
+            # pull cross the cluster network in that hop.
+            - name: STATE_REGISTRY_ADDR
+              value: {{ include "laboratory.registryTLSAddr" . | quote }}
+            - name: STATE_REGISTRY_CA_FILE
+              value: /etc/registry-ca/ca.crt
+            {{- else }}
             - name: STATE_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
+            {{- end }}
           {{- else }}
             # No platform registry in this release (no cache, no state persistence, no platform images): no relay on the node.
             - name: REGISTRY_ENABLED
@@ -285,6 +294,12 @@ spec:
               mountPath: /etc/bandwidth
               readOnly: true
             {{- end }}
+            {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+            # The authority of the registry gate's TLS port: only its certificate (ca.crt), not the key of the server.
+            - name: registry-ca
+              mountPath: /etc/registry-ca
+              readOnly: true
+            {{- end }}
             - name: ovs-run
               mountPath: /run/openvswitch
             - name: grpc-dir
@@ -312,6 +327,14 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+        - name: registry-ca
+          secret:
+            secretName: laboratory-registry-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         {{- if .Values.bandwidth.enabled }}
         # The limits of every node, written by the operator; the node-agent reads the key of its own node. Optional: the pod starts before
         # the operator has made the ConfigMap, and has no limit until it exists.

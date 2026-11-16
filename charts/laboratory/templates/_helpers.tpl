@@ -395,6 +395,35 @@ ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 {{- end }}
 
 {{/*
+host:port of the TLS port of the registry gate (the release namespace): the relay of a node dials it for the image cache, because the
+pull's credentials travel there.
+*/}}
+{{- define "laboratory.registryTLSAddr" -}}
+{{- printf "laboratory-registry.%s.svc:5443" .Release.Namespace -}}
+{{- end }}
+
+{{/*
+The certificate of the registry gate's TLS port, made once per render and cached in .Values._registryTLS: a certificate authority of its own
+(kept across upgrades, read back with lookup) and a server certificate for the Service names, signed by it. The node-agent trusts only the
+authority (its Secret key ca.crt), so no other certificate of the cluster is accepted for this hop. The server certificate is made again
+at every upgrade only when the Secret is missing; to rotate, delete the Secret laboratory-registry-tls and upgrade.
+*/}}
+{{- define "laboratory.registryTLS" -}}
+{{- if not (hasKey .Values "_registryTLS") -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace "laboratory-registry-tls" -}}
+{{- if and $existing $existing.data (hasKey $existing.data "ca.crt") (hasKey $existing.data "tls.crt") -}}
+{{- $_ := set .Values "_registryTLS" (dict "ca" (index $existing.data "ca.crt" | b64dec) "crt" (index $existing.data "tls.crt" | b64dec) "key" (index $existing.data "tls.key" | b64dec)) -}}
+{{- else -}}
+{{- $ns := .Release.Namespace -}}
+{{- $ca := genCA "laboratory-registry-ca" 3650 -}}
+{{- $alt := list "laboratory-registry" (printf "laboratory-registry.%s" $ns) (printf "laboratory-registry.%s.svc" $ns) (printf "laboratory-registry.%s.svc.cluster.local" $ns) -}}
+{{- $cert := genSignedCert (printf "laboratory-registry.%s.svc" $ns) nil $alt 3650 $ca -}}
+{{- $_ := set .Values "_registryTLS" (dict "ca" $ca.Cert "crt" $cert.Cert "key" $cert.Key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The credentials of the platform registry (zot), made once per render and cached in .Values._registryCreds so that the
 registry Secret and the copy for the agent (another namespace) agree. Generated once and kept across upgrades (read back with
 lookup). Accounts: writer (the operator and the node-agents write snapshots), reader (it may read the snapshots of the labs, the

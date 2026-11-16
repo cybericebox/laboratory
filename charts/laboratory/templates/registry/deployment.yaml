@@ -108,6 +108,8 @@ spec:
             # The image cache: on, /v2/c/<registry>/... is proved against the upstream registry with the pull's own credentials and served from zot.
             - name: GATE_CACHE_ENABLED
               value: "true"
+            - name: GATE_TLS_LISTEN
+              value: ":5443"
             - name: GATE_DECISION_MAX_AGE
               value: {{ $r.cache.decisionMaxAge | quote }}
             - name: GATE_DENIED_FOR
@@ -126,6 +128,10 @@ spec:
               containerPort: 5000
             - name: gate-health
               containerPort: 5002
+            {{- if $r.cache.enabled }}
+            - name: registry-tls
+              containerPort: 5443
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -150,6 +156,9 @@ spec:
             # Its own account in zot and the key of its credential hash: nothing else of the registry Secret.
             - name: gate-secret
               mountPath: /etc/gate-secret
+              readOnly: true
+            - name: gate-tls
+              mountPath: /etc/gate-tls
               readOnly: true
             # The volume of zot, to measure how full it is (the gate writes nothing there).
             - name: data
@@ -190,6 +199,14 @@ spec:
                 path: password
               - key: gateKey
                 path: key
+        - name: gate-tls
+          secret:
+            secretName: laboratory-registry-tls
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
         {{- if $r.cache.anonymousFill }}
         - name: gate-anonymous-fill
           secret:

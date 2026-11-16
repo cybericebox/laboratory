@@ -166,3 +166,66 @@ func TestRegistryGateCacheWiring(t *testing.T) {
 		t.Errorf("the registry Secret carries the gate's account and key")
 	}
 }
+
+// The credentials of a cached pull cross the cluster network between the relay of a node and the gate: that hop is TLS, the gate serves
+// the cache on its TLS port only, and the node-agent trusts the authority of this registry alone.
+func TestRegistryGateTLSHop(t *testing.T) {
+	cache := []string{"--set", "registry.cache.enabled=true"}
+	var sec corev1.Secret
+	render(t, "templates/registry/tls-secret.yaml", &sec, cache...)
+	for _, k := range []string{"ca.crt", "tls.crt", "tls.key"} {
+		if !strings.Contains(sec.StringData[k], "-----BEGIN") {
+			t.Errorf("the TLS Secret holds %s", k)
+		}
+	}
+	var svc corev1.Service
+	render(t, "templates/registry/service.yaml", &svc, cache...)
+	if len(svc.Spec.Ports) != 2 || svc.Spec.Ports[1].Port != 5443 || svc.Spec.Ports[1].TargetPort.StrVal != "registry-tls" {
+		t.Errorf("the Service has the TLS port: %+v", svc.Spec.Ports)
+	}
+	var plain corev1.Service
+	render(t, "templates/registry/service.yaml", &plain, "--set", statePath+"enabled=true")
+	if len(plain.Spec.Ports) != 1 {
+		t.Errorf("without the cache there is no TLS port: %+v", plain.Spec.Ports)
+	}
+
+	spec := registryPod(t, cache...)
+	gate := containerNamed(spec, "gate")
+	if envOf(*gate)["GATE_TLS_LISTEN"].Value != ":5443" {
+		t.Errorf("the gate listens for TLS")
+	}
+	for _, v := range spec.Volumes {
+		if v.Name == "gate-tls" {
+			var keys []string
+			for _, it := range v.Secret.Items {
+				keys = append(keys, it.Key)
+			}
+			if strings.Join(keys, ",") != "tls.crt,tls.key" {
+				t.Errorf("the gate reads its certificate and key, not the authority: %v", keys)
+			}
+		}
+	}
+
+	agent := nodeAgent(t, cache...).Spec.Template.Spec
+	vars := envOf(agent.Containers[0])
+	if vars["STATE_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5443" || vars["STATE_REGISTRY_CA_FILE"].Value != "/etc/registry-ca/ca.crt" {
+		t.Errorf("the relay dials the TLS port and trusts the registry's authority: %q %q", vars["STATE_REGISTRY_ADDR"].Value, vars["STATE_REGISTRY_CA_FILE"].Value)
+	}
+	found := false
+	for _, v := range agent.Volumes {
+		if v.Name == "registry-ca" {
+			found = true
+			if len(v.Secret.Items) != 1 || v.Secret.Items[0].Key != "ca.crt" {
+				t.Errorf("the node-agent mounts the authority only: %+v", v.Secret.Items)
+			}
+		}
+	}
+	if !found {
+		t.Error("the node-agent mounts the authority of the registry")
+	}
+	// without the cache nothing changes for the relay: plain, to the Service port
+	off := envOf(nodeAgent(t, "--set", statePath+"enabled=true").Spec.Template.Spec.Containers[0])
+	if _, set := off["STATE_REGISTRY_CA_FILE"]; set || off["STATE_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5000" {
+		t.Errorf("no cache, no TLS: %+v", off["STATE_REGISTRY_ADDR"])
+	}
+}

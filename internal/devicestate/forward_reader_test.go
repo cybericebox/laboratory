@@ -1,10 +1,22 @@
 package devicestate
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The reader account is added to the reads of the snapshot repositories and the base repository, and to nothing else.
@@ -87,4 +99,77 @@ func TestReaderHandlerNeedsTheExactHost(t *testing.T) {
 			t.Errorf("%s must not get the reader", p)
 		}
 	}
+}
+
+// With a certificate authority the relay speaks TLS to the registry and trusts only that authority; the pull's own credentials
+// reach the registry, and a server of another authority is refused.
+func TestForwardOverTLS(t *testing.T) {
+	var gotAuth, gotHost string
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotHost = r.Header.Get("Authorization"), r.Host
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer up.Close()
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: up.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := strings.TrimPrefix(up.URL, "https://")
+	// the test server's certificate is for 127.0.0.1 and example.com: the target is dialled by that address
+	o := forwardOptions{tlsCAFile: caFile}
+	if err := o.loadTLS(target); err != nil {
+		t.Fatal(err)
+	}
+	h := readerHandler(target, o)
+	req := httptest.NewRequest("GET", "/v2/c/ghcr.io/o/app/manifests/sha256:abc", nil)
+	req.Header.Set("Authorization", "Basic dDF+YWxpY2U6cHc=")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || gotAuth != "Basic dDF+YWxpY2U6cHc=" || gotHost != target {
+		t.Fatalf("%d auth %q host %q", rec.Code, gotAuth, gotHost)
+	}
+	// a relay with no reader adds none, even to a snapshot path
+	gotAuth = ""
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/v2/lab/a/b/manifests/x", nil))
+	if gotAuth != "" {
+		t.Fatalf("no reader configured, none added: %q", gotAuth)
+	}
+
+	// a server of another authority is refused
+	other := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotAuth = "reached" }))
+	other.TLS = &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}}
+	other.StartTLS()
+	defer other.Close()
+	gotAuth = ""
+	h2 := readerHandler(strings.TrimPrefix(other.URL, "https://"), o)
+	rec = httptest.NewRecorder()
+	h2.ServeHTTP(rec, httptest.NewRequest("GET", "/v2/c/a/b/manifests/x", nil))
+	if rec.Code != http.StatusBadGateway || gotAuth != "" {
+		t.Fatalf("an untrusted server must not be reached: %d %q", rec.Code, gotAuth)
+	}
+	if err := (&forwardOptions{tlsCAFile: filepath.Join(t.TempDir(), "none")}).loadTLS("x:1"); err == nil {
+		t.Fatal("a missing CA file is an error")
+	}
+	bad := filepath.Join(t.TempDir(), "bad.crt")
+	_ = os.WriteFile(bad, []byte("not pem"), 0o600)
+	if err := (&forwardOptions{tlsCAFile: bad}).loadTLS("x:1"); err == nil {
+		t.Fatal("a CA file with no certificate is an error")
+	}
+}
+
+// selfSigned is a certificate for 127.0.0.1 of an authority the test's relay does not trust.
+func selfSigned(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "other"}, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(time.Hour), IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }

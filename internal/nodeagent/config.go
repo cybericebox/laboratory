@@ -53,6 +53,9 @@ type Config struct {
 	// The node-agent relays it to 127.0.0.1:StateForwardPort (names.RegistryForwardPort, a constant), so snapshot and cached images are
 	// referenced as localhost:<port>/... and pulled by the node's containerd over plain HTTP without any host configuration.
 	StateRegistryAddr string `env:"STATE_REGISTRY_ADDR"`
+	// StateRegistryCAFile, when set, makes the relay speak TLS to the registry (its address is then the gate's TLS port) and trust only
+	// this certificate authority: the pull credentials of the image cache pass the relay.
+	StateRegistryCAFile string `env:"STATE_REGISTRY_CA_FILE"`
 	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform
 	// images): the relay is not started and there is no registry address. Default true (a registry exists, as before).
 	RegistryEnabled       bool   `env:"REGISTRY_ENABLED" envDefault:"true"`
