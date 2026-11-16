@@ -388,6 +388,9 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 				mm.caps[labKey{p.Namespace, c.Lab}] = true
 			}
 			for _, f := range min.Flows {
+				if m.Activity == nil {
+					break
+				}
 				m.Activity.Add(p.Namespace, laboratoryv1alpha1.ActivityEvent{
 					AtMs: min.Start.Add(time.Minute).UnixMilli(), Kind: laboratoryv1alpha1.ActivityEgress, LabName: f.Lab, SourceAddr: f.Source, DstAddr: f.Dest,
 					DstPort: int32(f.Port), Protocol: "tcp", BytesUp: f.Up, BytesDown: f.Down, Connections: f.Conns, FirstSeenMs: f.FirstMs, LastSeenMs: f.LastMs,

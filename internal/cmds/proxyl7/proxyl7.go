@@ -110,7 +110,7 @@ func Run() {
 		hub.Reader = mgr.GetAPIReader()
 		hub.OnError = func(err error) { log.Error(err, "write activity report") }
 		handler.WithActivity(hub)
-		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error { hub.Run(ctx, 30*time.Second); return nil })); err != nil {
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error { hub.Run(ctx, activity.FlushEvery); return nil })); err != nil {
 			log.Error(err, "add activity writer")
 			os.Exit(1)
 		}

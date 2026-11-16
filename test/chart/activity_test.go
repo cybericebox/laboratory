@@ -41,7 +41,7 @@ func TestActivityReportsRBAC(t *testing.T) {
 	}{
 		"templates/proxy/clusterrole-reports.yaml":       {"labactivityreports", []string{"get", "create"}},
 		"templates/operator/clusterrole-vpn.yaml":        {"labactivityreports", []string{"get", "create", "update"}},
-		"templates/agent/clusterrole.yaml":               {"labactivityreports", []string{"get", "list", "watch", "delete"}},
+		"templates/agent/clusterrole.yaml":               {"labactivityreports", []string{"get", "list", "delete"}},
 		"templates/operator/clusterrole.yaml":            {"labactivityreports", []string{"get", "create", "update"}},
 		"templates/operator/clusterrole-namespaced.yaml": {"", nil},
 	}
@@ -69,6 +69,18 @@ func TestActivityReportsRBAC(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s has no rule for %s", file, w.resource)
+		}
+	}
+	// the agent reads the rings on demand: no watch (so no informer is started for them)
+	agentOut, err := helmTemplate(t, append(append([]string{}, agentSet...), "-s", "templates/agent/clusterrole.yaml")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range docs(t, agentOut) {
+		for _, r := range rulesOf(t, doc) {
+			if has(r.Resources, "labactivityreports") && has(r.Verbs, "watch") {
+				t.Errorf("the agent must not watch the activity reports: %+v", r)
+			}
 		}
 	}
 	// the proxy writes the status but may not list, delete or read other replicas' rings

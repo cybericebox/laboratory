@@ -27,6 +27,9 @@ const (
 	MaxAge    = time.Hour
 )
 
+// FlushEvery is how often a writer looks for events to write: at most one write per ring per minute, and none when nothing is new.
+const FlushEvery = time.Minute
+
 // EnvEnabled is the variable every process reads (the chart sets it from activityReports.enabled).
 const EnvEnabled = "ACTIVITY_REPORTS"
 
@@ -129,10 +132,15 @@ func (h *Hub) Flush(ctx context.Context) error {
 	if h == nil {
 		return nil
 	}
+	// Only a ring with something new to write costs an API call: an idle writer (and a group nobody does anything in, as during a lab
+	// startup) makes none, not even a read.
 	h.mu.Lock()
-	namespaces := make([]string, 0, len(h.rings))
-	for ns := range h.rings {
-		namespaces = append(namespaces, ns)
+	var namespaces []string
+	for ns, r := range h.rings {
+		h.trim(r)
+		if r.dirty {
+			namespaces = append(namespaces, ns)
+		}
 	}
 	h.mu.Unlock()
 	var first error
