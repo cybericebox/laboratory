@@ -72,18 +72,8 @@ spec:
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" $r.image.pullPolicy "tag" $r.image.tag) }}
           args: [ "serve", "/etc/zot/config.json" ]
-          ports:
-            - name: registry
-              containerPort: 5000
-          readinessProbe:
-            tcpSocket:
-              port: registry
-            periodSeconds: 10
-          livenessProbe:
-            tcpSocket:
-              port: registry
-            initialDelaySeconds: 15
-            periodSeconds: 20
+          # zot listens on 127.0.0.1:5001 of the pod only, so the kubelet cannot probe it: the gate's readiness follows zot (it dials 5001),
+          # and a pod whose zot is down is not ready, so the Service stops sending it requests.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -103,6 +93,44 @@ spec:
               readOnly: true
             {{- end }}
           {{- with $r.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        # The gate: every request to the registry (the nodes' relay, the operator, the agent) reaches this container, and only it reaches zot.
+        # It runs the image of the node (/node registry-gate), as a plain user with no capability and a read-only root file system.
+        - name: gate
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
+          command: [ "/node", "registry-gate" ]
+          env:
+            - name: GATE_LISTEN
+              value: ":5000"
+            - name: GATE_HEALTH_LISTEN
+              value: ":5002"
+            - name: GATE_ZOT_ADDR
+              value: "127.0.0.1:5001"
+          ports:
+            - name: registry
+              containerPort: 5000
+            - name: gate-health
+              containerPort: 5002
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: gate-health
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: gate-health
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ ALL ]
+          {{- with $r.gate.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}

@@ -165,7 +165,7 @@ func TestOperatorAdmissionPolicy(t *testing.T) {
 	render := func(extra ...string) (string, error) {
 		return helmTemplate(t, append([]string{"-s", "templates/operator/admission-policy.yaml"}, extra...)...)
 	}
-	out, err := render("--kube-version", "1.33.0")
+	out, err := render("--kube-version", "1.35.0")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -179,7 +179,7 @@ func TestOperatorAdmissionPolicy(t *testing.T) {
 		t.Errorf("bindings = %d, want 3", n)
 	}
 	// off by a value, and not rendered where the API does not exist
-	if o, err := render("--kube-version", "1.33.0", "--set", "operator.admissionPolicy.enabled=false"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
+	if o, err := render("--kube-version", "1.35.0", "--set", "operator.admissionPolicy.enabled=false"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
 		t.Errorf("a disabled policy must not render:\n%s", o)
 	}
 	if o, err := render("--kube-version", "1.29.0"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {

@@ -895,6 +895,16 @@ registry:
     repository: ghcr.io/project-zot/zot
     tag: "v2.1.21"
     pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
+  # The gate: a container of the registry pod in front of zot (see DEPLOY.md, "The registry gate"). Every request to the registry passes it; zot
+  # listens on the loopback of the pod only. Same image as the node-agent (/node registry-gate). Requests and limits are starting values.
+  gate:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
   # StorageClass of the registry volume; empty = the cluster default. The volume holds every device snapshot, so its
   # PersistentVolume must survive the claim: use a class with reclaimPolicy Retain (retainClass below creates one).
   # With a class whose reclaimPolicy is Delete, a deleted claim or namespace deletes all snapshots.
@@ -1029,7 +1039,7 @@ devices:
       - standard
       - extended
     # Run device pods in a user namespace (hostUsers: false): root in a device is not root on the node. Needs Kubernetes
-    # 1.33+, a runtime with support (containerd 2.x) and kernel 6.3+. A hidden setting, not shown in any UI.
+    # 1.33+ (the chart needs 1.35), a runtime with support (containerd 2.x) and kernel 6.3+. A hidden setting, not shown in any UI.
     userNamespaces: true
     # Limit of the writable layer, logs and emptyDirs of a device, so one device cannot fill the node's disk
     # (DiskPressure evicts other pods). "0" = no limit.

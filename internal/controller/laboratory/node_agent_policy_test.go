@@ -36,7 +36,7 @@ var _ = Describe("node-agent label admission policy", Ordered, func() {
 		if _, err := exec.LookPath("helm"); err != nil {
 			Skip("helm is not installed")
 		}
-		out, err := exec.Command("helm", "template", "x", "../../../charts/laboratory", "--namespace", "laboratory-system", "--kube-version", "1.33.0",
+		out, err := exec.Command("helm", "template", "x", "../../../charts/laboratory", "--namespace", "laboratory-system", "--kube-version", "1.35.0",
 			"--set", "operator.baseDomain=lab.example.com", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820", "--set", "operator.supportEmail=a@example.com",
 			"-s", "templates/node-agent/admission-policy.yaml").CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(out))

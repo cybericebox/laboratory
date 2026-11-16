@@ -27,7 +27,8 @@ nowhere else, so it has none in lab/**, base or the cache. The cache retention b
 {{- end }}
 {{- end }}
 {{- $access := dict "repositories" $repos }}
-{{- $http := dict "address" "0.0.0.0" "compat" (list "docker2s2") "port" "5000" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
+{{- /* zot listens on the loopback of the pod only: the gate container (port 5000) is the one way in, structurally. */}}
+{{- $http := dict "address" "127.0.0.1" "compat" (list "docker2s2") "port" "5001" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
 {{- $cfg := dict "distSpecVersion" "1.1.0" "storage" $storage "http" $http "log" (dict "level" "info") }}
 {{- if $cache.enabled }}
 {{- /*

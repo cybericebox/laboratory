@@ -2,9 +2,10 @@ apiVersion: v2
 name: laboratory
 description: CyberICEBox Laboratory operator — manages lab groups, VPN, OVS networking, and device lifecycle.
 type: application
-# Native sidecars and ValidatingAdmissionPolicy need 1.30, but user namespaces for device pods (spec.hostUsers, devices.security.userNamespaces)
-# need 1.33: below that the API server may drop the field silently and a device would run in the host user namespace.
-kubeVersion: ">=1.33.0-0"
+# Native sidecars and ValidatingAdmissionPolicy need 1.30 and user namespaces for device pods (spec.hostUsers) 1.33, but the registry gate needs
+# 1.35: KEP-2535 (KubeletEnsureSecretPulledImages, beta and on by default from 1.35) makes the kubelet check the pull credentials of a pod against
+# the registry, so a tenant cannot start another tenant's private image that is already on the node. See DEPLOY.md, "Requirements".
+kubeVersion: ">=1.35.0-0"
 version: 1.1.0
 appVersion: "v1.1.0"
 keywords:
