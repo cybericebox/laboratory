@@ -17,6 +17,21 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
+// addInternetLab puts a lab with an Internet gateway into the namespace of the group once the namespace exists: the gateway pod of a group
+// exists only while one of its labs has an Internet gateway.
+func addInternetLab(group string) {
+	ns := laboratoryv1alpha1.LabGroupNamespace(group)
+	Eventually(func() error {
+		return k8sClient.Get(ctx, types.NamespacedName{Name: ns}, &corev1.Namespace{})
+	}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+	lab := &laboratoryv1alpha1.Lab{
+		ObjectMeta: metav1.ObjectMeta{Name: "net", Namespace: ns},
+		Spec:       laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "out", Kind: laboratoryv1alpha1.GatewayKindInternet}}},
+	}
+	Expect(k8sClient.Create(ctx, lab)).To(Succeed())
+	DeferCleanup(func() { _ = k8sClient.Delete(ctx, lab) })
+}
+
 var _ = Describe("LabGroup suspension", func() {
 	It("passes the configured support address to the VPN server", func() {
 		const namespace = "default"
@@ -127,6 +142,7 @@ var _ = Describe("LabGroup suspension", func() {
 		}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		addInternetLab(name)
 		Eventually(func() bool {
 			var current laboratoryv1alpha1.LabGroup
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil || current.Status.Phase != laboratoryv1alpha1.PhaseSuspended {
@@ -167,6 +183,7 @@ var _ = Describe("LabGroup suspension", func() {
 		}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		addInternetLab(name)
 		Eventually(func() bool {
 			var current laboratoryv1alpha1.LabGroup
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil || current.Status.Namespace == "" {
@@ -232,6 +249,7 @@ var _ = Describe("LabGroup suspension", func() {
 		group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		addInternetLab(name)
 
 		Eventually(func() laboratoryv1alpha1.Phase {
 			var current laboratoryv1alpha1.LabGroup
@@ -241,9 +259,14 @@ var _ = Describe("LabGroup suspension", func() {
 			return current.Status.Phase
 		}, 15*time.Second, 250*time.Millisecond).Should(Equal(laboratoryv1alpha1.PhaseReady))
 
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, group)).To(Succeed())
-		group.Spec.Suspended = true
-		Expect(k8sClient.Update(ctx, group)).To(Succeed())
+		// the operator is still writing the group's status (it counts the lab's gateway): read and update again on a conflict
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, group); err != nil {
+				return err
+			}
+			group.Spec.Suspended = true
+			return k8sClient.Update(ctx, group)
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
 
 		Eventually(func() bool {
 			var current laboratoryv1alpha1.LabGroup
