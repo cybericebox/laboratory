@@ -6,6 +6,7 @@
 #   g2  a private image: refused without credentials, pulled with the tenant~user secret, downloaded from upstream once
 #   g3  other credentials (no right upstream) are refused although the image is in the cache
 #   g4  the same credentials of another tenant are checked once more, then the decision is reused
+#   g5  a registry the gate knows but registry.allowedRegistries does not list is refused before any upstream call
 # Every case reports PASS or FAIL; the script exits 1 when one FAILs, after all of them ran. Needs docker, kind, kubectl, helm, jq, go.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
