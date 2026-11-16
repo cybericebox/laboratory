@@ -214,7 +214,8 @@ What a laboratory serves is set in the chart, once for the whole cluster. A lab 
 | `inetGateway.enabled` | on | no internet gateway pod in any group. Refused: a Lab with an Internet gateway, `LabGroup.spec.gateway.enabled=true` | `INTERNET_UNAVAILABLE` |
 | `proxy.enabled` + `proxy.l7.enabled` | on | no L7 proxy at all. Refused: every device access (http, terminal, rdp, vnc). HTTP(S) is served whenever the proxy is on | `ACCESS_UNAVAILABLE` |
 | `terminal.enabled` | off | the console: no device access DaemonSet, no console route. Refused: a `terminal` access | `ACCESS_UNAVAILABLE` |
-| `proxy.rdp.enabled`, `proxy.vnc.enabled` | off | not served (the chart refuses to render them on without the L7 proxy). Refused: an `rdp` / `vnc` access | `ACCESS_UNAVAILABLE` |
+| `proxy.rdp.enabled` | **on** | off: an `rdp` access is refused. On by default so that existing tasks with RDP keep being admitted | `ACCESS_UNAVAILABLE` |
+| `proxy.vnc.enabled` | off | not served yet (the chart refuses to render it on without the L7 proxy). Refused: a `vnc` access | `ACCESS_UNAVAILABLE` |
 | `checks.enabled` | off | no checker DaemonSet. Refused: a Lab with `spec.checks` | `CHECKS_UNAVAILABLE` |
 | `scheduler.enabled` | on | every pod starts as soon as it exists. Not a refusal: nothing is asked of it by a user object | - |
 

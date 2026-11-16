@@ -30,7 +30,7 @@ func TestVPNSwitchOwnsTheDemux(t *testing.T) {
 // The switches reach the operator and the agent through the shared environment, with the defaults the docs promise.
 func TestFeatureSwitchesReachTheComponents(t *testing.T) {
 	env := operatorConfig(t)
-	for k, want := range map[string]string{"VPN_ENABLED": "true", "INTERNET_ENABLED": "true", "PROXY_L7_ENABLED": "true", "PROXY_RDP_ENABLED": "false", "PROXY_VNC_ENABLED": "false"} {
+	for k, want := range map[string]string{"VPN_ENABLED": "true", "INTERNET_ENABLED": "true", "PROXY_L7_ENABLED": "true", "PROXY_RDP_ENABLED": "true", "PROXY_VNC_ENABLED": "false"} {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q (%v)", k, env[k], want, env)
 		}
@@ -43,9 +43,13 @@ func TestFeatureSwitchesReachTheComponents(t *testing.T) {
 	}
 }
 
-// RDP and VNC are served by the L7 proxy: turning them on without it is a mistake the chart refuses.
-func TestRDPAndVNCNeedTheL7Proxy(t *testing.T) {
-	for _, set := range []string{"proxy.rdp.enabled", "proxy.vnc.enabled"} {
+// VNC is served by the L7 proxy: turning it on without the proxy is a mistake the chart refuses. RDP is on by default, so the chart with
+// the proxy off still renders (every access is refused anyway).
+func TestVNCNeedsTheL7Proxy(t *testing.T) {
+	if out, err := helmTemplate(t, "--set", "proxy.l7.enabled=false"); err != nil {
+		t.Errorf("the default RDP must not break a chart without the proxy: %v\n%s", err, out)
+	}
+	for _, set := range []string{"proxy.vnc.enabled"} {
 		if out, err := helmTemplate(t, "--set", set+"=true", "--set", "proxy.l7.enabled=false"); err == nil {
 			t.Errorf("%s without the L7 proxy must fail to render", set)
 		} else if !strings.Contains(out, "proxy") {

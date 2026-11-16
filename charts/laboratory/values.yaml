@@ -437,10 +437,11 @@ proxy:
   # (the console and its device access service), rdp.enabled and vnc.enabled below. The WireGuard demultiplexer does not depend on it (see
   # vpn.enabled and proxy.wg.enabled).
   enabled: true
-  # RDP and VNC accesses of devices: nothing serves them yet, so a device that asks for one is refused (reason ACCESS_UNAVAILABLE) until the
-  # proxy does. They need the L7 proxy.
+  # RDP and VNC accesses of devices. RDP is served (on by default, so tasks that have it keep working); VNC is not yet, so a device that asks
+  # for it is refused (reason ACCESS_UNAVAILABLE) until the proxy serves it. Turning one off refuses the devices that ask for it. They need
+  # the L7 proxy (with it off, every access is refused anyway).
   rdp:
-    enabled: false
+    enabled: true
   vnc:
     enabled: false
 
