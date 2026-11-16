@@ -69,11 +69,10 @@ func (h *Handler) StartLabGroups(ctx context.Context, in *protobuf.StartLabGroup
 	})}, nil
 }
 func (h *Handler) acceptGroupLifecycle(ctx context.Context, t *protobuf.GroupTarget, intent *lab.GroupLifecycleSpec) error {
-	h.lifecycleAdmissionMu.Lock()
-	defer h.lifecycleAdmissionMu.Unlock()
 	if err := names.ValidateID(t.GetGroup()); err != nil {
 		return err
 	}
+	defer h.groupLock(t.GetGroup())()
 	if t.GetExpectedUid() == "" || strings.TrimSpace(intent.OperationID) == "" || utf8.RuneCountInString(intent.OperationID) > 128 || intent.Revision < 1 {
 		return fmt.Errorf("expected_uid, operation_id (1..128 characters) and positive revision are required")
 	}

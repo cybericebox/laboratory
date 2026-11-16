@@ -275,8 +275,7 @@ type labContract struct {
 }
 
 func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *protobuf.LabItem, v *labVariant, env deviceVars, contract labContract, common map[string]string) (protobuf.ItemState, error) {
-	h.lifecycleAdmissionMu.Lock()
-	defer h.lifecycleAdmissionMu.Unlock()
+	defer h.groupLock(it.GetLabGroup())()
 	name := crName(it.GetName())
 	ns, err := resolver.namespace(ctx, it.GetLabGroup())
 	if err != nil {
