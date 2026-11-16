@@ -355,6 +355,7 @@ func TestImageCacheCustomRegistriesAndAnonymousFill(t *testing.T) {
 	extra := []string{
 		"--set", "registry.cache.enabled=true",
 		"--set", "registry.cache.registries={docker.io}",
+		"--set", "registry.allowedRegistries={docker.io,registry.example.com}", // the cache serves what is allowed
 		"--set", "registry.cache.extraRegistries[0].name=registry.example.com",
 		"--set", "registry.cache.extraRegistries[0].url=https://registry.example.com",
 		"--set", "registry.cache.anonymousFill=my-fill-login",

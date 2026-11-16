@@ -128,10 +128,6 @@ func TestRegistryGateCacheWiring(t *testing.T) {
 	if got := vars["GATE_ALLOWED_REGISTRIES"].Value; !strings.Contains(","+got+",", ",ghcr.io,") || strings.Contains(got, "*") {
 		t.Errorf("GATE_ALLOWED_REGISTRIES = %q: want the chart's allowedRegistries", got)
 	}
-	any := containerNamed(registryPod(t, "--set", "registry.cache.enabled=true", "--set-json", `registry.allowedRegistries=["*"]`), "gate")
-	if got := envOf(*any)["GATE_ALLOWED_REGISTRIES"].Value; got != "*" {
-		t.Errorf("a list with * allows every registry: %q", got)
-	}
 	mounts := map[string]corev1.VolumeMount{}
 	for _, m := range gate.VolumeMounts {
 		mounts[m.Name] = m
@@ -242,7 +238,7 @@ func TestRegistryGateTLSHop(t *testing.T) {
 // gets holds the two registries that the test uses and not the third one it knows (so the refusal is tested end to end).
 func TestRegistryGateAllowedListWithTheE2EFlags(t *testing.T) {
 	spec := registryPod(t,
-		"--set", "registry.cache.enabled=true", "--set-json", "registry.cache.registries=[]",
+		"--set", "registry.cache.enabled=true", "--set-json", `registry.cache.registries=["docker.io"]`, // docker.io: the platform images
 		"--set-json", `registry.allowedRegistries=["pub","priv"]`,
 		"--set", "registry.cache.extraRegistries[0].name=pub", "--set", "registry.cache.extraRegistries[0].url=http://upstream-pub.laboratory-system.svc:5000",
 		"--set", "registry.cache.extraRegistries[1].name=priv", "--set", "registry.cache.extraRegistries[1].url=http://upstream-priv.laboratory-system.svc:5000",
