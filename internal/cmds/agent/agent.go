@@ -21,6 +21,7 @@ import (
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
@@ -35,6 +36,7 @@ func Run() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	grouppods.SetCluster(cfg.VPNEnabled, cfg.InternetEnabled)
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
@@ -180,7 +182,9 @@ func Run() {
 
 // features is what GetFeatures reports from the agent's own configuration.
 func features(cfg *config.Config) (f grpcserver.Features, err error) {
+	sw := cfg.Switches()
 	f = grpcserver.Features{
+		Switches:         &sw,
 		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
 		MaxLabGateways: cfg.MaxLabGateways, ChecksEnabled: cfg.ChecksEnabled, ActivityReports: cfg.ActivityReports, TerminalMaxLifetime: cfg.TerminalMaxLifetime, VPNFirewall: cfg.VPNFirewall, CheckerRequired: cfg.ChecksEnabled, TerminalEnabled: cfg.TerminalEnabled, TerminalServed: cfg.TerminalServed, CheckMaxTimeLimit: int32(cfg.ChecksMaxTimeLimit), ManualCooldown: cfg.ChecksManualCooldown,
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,

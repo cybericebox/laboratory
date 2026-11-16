@@ -10,6 +10,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
+	"github.com/cybericebox/laboratory/internal/switches"
 )
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA. TLS is always on; the files are where the chart mounts the
@@ -129,6 +130,13 @@ type Config struct {
 	// ActivityReports is the chart's activityReports.enabled (off by default): raw activity facts for the platform, see GetLabGroupActivity.
 	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// The feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled, proxy.enabled with proxy.rdp.enabled and
+	// proxy.vnc.enabled), the same variables the operator reads: what a Lab may ask for, reported in GetFeatures.
+	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
+	InternetEnabled bool `env:"INTERNET_ENABLED" envDefault:"true"`
+	ProxyL7Enabled  bool `env:"PROXY_L7_ENABLED" envDefault:"true"`
+	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"false"`
+	ProxyVNCEnabled bool `env:"PROXY_VNC_ENABLED" envDefault:"false"`
 	// TerminalMaxLifetime is the chart's terminal.limits.maxLifetime and VPNFirewall its vpn.firewall: the agent reports them in the activity
 	// feature (the longest console session; whether devices-touched events exist).
 	TerminalMaxLifetime time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
@@ -291,4 +299,9 @@ func (c *Config) ValidateLifecycle() error {
 		return fmt.Errorf("required snapshot advertisement requires qualified acceptance")
 	}
 	return nil
+}
+
+// Switches is what the laboratory serves, from the chart (package switches).
+func (c *Config) Switches() switches.Cluster {
+	return switches.Cluster{VPN: c.VPNEnabled, Internet: c.InternetEnabled, L7: c.ProxyL7Enabled, Terminal: c.TerminalEnabled, RDP: c.ProxyRDPEnabled, VNC: c.ProxyVNCEnabled, Checks: c.ChecksEnabled}
 }

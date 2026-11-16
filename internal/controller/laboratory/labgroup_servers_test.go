@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -18,6 +20,7 @@ import (
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/switches"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -224,5 +227,114 @@ func TestLabIsRefusedWhileItsGroupServerIsOff(t *testing.T) {
 	setSwitches(t, c, group, nil, nil) // a group made before the switches: both on
 	if msg := check(lab(ns, api.GatewayKindVPN, api.GatewayKindInternet)); msg != "" {
 		t.Errorf("a legacy group runs both servers: %q", msg)
+	}
+}
+
+// The group's switches are copied onto its namespace as labels (the admission policies of the API server read them), a group made before
+// the labels gets them, and a switch turned on or off is copied.
+func TestGroupSwitchesAreCopiedToTheNamespace(t *testing.T) {
+	ctx := context.Background()
+	r, c, group := serversFixture(t, false, api.LabGroupSpec{VPN: api.LabGroupVPNSpec{Enabled: boolPtr(true)}, Gateway: api.LabGroupGatewaySpec{Enabled: boolPtr(false)}})
+	reconcileServers(t, r, group)
+	labels := func() map[string]string {
+		t.Helper()
+		var ns corev1.Namespace
+		if err := c.Get(ctx, client.ObjectKey{Name: api.LabGroupNamespace(group.Name)}, &ns); err != nil {
+			t.Fatal(err)
+		}
+		return ns.Labels
+	}
+	if l := labels(); l[names.LabelGroupVPN] != "true" || l[names.LabelGroupInternet] != "false" {
+		t.Fatalf("labels of a new namespace: %v", l)
+	}
+	setSwitches(t, c, group, boolPtr(false), boolPtr(true))
+	reconcileServers(t, r, group)
+	if l := labels(); l[names.LabelGroupVPN] != "false" || l[names.LabelGroupInternet] != "true" {
+		t.Fatalf("labels after the switches changed: %v", l)
+	}
+	// a namespace made before the labels existed gets them, and keeps what else it has
+	var ns corev1.Namespace
+	if err := c.Get(ctx, client.ObjectKey{Name: api.LabGroupNamespace(group.Name)}, &ns); err != nil {
+		t.Fatal(err)
+	}
+	delete(ns.Labels, names.LabelGroupVPN)
+	delete(ns.Labels, names.LabelGroupInternet)
+	if err := c.Update(ctx, &ns); err != nil {
+		t.Fatal(err)
+	}
+	setSwitches(t, c, group, nil, nil) // a legacy group: both on
+	reconcileServers(t, r, group)
+	l := labels()
+	if l[names.LabelGroupVPN] != "true" || l[names.LabelGroupInternet] != "true" || len(l) != len(ns.Labels)+2 {
+		t.Fatalf("labels of a namespace made before them: %v", l)
+	}
+}
+
+// What the laboratory does not serve is refused by the operator too (Lab objects made by hand never met the agent or the policies),
+// with the stable reason in front; with no cluster switches given nothing is refused.
+func TestLabIsRefusedByTheClusterSwitches(t *testing.T) {
+	ctx := context.Background()
+	lab := &api.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l", Namespace: "elsewhere"}}
+	lab.Spec.Gateways = []api.GatewayTemplate{{Name: "v", Kind: api.GatewayKindVPN}}
+	got := func(r *LabReconciler) string {
+		t.Helper()
+		refusal, serverOff, err := r.validateGatewaysAndServers(ctx, lab)
+		if err != nil || serverOff {
+			t.Fatalf("serverOff %v err %v", serverOff, err)
+		}
+		if refusal == nil {
+			return ""
+		}
+		return refusal.Error()
+	}
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = api.AddToScheme(scheme)
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	if msg := got(&LabReconciler{Client: c}); msg != "" {
+		t.Fatalf("no cluster switches: %q", msg)
+	}
+	on := switches.Everything()
+	if msg := got(&LabReconciler{Client: c, Switches: &on}); msg != "" {
+		t.Fatalf("everything served: %q", msg)
+	}
+	off := switches.Everything()
+	off.VPN = false
+	if msg := got(&LabReconciler{Client: c, Switches: &off}); !strings.HasPrefix(msg, switches.ReasonVPNUnavailable+":") {
+		t.Fatalf("VPN off: %q", msg)
+	}
+}
+
+// A client made by hand where the laboratory runs no VPN is not served: Ready is false with the stable reason and an event; where the
+// VPN runs the same object gets past this check.
+func TestClientIsRefusedWhereThereIsNoVPN(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = api.AddToScheme(scheme)
+	lgc := &api.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: "ns"}, Spec: api.LabGroupClientSpec{PublicKey: "k"}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lgc).WithStatusSubresource(&api.LabGroupClient{}).Build()
+	rec := record.NewFakeRecorder(10)
+	off := switches.Everything()
+	off.VPN = false
+	r := &LabGroupClientReconciler{Client: c, Scheme: scheme, Recorder: rec, Switches: &off}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lgc)}); err != nil {
+		t.Fatal(err)
+	}
+	var got api.LabGroupClient
+	if err := c.Get(ctx, client.ObjectKeyFromObject(lgc), &got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if cond == nil || cond.Status != metav1.ConditionFalse || !strings.HasPrefix(cond.Message, switches.ReasonVPNUnavailable) || got.Status.AssignedIP != "" {
+		t.Fatalf("condition %+v, status %+v", cond, got.Status)
+	}
+	select {
+	case ev := <-rec.Events:
+		if !strings.Contains(ev, "ValidationFailed") || !strings.Contains(ev, switches.ReasonVPNUnavailable) {
+			t.Fatalf("event: %s", ev)
+		}
+	default:
+		t.Fatal("no ValidationFailed event")
 	}
 }

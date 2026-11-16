@@ -27,6 +27,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
+	"github.com/cybericebox/laboratory/internal/switches"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -41,6 +42,9 @@ type LabGroupClientReconciler struct {
 	Reader client.Reader
 	// LabBaseNetwork is the whole lab address space, advertised to WireGuard clients as their AllowedIPs (e.g. "10.128.0.0/9").
 	LabBaseNetwork string
+	// Switches is what the laboratory serves (nil: everything). A client needs the VPN: where it is off the object is refused here, for
+	// whatever slipped past the admission policy and the agent.
+	Switches *switches.Cluster
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroupclients,verbs=get;list;watch;create;update;patch;delete
@@ -71,6 +75,14 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		if err := r.Update(ctx, lgc); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if r.Switches != nil && !r.Switches.VPN {
+		msg := switches.ReasonVPNUnavailable + ": this laboratory runs no VPN (vpn.enabled is off), so a client has nothing to connect to"
+		labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonValidationFailed, msg)
+		_ = r.Status().Update(ctx, lgc)
+		r.Recorder.Event(lgc, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, msg)
+		return ctrl.Result{}, nil
 	}
 
 	// The caller generates the WireGuard keypair and provides the public key;

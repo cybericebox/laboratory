@@ -72,6 +72,10 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	if group.Annotations[names.AnnotationLifecycleRetirement] != "" {
 		return protobuf.ItemState_ITEM_STATE_FAILED, fmt.Errorf("retired group cannot mutate access")
 	}
+	// the policy is read by the VPN pod (the firewall pairs) and by the L7 proxy (who may open an endpoint): with neither, nothing reads it
+	if c := h.cluster(); !c.VPN && !c.L7 {
+		return protobuf.ItemState_ITEM_STATE_FAILED, refusal(client.ReasonVPNUnavailable, "this laboratory runs no VPN and no L7 proxy (vpn.enabled and proxy.enabled are off): nothing would read an access policy")
+	}
 
 	labs, err := h.cs.LaboratoryV1alpha1().Labs(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {

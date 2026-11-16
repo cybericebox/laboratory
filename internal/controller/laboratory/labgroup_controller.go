@@ -586,11 +586,34 @@ var errForeignNamespace = fmt.Errorf("the namespace exists and is not this group
 // ensureNamespace creates the namespace of a group, labelled with the group. It never adopts a namespace that exists
 // without the group's label: a tenant picks the group name, and must not be able to point the operator at kube-system
 // or at another group's namespace.
+// groupNamespaceLabels are the labels the operator keeps on the namespace of a group: the group, and its two switches as the admission
+// policies read them ("true" or "false"; the group's own switch, whatever the cluster runs: the policies know the cluster's from the chart).
+func groupNamespaceLabels(g *laboratoryv1alpha1.LabGroup) map[string]string {
+	return map[string]string{
+		names.LabelGroup:         g.Name,
+		names.LabelGroupVPN:      strconv.FormatBool(g.VPNEnabled()),
+		names.LabelGroupInternet: strconv.FormatBool(g.InternetEnabled()),
+	}
+}
+
 func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, owner *laboratoryv1alpha1.LabGroup) error {
 	var existing corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &existing); err == nil {
 		if !ownsNamespace(&existing, owner) {
 			return fmt.Errorf("%w: %s", errForeignNamespace, ns)
+		}
+		// the switches follow the group: a group made before the labels gets them, a switch turned on or off is copied
+		want, changed := groupNamespaceLabels(owner), false
+		if existing.Labels == nil {
+			existing.Labels = map[string]string{}
+		}
+		for k, v := range want {
+			if existing.Labels[k] != v {
+				existing.Labels[k], changed = v, true
+			}
+		}
+		if changed {
+			return r.Update(ctx, &existing)
 		}
 		return nil
 	} else if !errors.IsNotFound(err) {
@@ -599,7 +622,7 @@ func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, own
 	n := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ns,
-			Labels: map[string]string{names.LabelGroup: owner.Name},
+			Labels: groupNamespaceLabels(owner),
 		},
 	}
 	return r.Create(ctx, n)

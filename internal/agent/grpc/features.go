@@ -18,6 +18,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/internal/switches"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
@@ -85,6 +86,10 @@ type Features struct {
 	// keeps no connection tracking, so no devices-touched events).
 	TerminalMaxLifetime time.Duration
 	VPNFirewall         string
+	// Switches is what the laboratory serves (chart vpn.enabled, inetGateway.enabled, proxy.enabled and its accesses, checks.enabled).
+	// Nil: every switch is on (an installation, or a test, that does not say). A lab, a client or a group switch that asks for what is off is
+	// refused with a reason (VPN_UNAVAILABLE, INTERNET_UNAVAILABLE, ACCESS_UNAVAILABLE, CHECKS_UNAVAILABLE).
+	Switches *switches.Cluster
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
@@ -152,7 +157,8 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
 				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				Checks:          h.checksFeature(),
-				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed},
+				Access:          h.accessFeature(),
+				Internet:        &protobuf.InternetFeature{Enabled: h.cluster().Internet},
 				Bootstrap:       bootstrapFeature(),
 				Vpn:             h.vpnFeature(),
 				Activity:        h.activityFeature(),
@@ -273,7 +279,31 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 // vpnFeature reports whether the VPN gates enforce the block of connections started by a lab towards a client. The answer comes from the
 // code that generates the rules (vpn.LabInitiatedBlockEnforced), so it cannot say true for a gate that does not install them.
 func (h *Handler) vpnFeature() *protobuf.VPNFeature {
-	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced(), MaxGateways: int32(h.maxLabGateways())}
+	enabled := h.cluster().VPN
+	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced(), MaxGateways: int32(h.maxLabGateways()), Enabled: &enabled}
+}
+
+// cluster is what the laboratory serves: the configured switches, or everything on when none were given.
+func (h *Handler) cluster() switches.Cluster {
+	if h.features.Switches != nil {
+		return *h.features.Switches
+	}
+	return switches.Everything()
+}
+
+// accessFeature is which accesses of a device the laboratory serves: http while the L7 proxy runs, the others also by their own switch.
+func (h *Handler) accessFeature() *protobuf.AccessFeature {
+	c, f := h.cluster(), h.features
+	return &protobuf.AccessFeature{Http: c.L7, Terminal: c.L7 && f.TerminalEnabled && f.TerminalServed, Rdp: c.L7 && c.RDP, Vnc: c.L7 && c.VNC}
+}
+
+// clusterRefusal is the refusal of a lab spec that asks for what a switch of the laboratory has turned off, as an error with a stable
+// reason; nil when it is fine. Terminal and checks have their own earlier refusals, which say the same.
+func (h *Handler) clusterRefusal(spec *laboratoryv1alpha1.LabSpec) error {
+	if r := h.cluster().Refuse(spec); r != nil {
+		return refusal(r.Reason, "%s", r.Text)
+	}
+	return nil
 }
 
 // maxLabGateways is the most gateways one lab may have: the configured limit, or the default.

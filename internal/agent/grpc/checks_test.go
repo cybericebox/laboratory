@@ -18,6 +18,7 @@ import (
 	devnames "github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/labchecks"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/switches"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -571,6 +572,9 @@ func TestFeaturesReportChecksAndAccess(t *testing.T) {
 	for _, c := range []struct{ checks, terminal, served bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false}, {true, true, true}, {false, false, true}} {
 		f := testFeatures
 		f.ChecksEnabled, f.TerminalEnabled, f.TerminalServed = c.checks, c.terminal, c.served
+		sw := switches.Everything() // the chart's defaults: rdp and vnc are not served
+		sw.RDP, sw.VNC = false, false
+		f.Switches = &sw
 		h := featuresHandler(t, f, newTenantTenant("a", true, nil))
 		got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
 		if err != nil {

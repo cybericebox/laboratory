@@ -1209,6 +1209,8 @@ message FeaturesResponse {
   AccessFeature access = 21;
   // Activity reports (contract 2.5), off by default. Absent = an agent older than the field.
   ActivityFeature activity = 22;
+  // The internet gateway (contract 2.8).
+  InternetFeature internet = 23;
 }
 
 // ActivityFeature: enabled is true when the cluster keeps raw activity facts for GetLabGroupActivity (the chart value
@@ -1233,6 +1235,16 @@ message ActivityFeature {
 message VPNFeature {
   bool reverse_connections = 1;
   int32 max_gateways = 2;
+  // The laboratory runs a VPN (chart vpn.enabled; contract 2.8). Absent = an agent older than the field: it runs one. When false there is
+  // no WireGuard demultiplexer and no VPN pod, and a lab with a VPN gateway, a LabGroupClient, a LabGroupAccessPolicy and a group's
+  // vpn_enabled true are refused (reason VPN_UNAVAILABLE).
+  optional bool enabled = 3;
+}
+// The internet gateway of the laboratory (chart inetGateway.enabled; contract 2.8). When enabled is false there is no gateway pod, and a
+// lab with an Internet gateway and a group's internet_enabled true are refused (reason INTERNET_UNAVAILABLE). Absent (the whole message)
+// = an agent older than the field: it runs one.
+message InternetFeature {
+  bool enabled = 1;
 }
 
 message ChecksFeature {
@@ -1250,6 +1262,9 @@ message ChecksFeature {
 // it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
 // The address of a kind of access to a device is a host name alone, never a path or a query: the link is LabAccessEntry.url of the entry
 // of that kind, and the daemon takes it from there, as it does for http.
+// Which accesses of a device the laboratory serves. http needs the L7 proxy and is served whenever it runs (proxy.enabled); terminal also
+// needs terminal.enabled; vnc and rdp need proxy.vnc.enabled / proxy.rdp.enabled (nothing serves them yet, so they are false). A lab with a
+// device that asks for an access that is not served is refused (reason ACCESS_UNAVAILABLE, contract 2.8; terminal had its own refusal before).
 message AccessFeature {
   reserved 5;   // was terminal_host (the console had one host for all devices)
   reserved "terminal_host";
