@@ -249,6 +249,8 @@ VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 LAB_RECONCILE_WORKERS: {{ .Values.operator.workers.lab | quote }}
 DEVICE_RECONCILE_WORKERS: {{ .Values.operator.workers.device | quote }}
 CONNECTION_RECONCILE_WORKERS: {{ .Values.operator.workers.connection | quote }}
+API_QPS: {{ .Values.operator.api.qps | quote }}
+API_BURST: {{ .Values.operator.api.burst | quote }}
 MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
 ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}

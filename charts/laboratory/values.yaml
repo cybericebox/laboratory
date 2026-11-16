@@ -53,6 +53,12 @@ operator:
     device: 16
     connection: 8
 
+  # Client-side rate limit of the operator's Kubernetes API client (requests per second, and the burst on top of it). All the workers
+  # above and the scheduler share it. The API server and etcd are shared with the node agents, so raise it with their latency in view.
+  api:
+    qps: 200
+    burst: 400
+
   # Comma-separated CIDRs of proxy source IPs for hostNetwork proxy (e.g. Kind).
   # Leave empty in standard clusters.
   proxySourceCIDRs: ""

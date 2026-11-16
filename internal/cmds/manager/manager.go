@@ -137,11 +137,11 @@ func Run() {
 
 	// The metrics server is off unless --metrics-bind-address is given; controller-runtime then makes a self-signed certificate.
 
-	// The scheduler writes the queue status of many objects; the default client-side
-	// rate limit (20 QPS, burst 30) would also slow every reconciler.
+	// The scheduler writes the queue status of many objects and the controllers run several workers each; the default client-side
+	// rate limit (20 QPS, burst 30) would make them all wait. API_QPS and API_BURST (chart operator.api) default to 200 and 400.
 	restCfg := ctrl.GetConfigOrDie()
-	restCfg.QPS = 60
-	restCfg.Burst = 120
+	restCfg.QPS = cfg.APIQPS
+	restCfg.Burst = cfg.APIBurst
 
 	// The operator and the agent need the CRDs of this release (the enrollment epoch among them): refuse to run on older ones.
 	if dc, err := discovery.NewDiscoveryClientForConfig(restCfg); err != nil {
