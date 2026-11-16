@@ -44,7 +44,9 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 		VpnSize:       immutableGroupSize(g.Spec.VPN.Size),
 		GatewaySize:   immutableGroupSize(g.Spec.Gateway.Size),
 		// the reservation's CR name; the callers map it back to the id (reservationIDOf)
-		ReservationId: g.Labels[names.LabelReservation],
+		ReservationId:   g.Labels[names.LabelReservation],
+		VpnEnabled:      g.VPNEnabled(),
+		InternetEnabled: g.InternetEnabled(),
 	}
 }
 

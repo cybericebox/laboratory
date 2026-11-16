@@ -50,11 +50,6 @@ type LabGroupStatusApplyConfiguration struct {
 	// Pods is the scheduling state of the group's own pods ("vpn", "gateway").
 	// Absent for a group that predates the scheduler: its pods are not queued.
 	Pods []NamedPodScheduleApplyConfiguration `json:"pods,omitempty"`
-	// GatewayPod says whether the group runs its gateway pod: the operator sets it from the labs of the group, true while some lab has an
-	// Internet gateway (the pod serves their DHCP, DNS, NAT and egress filter and nothing else), false while none has. Absent for a group
-	// the operator has not counted yet, or one that predates the field: it keeps the gateway pod. The VPN pod is not counted this way:
-	// it follows spec.vpn.disabled, which the platform sets.
-	GatewayPod *bool `json:"gatewayPod,omitempty"`
 }
 
 // LabGroupStatusApplyConfiguration constructs a declarative configuration of the LabGroupStatus type for use with
@@ -184,13 +179,5 @@ func (b *LabGroupStatusApplyConfiguration) WithPods(values ...*NamedPodScheduleA
 		}
 		b.Pods = append(b.Pods, *values[i])
 	}
-	return b
-}
-
-// WithGatewayPod sets the GatewayPod field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the GatewayPod field is set to the value of the last call.
-func (b *LabGroupStatusApplyConfiguration) WithGatewayPod(value bool) *LabGroupStatusApplyConfiguration {
-	b.GatewayPod = &value
 	return b
 }

@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,40 @@ func (r *LabReconciler) maxLabGateways() int {
 // gatewayspec). The agent has refused the same at creation; a Lab made by hand or by an older agent is stopped here.
 func (r *LabReconciler) validateGateways(lab *laboratoryv1alpha1.Lab) error {
 	return gatewayspec.Validate(&lab.Spec, r.maxLabGateways())
+}
+
+// groupServerRecheck is how often a lab refused for a server its group has switched off is looked at again.
+const groupServerRecheck = 15 * time.Second
+
+// validateGatewaysAndServers is validateGateways followed by groupServerOff: the first refusal, and whether it is the one for a server
+// of the group that is off (which is looked at again later).
+func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *laboratoryv1alpha1.Lab) (refusal error, serverOff bool, err error) {
+	if refusal = r.validateGateways(lab); refusal != nil {
+		return refusal, false, nil
+	}
+	off, err := r.groupServerOff(ctx, lab)
+	return off, off != nil, err
+}
+
+// groupServerOff is the refusal of a lab that declares a gateway whose server its group has switched off (spec.vpn.enabled for a VPN
+// gateway, spec.gateway.enabled for an Internet gateway), nil when the lab is fine. A lab outside any group namespace is not checked. The
+// agent refuses the same at creation (GROUP_VPN_OFF, GROUP_INTERNET_OFF); a Lab made by hand is stopped here, and it starts by itself
+// when the switch is turned on.
+func (r *LabReconciler) groupServerOff(ctx context.Context, lab *laboratoryv1alpha1.Lab) (refusal error, err error) {
+	if !lab.Spec.HasVPN() && !lab.Spec.HasInternet() {
+		return nil, nil
+	}
+	group, err := (&DeviceReconciler{Client: r.Client}).labGroupOfNamespace(ctx, lab.Namespace)
+	if err != nil || group == nil {
+		return nil, err
+	}
+	if lab.Spec.HasVPN() && !group.VPNEnabled() {
+		return fmt.Errorf("GroupVPNOff: the lab has a VPN gateway but the VPN of its group %s is off (spec.vpn.enabled)", group.Name), nil
+	}
+	if lab.Spec.HasInternet() && !group.InternetEnabled() {
+		return fmt.Errorf("GroupInternetOff: the lab has an Internet gateway but the internet of its group %s is off (spec.gateway.enabled)", group.Name), nil
+	}
+	return nil, nil
 }
 
 // setGatewayStatus writes the entry of a gateway into the status, in place (by name) or at the end.

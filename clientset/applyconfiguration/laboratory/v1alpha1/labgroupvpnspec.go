@@ -26,7 +26,15 @@ import (
 //
 // LabGroupVPNSpec holds VPN server configuration.
 type LabGroupVPNSpecApplyConfiguration struct {
-	// Disabled stops only the VPN server; internet gateway and Labs remain running.
+	// Enabled is the switch of the group's VPN server pod: the pod exists only while it is on. A lab with a VPN gateway (spec.gateways,
+	// kind vpn) and a LabGroupClient are refused while it is off, and it cannot be turned off while a lab of the group has a VPN
+	// gateway. Absent (a group made before the field) it follows Disabled, so existing groups keep their VPN pod unless they disabled it.
+	// The agent writes it explicitly (and keeps Disabled equal to its opposite), off unless the caller asks for it.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Disabled is the old switch, kept so a group made before Enabled means the same: true stops the VPN server (no pod). Enabled wins
+	// when it is set.
+	//
+	// Deprecated: use Enabled.
 	Disabled *bool `json:"disabled,omitempty"`
 	// Deprecated: suspension now always keeps WireGuard and the internet
 	// gateway running while stopping only task devices.
@@ -42,6 +50,14 @@ type LabGroupVPNSpecApplyConfiguration struct {
 // apply.
 func LabGroupVPNSpec() *LabGroupVPNSpecApplyConfiguration {
 	return &LabGroupVPNSpecApplyConfiguration{}
+}
+
+// WithEnabled sets the Enabled field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Enabled field is set to the value of the last call.
+func (b *LabGroupVPNSpecApplyConfiguration) WithEnabled(value bool) *LabGroupVPNSpecApplyConfiguration {
+	b.Enabled = &value
+	return b
 }
 
 // WithDisabled sets the Disabled field in the declarative configuration to the given value

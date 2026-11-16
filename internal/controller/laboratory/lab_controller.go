@@ -169,7 +169,11 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// What the lab declares as gateways is checked before anything is taken from the address pool for them.
-	validationErr := r.validateGateways(&lab)
+	// A lab also needs the servers of its group: the VPN server for a VPN gateway, the gateway for an Internet gateway.
+	validationErr, serverOff, err := r.validateGatewaysAndServers(ctx, &lab)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if validationErr == nil {
 		// Like the modes, the subnets stay in lab as the status write answered them (a read
 		// from the cache could return the object without them).
@@ -194,18 +198,7 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
 	}
 	if validationErr != nil {
-		// Surface the specific validation reason — it was previously discarded,
-		// leaving the Lab in Failed with no user-visible cause.
-		lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
-		labstatus.SetReady(
-			&lab.Status.Conditions, lab.Generation, false,
-			labstatus.ReasonValidationFailed, validationErr.Error(),
-		)
-		r.Recorder.Event(&lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, validationErr.Error())
-		if statusErr := r.Status().Update(ctx, &lab); statusErr != nil {
-			logger.Error(statusErr, "update status after graph validation failure")
-		}
-		return ctrl.Result{}, nil
+		return r.refuseLab(ctx, &lab, validationErr, serverOff)
 	}
 
 	// After validation: the web host label relies on validated device names.
@@ -1141,6 +1134,25 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 
 	controllerutil.RemoveFinalizer(lab, names.FinalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
+}
+
+// refuseLab fails the lab with the reason of its validation, as a condition and an event. A lab refused for a server its group has
+// switched off is looked at again later (the switch may be turned on), any other refusal waits for a change of the lab.
+func (r *LabReconciler) refuseLab(ctx context.Context, lab *laboratoryv1alpha1.Lab, validationErr error, serverOff bool) (ctrl.Result, error) {
+	// Surface the specific validation reason — it was previously discarded, leaving the Lab in Failed with no user-visible cause.
+	lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
+	labstatus.SetReady(
+		&lab.Status.Conditions, lab.Generation, false,
+		labstatus.ReasonValidationFailed, validationErr.Error(),
+	)
+	r.Recorder.Event(lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, validationErr.Error())
+	if statusErr := r.Status().Update(ctx, lab); statusErr != nil {
+		log.FromContext(ctx).Error(statusErr, "update status after graph validation failure")
+	}
+	if serverOff {
+		return ctrl.Result{RequeueAfter: groupServerRecheck}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // releaseFinalizerOfAbsentGroupPod strips the finalizer of the group pod's binary (it cleans inside the pod: DHCP, firewall rules, the lab

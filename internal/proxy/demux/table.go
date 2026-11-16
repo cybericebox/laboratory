@@ -347,7 +347,7 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	pubKey := lg.Status.VPN.PublicKey
-	if pubKey == "" || !lg.Status.VPN.Registered || lg.Spec.VPN.Disabled {
+	if pubKey == "" || !lg.Status.VPN.Registered || !lg.VPNEnabled() {
 		// VPN not yet ready — remove stale entry if present.
 		w.Table.Delete(string(lg.UID))
 		w.forget(lg.Name)

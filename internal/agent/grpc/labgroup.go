@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,9 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if _, err := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
+		if _, _, err := groupSwitches(it); err != nil {
+			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+		}
 		computed, err := h.applyExpectedCounts(it)
 		if err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
@@ -65,7 +69,7 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 	for i, it := range items {
 		ids[i] = it.GetReservationId()
 		lg := &laboratoryv1alpha1.LabGroup{}
-		lg.Spec.VPN.Disabled = it.GetVpnDisabled()
+		lg.Spec.VPN.Enabled, lg.Spec.Gateway.Enabled = switchesOf(it)
 		lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
 		fit[i] = fitItem{reservation: it.GetReservationId(), need: h.groupNeedOf(lg), deployGroup: names.DeployKey(it.GetDeployGroup())}
 		if _, err := h.getGroup(ctx, it.GetName()); err == nil {
@@ -101,7 +105,8 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
 	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	lg.Spec.Suspended = it.GetSuspended()
-	lg.Spec.VPN.Disabled = it.GetVpnDisabled()
+	lg.Spec.VPN.Enabled, lg.Spec.Gateway.Enabled = switchesOf(it)
+	lg.Spec.VPN.Disabled = !*lg.Spec.VPN.Enabled // the old switch says the same, for whatever still reads it
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
 	lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
 	tenant := tenantOf(ctx)
@@ -143,7 +148,7 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 		if names.IDOf(cur) != it.GetName() {
 			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLabGroup, it.GetName(), names.IDOf(cur))
 		}
-		if cur.Spec.Suspended != lg.Spec.Suspended || cur.Spec.VPN.Disabled != lg.Spec.VPN.Disabled ||
+		if cur.Spec.Suspended != lg.Spec.Suspended || cur.VPNEnabled() != lg.VPNEnabled() || cur.InternetEnabled() != lg.InternetEnabled() ||
 			cur.Spec.VPN.ProbeWhileSuspended != lg.Spec.VPN.ProbeWhileSuspended ||
 			!samePodSize(cur.Spec.VPN.Size, lg.Spec.VPN.Size) || !samePodSize(cur.Spec.Gateway.Size, lg.Spec.Gateway.Size) || !dep.matches(cur.Labels, cur.Annotations) {
 			return errDifferentSpec{kindLabGroup, it.GetName()}
@@ -282,8 +287,8 @@ func (h *Handler) UpdateLabGroups(ctx context.Context, in *protobuf.UpdateLabGro
 
 // groupPlan is a validated set of changes for one group.
 type groupPlan struct {
-	labels                                 labelPlan
-	suspended, vpnDisabled, probeWhileSusp *bool
+	labels                                                 labelPlan
+	suspended, vpnEnabled, internetEnabled, probeWhileSusp *bool
 	// reservation: attach to this reservation id (see attachReservation)
 	reservation *string
 }
@@ -309,7 +314,16 @@ func planGroupChanges(common, item *protobuf.LabGroupChanges) (groupPlan, error)
 		common = &protobuf.LabGroupChanges{}
 	}
 	p.suspended = pick(common.Suspended, item.Suspended)
-	p.vpnDisabled = pick(common.VpnDisabled, item.VpnDisabled)
+	// the VPN switch: vpn_enabled, else the old vpn_disabled (true = off, false = on)
+	vpnDisabled := pick(common.VpnDisabled, item.VpnDisabled)
+	p.vpnEnabled = pick(common.VpnEnabled, item.VpnEnabled)
+	if p.vpnEnabled == nil && vpnDisabled != nil {
+		on := !*vpnDisabled
+		p.vpnEnabled = &on
+	} else if p.vpnEnabled != nil && vpnDisabled != nil && *vpnDisabled == *p.vpnEnabled {
+		return p, fmt.Errorf("vpn_disabled and vpn_enabled say the opposite of each other")
+	}
+	p.internetEnabled = pick(common.InternetEnabled, item.InternetEnabled)
 	p.probeWhileSusp = pick(common.ProbeWhileSuspended, item.ProbeWhileSuspended)
 	if p.reservation = pickString(common.ReservationId, item.ReservationId); p.reservation != nil {
 		if err := names.ValidateID(*p.reservation); err != nil {
@@ -355,7 +369,24 @@ func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p g
 			}
 		}
 		set(&cur.Spec.Suspended, p.suspended)
-		set(&cur.Spec.VPN.Disabled, p.vpnDisabled)
+		if p.vpnEnabled != nil && cur.VPNEnabled() != *p.vpnEnabled {
+			if !*p.vpnEnabled {
+				if err := h.refuseServerInUse(ctx, cur, kindServerVPN); err != nil {
+					return err
+				}
+			}
+			on := *p.vpnEnabled
+			cur.Spec.VPN.Enabled, cur.Spec.VPN.Disabled, changed = &on, !on, true
+		}
+		if p.internetEnabled != nil && cur.InternetEnabled() != *p.internetEnabled {
+			if !*p.internetEnabled {
+				if err := h.refuseServerInUse(ctx, cur, kindServerInternet); err != nil {
+					return err
+				}
+			}
+			on := *p.internetEnabled
+			cur.Spec.Gateway.Enabled, changed = &on, true
+		}
 		set(&cur.Spec.VPN.ProbeWhileSuspended, p.probeWhileSusp)
 		if p.reservation != nil {
 			label, err := h.attachReservation(ctx, kindLabGroup, ref.GetName(), cur.Labels, *p.reservation)
@@ -484,4 +515,72 @@ func (h *Handler) applyExpectedCounts(it *protobuf.LabGroupItem) (bool, error) {
 	it.VpnSize = &protobuf.PodSize{CpuMillicores: vpn.CPU, MemoryBytes: vpn.Memory}
 	it.GatewaySize = &protobuf.PodSize{CpuMillicores: gw.CPU, MemoryBytes: gw.Memory}
 	return true, nil
+}
+
+// Which server of a group a switch is about.
+const (
+	kindServerVPN      = "vpn"
+	kindServerInternet = "internet"
+)
+
+// switchesOf is the switches of a new group from its item: the new fields when set, else the old vpn_disabled (true = off); a switch
+// nobody asks for is OFF. Both are returned as pointers, to be written on the object as given.
+func switchesOf(it *protobuf.LabGroupItem) (vpn, internet *bool) {
+	on := it.VpnEnabled != nil && *it.VpnEnabled
+	off := false
+	if on {
+		vpn = &on
+	} else {
+		vpn = &off
+	}
+	in := it.InternetEnabled != nil && *it.InternetEnabled
+	internet = &in
+	return vpn, internet
+}
+
+// groupSwitches validates the switches of an item and returns them.
+func groupSwitches(it *protobuf.LabGroupItem) (vpn, internet bool, err error) {
+	if it.VpnEnabled != nil && *it.VpnEnabled && it.GetVpnDisabled() {
+		return false, false, fmt.Errorf("vpn_enabled and vpn_disabled say the opposite of each other")
+	}
+	v, i := switchesOf(it)
+	return *v, *i, nil
+}
+
+// groupServerRefusal refuses a lab spec that needs a server its group has switched off: a VPN gateway needs the VPN, an Internet
+// gateway needs the internet. The operator refuses the same for objects made by hand (validateGateways).
+func groupServerRefusal(g *laboratoryv1alpha1.LabGroup, spec *laboratoryv1alpha1.LabSpec) error {
+	if spec.HasVPN() && !g.VPNEnabled() {
+		return refusal(client.ReasonGroupVPNOff, "the lab has a VPN gateway but the VPN of group %s is off: turn it on (vpn_enabled) first", names.IDOf(g))
+	}
+	if spec.HasInternet() && !g.InternetEnabled() {
+		return refusal(client.ReasonGroupInternetOff, "the lab has an Internet gateway but the internet of group %s is off: turn it on (internet_enabled) first", names.IDOf(g))
+	}
+	return nil
+}
+
+// refuseServerInUse refuses to turn a server of the group off while a lab of the group has a gateway that needs it (a lab being
+// deleted counts: its gateway is removed by the pod).
+func (h *Handler) refuseServerInUse(ctx context.Context, g *laboratoryv1alpha1.LabGroup, server string) error {
+	ns := laboratoryv1alpha1.LabGroupNamespaceOf(g)
+	labs, err := h.cs.LaboratoryV1alpha1().Labs(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	var using []string
+	for i := range labs.Items {
+		l := &labs.Items[i]
+		if (server == kindServerVPN && l.Spec.HasVPN()) || (server == kindServerInternet && l.Spec.HasInternet()) {
+			using = append(using, fmt.Sprintf("%q", names.IDOf(l)))
+		}
+	}
+	if len(using) == 0 {
+		return nil
+	}
+	sort.Strings(using)
+	what := "VPN gateway"
+	if server == kindServerInternet {
+		what = "Internet gateway"
+	}
+	return refusal(client.ReasonGroupServerInUse, "the %s of group %s is used by lab(s) %s: delete them before turning it off", what, names.IDOf(g), strings.Join(using, ", "))
 }

@@ -1,6 +1,7 @@
 package laboratory
 
 import (
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -9,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -16,21 +18,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 )
-
-// addInternetLab puts a lab with an Internet gateway into the namespace of the group once the namespace exists: the gateway pod of a group
-// exists only while one of its labs has an Internet gateway.
-func addInternetLab(group string) {
-	ns := laboratoryv1alpha1.LabGroupNamespace(group)
-	Eventually(func() error {
-		return k8sClient.Get(ctx, types.NamespacedName{Name: ns}, &corev1.Namespace{})
-	}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
-	lab := &laboratoryv1alpha1.Lab{
-		ObjectMeta: metav1.ObjectMeta{Name: "net", Namespace: ns},
-		Spec:       laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "out", Kind: laboratoryv1alpha1.GatewayKindInternet}}},
-	}
-	Expect(k8sClient.Create(ctx, lab)).To(Succeed())
-	DeferCleanup(func() { _ = k8sClient.Delete(ctx, lab) })
-}
 
 var _ = Describe("LabGroup suspension", func() {
 	It("passes the configured support address to the VPN server", func() {
@@ -142,7 +129,6 @@ var _ = Describe("LabGroup suspension", func() {
 		}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
-		addInternetLab(name)
 		Eventually(func() bool {
 			var current laboratoryv1alpha1.LabGroup
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil || current.Status.Phase != laboratoryv1alpha1.PhaseSuspended {
@@ -183,21 +169,86 @@ var _ = Describe("LabGroup suspension", func() {
 		}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
-		addInternetLab(name)
 		Eventually(func() bool {
 			var current laboratoryv1alpha1.LabGroup
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil || current.Status.Namespace == "" {
 				return false
 			}
 			var vpn, gateway appsv1.Deployment
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn); err != nil {
+			// a VPN that is off has no pod at all (no Deployment, not one at zero replicas)
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn); !apierrors.IsNotFound(err) {
 				return false
 			}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &gateway); err != nil {
 				return false
 			}
-			return vpn.Spec.Replicas != nil && *vpn.Spec.Replicas == 0 && gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1 && !current.Status.VPN.Registered && !current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24"
+			return gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1 && !current.Status.VPN.Registered && !current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24" && current.Status.Phase == laboratoryv1alpha1.PhaseReady
 		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
+	})
+
+	It("refuses a lab whose connector needs a server its group has switched off, and lets it in when the switch is turned on", func() {
+		const name = "servers-off"
+		off := false
+		group := &laboratoryv1alpha1.LabGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: laboratoryv1alpha1.LabGroupSpec{
+				VPN:     laboratoryv1alpha1.LabGroupVPNSpec{Enabled: &off},
+				Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &off},
+			},
+		}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		ns := laboratoryv1alpha1.LabGroupNamespace(name)
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: ns}, &corev1.Namespace{})
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		lab := &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Name: "needs-vpn", Namespace: ns},
+			Spec:       laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}},
+		}
+		Expect(k8sClient.Create(ctx, lab)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, lab) })
+
+		Eventually(func() string {
+			var cur laboratoryv1alpha1.Lab
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lab.Name, Namespace: ns}, &cur); err != nil || cur.Status.Phase != laboratoryv1alpha1.PhaseFailed {
+				return ""
+			}
+			for _, c := range cur.Status.Conditions {
+				if strings.Contains(c.Message, "GroupVPNOff") {
+					return c.Message
+				}
+			}
+			return ""
+		}, 20*time.Second, 250*time.Millisecond).ShouldNot(BeEmpty())
+		var vpn appsv1.Deployment
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &vpn))).To(BeTrue(), "no VPN pod while the VPN is off")
+
+		// turn the VPN on: the pod is made and the lab is no longer refused (it is looked at again by itself)
+		Eventually(func() error {
+			var cur laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &cur); err != nil {
+				return err
+			}
+			on := true
+			cur.Spec.VPN.Enabled = &on
+			return k8sClient.Update(ctx, &cur)
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &vpn)
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		Eventually(func() bool {
+			var cur laboratoryv1alpha1.Lab
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lab.Name, Namespace: ns}, &cur); err != nil {
+				return false
+			}
+			for _, c := range cur.Status.Conditions {
+				if strings.Contains(c.Message, "GroupVPNOff") {
+					return false
+				}
+			}
+			return true
+		}, 40*time.Second, 500*time.Millisecond).Should(BeTrue())
 	})
 
 	It("scales existing VPN and gateway deployments down", func() {
@@ -249,7 +300,6 @@ var _ = Describe("LabGroup suspension", func() {
 		group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
-		addInternetLab(name)
 
 		Eventually(func() laboratoryv1alpha1.Phase {
 			var current laboratoryv1alpha1.LabGroup
@@ -259,14 +309,9 @@ var _ = Describe("LabGroup suspension", func() {
 			return current.Status.Phase
 		}, 15*time.Second, 250*time.Millisecond).Should(Equal(laboratoryv1alpha1.PhaseReady))
 
-		// the operator is still writing the group's status (it counts the lab's gateway): read and update again on a conflict
-		Eventually(func() error {
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, group); err != nil {
-				return err
-			}
-			group.Spec.Suspended = true
-			return k8sClient.Update(ctx, group)
-		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, group)).To(Succeed())
+		group.Spec.Suspended = true
+		Expect(k8sClient.Update(ctx, group)).To(Succeed())
 
 		Eventually(func() bool {
 			var current laboratoryv1alpha1.LabGroup

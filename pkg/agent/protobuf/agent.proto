@@ -271,8 +271,18 @@ message LabGroupItem {
   string deploy_group = 3;
   repeated string deploy_after = 4;
   bool suspended = 5;
+  // The old VPN switch (true = no VPN server). Deprecated: send vpn_enabled. Still honoured: true means vpn_enabled false (and sending
+  // vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing (the VPN server is off unless vpn_enabled
+  // says otherwise: see below).
   bool vpn_disabled = 6;
   bool probe_while_suspended = 7;
+  // The switches of the group's two servers (contract 2.7). The pod of a server exists only while its switch is on, so a group that needs
+  // no VPN and no internet costs neither pod. A lab with a VPN gateway, and a LabGroupClient, are refused (reason GROUP_VPN_OFF) in a group
+  // whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. Both are OFF unless
+  // set to true here: an unset field is off for a NEW group (an older caller that sends neither gets a group with no VPN server and no
+  // gateway). A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
+  optional bool vpn_enabled = 13;
+  optional bool internet_enabled = 14;
   // The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group
   // may have, the gateway for the labs of the group that use the internet). The pods are created Guaranteed at exactly that size
   // and never resized. Unset = the chart's default size. A set size must have both values positive and be within the maximum
@@ -304,8 +314,14 @@ message CreateLabGroupsRequest {
 message LabGroupChanges {
   LabelChanges labels = 1;
   optional bool suspended = 2;
+  // The old VPN switch; see LabGroupItem.vpn_disabled. vpn_enabled wins when both are sent.
   optional bool vpn_disabled = 3;
   optional bool probe_while_suspended = 4;
+  // The switches of the group's servers (contract 2.7). Turning one OFF while a lab of the group uses it (a lab with a VPN gateway for
+  // the VPN, an Internet gateway for the internet) is refused with GROUP_SERVER_IN_USE and nothing changes; turning one on makes its
+  // pod. Turning the VPN off does not delete the group's clients (they stay, unserved, and the VPN comes back with the switch).
+  optional bool vpn_enabled = 6;
+  optional bool internet_enabled = 7;
   // Attach only: puts a group that runs under no reservation under this one (same tenant, not ended). No fit check
   // (running work is never refused) and only the label changes. Another id on a group that has one is
   // RESERVATION_MISMATCH; the same id is a no-op.
@@ -538,6 +554,11 @@ message LabGroup {
   PodSize gateway_size = 17;
   // The reservation the group runs under, as given; empty = unreserved.
   string reservation_id = 19;
+  // The switches of the group's servers as they are now (contract 2.7; a group that predates them reports both on): a server that is off
+  // has no pod, no entry in status.pods, and for the VPN no vpn_registered and no current_vpn_boot_*. The group is Ready (status.phase)
+  // without a VPN server when its VPN is off.
+  bool vpn_enabled = 20;
+  bool internet_enabled = 21;
 }
 message LabGroupStatus {
   string phase = 1;
