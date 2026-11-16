@@ -21,6 +21,14 @@ import (
 // CacheSegment is the first path segment of the cache under the registry's address.
 const CacheSegment = "c"
 
+// HeaderGateCache is the response header with which the registry gate says where an answer on the cache path came from:
+// GateCacheHit when the object was served from the cache's own storage (after the gate proved the pull). The prewarm asks for it to know
+// that a blob is really stored and not only proved.
+const (
+	HeaderGateCache = "Registry-Gate-Cache"
+	GateCacheHit    = "hit"
+)
+
 // DefaultRegistries are the upstream registries the chart configures by default.
 var DefaultRegistries = []string{"docker.io", "ghcr.io", "quay.io", "registry.k8s.io"}
 

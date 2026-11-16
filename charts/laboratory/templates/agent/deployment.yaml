@@ -171,6 +171,11 @@ spec:
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT
               value: {{ .Values.registry.cache.prewarm.timeout | quote }}
+            # ... through the gate's TLS port, with the credentials of the call, trusting the registry's own authority only.
+            - name: AGENT_PREWARM_GATE_ADDR
+              value: {{ include "laboratory.registryTLSAddr" . | quote }}
+            - name: AGENT_PREWARM_GATE_CA_FILE
+              value: /registry-ca/ca.crt
           {{- end }}
           {{- with .Values.images.tenantDeny }}
             # Repositories no tenant may use (Tenant.spec.images.allow narrows the rest).
@@ -240,6 +245,11 @@ spec:
             - name: client-ca
               mountPath: /ca
               readOnly: true
+            {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+            - name: registry-ca
+              mountPath: /registry-ca
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       volumes:
@@ -251,4 +261,9 @@ spec:
         - name: client-ca
           secret:
             secretName: laboratory-agent-ca
+        {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+        - name: registry-ca
+          secret:
+            secretName: laboratory-registry-ca
+        {{- end }}
 {{- end }}

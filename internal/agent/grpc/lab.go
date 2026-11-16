@@ -98,7 +98,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 			return nil, invalid("variant %q: %v", id, err)
 		}
 	}
-	policy, _, err := h.imagePolicy(ctx)
+	policy, err := h.imagePolicy(ctx)
 	if err != nil {
 		return nil, err
 	}

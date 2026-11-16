@@ -228,6 +228,11 @@ type CacheConfig struct {
 	PullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
 	// PullSecretNamespace is the namespace of those Secrets; empty = names.SystemNamespace.
 	PullSecretNamespace string `env:"AGENT_PULL_SECRET_NAMESPACE"`
+	// GateAddr is host:port of the registry gate's TLS port, where the cache path is served: PrewarmImages warms images through it, with the
+	// credentials of the call. Empty = names.RegistryGateAddr. GateCAFile is the authority the agent trusts there (the chart gives it the CA
+	// of the gate's certificate only); without it the agent speaks plain http, which only a development setup does.
+	GateAddr   string `env:"AGENT_PREWARM_GATE_ADDR"`
+	GateCAFile string `env:"AGENT_PREWARM_GATE_CA_FILE"`
 	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
 	PinTTL      time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`
@@ -267,6 +272,9 @@ func Load() (*Config, error) {
 	c.PublicVPNEndpoint = names.WithPublicVPNPort(c.PublicVPNEndpoint)
 	if c.ReleaseNamespace == "" {
 		c.ReleaseNamespace = names.SystemNamespace
+	}
+	if c.Cache.GateAddr == "" {
+		c.Cache.GateAddr = names.RegistryGateAddr
 	}
 	if c.Cache.PullSecretNamespace == "" {
 		c.Cache.PullSecretNamespace = names.SystemNamespace

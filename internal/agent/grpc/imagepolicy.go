@@ -18,12 +18,12 @@ import (
 // imagePolicy is what the caller's tenant may run: the platform deny list and cache
 // addresses, narrowed by the tenant's allow list. The tenant is nil for a caller without a
 // Tenant object (the default tenant of a development setup).
-func (h *Handler) imagePolicy(ctx context.Context) (imagepolicy.Policy, *laboratoryv1alpha1.Tenant, error) {
+func (h *Handler) imagePolicy(ctx context.Context) (imagepolicy.Policy, error) {
 	var ten *laboratoryv1alpha1.Tenant
 	if h.cs != nil {
 		var err error
 		if ten, err = h.tenantObject(ctx, tenantOf(ctx)); err != nil {
-			return imagepolicy.Policy{}, nil, err
+			return imagepolicy.Policy{}, err
 		}
 	}
 	p := imagepolicy.Policy{Deny: h.imageDeny, CachePrefixes: h.imageCache, PlatformOnly: h.platformOnly, PlatformPrefix: h.platformPrefix,
@@ -35,7 +35,7 @@ func (h *Handler) imagePolicy(ctx context.Context) (imagepolicy.Policy, *laborat
 		p.Allow = ten.Spec.Images.Allow
 		p.PlatformOnly = p.PlatformOnly || ten.Spec.Images.PlatformOnly
 	}
-	return p, ten, nil
+	return p, nil
 }
 
 // checkSpecImages refuses a spec that names an image the tenant may not use.

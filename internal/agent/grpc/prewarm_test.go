@@ -19,6 +19,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -126,6 +127,7 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ok := z.blobs[p[:i]+"/"+p[i+len("/blobs/"):]]
 		z.mu.Unlock()
 		if ok {
+			w.Header().Set(imagecache.HeaderGateCache, imagecache.GateCacheHit)
 			w.WriteHeader(http.StatusOK)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
@@ -289,12 +291,12 @@ func TestPrewarmFailsWhenOnlyTheManifestWasStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := waitState(t, h, "ghcr.io/o/half:1", protobuf.PrewarmState_PREWARM_STATE_FAILED)
-	if !strings.Contains(st.Error, "not stored in the cache") {
+	if !strings.Contains(st.Error, "blob sha256:") || !strings.Contains(st.Error, "cache") {
 		t.Fatalf("the error must say that a blob is missing: %q", st.Error)
 	}
 }
 
-func TestPrewarmSkipsRegistriesTheCacheDoesNotServe(t *testing.T) {
+func TestPrewarmRefusesRegistriesTheCacheDoesNotServe(t *testing.T) {
 	z := newFakeZot(t)
 	h := prewarmHandler(t, z, &fakeResolver{}, PrewarmConfig{})
 	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"registry.example.com/team/app:1", "localhost:5035/lab/x/y/z@sha256:" + strings.Repeat("a", 64)}})
@@ -302,12 +304,9 @@ func TestPrewarmSkipsRegistriesTheCacheDoesNotServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range r.Images {
-		want := protobuf.PrewarmState_PREWARM_STATE_SKIPPED
-		if strings.HasPrefix(s.Image, "localhost") {
-			want = protobuf.PrewarmState_PREWARM_STATE_FAILED // a loopback registry is refused by the image policy
-		}
-		if s.State != want {
-			t.Fatalf("%s: %v, want %v", s.Image, s.State, want)
+		// with the cache on there is no direct pull: an image it cannot serve is refused (a loopback registry by the image policy)
+		if s.State != protobuf.PrewarmState_PREWARM_STATE_FAILED {
+			t.Fatalf("%s: %v, want FAILED", s.Image, s.State)
 		}
 	}
 	if z.count("registry.example.com/team/app@")+len(z.manifestsCopy()) != 0 {
@@ -484,18 +483,17 @@ func TestPrewarmAppliesTheTenantImagePolicy(t *testing.T) {
 	}
 }
 
-func TestPrewarmSkipsTenantsWithTheirOwnCredentials(t *testing.T) {
+// A tenant with registry credentials of its own is no different here: its public images are warmed anonymously like everyone's, and the
+// gate (not the agent) says no to one that needs credentials the call does not bring.
+func TestPrewarmDoesNotSkipTenantsWithTheirOwnCredentials(t *testing.T) {
 	z := newFakeZot(t)
-	h := tenantPolicyHandler(t, z, &fakeResolver{}, &laboratoryv1alpha1.Tenant{
+	d := z.addImage(t, "ghcr.io/acme/app")
+	h := tenantPolicyHandler(t, z, &fakeResolver{digests: map[string]string{"ghcr.io/acme/app:1": d.String()}}, &laboratoryv1alpha1.Tenant{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec:       laboratoryv1alpha1.TenantSpec{Images: laboratoryv1alpha1.TenantImages{PullSecret: "mine"}},
 	}, nil)
-	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"ghcr.io/acme/app:1"}})
-	if err != nil || r.Images[0].State != protobuf.PrewarmState_PREWARM_STATE_SKIPPED {
-		t.Fatalf("%+v %v", r, err)
-	}
-	if z.manifestFetches("ghcr.io/acme/app") != 0 {
-		t.Error("the shared cache must not fetch it")
+	if st := waitState(t, h, "ghcr.io/acme/app:1", protobuf.PrewarmState_PREWARM_STATE_DONE); st.Digest != d.String() {
+		t.Fatalf("%+v", st)
 	}
 }
 
@@ -548,5 +546,51 @@ func TestPrewarmSkipsPlatformImages(t *testing.T) {
 	}
 	if r.Images[1].State != protobuf.PrewarmState_PREWARM_STATE_FAILED {
 		t.Errorf("a malformed platform reference is refused: %+v", r.Images[1])
+	}
+}
+
+// The credential of a call reaches the gate as the operator writes a pod's: "<tenant>~<user>", only for images whose registry it names.
+func TestCredentialedImagesCarryTheTenantInTheUsername(t *testing.T) {
+	creds := []*protobuf.RegistryCredential{{Registry: "ghcr.io", Username: "bot", Password: "s3"}, {Registry: "quay.io", Username: "", Password: "x"}}
+	got := credentialedImages([]string{"ghcr.io/o/a:1", " ghcr.io/o/a:1 ", "nginx", "quay.io/o/b:2", "not a ref"}, creds, "acme")
+	if len(got) != 1 {
+		t.Fatalf("only ghcr.io/o/a:1 has a usable credential (the other has no username): %+v", got)
+	}
+	a := got["ghcr.io/o/a:1"]
+	if a == nil || a.user != "acme~bot" || a.pass != "s3" || a.id == "" || strings.Contains(a.id, "s3") {
+		t.Fatalf("%+v", a)
+	}
+	if credentialedImages([]string{"ghcr.io/o/a:1"}, nil, "acme") != nil {
+		t.Error("no credentials, none")
+	}
+}
+
+// What was warmed with someone's credentials is theirs: it is not in the listing, and a call with other credentials has an entry of its own.
+func TestPrewarmKeepsCredentialedEntriesApart(t *testing.T) {
+	z := newFakeZot(t)
+	d := z.addImage(t, "ghcr.io/o/priv")
+	h := prewarmHandler(t, z, &fakeResolver{}, PrewarmConfig{})
+	call := func(user string) *protobuf.PrewarmImageStatus {
+		res, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{
+			Images:              []string{"ghcr.io/o/priv@" + d.String()},
+			RegistryCredentials: []*protobuf.RegistryCredential{{Registry: "ghcr.io", Username: user, Password: "pw"}},
+		})
+		if err != nil || len(res.Images) != 1 {
+			t.Fatalf("%v %+v", err, res)
+		}
+		return res.Images[0]
+	}
+	for i := 0; i < 200 && call("alice").State != protobuf.PrewarmState_PREWARM_STATE_DONE; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st := call("alice"); st.State != protobuf.PrewarmState_PREWARM_STATE_DONE || st.Digest != d.String() {
+		t.Fatalf("%+v", st)
+	}
+	if st := call("bob"); st.State == protobuf.PrewarmState_PREWARM_STATE_DONE && st.UpdatedUnixMs == call("alice").UpdatedUnixMs {
+		t.Error("another credential must not see the first one's result as its own")
+	}
+	all, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{})
+	if err != nil || len(all.Images) != 0 {
+		t.Fatalf("the listing shows nothing that was warmed with credentials: %+v %v", all, err)
 	}
 }

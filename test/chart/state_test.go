@@ -409,11 +409,31 @@ func TestAgentPrewarmWiring(t *testing.T) {
 		"IMAGE_PULL_SECRETS":        "pull-one",
 		"AGENT_PREWARM_CONCURRENCY": "7",
 		"AGENT_PREWARM_TIMEOUT":     "10m",
+		// the prewarm goes through the gate's TLS port, trusting the registry's own authority only
+		"AGENT_PREWARM_GATE_ADDR":    "laboratory-registry.laboratory-system.svc:5443",
+		"AGENT_PREWARM_GATE_CA_FILE": "/registry-ca/ca.crt",
 	}
 	for k, v := range want {
 		if env[k].Value != v {
 			t.Errorf("%s = %q, want %q", k, env[k].Value, v)
 		}
+	}
+	mounted, caSecret := false, ""
+	for _, m := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
+		mounted = mounted || m.Name == "registry-ca" && m.MountPath == "/registry-ca" && m.ReadOnly
+	}
+	for _, v := range dep.Spec.Template.Spec.Volumes {
+		if v.Name == "registry-ca" && v.Secret != nil {
+			caSecret = v.Secret.SecretName
+		}
+	}
+	if !mounted || caSecret != "laboratory-registry-ca" {
+		t.Errorf("the agent mounts the authority of the gate: mounted=%v secret=%q", mounted, caSecret)
+	}
+	if tlsOut, err := helmTemplate(t, append(on, "-s", "templates/registry/tls-secret.yaml")...); err != nil {
+		t.Errorf("%v\n%s", err, tlsOut)
+	} else if _, copyOnly, found := strings.Cut(tlsOut, "name: laboratory-registry-ca"); !found || strings.Contains(copyOnly, "private") || strings.Count(copyOnly, "BEGIN") != 1 {
+		t.Errorf("the agent's copy holds the authority certificate and nothing else:\n%s", tlsOut)
 	}
 	out, err := helmTemplate(t, append(on, "-s", "templates/agent/role-pullsecrets.yaml")...)
 	if err != nil || !strings.Contains(out, "pull-one") || !strings.Contains(out, "verbs: [ get ]") && !strings.Contains(out, "- get") {
