@@ -43,17 +43,17 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 	if lab.Status.ImageCache != nil {
 		return false, nil
 	}
-	// A lab with registry credentials of its own (Spec.ImagePullSecret) pulls straight from
-	// its registry for the same reason as a tenant with its own, below.
-	cache := r.Mirror.Prefix != "" && lab.Spec.ImagePullSecret == ""
-	if cache {
-		// A tenant with registry credentials of its own pulls straight from its registries:
-		// the shared cache would fetch its private images with the platform's credentials.
+	// Every lab goes through the cache when it is on, also one with registry credentials of its own or of its tenant: the gate proves each
+	// pull with the pull's own credentials (re-keyed for the cache path by the Device controller), so a private image is never fetched with
+	// anyone else's. Credentials only decide whether the tags are pinned (below).
+	cache := r.Mirror.Enabled()
+	credentialed := lab.Spec.ImagePullSecret != ""
+	if cache && !credentialed {
 		secret, err := tenantPullSecret(ctx, r, names.TenantOf(lab.Labels))
 		if err != nil {
 			return false, err
 		}
-		cache = secret == ""
+		credentialed = secret != ""
 	}
 	if cache {
 		var devices laboratoryv1alpha1.DeviceList
@@ -64,7 +64,9 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 			cache = false
 		}
 	}
-	if cache {
+	// The tags of a lab with credentials are not pinned: they are resolved with the operator's own pull secrets, which could not read a
+	// private image, and the gate resolves a tag at each pull with the pull's credentials. Such a lab's images follow their tags.
+	if cache && !credentialed {
 		if r.pinImages(ctx, lab) {
 			// Nothing is decided or written until the digests are known; the Pinner wakes the lab when they are. The resolutions run
 			// in the background, so the worker goes on with other labs.

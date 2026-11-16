@@ -153,6 +153,21 @@ func LabRegistrySecret(lab string) string {
 	return hashKey(lab) + suffix
 }
 
+// LabCacheRegistrySecret is the pull Secret of a lab on the image cache, in the lab's namespace: the credentials of the tenant and of the lab
+// re-keyed by the operator for the cache path ("localhost:5035/c/<registry>", username "<tenant>~<user>"). The device pods reference it
+// and not the raw Secrets. A DNS label like the raw name: a longer name uses the hash of the lab name.
+func LabCacheRegistrySecret(lab string) string {
+	const suffix = "-cache-registry"
+	if name := lab + suffix; len(name) <= 63 {
+		return name
+	}
+	return hashKey(lab) + suffix
+}
+
+// PlatformCacheSecret is the pull Secret of the platform's own pods (VPN and gateway) of a group namespace on the image cache: the
+// operator's pull secrets re-keyed for the cache path with the tenant name imagecache.PlatformTenant.
+const PlatformCacheSecret = "platform-cache-registry"
+
 // AccessKeysSecret is the Secret (in AccessKeysNamespace) that holds the access public keys of a
 // tenant, one entry per key id with the PEM public key. The proxy looks keys up by this name.
 func AccessKeysSecret(tenant string) string { return "tenant-" + tenant + "-access-keys" }
