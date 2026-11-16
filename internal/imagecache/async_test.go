@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type gateResolver struct {
@@ -173,4 +175,57 @@ func TestAsyncDigestReferenceNeedsNoRegistry(t *testing.T) {
 	if got := a.Lookup(context.Background(), OperatorSource, "nginx@"+dig, "w"); got.Digest != dig || got.Pending {
 		t.Fatalf("%+v", got)
 	}
+}
+
+// Lookups are counted as hit, pending or miss, and each resolution is timed.
+func TestAsyncMetrics(t *testing.T) {
+	count := func(result string) uint64 { return sampleCount(t, pinLookups, "result", result) }
+	hits, pending, misses := count("hit"), count("pending"), count("miss")
+	resolved := sampleCount(t, pinResolveSeconds, "result", "ok")
+	g := &gateResolver{release: make(chan struct{}), digest: dig}
+	a := &AsyncResolver{Sources: map[string]Resolver{OperatorSource: g}}
+	ctx := context.Background()
+	a.Lookup(ctx, OperatorSource, "m:1", "a") // miss
+	a.Lookup(ctx, OperatorSource, "m:1", "b") // pending
+	close(g.release)
+	waitFor(t, "answer", func() bool { return !a.Lookup(ctx, OperatorSource, "m:1", "c").Pending }) // hit (and maybe pending)
+	if count("miss")-misses != 1 || count("pending")-pending < 1 || count("hit")-hits < 1 {
+		t.Fatalf("miss %d pending %d hit %d", count("miss")-misses, count("pending")-pending, count("hit")-hits)
+	}
+	if got := sampleCount(t, pinResolveSeconds, "result", "ok") - resolved; got != 1 {
+		t.Fatalf("%d resolutions timed", got)
+	}
+}
+
+func sampleCount(t *testing.T, c prometheus.Collector, labels ...string) uint64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n uint64
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			ok := true
+			for i := 0; i+1 < len(labels); i += 2 {
+				found := false
+				for _, l := range m.GetLabel() {
+					found = found || (l.GetName() == labels[i] && l.GetValue() == labels[i+1])
+				}
+				ok = ok && found
+			}
+			if ok {
+				if h := m.GetHistogram(); h != nil {
+					n += h.GetSampleCount()
+				} else if c := m.GetCounter(); c != nil {
+					n += uint64(c.GetValue())
+				}
+			}
+		}
+	}
+	return n
 }

@@ -70,6 +70,7 @@ func (m *heldMutex) lock(ctx context.Context, who string) error {
 	select {
 	case m.ch <- struct{}{}:
 		m.acquired(who)
+		lockWaitSeconds.WithLabelValues(m.name).Observe(0)
 		return nil
 	default:
 	}
@@ -80,6 +81,7 @@ func (m *heldMutex) lock(ctx context.Context, who string) error {
 		select {
 		case m.ch <- struct{}{}:
 			m.acquired(who)
+			lockWaitSeconds.WithLabelValues(m.name).Observe(since(start))
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -99,6 +101,7 @@ func (m *heldMutex) Unlock() {
 	holder, held := m.holder, time.Since(m.since)
 	m.holder = ""
 	m.mu.Unlock()
+	lockHoldSeconds.WithLabelValues(m.name, holder).Observe(held.Seconds())
 	if held > slowLockHold {
 		m.log("lock held long", "lock", m.name, "holder", holder, "heldFor", held.Round(time.Millisecond).String())
 	}

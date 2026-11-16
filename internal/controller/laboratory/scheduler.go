@@ -466,6 +466,17 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		if ps.State == laboratoryv1alpha1.PodFailed && s.Recorder != nil {
 			s.Recorder.Eventf(d, corev1.EventTypeWarning, "PodStartFailed", "%s: %s", ps.Failure.Reason, ps.Failure.Message)
 		}
+		if cur.State == laboratoryv1alpha1.PodStarting && ps.State == laboratoryv1alpha1.PodStarted {
+			// once per device: the Starting -> Started edge
+			var queued, dispatched *time.Time
+			if cur.QueuedAt != nil {
+				queued = &cur.QueuedAt.Time
+			}
+			if cur.DispatchedAt != nil {
+				dispatched = &cur.DispatchedAt.Time
+			}
+			observeLaunch(queued, dispatched, newestPod(snap.podsOf[key]), now)
+		}
 	}
 	for _, g := range snap.groups {
 		if g.DeletionTimestamp != nil {
@@ -739,6 +750,8 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 
 // tick runs one scheduling pass.
 func (s *Scheduler) tick(ctx context.Context) error {
+	started := time.Now()
+	defer func() { schedulerTickSeconds.Observe(time.Since(started).Seconds()) }()
 	logger := log.FromContext(ctx).WithName("scheduler")
 	if s.prepared == nil {
 		s.prepared = map[string]struct{}{}
@@ -813,6 +826,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		fenced[key] = ok
 		return ok
 	}
+	sent := 0
 	for _, p := range plan.dispatch {
 		var err error
 		switch p.kind {
@@ -835,7 +849,10 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			continue
 		}
 		s.recent[p.key] = now
+		schedulerDispatched.Inc()
+		sent++
 	}
+	s.publishQueue(objs, plan, flight, sent)
 	for _, f := range plan.failed {
 		if f.pod.kind == kindGroupPod {
 			if err := s.failGroupPod(ctx, snap, f, stamp); err != nil && !errors.IsNotFound(err) {
@@ -1610,4 +1627,33 @@ func (s *Scheduler) directReader() client.Reader {
 func (s *Scheduler) recentDispatchPending(key string, state laboratoryv1alpha1.PodScheduleState, now time.Time) bool {
 	at, ok := s.recent[key]
 	return ok && state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL
+}
+
+// publishQueue sets the queue gauges of a pass.
+// flight pods held a slot before the pass and sent were dispatched by it.
+func (s *Scheduler) publishQueue(objs []*schedObject, plan schedPlan, flight, sent int) {
+	schedulerSlotsMax.Set(float64(s.Config.MaxPods))
+	schedulerSlotsUsed.Set(float64(flight + sent))
+	queued := 0
+	groups := map[string]bool{}
+	going := make(map[string]bool, len(plan.dispatch))
+	for _, p := range plan.dispatch {
+		going[p.key] = true
+	}
+	for _, o := range objs {
+		waiting := false
+		for _, p := range o.pods {
+			if p.state == laboratoryv1alpha1.PodQueued && !going[p.key] {
+				queued++
+				waiting = true
+			}
+		}
+		if waiting && o.group != "" {
+			groups[o.group] = true
+		}
+	}
+	schedulerQueuedPods.Set(float64(queued))
+	schedulerQueuedObjects.Set(float64(len(plan.status)))
+	schedulerQueuedGroups.Set(float64(len(groups)))
+	schedulerPrepulling.Set(float64(len(s.preparing)))
 }

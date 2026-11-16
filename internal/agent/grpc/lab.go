@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -172,10 +173,13 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if refusals[i] != nil {
 			return failedResult(refs[i], refusals[i])
 		}
+		started := time.Now()
 		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], labContract{bootstrap: boots[i], checks: sets[i]}, in.GetLabels())
 		if err != nil {
+			createLabSeconds.WithLabelValues("error").Observe(sinceSeconds(started))
 			return failedResult(refs[i], err)
 		}
+		createLabSeconds.WithLabelValues(state.String()).Observe(sinceSeconds(started))
 		return result(refs[i], state)
 	})}, nil
 }

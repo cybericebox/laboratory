@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // Auth is the registry credential of one pull.
@@ -104,11 +106,29 @@ func pullOne(ctx context.Context, p Puller, ref string, auth *Auth, timeout time
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	started := time.Now()
 	if ok, err := p.Present(ctx, ref); err == nil && ok {
+		pullSeconds.WithLabelValues("present").Observe(time.Since(started).Seconds())
 		return nil
 	}
-	return p.Pull(ctx, ref, auth)
+	err := p.Pull(ctx, ref, auth)
+	result := "pulled"
+	if err != nil {
+		result = "error"
+	}
+	pullSeconds.WithLabelValues(result).Observe(time.Since(started).Seconds())
+	return err
 }
+
+// pullSeconds is the time to make the node hold one image (no image name is a label). result: present (it was there already), pulled
+// or error.
+var pullSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "laboratory_image_pull_seconds",
+	Help:    "Time to make the node hold one image for a prepull request. result: present, pulled or error.",
+	Buckets: []float64{0.05, 0.25, 1, 2, 5, 10, 20, 30, 60, 120, 300},
+}, []string{"result"})
+
+func init() { metrics.Registry.MustRegister(pullSeconds) }
 
 // scrub keeps a runtime message short and free of the credential it was given.
 func scrub(msg string, auth *Auth) string {
