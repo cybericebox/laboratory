@@ -80,7 +80,7 @@ func TestCacheConfig(t *testing.T) {
 	if rw.Prefix != "localhost:5035" || len(rw.Registries) != 2 {
 		t.Fatalf("%+v", rw)
 	}
-	if got := rw.Rewrite("nginx"); got != "localhost:5035/docker.io/library/nginx:latest" {
+	if got := rw.Rewrite("nginx"); got != "localhost:5035/c/docker.io/library/nginx:latest" {
 		t.Fatal(got)
 	}
 }
