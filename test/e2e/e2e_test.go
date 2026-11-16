@@ -229,7 +229,23 @@ var _ = Describe(
 
 						By("verifying that the controller manager is serving the metrics server")
 						verifyMetricsServerStarted := func(g Gomega) {
-							cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+							// The pod found by the first test can be the one the "set env" rollout replaced (it cannot start without
+							// its settings): read the log of the newest pod that is not going away.
+							cmd := exec.Command(
+								"kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+								"--sort-by=.metadata.creationTimestamp",
+								"-o", "go-template={{ range .items }}"+
+									"{{ if not .metadata.deletionTimestamp }}"+
+									"{{ .metadata.name }}"+
+									"{{ \"\\n\" }}{{ end }}{{ end }}",
+								"-n", namespace,
+							)
+							podOutput, err := utils.Run(cmd)
+							g.Expect(err).NotTo(HaveOccurred())
+							podNames := utils.GetNonEmptyLines(podOutput)
+							g.Expect(podNames).NotTo(BeEmpty())
+							controllerPodName = podNames[len(podNames)-1]
+							cmd = exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 							output, err := utils.Run(cmd)
 							g.Expect(err).NotTo(HaveOccurred())
 							// The operator logs JSON (not the console format of the scaffold), so the logger and the message are fields.
