@@ -111,7 +111,8 @@ func (z *fakeZot) addIndex(t *testing.T, repo string) v1.Hash {
 }
 
 func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p := strings.TrimPrefix(r.URL.Path, "/v2/")
+	// the cache lives under c/ (the gate's path); the fixtures name the repositories without it
+	p := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/v2/"), "c/")
 	if p == "" {
 		w.WriteHeader(http.StatusOK)
 		return

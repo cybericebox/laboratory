@@ -36,7 +36,9 @@ type Cache struct {
 	Store *Store
 	// DiskFull says that the volume is above its high-water mark: a miss is then streamed through and not stored.
 	DiskFull func() bool
-	M        *Metrics
+	// Fill is the optional login used to fill an image proved public (rate-limit relief); never for a private one.
+	Fill AnonymousFill
+	M    *Metrics
 
 	checks, reval, fills flight
 	pending              pendingSet
@@ -308,7 +310,8 @@ func (c *Cache) serveManifest(w http.ResponseWriter, r *http.Request, reg Regist
 		return
 	}
 	c.M.cache.WithLabelValues("manifest", "miss").Inc()
-	resp, out, _ := c.Up.Fetch(ctx, reg, up, who.creds, who.hash)
+	fc, fk := c.fillCreds(who, o.Registry)
+	resp, out, _ := c.Up.Fetch(ctx, reg, up, fc, fk)
 	if resp == nil {
 		c.M.fills.WithLabelValues("manifest", "upstream_"+outcomeName(out)).Inc()
 		c.refuseUpstream(w, out, nil)
@@ -490,7 +493,8 @@ func (c *Cache) fillBlob(ctx context.Context, reg Registry, o objectRef, who cal
 	// the fill belongs to everyone waiting for the blob: it outlives the request that started it
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
 	defer cancel()
-	resp, out, _ := c.Up.Fetch(ctx, reg, Object{Repo: o.Repo, Kind: kindBlobs, Ref: o.Ref}, who.creds, who.hash)
+	fc, fk := c.fillCreds(who, o.Registry)
+	resp, out, _ := c.Up.Fetch(ctx, reg, Object{Repo: o.Repo, Kind: kindBlobs, Ref: o.Ref}, fc, fk)
 	if resp == nil {
 		c.M.fills.WithLabelValues("blob", "upstream_"+outcomeName(out)).Inc()
 		return fillRefused{out}
@@ -526,7 +530,7 @@ func (c *Cache) fillBlob(ctx context.Context, reg Registry, o objectRef, who cal
 	n, copyErr := io.Copy(io.MultiWriter(sinks...), resp.Body)
 	if copyErr != nil || n != size {
 		_ = pw.CloseWithError(errors.New("the upstream stream was cut"))
-		_ = <-stored
+		<-stored //nolint:errcheck // the error of a cut upload is the cut itself
 		c.M.fills.WithLabelValues("blob", "cut").Inc()
 		return errFillFailed
 	}
@@ -560,7 +564,8 @@ func (l *lenient) Write(p []byte) (int, error) {
 // streamThrough serves the blob from upstream with the pull's credentials and keeps nothing (the disk is full, or the store failed).
 func (c *Cache) streamThrough(w http.ResponseWriter, r *http.Request, reg Registry, up Object, digest string, who caller) {
 	up.Range = r.Header.Get("Range")
-	resp, out, err := c.Up.Fetch(r.Context(), reg, up, who.creds, who.hash)
+	fc, fk := c.fillCreds(who, reg.Name)
+	resp, out, err := c.Up.Fetch(r.Context(), reg, up, fc, fk)
 	if resp == nil {
 		c.refuseUpstream(w, out, err)
 		return

@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -405,8 +406,10 @@ func (p *prewarmer) warm(img, repo string, e *prewarmEntry) {
 }
 
 // fetch makes the cache hold the image: it asks the cache for the manifest by the
-// digest the operator will pin labs to (zot syncs the image from upstream before it
-// answers), then checks that every blob really is in the cache's storage.
+// digest the operator will pin labs to, reads every blob through the gate (which stores
+// what it serves), then checks that every blob really is in the cache's storage. An
+// image that needs credentials is not warmed this way: the gate proves each pull with the
+// pull's own credentials, and this one carries none.
 func (p *prewarmer) fetch(ctx context.Context, img, repo string) (string, error) {
 	var digest string
 	if p.cfg.Resolver != nil {
@@ -431,6 +434,21 @@ func (p *prewarmer) fetch(ctx context.Context, img, repo string) (string, error)
 		return digest, err
 	}
 	return digest, nil
+}
+
+// readBlob reads a blob through the cache to the end and discards it: the gate fills the cache with what it streams.
+func readBlob(ctx context.Context, repoName name.Repository, d v1.Hash) error {
+	l, err := remote.Layer(repoName.Digest(d.String()), remote.WithContext(ctx))
+	if err != nil {
+		return err
+	}
+	rc, err := l.Compressed()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rc.Close() }()
+	_, err = io.Copy(io.Discard, rc)
+	return err
 }
 
 // verifyStored walks an index or image manifest and checks that the config and
@@ -470,6 +488,9 @@ func verifyStored(ctx context.Context, reg *snapshot.Registry, repoName name.Rep
 		}
 		blobs := append([]v1.Descriptor{m.Config}, m.Layers...)
 		for _, b := range blobs {
+			if !reg.HasBlobIn(ctx, repo, b.Digest) {
+				_ = readBlob(ctx, repoName, b.Digest) // the check below says whether the cache holds it now
+			}
 			if !reg.HasBlobIn(ctx, repo, b.Digest) {
 				return fmt.Errorf("blob %s of %s is not stored in the cache", b.Digest, desc.Digest)
 			}
