@@ -164,18 +164,15 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 			t.Errorf("%s: the reader reads, the writer writes: %+v", private, r.Policies)
 		}
 	}
-	for _, public := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
-		r, ok := repos[public]
-		if !ok || len(r.AnonymousPolicy) != 1 || r.AnonymousPolicy[0] != "read" {
-			t.Errorf("%s is the public cache: anonymous read: %+v", public, r)
-			continue
+	// the image cache is the gate's tree: nobody reads it anonymously, and the only account with a right there is the gate
+	for _, upstream := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
+		if r, ok := repos[upstream]; ok {
+			t.Errorf("%s: the old public cache patterns are gone (the cache lives under c/**): %+v", upstream, r)
 		}
-		// the writer account is on every node: it may read the cache and never write or delete there (zot's own sync fills it)
-		for _, p := range r.Policies {
-			if strings.Join(p.Users, ",") == "writer" && strings.Join(p.Actions, ",") != "read" {
-				t.Errorf("%s: the writer must only read the cache: %v", public, p.Actions)
-			}
-		}
+	}
+	c, ok := repos["c/**"]
+	if !ok || len(c.AnonymousPolicy) != 0 || len(c.Policies) != 1 || strings.Join(c.Policies[0].Users, ",") != "gate" {
+		t.Errorf("c/** belongs to the gate account alone: %+v", c)
 	}
 	if strings.Contains(cm.Data["config.json"], "adminPolicy") {
 		t.Error("no account may have rights over every repository")

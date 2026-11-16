@@ -112,3 +112,57 @@ func TestRegistryGateIsNotRenderedWithoutTheRegistry(t *testing.T) {
 		t.Errorf("the gate without a registry")
 	}
 }
+
+// With the image cache on, the gate gets its list, its own account and key and a read-only view of the volume, and nothing else of the
+// registry Secret; zot has no sync. With it off the gate is a plain pass-through.
+func TestRegistryGateCacheWiring(t *testing.T) {
+	on := registryPod(t, "--set", "registry.cache.enabled=true", "--set", "registry.cache.staleIfError=7m")
+	gate := containerNamed(on, "gate")
+	vars := envOf(*gate)
+	for k, want := range map[string]string{"GATE_CACHE_ENABLED": "true", "GATE_STALE_IF_ERROR": "7m", "GATE_DECISION_MAX_AGE": "2m", "GATE_DENIED_FOR": "30s", "GATE_DISK_HIGH_WATER": "90"} {
+		if vars[k].Value != want {
+			t.Errorf("%s = %q, want %q", k, vars[k].Value, want)
+		}
+	}
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range gate.VolumeMounts {
+		mounts[m.Name] = m
+	}
+	for _, name := range []string{"gate-config", "gate-secret", "data"} {
+		if !mounts[name].ReadOnly {
+			t.Errorf("the gate mounts %s read-only: %+v", name, mounts[name])
+		}
+	}
+	for _, v := range on.Volumes {
+		switch v.Name {
+		case "gate-secret":
+			var keys []string
+			for _, it := range v.Secret.Items {
+				keys = append(keys, it.Key)
+			}
+			if strings.Join(keys, ",") != "gatePassword,gateKey" {
+				t.Errorf("the gate reads its own account and key and nothing else of the registry Secret: %v", keys)
+			}
+		case "sync-credentials":
+			t.Errorf("zot has no sync, so no credentials volume")
+		}
+	}
+	zot := containerNamed(on, "zot")
+	for _, m := range zot.VolumeMounts {
+		if m.Name == "gate-secret" || m.Name == "gate-config" {
+			t.Errorf("zot must not see the gate's key: %+v", m)
+		}
+	}
+
+	off := registryPod(t)
+	g := containerNamed(off, "gate")
+	if _, set := envOf(*g)["GATE_CACHE_ENABLED"]; set || len(g.VolumeMounts) != 0 {
+		t.Errorf("with the cache off the gate is a pass-through with nothing mounted: %+v", g.VolumeMounts)
+	}
+
+	var sec corev1.Secret
+	render(t, "templates/registry/secret.yaml", &sec, "--set", "registry.cache.enabled=true")
+	if sec.StringData["gatePassword"] == "" || sec.StringData["gateKey"] == "" || !strings.Contains(sec.StringData["htpasswd"], "gate:$2") {
+		t.Errorf("the registry Secret carries the gate's account and key")
+	}
+}

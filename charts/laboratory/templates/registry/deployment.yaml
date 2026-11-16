@@ -87,11 +87,6 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/registry
-            {{- if $r.cache.enabled }}
-            - name: sync-credentials
-              mountPath: /etc/zot-sync
-              readOnly: true
-            {{- end }}
           {{- with $r.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -109,6 +104,23 @@ spec:
               value: ":5002"
             - name: GATE_ZOT_ADDR
               value: "127.0.0.1:5001"
+            {{- if $r.cache.enabled }}
+            # The image cache: on, /v2/c/<registry>/... is proved against the upstream registry with the pull's own credentials and served from zot.
+            - name: GATE_CACHE_ENABLED
+              value: "true"
+            - name: GATE_DECISION_MAX_AGE
+              value: {{ $r.cache.decisionMaxAge | quote }}
+            - name: GATE_DENIED_FOR
+              value: {{ $r.cache.deniedFor | quote }}
+            - name: GATE_STALE_IF_ERROR
+              value: {{ $r.cache.staleIfError | quote }}
+            - name: GATE_DISK_HIGH_WATER
+              value: {{ $r.cache.diskHighWater | quote }}
+            {{- if $r.cache.anonymousFill }}
+            - name: GATE_ANONYMOUS_FILL_FILE
+              value: /etc/gate-anonymous-fill/.dockerconfigjson
+            {{- end }}
+            {{- end }}
           ports:
             - name: registry
               containerPort: 5000
@@ -130,6 +142,25 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ ALL ]
+          {{- if $r.cache.enabled }}
+          volumeMounts:
+            - name: gate-config
+              mountPath: /etc/gate
+              readOnly: true
+            # Its own account in zot and the key of its credential hash: nothing else of the registry Secret.
+            - name: gate-secret
+              mountPath: /etc/gate-secret
+              readOnly: true
+            # The volume of zot, to measure how full it is (the gate writes nothing there).
+            - name: data
+              mountPath: /var/lib/registry
+              readOnly: true
+            {{- if $r.cache.anonymousFill }}
+            - name: gate-anonymous-fill
+              mountPath: /etc/gate-anonymous-fill
+              readOnly: true
+            {{- end }}
+          {{- end }}
           {{- with $r.gate.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -148,11 +179,24 @@ spec:
           persistentVolumeClaim:
             claimName: laboratory-registry
         {{- if $r.cache.enabled }}
-        - name: sync-credentials
+        - name: gate-config
+          configMap:
+            name: laboratory-registry-gate
+        - name: gate-secret
           secret:
-            secretName: {{ default "laboratory-registry-sync" $r.cache.credentialsSecret }}
+            secretName: laboratory-registry
             items:
-              - key: credentials.json
-                path: credentials.json
+              - key: gatePassword
+                path: password
+              - key: gateKey
+                path: key
+        {{- if $r.cache.anonymousFill }}
+        - name: gate-anonymous-fill
+          secret:
+            secretName: {{ $r.cache.anonymousFill | quote }}
+            items:
+              - key: .dockerconfigjson
+                path: .dockerconfigjson
+        {{- end }}
         {{- end }}
 {{- end }}

@@ -398,7 +398,8 @@ ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 The credentials of the platform registry (zot), made once per render and cached in .Values._registryCreds so that the
 registry Secret and the copy for the agent (another namespace) agree. Generated once and kept across upgrades (read back with
 lookup). Accounts: writer (the operator and the node-agents write snapshots), reader (it may read the snapshots of the labs, the
-base repository and platform/**; everything else in the registry is the public image cache, anonymous read) and, when
+base repository and platform/**), gate (the registry gate: read and write on the cache tree c/** and nothing else; its key for the
+credential hash is kept with it) and, when
 registry.platform.enabled, platform-writer (it reads, writes and deletes platform/** only; its password is kept once made, also when the
 feature is switched off, so that switching it on again changes nothing). A registry made by an earlier version has no reader or
 platform-writer yet: it is added, the existing accounts stay.
@@ -408,6 +409,8 @@ platform-writer yet: it is added, the existing accounts stay.
 {{- $existing := lookup "v1" "Secret" .Release.Namespace "laboratory-registry" -}}
 {{- $writer := randAlphaNum 40 -}}
 {{- $reader := randAlphaNum 40 -}}
+{{- $gate := randAlphaNum 40 -}}
+{{- $gateKey := randAlphaNum 48 -}}
 {{- $platform := "" -}}
 {{- $htpasswd := "" -}}
 {{- if and $existing $existing.data -}}
@@ -418,6 +421,12 @@ platform-writer yet: it is added, the existing accounts stay.
 {{- else -}}
 {{- $htpasswd = printf "%s\n%s" (index $existing.data "htpasswd" | b64dec | trim) (htpasswd "reader" $reader) -}}
 {{- end -}}
+{{- if hasKey $existing.data "gatePassword" -}}
+{{- $gate = index $existing.data "gatePassword" | b64dec -}}
+{{- $gateKey = index $existing.data "gateKey" | b64dec -}}
+{{- else -}}
+{{- $htpasswd = printf "%s\n%s" ($htpasswd | trim) (htpasswd "gate" $gate) -}}
+{{- end -}}
 {{- if hasKey $existing.data "platformPassword" -}}
 {{- $platform = index $existing.data "platformPassword" | b64dec -}}
 {{- else if .Values.registry.platform.enabled -}}
@@ -425,13 +434,13 @@ platform-writer yet: it is added, the existing accounts stay.
 {{- $htpasswd = printf "%s\n%s" ($htpasswd | trim) (htpasswd "platform-writer" $platform) -}}
 {{- end -}}
 {{- else -}}
-{{- $htpasswd = printf "%s\n%s" (htpasswd "writer" $writer) (htpasswd "reader" $reader) -}}
+{{- $htpasswd = printf "%s\n%s\n%s" (htpasswd "writer" $writer) (htpasswd "reader" $reader) (htpasswd "gate" $gate) -}}
 {{- if .Values.registry.platform.enabled -}}
 {{- $platform = randAlphaNum 40 -}}
 {{- $htpasswd = printf "%s\n%s" $htpasswd (htpasswd "platform-writer" $platform) -}}
 {{- end -}}
 {{- end -}}
-{{- $_ := set .Values "_registryCreds" (dict "writer" $writer "reader" $reader "platform" $platform "htpasswd" $htpasswd) -}}
+{{- $_ := set .Values "_registryCreds" (dict "writer" $writer "reader" $reader "gate" $gate "gateKey" $gateKey "platform" $platform "htpasswd" $htpasswd) -}}
 {{- end -}}
 {{- end -}}
 

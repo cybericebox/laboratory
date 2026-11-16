@@ -1010,12 +1010,22 @@ registry:
     # Additional upstream registries: - name: registry.example.com
     #                                   url: https://registry.example.com
     extraRegistries: []
-    # Upstream credentials (private registries, Docker Hub rate limits) come from the
-    # chart-level imagePullSecrets (dockerconfigjson Secrets in the release namespace),
-    # read at install time. To manage them yourself, name a Secret in the release
-    # namespace with the key credentials.json in zot's sync credentials format
-    # ({"host": {"username": "...", "password": "..."}}); imagePullSecrets is then ignored.
-    credentialsSecret: ""
+    # Credentials for an upstream registry are the pod's own: the pull secret of the lab carries them, the gate proves every pull with them
+    # (see DEPLOY.md, "The registry gate"). The chart keeps none of its own, and imagePullSecrets of the chart no longer feed the cache.
+    # How long a verified pull is served while the upstream registry is unreachable (a Go duration). Longer, and a pull of a tenant already
+    # verified fails with IMAGE_REGISTRY_UNAVAILABLE; a tenant that was never verified for those credentials always fails then. An image
+    # that was public stays served from the cache for the whole outage.
+    staleIfError: 10m
+    # How long a fresh check (a token and a HEAD against the upstream registry with the pull's credentials) is reused for a tenant already
+    # verified; after it the next pull is served and checked again in the background. A refusal is repeated without asking for deniedFor.
+    decisionMaxAge: 2m
+    deniedFor: 30s
+    # Percent of the registry volume in use above which a miss is streamed through to the pod and not stored (hits still serve).
+    diskHighWater: 90
+    # Optional login for rate-limit relief (for example Docker Hub): the NAME of a Secret of the release namespace of type
+    # kubernetes.io/dockerconfigjson. The gate uses it ONLY to fill an image it proved readable without credentials; never for a tenant's
+    # private image, never to prove anything. Empty: anonymous fills.
+    anonymousFill: ""
     # Cache prewarm: the management agent's PrewarmImages RPC makes the cache fetch images
     # ahead of an event. Needs agent.enabled. See DEPLOY.md, "Cache prewarm".
     prewarm:
