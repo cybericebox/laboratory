@@ -42,9 +42,8 @@ type Handler struct {
 	usageAll            map[string]map[usageKey]deviceUsage
 	usageAt             time.Time
 	agentID             string
-	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
-	// Multi-agent/API admission remains a native capability gate.
-	lifecycleAdmissionMu sync.Mutex
+	// Group lifecycle and child admission of one group exclude each other in this agent (groupLock); groups do not wait for
+	// one another. Multi-agent/API admission remains a native capability gate.
 
 	// monitor is the shared poller and journal behind every Monitoring stream.
 	monOnce sync.Once

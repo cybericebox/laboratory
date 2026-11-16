@@ -116,12 +116,11 @@ func checkLifecycleCount(n int) error {
 	return checkItemCount(n)
 }
 func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, target *protobuf.LabLifecycleTarget, intent *lab.LabLifecycleSpec) error {
-	h.lifecycleAdmissionMu.Lock()
-	defer h.lifecycleAdmissionMu.Unlock()
 	ref := target.GetRef()
 	if ref.GetLabGroup() == "" || ref.GetName() == "" || ref.GetLab() != "" {
 		return fmt.Errorf("target ref requires lab_group and name, with no lab")
 	}
+	defer h.groupLock(ref.GetLabGroup())()
 	if target.GetExpectedLabUid() == "" || strings.TrimSpace(intent.OperationID) == "" || utf8.RuneCountInString(intent.OperationID) > 128 || intent.Revision < 1 {
 		return fmt.Errorf("expected_lab_uid, operation_id (1..128 characters) and positive lifecycle_revision are required")
 	}
