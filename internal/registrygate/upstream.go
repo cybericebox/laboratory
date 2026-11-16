@@ -67,9 +67,13 @@ type Object struct {
 func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.Ref }
 
 // Check is the proof of 5.2: the HEAD of the object with the pull's credentials (a token for repository:<repo>:pull first when the
-// registry asks for one). 200 is Allowed; 401, 403 and 404 are Denied; 429, 5xx, a timeout or DNS are Unreachable. A token alone is
-// no proof (Docker Hub gives an empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials
-// in the token cache (the HMAC hash, never the secret).
+// registry asks for one). Only a 200 is Allowed. 401, 403 and a refused token are Denied (the credentials have no right to the
+// repository). 404 is NotFound: the object is not there, which says nothing about the repository (it must not become a refusal that
+// holds for every holder of the credentials). 429, 5xx, a timeout, DNS and anything else are Unreachable. A redirect is not a proof
+// (a registry may redirect without having looked at who asks): it is followed, without the Authorization header, and only a 200 at the
+// end is Allowed; a CDN that refuses is Unreachable, never a denial. A token alone is no proof either (Docker Hub gives an
+// empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials in the token cache (the HMAC
+// hash, never the secret).
 func (u *Upstream) Check(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, error) {
 	out, _, err := u.Head(ctx, reg, o, c, credKey)
 	return out, err
@@ -84,24 +88,58 @@ func (u *Upstream) Head(ctx context.Context, reg Registry, o Object, c Creds, cr
 	if err != nil {
 		return Unreachable, nil, err
 	}
+	resp, redirected, err := u.follow(ctx, reg, resp, http.MethodHead)
+	if err != nil {
+		return Unreachable, nil, err
+	}
 	defer drain(resp)
-	return classify(resp.StatusCode), resp.Header.Clone(), nil
+	return classify(resp.StatusCode, redirected), resp.Header.Clone(), nil
 }
 
-func classify(code int) Outcome {
+// classify is the meaning of a final answer. After a redirect the answer is the CDN's, not the registry's: only a 200 counts, and a
+// refusal there is an outage of the transport, not a denial of the pull.
+func classify(code int, redirected bool) Outcome {
 	switch {
-	case code == http.StatusOK, code == http.StatusPartialContent, code >= 300 && code < 400:
-		// a redirect for a blob is given only to a caller that is allowed (the CDN is reached after the registry said yes)
+	case code == http.StatusOK:
 		return Allowed
-	case code == http.StatusUnauthorized, code == http.StatusForbidden, code == http.StatusNotFound:
+	case redirected:
+		return Unreachable
+	case code == http.StatusUnauthorized, code == http.StatusForbidden:
 		return Denied
+	case code == http.StatusNotFound:
+		return NotFound
 	}
 	return Unreachable
 }
 
+// follow follows the redirects of a response (at most five) over https and WITHOUT the Authorization header; on plain http only
+// inside the upstream's own host. It returns the last response and whether a redirect was followed.
+func (u *Upstream) follow(ctx context.Context, reg Registry, resp *http.Response, method string) (*http.Response, bool, error) {
+	redirected := false
+	for hops := 0; resp.StatusCode >= 300 && resp.StatusCode < 400; hops++ {
+		loc, lerr := resp.Location()
+		drain(resp)
+		if hops >= 5 {
+			return nil, true, errors.New("too many upstream redirects")
+		}
+		if lerr != nil || loc.Scheme != "https" && !u.allowInsecure(reg, loc) {
+			return nil, true, fmt.Errorf("upstream redirect refused: %v", lerr)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, loc.String(), nil) // no Authorization
+		if err != nil {
+			return nil, true, err
+		}
+		if resp, err = u.HTTP.Do(req); err != nil {
+			return nil, true, err
+		}
+		redirected = true
+	}
+	return resp, redirected, nil
+}
+
 // Fetch is the GET of the object with the pull's credentials. A redirect (a blob often goes to a CDN) is followed over https and
-// WITHOUT the Authorization header. The caller closes the body. The outcome is Allowed with a response, or Denied or Unreachable with
-// none.
+// WITHOUT the Authorization header: a transport detail, not a proof of anything. The caller closes the body. The outcome is Allowed
+// with a response, or another outcome with none (the same meaning as for Check).
 func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (*http.Response, Outcome, error) {
 	resp, err := u.do(ctx, http.MethodGet, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
@@ -110,26 +148,16 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 	if err != nil {
 		return nil, Unreachable, err
 	}
-	for hops := 0; resp.StatusCode >= 300 && resp.StatusCode < 400 && hops < 5; hops++ {
-		loc, lerr := resp.Location()
-		drain(resp)
-		if lerr != nil || loc.Scheme != "https" && !u.allowInsecure(reg, loc) {
-			return nil, Unreachable, fmt.Errorf("upstream redirect refused: %v", lerr)
-		}
-		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, loc.String(), nil) // no Authorization
-		if rerr != nil {
-			return nil, Unreachable, rerr
-		}
-		if resp, err = u.HTTP.Do(req); err != nil {
-			return nil, Unreachable, err
-		}
+	resp, redirected, err := u.follow(ctx, reg, resp, http.MethodGet)
+	if err != nil {
+		return nil, Unreachable, err
 	}
-	if out := classify(resp.StatusCode); out != Allowed || resp.StatusCode >= 300 {
+	if resp.StatusCode == http.StatusPartialContent && o.Range != "" {
+		return resp, Allowed, nil
+	}
+	if out := classify(resp.StatusCode, redirected); out != Allowed {
 		drain(resp)
-		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-			return nil, Unreachable, errors.New("too many upstream redirects")
-		}
-		return nil, classify(resp.StatusCode), nil
+		return nil, out, nil
 	}
 	return resp, Allowed, nil
 }

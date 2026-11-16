@@ -394,3 +394,83 @@ func TestIndexIsServedFromMemoryAndChildIsStored(t *testing.T) {
 		t.Fatalf("the memory copy is behind the proof like the stored ones: %d", code)
 	}
 }
+
+// A digest that a manifest lists is no proof that the repository has the blob: whoever controls an upstream repository can list any
+// digest in a manifest of his own. A blob that another cached repository holds is linked into this one only after a HEAD of that exact
+// digest in THIS repository with the caller's own credentials.
+func TestAListedDigestIsNoProofAndNothingIsMountedWithoutOne(t *testing.T) {
+	r := newRig(t)
+	r.up.users["eve"] = "pw"
+	r.up.repos["org/evil"] = map[string]bool{"eve": true}
+	r.up.repos["org/private"] = map[string]bool{"carol": true} // the victim's repository
+	secret := bytes.Repeat([]byte("victim's layer"), 100)
+	sd := r.up.put("org/private", "blobs", secret)
+	// the victim's blob is in the cache (carol pulled it)
+	if code, _, _ := r.pull("GET", bpath("org/private", sd), carol, "pw", nil); code != 200 {
+		t.Fatalf("carol: %d", code)
+	}
+	if !r.inZot("c/up/org/private", "blobs", sd) {
+		t.Fatal("the victim's layer is cached")
+	}
+	// eve's repository has a manifest that LISTS the victim's digest (a registry that does not check what a manifest refers to)
+	cfg := r.up.put("org/evil", "blobs", []byte("{}"))
+	mb := r.up.put("org/evil", "manifests", manifestBody(cfg, sd))
+	if code, _, _ := r.pull("GET", mpath("org/evil", mb), "t5~eve", "pw", nil); code != 200 {
+		t.Fatalf("eve's own manifest: %d", code)
+	}
+	headsBefore := r.up.n("HEAD org/evil")
+	code, body, _ := r.pull("GET", bpath("org/evil", sd), "t5~eve", "pw", nil)
+	if code == 200 || bytes.Contains(body, secret) {
+		t.Fatalf("the victim's layer must not be served to eve through her own manifest: %d", code)
+	}
+	if r.inZot("c/up/org/evil", "blobs", sd) {
+		t.Fatal("the victim's layer must not be linked into eve's repository")
+	}
+	if r.up.n("HEAD org/evil") == headsBefore {
+		t.Fatal("the gate must ask upstream whether THIS repository has THIS blob")
+	}
+}
+
+// The proof is one HEAD per credential, repository and digest, and then a legitimate shared layer is linked in without a download.
+func TestMountNeedsAndCachesTheBlobProof(t *testing.T) {
+	r := newRig(t)
+	r.up.repos["org/other"] = map[string]bool{"alice": true}
+	shared := bytes.Repeat([]byte("S"), 2048)
+	sd := r.up.put("org/private", "blobs", shared)
+	r.up.put("org/other", "blobs", shared)
+	if code, _, _ := r.pull("GET", bpath("org/private", sd), alice, "pw", nil); code != 200 {
+		t.Fatal(code)
+	}
+	gets, heads := r.up.n("GET org/other"), r.up.n("HEAD org/other")
+	if code, body, _ := r.pull("GET", bpath("org/other", sd), alice, "pw", nil); code != 200 || !bytes.Equal(body, shared) {
+		t.Fatalf("%d", code)
+	}
+	if r.up.n("GET org/other") != gets {
+		t.Fatalf("a layer that the repository has upstream is linked in, not downloaded: %d GETs", r.up.n("GET org/other")-gets)
+	}
+	if r.up.n("HEAD org/other") < heads+1 {
+		t.Fatal("the link is made after a HEAD of that blob in that repository")
+	}
+}
+
+// A missing object does not become a refusal of the repository for everybody who holds the credentials.
+func TestAMissingObjectDoesNotPoisonTheDecision(t *testing.T) {
+	r := newRig(t)
+	ld := r.up.put("org/private", "blobs", []byte("a real layer"))
+	missing := "sha256:" + strings.Repeat("0", 64)
+	if code, _, _ := r.pull("GET", bpath("org/private", missing), alice, "pw", nil); code != 404 {
+		t.Fatalf("a digest the repository does not have: %d", code)
+	}
+	if got := r.cache.Store.Lookup(DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}, "t1"); got == Refuse {
+		t.Fatal("a 404 must not become a refusal")
+	}
+	for _, tenant := range []string{alice, aliceT} {
+		if code, _, _ := r.pull("GET", bpath("org/private", ld), tenant, "pw", nil); code != 200 {
+			t.Fatalf("the same credentials still work for %s: %d", tenant, code)
+		}
+	}
+	// ... and the reverse: a repository the credentials have no right to is still refused (401), not hidden as a 404
+	if code, _, _ := r.pull("GET", bpath("org/private", ld), mal, "pw", nil); code != 401 {
+		t.Fatalf("a refusal stays a refusal: %d", code)
+	}
+}
