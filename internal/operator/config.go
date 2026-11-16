@@ -277,8 +277,8 @@ type CacheConfig struct {
 	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
 	// Prefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); empty = names.RegistryNodePrefix.
 	Prefix string `env:"IMAGE_CACHE_PREFIX"`
-	// Registries are the upstream registries the cache serves; references to any
-	// other registry are pulled directly.
+	// Registries are the upstream registries the cache serves; with the cache on a reference to
+	// any other registry is refused, never pulled directly.
 	// PinTTL is how long a resolved image digest is remembered, so labs created in
 	// the same wave run the same image even when the upstream tag moves.
 	PinTTL time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`

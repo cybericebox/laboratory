@@ -1388,13 +1388,11 @@ images:
   Adding or removing the secret later changes the pod template of the tenant's devices on their next reconcile (a running device
   is restarted by its Deployment). A missing or non-registry Secret keeps the group from reconciling, with the reason in the
   operator log.
-- **Image cache.** zot's on-demand sync is one credential set per upstream registry (`registry.cache.credentialsSecret` or the chart's
-  `imagePullSecrets`), so it cannot be split by tenant. It is for the **platform's** images and for public images. A tenant with
-  `images.pullSecret` therefore does **not** use the shared cache: its labs are created with `Lab.status.imageCache: false`, nodes
-  pull straight from its registries with its credentials, and `PrewarmImages` answers `SKIPPED` for it. A tenant without its own
-  credentials uses the cache, and zot fetches its images from upstream with whatever credentials the platform gave zot; keep the
-  platform's private registries out of reach with `images.tenantDeny` (and the tenant's `allow`), or give zot no credentials for
-  them.
+- **Image cache.** A tenant with `images.pullSecret` (and a lab with credentials of its own) uses the cache like every tenant: the
+  operator re-keys the credentials for the cache path (see "Upstream credentials" under "The platform registry"), and the registry
+  gate proves every pull against the upstream registry with them, so a private image is never fetched with anyone else's
+  credentials and never served to a pod that cannot prove access. The platform's own credentials are never used for a tenant's images.
+  Keep the platform's private repositories out of reach with `images.tenantDeny` (and the tenant's `allow`).
 - **Allow and deny lists.** The management agent enforces them on `CreateLabs` (`PERMISSION_DENIED`, naming the device) and
   `PrewarmImages` (the image is `FAILED` and never fetched; the list of warmed images an empty request returns shows only what the
   tenant may use). Entries are `registry/repository-prefix`: a reference is covered when it equals an entry or lies below it, on
@@ -2687,8 +2685,12 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
   Secret `laboratory-registry-tls` and upgrade the release.
 - **What is rewritten.** The operator rewrites `REG/repo:tag` (and `@sha256:` references) into
   `localhost:<port>/c/REG/repo:tag`, for registries in `registry.cache.registries` and `extraRegistries` only. Names
-  follow Docker rules: `nginx` is `docker.io/library/nginx:latest`. Snapshot images and images of other registries
-  are pulled directly. The gate maps `REG` back to the upstream registry of its list (the ConfigMap
+  follow Docker rules: `nginx` is `docker.io/library/nginx:latest`. With the cache on **every** image of a lab goes
+  through it: an image of a registry the cache does not serve, or a reference that does not parse, is **refused**, never
+  pulled directly (the agent refuses it at `CreateLabs`, the operator for a Lab made by hand and when a device starts). So the
+  chart requires every registry of `registry.allowedRegistries`, and the registry of every platform image (`vpn.image`,
+  `inetGateway.image`, `nodeAgent.image`: `docker.io` when the repository names none), to be one the cache serves, and refuses
+  `"*"` there; add the others to `registry.cache.extraRegistries` with their URL. Snapshot images are not rewritten. The gate maps `REG` back to the upstream registry of its list (the ConfigMap
   `laboratory-registry-gate`, reloaded within seconds when it changes: no restart of the gate and none of zot); a
   registry that is not in the list is refused with `403` (`IMAGE_REGISTRY_NOT_ALLOWED`). zot keeps the cache under the
   repositories `c/REG/repo`, readable and writable by the gate's account alone.
@@ -2700,20 +2702,27 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
 - **Snapshots.** The cache tree `c/` belongs to the gate alone, so the snapshot account cannot read it: the base layers
   of a device snapshot are uploaded once to the shared `base` repository (and linked from there), not linked from the
   cached repository of the base image.
-- **Upstream credentials.** They are the pull's own: the pull secret of the lab carries them, containerd sends them
-  to the gate after its `401` challenge, and the gate uses them for the check and for the fill. The chart keeps no
-  credentials of its own and `imagePullSecrets` of the chart do not feed the cache any more
-  (`registry.cache.credentialsSecret` is refused). For rate-limit relief on **public** images set
-  `registry.cache.anonymousFill` to the name of a `kubernetes.io/dockerconfigjson` Secret of the release namespace:
-  the gate uses it only to fill an image it proved readable without credentials (never for a private image, never to
-  prove anything). The pull secret must be written for the cache: the registry key `localhost:5035/c/<registry>` and
-  the username `<tenant>~<user>`; the platform's operator and agent do that (a later phase), and until then only
-  images that are public work through the cache.
+- **Upstream credentials.** They are the pull's own: containerd sends them to the gate after its `401` challenge, and the gate
+  uses them for the check and for the fill. The chart keeps no credentials of its own and `imagePullSecrets` of the chart do
+  not feed the cache for tenants (`registry.cache.credentialsSecret` is refused). The **operator** writes the pull secret of a
+  device on the cache from the raw ones (the tenant's `images.pullSecret`, copied to the group namespace as `tenant-registry`,
+  and the lab's own `<lab>-registry` that the agent writes from the `registry_credentials` of `CreateLabs`): the Secret
+  `<lab>-cache-registry`, with one key per registry, `localhost:5035/c/<registry>`, and the username `<tenant>~<user>`. The
+  tenant is the tenant label of the lab (set from the caller's certificate), never anything a caller sends; the lab's own
+  credentials win over the tenant's for one registry; a credential for a registry the cache does not serve, or without a
+  username, is dropped. The device pods reference only this Secret (the raw ones are not mounted or referenced) and pull with
+  `Always`; it is owned by the Lab and goes with it. The platform's own pods (VPN, gateway) get `platform-cache-registry` in
+  their group namespace, made the same way from the operator's `imagePullSecrets` with the tenant name `platform`. For
+  rate-limit relief on **public** images set `registry.cache.anonymousFill` to the name of a
+  `kubernetes.io/dockerconfigjson` Secret of the release namespace: the gate uses it only to fill an image it proved
+  readable without credentials (never for a private image, never to prove anything).
 - **Digest pinning.** A tag can move upstream during an event. When a lab is created with the cache on, the operator
   asks the upstream registry (directly, with the pull secrets; not through zot, which would answer from its store)
   for the digest of each device image and of the netconfig image, once, and the lab's pods pull
   `localhost:<port>/REG/repo@sha256:...`. The digests are recorded in `Lab.status.imageDigests` and copied to
-  `Device.spec.imageDigests`; the prepull uses them. A resolved digest is remembered for `registry.cache.pinTTL`
+  `Device.spec.imageDigests`; the prepull uses them. A lab with registry credentials of its own, or whose tenant has some,
+  is **not** pinned: the operator resolves with its own pull secrets, which could not read a private image, and the gate
+  resolves a tag at each pull with the pull's credentials, so such a lab's images follow their tags. A resolved digest is remembered for `registry.cache.pinTTL`
   (default 30m), so labs created in the same wave get the same image. The VPN and gateway images of a group are
   pinned the same way when the group's pods are created; a failure there is recorded in `LabGroup.status.imageWarning`.
   Both warnings reach the management agent (`LabStatus.image_warning`, `LabGroupStatus.image_warning`). An image whose digest cannot be resolved is pulled by its
@@ -2747,6 +2756,32 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
 - **Size.** The registry volume (`registry.size`) holds the cached images as well: plan for the images of the labs you
   run, next to the snapshots.
 
+#### Migrating to the credentialed cache
+
+From the earlier cache (zot syncing with the platform's credentials, anonymous pulls only, tenants with credentials pulling
+directly) to this one:
+
+1. **Values.** Every registry of `registry.allowedRegistries` and the registry of every platform image must be served by the
+   cache: add the missing ones to `registry.cache.extraRegistries` (name and URL); `docker.io` is needed as soon as one platform
+   image names no registry. `"*"` is refused with the cache on. `helm upgrade` fails at once with the name of the registry when
+   one is missing. `registry.cache.credentialsSecret` and the chart's `imagePullSecrets` for the cache are gone (refused / unused).
+2. **Existing labs keep their mode.** A lab created with `Lab.status.imageCache: false` (a tenant or lab with credentials of
+   its own, before this release) keeps pulling directly with the raw Secrets until it is recreated; a lab created from now on
+   goes through the cache, with credentials too. Nothing is rewritten under a running lab, and `Device.spec.imageMirror` of an
+   existing device is not changed. A device that was created for the cache and whose registry is later removed from the list
+   does not start (refused), instead of pulling directly.
+3. **The platform's own pods.** The group's VPN and gateway Deployments are converged by the operator: with the cache on their
+   image becomes the cache path and their `imagePullSecrets` become `platform-cache-registry` (made from the operator's
+   `imagePullSecrets`). A private registry of a platform image therefore needs the registry listed in the cache and
+   credentials in one of those Secrets.
+4. **Agent.** The Secret `laboratory-registry-ca` is created in the agent's namespace by the chart and mounted at
+   `/registry-ca`; the agent's `PrewarmImages` uses the gate's TLS port. An agent from before this release still reads zot on
+   port 5000, which refuses the cache path.
+5. **Tags of labs with credentials** are no longer pinned to a digest (see "Digest pinning"), so two devices of one lab started
+   minutes apart can run different content if the upstream tag moved in between. Pin by digest in the topology when that matters.
+6. **Cached data.** Nothing to migrate: the gate fills the cache itself, from the first pull on. Objects the old cache stored
+   under `REG/repo` (without `c/`) are not read; delete them with the registry's garbage collection or leave them to the volume.
+
 
 ### Cache prewarm
 
@@ -2762,21 +2797,32 @@ management agent only (the operator and the scheduler take no part), through one
   30 seconds have passed since it failed (so a poller sees the failure); a `DONE` one older than 30 minutes is checked
   again. An empty list reports every image the agent knows. The status is kept in the agent's memory: after an agent
   restart, ask again (the images are checked in seconds).
-- **What it does.** For each image the agent resolves the tag to the digest the operator will pin labs to (the manifest of the
-  node platform when every lab node has one architecture, the index otherwise), asks zot for that manifest, and zot
-  fetches the image from upstream before it answers. zot stores the blobs while it serves that manifest request (checked
-  on the stand: the layers are on the volume although nobody pulled a blob); the agent then checks that the config and
-  **every layer blob** are stored (an index: every platform manifest too), and only then reports `DONE` with the digest.
-  A lab created later pins the same digest and its nodes pull from zot with no upstream traffic.
+- **What it does.** Through the registry gate, like a pod. Without credentials, the agent resolves the tag to the digest the
+  operator will pin labs to (the manifest of the node platform when every lab node has one architecture, the index
+  otherwise), asks the gate for that manifest, and reads the config and every layer blob through it (the gate proves the
+  image is public, fetches and stores what it serves); it then asks the gate (a `HEAD`, answered with the header
+  `Registry-Gate-Cache: hit` only for an object in the cache's own storage) whether **every blob** is stored (an index: every
+  platform manifest too), and only then reports `DONE` with the digest. A lab created later pins the same digest and its
+  nodes pull from the cache with no upstream traffic.
+- **Images that need credentials.** Send `registry_credentials` with the call (one per registry, as for `CreateLabs`). The agent
+  warms such an image through the gate with the username `<tenant>~<user>` (the tenant of the caller's certificate): the gate
+  proves access against the registry with them, exactly as for a pod, and resolves a tag itself (a lab with credentials is not
+  pinned). No platform or operator credential ever reaches the upstream registry. The state of such an image is kept for those
+  credentials only (a hash is part of its key), is not in the list an empty request returns and is not shown to a call that brings
+  other credentials. An image that needs credentials and is named without them is `FAILED` with the gate's answer.
 - **Concurrency and time.** `registry.cache.prewarm.concurrency` images at once (4), at most `registry.cache.prewarm.timeout`
   (10m) for one; every image has its own error.
-- **`SKIPPED`:** the image's registry is not in the cache list (`registry.cache.registries`, `extraRegistries`): nodes pull it
-  directly. The whole call fails with `FailedPrecondition` when the cache is not enabled.
+- **`FAILED` for a registry the cache does not serve:** an image of a registry that is not in the cache list
+  (`registry.cache.registries`, `extraRegistries`), or a reference that does not parse, is refused, as it would be at
+  `CreateLabs`. `SKIPPED` remains for a platform image (it is in the platform registry already). The whole call fails with
+  `FailedPrecondition` when the cache is not enabled.
 - **Retention.** The manifest request counts as a pull for the cache's `unusedTTL` (48h), as does every later check.
   Prewarm within 48 hours before the event, or repeat the call: an image nobody pulled for 48 hours is deleted.
-- **Requirements.** `agent.enabled` and `registry.cache.enabled`. The chart gives the agent the cache address, the
-  registry list, and read access to exactly the `imagePullSecrets` Secrets of the release namespace (used to ask
-  upstream registries for digests), and opens the network policies between the agent, zot and the upstream registries.
+- **Requirements.** `agent.enabled` and `registry.cache.enabled`. The chart gives the agent the address of the gate's TLS port
+  (`AGENT_PREWARM_GATE_ADDR`) and the authority it trusts there, a copy of `ca.crt` only as the Secret `laboratory-registry-ca`
+  in the agent's namespace (`AGENT_PREWARM_GATE_CA_FILE`), the registry list, and read access to exactly the `imagePullSecrets`
+  Secrets of the release namespace (used to ask upstream registries for the digest of a public image), and opens the network
+  policies between the agent, the gate and the upstream registries.
 
 ---
 
