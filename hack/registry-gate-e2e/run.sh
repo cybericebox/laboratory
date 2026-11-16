@@ -28,6 +28,25 @@ check() { # check ID "what" cmd...
   if "$@"; then record PASS "$id" "$what"; else record FAIL "$id" "$what"; fi
 }
 node() { docker exec "$NODE" "$@"; }
+# diag: why the registry pod is not up (a ReplicaSet that cannot create its pod says so in its events: a missing PriorityClass, a Secret,
+# an admission policy), written to the log and to $OUT/diag.txt.
+diag() {
+  {
+    echo "### deployments, replicasets, pods"
+    kubectl -n "$NS" get deploy,rs,pods,pvc -o wide
+    echo "### describe deploy/laboratory-registry"
+    kubectl -n "$NS" describe deploy/laboratory-registry
+    echo "### describe replicaset (FailedCreate lands here)"
+    kubectl -n "$NS" describe rs -l app=laboratory-registry
+    echo "### describe pod"
+    kubectl -n "$NS" describe pod -l app=laboratory-registry
+    echo "### events"
+    kubectl get events -A --sort-by=.lastTimestamp | tail -n 80
+    echo "### priorityclasses"
+    kubectl get priorityclass
+  } >"$OUT/diag.txt" 2>&1
+  cat "$OUT/diag.txt" >&2
+}
 crictl() { node crictl --runtime-endpoint unix:///run/containerd/containerd.sock "$@"; }
 
 # ---- build the image, make the cluster ------------------------------------------------------------------------------------------
@@ -68,9 +87,9 @@ helm template x charts/laboratory --namespace "$NS" \
   --set registry.gate.resources.requests.cpu=50m \
   -s templates/registry/deployment.yaml -s templates/registry/service.yaml -s templates/registry/configmap.yaml \
   -s templates/registry/gate-configmap.yaml -s templates/registry/secret.yaml -s templates/registry/tls-secret.yaml \
-  -s templates/registry/pvc.yaml >"$OUT/registry.yaml" || exit 2
+  -s templates/registry/pvc.yaml -s templates/priorityclasses.yaml >"$OUT/registry.yaml" || exit 2
 kubectl apply -f "$OUT/registry.yaml" >/dev/null || exit 2
-kubectl -n "$NS" rollout status deploy/laboratory-registry --timeout=300s || { kubectl -n "$NS" describe pod -l app=laboratory-registry >&2; exit 2; }
+kubectl -n "$NS" rollout status deploy/laboratory-registry --timeout=300s || { diag; exit 2; }
 kubectl apply -f hack/registry-gate-e2e/relay-pod.yaml >/dev/null || exit 2
 kubectl -n "$NS" wait --for=condition=Ready pod/relay --timeout=120s >/dev/null || exit 2
 REG_POD=$(kubectl -n "$NS" get pod -l app=laboratory-registry -o name | head -1)
