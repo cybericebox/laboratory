@@ -1539,8 +1539,9 @@ cert-manager:
 #         memory: "40%"         #   of what the lab nodes allocate
 #       images:
 #         pullSecret: acme-registry   # a dockerconfigjson Secret in laboratory-tenants: the tenant's
-#                                     #   own registry credentials for its devices and prepull. A tenant
-#                                     #   with one pulls straight from its registries (no shared cache).
+#                                     #   own registry credentials for its devices. With the image cache
+#                                     #   on they go through it (re-keyed for the cache path, the tenant
+#                                     #   in the username) and the registry gate proves every pull.
 #         platformOnly: true          # optional; only platform images (platform:<name>@sha256:<hex>) run for this tenant
 #         allow:                      # optional; absent = any image `images.tenantDeny` does not exclude
 #           - ghcr.io/acme/           # registry/repository prefixes; a reference equal to an entry

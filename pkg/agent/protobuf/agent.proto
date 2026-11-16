@@ -1428,7 +1428,7 @@ message StatePersistenceFeature {
 // The platform image cache (PrewarmImages works only when it is enabled).
 message ImageCacheFeature {
   bool enabled = 1;
-  // Upstream registries the cache serves; images of other registries are pulled directly.
+  // Upstream registries the cache serves; an image of another registry is refused (there is no direct pull).
   repeated string registries = 2;
 }
 
@@ -1523,7 +1523,7 @@ enum PrewarmState {
   PREWARM_STATE_WARMING = 2;  // the cache is fetching it
   PREWARM_STATE_DONE = 3;     // the manifest and every blob are stored in the cache
   PREWARM_STATE_FAILED = 4;   // see error; a repeated call retries
-  PREWARM_STATE_SKIPPED = 5;  // the image's registry is not served by the cache: nodes pull it directly
+  PREWARM_STATE_SKIPPED = 5;  // nothing to prewarm: a platform image is in the platform registry already
 }
 
 message PrewarmImageStatus {

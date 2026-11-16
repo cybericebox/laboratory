@@ -31,9 +31,9 @@ type TenantSpec struct {
 type TenantImages struct {
 	// PullSecret names a kubernetes.io/dockerconfigjson Secret of the tenants namespace
 	// (laboratory-tenants) with the tenant's registry credentials. They are used for the
-	// tenant's devices and image prepull, and a tenant that has them pulls straight from
-	// its registries: its images do not go through the shared image cache. Absent: the
-	// tenant's images are public.
+	// tenant's devices: with the image cache on they go through it like every image, re-keyed
+	// for the cache path with the tenant in the username, and the registry gate proves every
+	// pull with them. Absent: the tenant's images are public.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	PullSecret string `json:"pullSecret,omitempty"`

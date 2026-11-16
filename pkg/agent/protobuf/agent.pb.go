@@ -403,7 +403,7 @@ const (
 	PrewarmState_PREWARM_STATE_WARMING     PrewarmState = 2 // the cache is fetching it
 	PrewarmState_PREWARM_STATE_DONE        PrewarmState = 3 // the manifest and every blob are stored in the cache
 	PrewarmState_PREWARM_STATE_FAILED      PrewarmState = 4 // see error; a repeated call retries
-	PrewarmState_PREWARM_STATE_SKIPPED     PrewarmState = 5 // the image's registry is not served by the cache: nodes pull it directly
+	PrewarmState_PREWARM_STATE_SKIPPED     PrewarmState = 5 // nothing to prewarm: a platform image is in the platform registry already
 )
 
 // Enum value maps for PrewarmState.
@@ -9550,7 +9550,7 @@ func (x *StatePersistenceFeature) GetUnavailableReason() string {
 type ImageCacheFeature struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Enabled bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Upstream registries the cache serves; images of other registries are pulled directly.
+	// Upstream registries the cache serves; an image of another registry is refused (there is no direct pull).
 	Registries    []string `protobuf:"bytes,2,rep,name=registries,proto3" json:"registries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
