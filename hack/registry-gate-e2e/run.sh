@@ -7,6 +7,7 @@
 #   g3  other credentials (no right upstream) are refused although the image is in the cache
 #   g4  the same credentials of another tenant are checked once more, then the decision is reused
 #   g5  a registry the gate knows but registry.allowedRegistries does not list is refused before any upstream call
+#   g6  the pull Secret as the platform makes it (the agent's raw document through the operator's re-keying) pulls a private image; the raw one does not
 # Every case reports PASS or FAIL; the script exits 1 when one FAILs, after all of them ran. Needs docker, kind, kubectl, helm, jq, go.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
@@ -109,6 +110,11 @@ mk_secret() { # mk_secret NS NAME USER PASS
   auths=$(jq -nc --arg u "$3" --arg p "$4" '{auths: {"localhost:5035/c/priv": {username: $u, password: $p, auth: (($u + ":" + $p) | @base64)}}}')
   kubectl -n "$1" create secret generic "$2" --type=kubernetes.io/dockerconfigjson --from-literal=.dockerconfigjson="$auths" >/dev/null
 }
+# mk_secret_with NS NAME FILE: a pull Secret from a dockerconfigjson document in a file
+mk_secret_with() {
+  kubectl create namespace "$1" >/dev/null 2>&1 || true
+  kubectl -n "$1" create secret generic "$2" --type=kubernetes.io/dockerconfigjson --from-file=.dockerconfigjson="$3" >/dev/null
+}
 mk_pod() { # mk_pod NS NAME IMAGE [SECRET]
   kubectl create namespace "$1" >/dev/null 2>&1 || true
   {
@@ -207,6 +213,23 @@ check g5a "an image of a registry that is not on allowedRegistries is not pulled
 check g5b "...the gate refused it as not allowed" gt "$(metric 'registry_gate_cache_refusals_total{reason="not_allowed"}')" "$refused"
 check g5c "...and no upstream registry was called for it" test "$(upstream_gets upstream-pub team/app)" -eq "$gets"
 clean_node e2e-g5
+
+# ---- g6: the pull Secret as the platform writes it (the agent's raw document through the operator's re-keying) ---------------------
+say "== g6"
+go build -o "$OUT/keysecret" ./hack/registry-gate-e2e/keysecret || exit 2
+"$OUT/keysecret" -tenant t6 -served pub,priv,docker.io -registry priv -user alice -pass pw >"$OUT/g6-operator.json" || exit 2
+check g6a "the operator's re-keying is keyed localhost:5035/c/priv with the tenant in the username" \
+  jq -e '.auths | keys == ["localhost:5035/c/priv"] and (.["localhost:5035/c/priv"].username == "t6~alice")' "$OUT/g6-operator.json"
+mk_secret_with e2e-g6a s "$OUT/g6-operator.json"
+mk_pod e2e-g6a p "$(img priv team/secret "$PRIV")" s
+check g6b "a private image is pulled with the Secret the platform makes (no hand-made key)" pulled e2e-g6a p
+clean_node e2e-g6a
+# the raw document is keyed by the registry host: the kubelet does not match it to the cache path, so the pull is anonymous and refused
+"$OUT/keysecret" -raw -registry priv -user alice -pass pw >"$OUT/g6-raw.json" || exit 2
+mk_secret_with e2e-g6b s "$OUT/g6-raw.json"
+mk_pod e2e-g6b p "$(img priv team/secret "$PRIV")" s
+check g6c "the raw Secret (keyed by the registry host) does not pull a private image through the cache" not_pulled e2e-g6b p
+clean_node e2e-g6b
 
 # ---- evidence and verdict -----------------------------------------------------------------------------------------------------------
 curl -s localhost:15002/metrics >"$OUT/gate-metrics.txt" 2>/dev/null || true
