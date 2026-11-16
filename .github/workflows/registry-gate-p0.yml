@@ -1,0 +1,61 @@
+name: Registry gate P0
+
+# The spike of the registry gate (docs/research/2026-11-16-zot-tenant-cache.md, section 11): does the pull path the design relies on work
+# on a real kind node with Kubernetes 1.35 or newer? A fake registry on the node's loopback (hack/registry-gate-p0) answers 401 with a Basic
+# challenge and logs every request; the kubelet and containerd do the pulls. It is a probe, not a gate of the repository: it runs on its
+# own branch and by hand, and its result is read, not required.
+on:
+  push:
+    branches: [feat/registry-gate]
+    paths:
+      - hack/registry-gate-p0/**
+      - .github/workflows/registry-gate-p0.yml
+  workflow_dispatch:
+    inputs:
+      verify_policy:
+        description: kubelet imagePullCredentialsVerificationPolicy (NeverVerifyPreloadedImages, NeverVerify, AlwaysVerify, AlwaysVerifyAllImages)
+        default: NeverVerifyPreloadedImages
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p0:
+    name: c1 c2 c3 on kind 1.35
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: Install kind (a pinned version, verified against a checksum kept here)
+        run: |
+          curl -fsSLo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Login to Docker Hub (the kind node image comes from there)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Unit test of the fake registry
+        run: go test ./hack/registry-gate-p0/...
+      - name: Run c1 c2 c3
+        env:
+          P0_OUT: ${{ runner.temp }}/p0
+          P0_VERIFY_POLICY: ${{ inputs.verify_policy || 'NeverVerifyPreloadedImages' }}
+          P0_KEEP: "1"
+        run: hack/registry-gate-p0/run.sh
+      - name: Evidence (request log, kubelet and containerd logs, pods)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: registry-gate-p0
+          path: ${{ runner.temp }}/p0
+          if-no-files-found: warn
