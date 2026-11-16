@@ -774,8 +774,8 @@ nodeAgent:
     tunSlots: 1000
 
   # Requests and limits of the node-agent pod, so that one runaway process cannot starve the node (the pod is privileged
-  # and the cluster's other pods share the node). Three groups: the node-agent container (its snapshot engine keeps the path
-  # map of a layer merge in memory), the OVS sidecar, and the short init containers (host-prep and the CNI installers).
+  # and the cluster's other pods share the node). Three groups: the node-agent container, the OVS sidecar, and the short init
+  # containers (host-prep and the CNI installers). The snapshot engine is not here: it runs in the node-state DaemonSet (nodeState).
   # These are starting values: measure on your nodes and adjust.
   resources:
     requests:
@@ -798,6 +798,27 @@ nodeAgent:
     limits:
       cpu: 200m
       memory: 64Mi
+
+# ============================================================
+# node-state DaemonSet: the snapshot engine and the CPU throttle monitor
+# ============================================================
+# Rendered only while devices.statePersistence.enabled or lifecycle.runtimeObservation.enabled is on (and nodeAgent.enabled). It runs
+# the image of the node-agent (/node node-state) on the same nodes, apart from it: the node-agent wires the network of every new pod and
+# keeps only what that needs, while the privileges of the snapshot engine (appArmorProfile Unconfined, DAC_READ_SEARCH, the containerd
+# root, the host cgroup tree) live here. It reaches the registry only through the relay the node-agent serves on 127.0.0.1:5035.
+# What it runs: the CPU throttle monitor (whenever it is rendered) and, with devices.statePersistence.enabled, the snapshot engine and
+# the check of the node for it (the Node annotation cybericebox.com/state-persistence). The runtime observer stays in the node-agent.
+nodeState:
+  # /readyz (the caches have synced) and /healthz on the loopback of the node (it is on the host network, like the node-agent).
+  healthPort: 9441
+  # Requests and limits of the pod (the snapshot engine keeps the path map of a layer merge in memory). Starting values: measure and adjust.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 # ============================================================
 # Platform registry (zot): device snapshots and the image cache
@@ -954,10 +975,11 @@ devices:
   # Device is created and never changes, whatever this switch does later.
   # false: no device can ask for persistence.
   statePersistence:
-    # On, the node-agent container also runs with appArmorProfile Unconfined: the runtime's default AppArmor profile
-    # (cri-containerd.apparmor.d on Ubuntu and other AppArmor nodes) has `deny mount`, and the snapshot filter mounts read-only
-    # overlay views of a device's layers, so under it every snapshot fails with "permission denied". The container already has
-    # SYS_ADMIN. A node-agent that still finds itself under that profile says so in its log and on every device it follows.
+    # On, the node-state DaemonSet (nodeState) is rendered and runs the snapshot engine, with appArmorProfile Unconfined: the runtime's
+    # default AppArmor profile (cri-containerd.apparmor.d on Ubuntu and other AppArmor nodes) has `deny mount`, and the snapshot filter
+    # mounts read-only overlay views of a device's layers, so under it every snapshot fails with "permission denied". It also has SYS_ADMIN
+    # and DAC_READ_SEARCH; the node-agent has neither Unconfined nor DAC_READ_SEARCH. A node-state that still finds itself under that
+    # profile says so in its log and on every device it follows. Needs the platform registry (the engine pushes through the node-agent's relay).
     enabled: false
 
     # How long a device's writable layer must stay quiet before a snapshot is taken.
@@ -996,7 +1018,7 @@ devices:
     # A push is refused while the registry (registry.size) holds more than this fraction less than its volume: everything it
     # stores counts, each blob once, retained repositories of deleted labs included.
     registryReserve: 0.1
-    # Directories of one device's writable layer the node-agent watches with inotify (the kernel's watch limit is shared by
+    # Directories of one device's writable layer node-state watches with inotify (the kernel's watch limit is shared by
     # everything on the node). Past it the layer is only polled (about every 30 s), so a change is noticed later.
     maxWatchedDirs: 2000
     # How often the retention sweep of old snapshots runs (Go duration).
@@ -1012,7 +1034,7 @@ devices:
     retention: 168h
 
     # Host path of the containerd root (the overlayfs snapshotter keeps the writable
-    # layers below it), mounted read-only at the same path into the node-agent.
+    # layers below it), mounted read-only at the same path into node-state.
     containerdRoot: /var/lib/k0s/containerd
     # containerd namespace of the kubelet's CRI.
     containerdNamespace: k8s.io

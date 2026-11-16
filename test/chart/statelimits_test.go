@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// The state limits against abuse reach the node-agent and the agent from the chart.
+// The state limits against abuse reach node-state and the agent from the chart.
 func TestStateAbuseLimitsAreValues(t *testing.T) {
 	out, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true", "--set", "devices.statePersistence.maxWatchedDirs=500",
-		"--set", "devices.statePersistence.tenantQuota=3Gi", "-s", "templates/node-agent/daemonset.yaml", "-s", "templates/agent/deployment.yaml")...)
+		"--set", "devices.statePersistence.tenantQuota=3Gi", "-s", "templates/node-state/daemonset.yaml", "-s", "templates/agent/deployment.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

@@ -156,8 +156,24 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 			t.Errorf("%s is not passed by the chart (the relay port is a constant, the others default in the image)", baked)
 		}
 	}
-	mounts := map[string]corev1.VolumeMount{}
+	// The node-agent keeps the relay only: the snapshot engine and its privileges are node-state's.
+	for _, unwanted := range []string{"STATE_PERSISTENCE_ENABLED", "STATE_REGISTRY_USER", "STATE_REGISTRY_PASSWORD", "CONTAINERD_ROOT"} {
+		if _, set := env[unwanted]; set {
+			t.Errorf("the node-agent must not be passed %s (node-state's)", unwanted)
+		}
+	}
 	for _, m := range agent.VolumeMounts {
+		if m.Name == "containerd-root" {
+			t.Errorf("the node-agent must not mount the containerd root")
+		}
+	}
+	if caps := agent.SecurityContext.Capabilities.Add; hasCap(caps, "DAC_READ_SEARCH") {
+		t.Errorf("node-agent capabilities %v", caps)
+	}
+
+	engine := nodeState(t, on...).Spec.Template.Spec.Containers[0]
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range engine.VolumeMounts {
 		mounts[m.Name] = m
 	}
 	if m := mounts["containerd-root"]; m.MountPath != "/var/lib/k0s/containerd" || !m.ReadOnly {
@@ -166,9 +182,16 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 	if mounts["host-cgroup"].MountPath != "/host/sys/fs/cgroup" {
 		t.Errorf("host cgroup tree not mounted")
 	}
-	caps := agent.SecurityContext.Capabilities.Add
-	if !hasCap(caps, "DAC_READ_SEARCH") || !hasCap(caps, "SYS_ADMIN") {
-		t.Errorf("node-agent capabilities %v", caps)
+	if caps := engine.SecurityContext.Capabilities.Add; !hasCap(caps, "DAC_READ_SEARCH") || !hasCap(caps, "SYS_ADMIN") {
+		t.Errorf("node-state capabilities %v", caps)
+	}
+	for _, k := range []string{"STATE_REGISTRY_USER", "STATE_REGISTRY_PASSWORD"} {
+		if e := envOf(engine)[k]; e.ValueFrom == nil || e.ValueFrom.SecretKeyRef.Name != "laboratory-registry" {
+			t.Errorf("node-state %s must come from the registry Secret", k)
+		}
+	}
+	if _, direct := envOf(engine)["STATE_REGISTRY_ADDR"]; direct {
+		t.Errorf("node-state has no direct path to the registry: it goes through the node-agent's relay")
 	}
 }
 
@@ -216,8 +239,8 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, cm.Data[k], v)
 		}
 	}
-	agent := nodeAgent(t, extra...).Spec.Template.Spec.Containers[0]
-	for _, m := range agent.VolumeMounts {
+	engine := nodeState(t, extra...).Spec.Template.Spec.Containers[0]
+	for _, m := range engine.VolumeMounts {
 		if m.Name == "containerd-root" && m.MountPath != "/var/lib/containerd" {
 			t.Errorf("containerd root mount %s", m.MountPath)
 		}
@@ -546,26 +569,31 @@ func TestNodeLossForceDeleteAfterReachesOperator(t *testing.T) {
 	}
 }
 
-func TestStatePersistenceNodeAgentAppArmor(t *testing.T) {
-	nodeAgent := func(extra ...string) corev1.Container {
+func TestStatePersistenceNodeStateAppArmor(t *testing.T) {
+	stateContainer := func(extra ...string) corev1.Container {
 		t.Helper()
 		var ds appsv1.DaemonSet
-		render(t, "templates/node-agent/daemonset.yaml", &ds, extra...)
+		render(t, "templates/node-state/daemonset.yaml", &ds, extra...)
 		for _, c := range ds.Spec.Template.Spec.Containers {
-			if c.Name == "node-agent" {
+			if c.Name == "node-state" {
 				return c
 			}
 		}
-		t.Fatal("no node-agent container")
+		t.Fatal("no node-state container")
 		return corev1.Container{}
 	}
 	// On: the default cri-containerd profile has `deny mount`, and the snapshot filter mounts read-only overlays.
-	on := nodeAgent("--set", statePath+"enabled=true")
+	on := stateContainer("--set", statePath+"enabled=true")
 	if sc := on.SecurityContext; sc == nil || sc.AppArmorProfile == nil || sc.AppArmorProfile.Type != corev1.AppArmorProfileTypeUnconfined {
-		t.Errorf("with state persistence on the node-agent must run AppArmor-unconfined, got %+v", on.SecurityContext)
+		t.Errorf("with state persistence on node-state must run AppArmor-unconfined, got %+v", on.SecurityContext)
 	}
-	// Off: nothing mounts, so the node-agent keeps the runtime default.
-	if off := nodeAgent(); off.SecurityContext != nil && off.SecurityContext.AppArmorProfile != nil {
-		t.Errorf("with state persistence off the node-agent keeps the default AppArmor profile, got %+v", off.SecurityContext.AppArmorProfile)
+	// The node-agent never does.
+	if sc := nodeAgent(t, "--set", statePath+"enabled=true").Spec.Template.Spec.Containers[0].SecurityContext; sc != nil && sc.AppArmorProfile != nil {
+		t.Errorf("the node-agent keeps the default AppArmor profile, got %+v", sc.AppArmorProfile)
+	}
+	// Observation alone: node-state runs the throttle monitor only, under the default profile and without the snapshot privileges.
+	obs := stateContainer("--set", "lifecycle.runtimeObservation.enabled=true")
+	if sc := obs.SecurityContext; sc.AppArmorProfile != nil || hasCap(sc.Capabilities.Add, "DAC_READ_SEARCH") {
+		t.Errorf("without state persistence node-state keeps the default profile and no DAC_READ_SEARCH, got %+v", sc)
 	}
 }

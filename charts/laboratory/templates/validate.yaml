@@ -207,6 +207,15 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if and (include "laboratory.nodeState.enabled" .) (eq (int .Values.nodeState.healthPort) (int .Values.nodeAgent.healthPort)) }}
+{{- fail "nodeState.healthPort must differ from nodeAgent.healthPort: both are on the host network" }}
+{{- end }}
+{{- if and .Values.devices.statePersistence.enabled (not (include "laboratory.registryEnabled" .)) }}
+{{- fail "devices.statePersistence.enabled needs the platform registry: node-state pushes the snapshots through the node-agent's relay to it" }}
+{{- end }}
+{{- if and .Values.devices.statePersistence.enabled (not .Values.nodeAgent.enabled) }}
+{{- fail "devices.statePersistence.enabled needs nodeAgent.enabled: node-state reaches the registry through the node-agent's relay" }}
+{{- end }}
 {{- if and .Values.devices.statePersistence.enabled (not (hasPrefix "/" .Values.devices.statePersistence.containerdRoot)) }}
 {{- fail "devices.statePersistence.containerdRoot must be an absolute host path (the containerd root directory)" }}
 {{- end }}

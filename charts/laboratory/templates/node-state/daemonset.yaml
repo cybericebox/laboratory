@@ -1,0 +1,179 @@
+{{- if include "laboratory.nodeState.enabled" . }}
+{{- /*
+node-state: the snapshot engine of device state (only with devices.statePersistence.enabled) and the CPU throttle monitor, a DaemonSet of
+its own apart from the node-agent (DEPLOY.md, "node-state"). The node-agent wires the network of every new pod and keeps only what that
+needs; the privileges the snapshot engine needs (AppArmor Unconfined, DAC_READ_SEARCH, the containerd root, the host cgroup tree) are here.
+Rendered only while devices.statePersistence.enabled or lifecycle.runtimeObservation.enabled is on.
+*/ -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-node-state
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: node-state
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: node-state
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: node-state
+        {{- include "laboratory.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: laboratory-node-state
+      # Below the node-agent (system-node-critical): when the node is short of room this goes first and the pod networking stays.
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      # The host network: the registry is reached through the relay the node-agent serves on the loopback of the node (127.0.0.1:5035).
+      hostNetwork: true
+      hostPID: false
+      dnsPolicy: ClusterFirstWithHostNet
+      # Where the node-agent runs: the lab nodes (labWorkloads), with the same tolerations for the DaemonSet availability and Cilium
+      # taints. No toleration for the startup taint: the node-agent removes it, and this starts after.
+      {{- with .Values.labWorkloads.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - key: node.cilium.io/agent-not-ready
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.labWorkloads.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: node-state
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
+          command: [ "/node", "node-state" ]
+          env:
+            # The probes' address: the loopback only (host network).
+            - name: HEALTH_ADDR
+              value: {{ printf "127.0.0.1:%d" (.Values.nodeState.healthPort | int) | quote }}
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CRI_SOCK
+              value: {{ .Values.nodeAgent.criSocket | quote }}
+            - name: ERROR_JOURNAL_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: CONTAINERD_NAMESPACE
+              value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
+          {{- if .Values.devices.statePersistence.enabled }}
+            - name: STATE_PERSISTENCE_ENABLED
+              value: "true"
+            # Checked at start (node-state tells what its node can do on the Node and in an Event; a wrong path does not hang the pod).
+            - name: CONTAINERD_ROOT
+              value: {{ .Values.devices.statePersistence.containerdRoot | quote }}
+            - name: STATE_MAX_WATCH_DIRS
+              value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
+            # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
+            - name: STATE_MIN_PUSH_INTERVAL
+              value: {{ .Values.devices.statePersistence.minPushInterval | quote }}
+            - name: STATE_PUSH_BUDGET
+              value: {{ .Values.devices.statePersistence.pushBudget | quote }}
+            - name: STATE_PUSH_BUDGET_WINDOW
+              value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
+            - name: STATE_SUPERSEDED_GRACE
+              value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
+            - name: STATE_REGISTRY_CAPACITY
+              value: {{ .Values.registry.size | quote }}
+            - name: STATE_REGISTRY_RESERVE
+              value: {{ .Values.devices.statePersistence.registryReserve | quote }}
+            # The writer account: the snapshots are pushed through the node-agent's relay (the registry itself is not reachable from here).
+            - name: STATE_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: username
+            - name: STATE_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: password
+          {{- end }}
+          securityContext:
+            {{- if .Values.devices.statePersistence.enabled }}
+            {{- /* The snapshot filter mounts read-only overlays; the runtime's default AppArmor profile has `deny mount` (values.yaml). */}}
+            appArmorProfile:
+              type: Unconfined
+            {{- end }}
+            capabilities:
+              {{- /* SYS_ADMIN: the overlay mounts of the snapshot filter. DAC_READ_SEARCH: the watcher reads writable layers owned by the container's own users. */}}
+              add:  [ SYS_ADMIN{{ if .Values.devices.statePersistence.enabled }}, DAC_READ_SEARCH{{ end }} ]
+              drop: [ ALL ]
+          startupProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.nodeState.healthPort }}
+            periodSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.nodeState.healthPort }}
+            periodSeconds: 10
+            failureThreshold: 2
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: {{ .Values.nodeState.healthPort }}
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 8
+          volumeMounts:
+            - name: cri-sock
+              mountPath: {{ .Values.nodeAgent.criSocket | quote }}
+            # The host's cgroup v2 tree: the throttle monitor reads cpu.stat and a container is frozen through cgroup.freeze while its
+            # layer is diffed.
+            - name: host-cgroup
+              mountPath: /host/sys/fs/cgroup
+          {{- if .Values.devices.statePersistence.enabled }}
+            # The overlayfs snapshotter's directories, at the same path as on the host: the writable layers that are snapshotted live below it.
+            - name: containerd-root
+              mountPath: {{ .Values.devices.statePersistence.containerdRoot | quote }}
+              readOnly: true
+            - name: state-work
+              mountPath: /var/cache/cybericebox/state
+          {{- end }}
+          {{- with .Values.nodeState.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: cri-sock
+          hostPath:
+            path: {{ .Values.nodeAgent.criSocket }}
+            type: Socket
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+      {{- if .Values.devices.statePersistence.enabled }}
+        - name: containerd-root
+          hostPath:
+            path: {{ .Values.devices.statePersistence.containerdRoot | quote }}
+            # No type check on purpose: a wrong path must reach node-state's own check (which says so clearly) and not leave the pod waiting for a volume.
+            type: ""
+        - name: state-work
+          # Required capture holds must survive node-state Pod recreation.
+          hostPath:
+            path: /var/cache/cybericebox/state
+            type: DirectoryOrCreate
+      {{- end }}
+{{- end }}
