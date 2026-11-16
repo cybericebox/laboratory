@@ -111,6 +111,14 @@ func TestChartPassesReconcileWorkers(t *testing.T) {
 			t.Fatalf("%s missing from the operator settings", want)
 		}
 	}
+	for _, want := range []string{`API_QPS: "200"`, `API_BURST: "400"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%s missing from the operator settings", want)
+		}
+	}
+	if _, err = renderChart(t, "--set", "operator.api.burst=10"); err == nil {
+		t.Fatal("a burst below the rate must be refused at install time")
+	}
 	out, err = renderChart(t, "--set", "operator.workers.device=4")
 	if err != nil || !strings.Contains(out, `DEVICE_RECONCILE_WORKERS: "4"`) {
 		t.Fatalf("the chart value is not passed on: %v", err)

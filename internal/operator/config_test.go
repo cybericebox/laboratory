@@ -340,3 +340,21 @@ func TestLoadConfigReconcileWorkers(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigAPIRate(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.APIQPS != 200 || cfg.APIBurst != 400 {
+		t.Fatalf("defaults: %v %v", cfg, err)
+	}
+	for _, kv := range [][2]string{{"API_QPS", "0"}, {"API_QPS", "2001"}, {"API_BURST", "199"}, {"API_BURST", "4001"}} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}

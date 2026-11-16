@@ -21,6 +21,9 @@ import (
 // MaxReconcileWorkers is the most workers one controller may be given: more than that only queues behind the client rate limit.
 const MaxReconcileWorkers = 64
 
+// MaxAPIQPS is the largest client rate limit the operator may be given: the API server and etcd are shared with the node-agents.
+const MaxAPIQPS = 2000
+
 type Config struct {
 	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the operator writes the bandwidth ceilings onto the
 	// gateway, demux and L7 proxy pods (see package bandwidth).
@@ -57,6 +60,12 @@ type Config struct {
 	LabWorkers        int `env:"LAB_RECONCILE_WORKERS" envDefault:"8"`
 	DeviceWorkers     int `env:"DEVICE_RECONCILE_WORKERS" envDefault:"16"`
 	ConnectionWorkers int `env:"CONNECTION_RECONCILE_WORKERS" envDefault:"8"`
+
+	// APIQPS and APIBurst are the client-side rate limit of the operator's Kubernetes API client, shared by every controller and the
+	// scheduler (API_QPS, API_BURST; chart operator.api). The client-go default of 20 and 30 would make the workers wait for one
+	// another.
+	APIQPS   float32 `env:"API_QPS" envDefault:"200"`
+	APIBurst int     `env:"API_BURST" envDefault:"400"`
 
 	// The egress monitor pulls the per-minute summaries of the gateways (EGRESS_MONITOR_ENABLED), on their summaries port (EGRESS_STATS_PORT),
 	// keeps the connection log in the operator log and, with EGRESS_LOG_DIR, in daily files for EGRESS_LOG_RETENTION, and flags a lab when
@@ -405,6 +414,9 @@ func LoadConfig() (*Config, error) {
 		if v < 1 || v > MaxReconcileWorkers {
 			return nil, fmt.Errorf("%s must be between 1 and %d (got %d)", name, MaxReconcileWorkers, v)
 		}
+	}
+	if cfg.APIQPS < 1 || cfg.APIQPS > MaxAPIQPS || cfg.APIBurst < int(cfg.APIQPS) || cfg.APIBurst > 2*MaxAPIQPS {
+		return nil, fmt.Errorf("API_QPS must be between 1 and %d and API_BURST between API_QPS and %d (got %v and %d)", MaxAPIQPS, 2*MaxAPIQPS, cfg.APIQPS, cfg.APIBurst)
 	}
 	if cfg.SchedulerMaxPods < 0 {
 		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")
