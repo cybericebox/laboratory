@@ -151,3 +151,54 @@ func TestPrewarmWarmsAPublicImageThroughTheGate(t *testing.T) {
 type staticResolver string
 
 func (s staticResolver) Resolve(context.Context, string) (string, error) { return string(s), nil }
+
+// A tenant must not learn the digest of an image it cannot read. The platform's resolver can read it, so it is asked only about an image
+// the gate has served first: a private image named without credentials, or with ones that have no right, fails with an error and no
+// digest, in the reply and in what the agent keeps.
+func TestPrewarmNeverReportsADigestOfAnImageTheCallerCannotRead(t *testing.T) {
+	r := newRig(t)
+	d, _ := r.putImage("org/private")
+	r.cache.Registries.Set([]Registry{r.up.registry("up"), r.up.registry("reg.test")})
+	h := grpcserver.NewHandler(nil, nil, nil)
+	h.SetPrewarm(grpcserver.PrewarmConfig{
+		Enabled: true, RegistryAddr: strings.TrimPrefix(r.gate.URL, "http://"), Registries: []string{"reg.test"},
+		Resolver: staticResolver(d), // the platform's keychain can read it, and says so
+		Timeout:  30 * time.Second, RetryAfter: time.Hour,
+	})
+	for name, creds := range map[string][]*protobuf.RegistryCredential{
+		"no credentials":    nil,
+		"no right upstream": {{Registry: "reg.test", Username: "mallory", Password: "pw"}},
+	} {
+		var st *protobuf.PrewarmImageStatus
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			res, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"reg.test/org/private:latest"}, RegistryCredentials: creds})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st = res.Images[0]; st.State == protobuf.PrewarmState_PREWARM_STATE_FAILED {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if st == nil || st.State != protobuf.PrewarmState_PREWARM_STATE_FAILED {
+			t.Fatalf("%s: %+v", name, st)
+		}
+		if st.Digest != "" || strings.Contains(st.Error, d) {
+			t.Errorf("%s: the digest of an image the caller cannot read reached the reply: %+v", name, st)
+		}
+		if r.inZot("c/reg.test/org/private", "manifests", d) {
+			t.Errorf("%s: nothing is stored for a caller that has no right", name)
+		}
+	}
+	// the listing (an empty request) shows nothing either
+	all, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range all.Images {
+		if st.Digest != "" {
+			t.Errorf("a digest in the listing: %+v", st)
+		}
+	}
+}
