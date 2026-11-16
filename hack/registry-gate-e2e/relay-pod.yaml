@@ -1,0 +1,21 @@
+# The relay of a node as the node-agent runs it (devicestate.Forward over TLS to the gate), on the host network of the node.
+apiVersion: v1
+kind: Pod
+metadata: {name: relay, namespace: laboratory-system}
+spec:
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  containers:
+    - name: relay
+      image: p0e2e/node:e2e
+      imagePullPolicy: Never
+      command: ["/relay"]
+      env:
+        - {name: STATE_REGISTRY_ADDR, value: "laboratory-registry.laboratory-system.svc:5443"}
+        - {name: STATE_REGISTRY_CA_FILE, value: /etc/registry-ca/ca.crt}
+      volumeMounts: [{name: ca, mountPath: /etc/registry-ca, readOnly: true}]
+  volumes:
+    - name: ca
+      secret:
+        secretName: laboratory-registry-tls
+        items: [{key: ca.crt, path: ca.crt}]
