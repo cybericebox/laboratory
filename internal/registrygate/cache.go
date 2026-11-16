@@ -157,11 +157,18 @@ func (c *Cache) caller(o objectRef, r *http.Request) (caller, bool) {
 // 200 serve, 401 refused, 503 upstream unreachable and no stale answer allowed, 502 no digest.
 func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Object, who caller) (string, int) {
 	key := DecisionKey{Hash: who.hash, Repo: o.fullRepo()}
+	if c.Store.Missing(MissKey{Hash: who.hash, Repo: key.Repo, Kind: o.Kind, Ref: o.Ref}) {
+		return "", statusOf(NotFound, who.hash == "") // found missing a moment ago: the same ref is not asked again
+	}
 	if o.isTag() {
 		// a tag moves: the one HEAD that resolves it is a fresh check too
 		started := c.Store.Now()
 		out, hdr, _ := c.Up.Proof(ctx, reg, up, who.creds, who.hash)
 		c.M.checks.WithLabelValues(outcomeName(out)).Inc()
+		if out == NotFound {
+			c.settleMissing(ctx, reg, key, who, up)
+			return "", statusOf(NotFound, who.hash == "")
+		}
 		serve := c.Store.Record(key, who.tenant, out, started)
 		if !serve {
 			return "", statusOf(out, who.hash == "")
@@ -173,6 +180,7 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 		if !reDigest.MatchString(d) {
 			return "", http.StatusBadGateway
 		}
+		c.Store.Know(key, kindManifests, d, up.Accept)
 		return d, http.StatusOK
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -192,24 +200,65 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 		var result int
 		// one fresh check per decision at a time: the others of a burst wait for it and then look the decision up again
 		_, leader := c.checks.Do(key.Hash+"|"+key.Repo+"|"+who.tenant, func() error {
-			result = c.freshCheck(ctx, reg, key, who, up)
+			result = c.freshCheck(ctx, reg, key, who, up, false)
 			return nil
 		})
 		if leader {
 			return o.Ref, result
 		}
 	}
-	return o.Ref, c.freshCheck(ctx, reg, key, who, up)
+	return o.Ref, c.freshCheck(ctx, reg, key, who, up, false)
 }
 
-func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object) int {
+// freshCheck asks upstream and records the answer. A revalidation (the background check of a stale decision) asks about a ref that was
+// already proven for the key, not about the ref of the request: a 404 on it is a revocation or a hidden repository.
+func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object, revalidating bool) int {
+	known := false
+	if kg, ok := c.Store.Known(key); ok && revalidating {
+		up, known = Object{Repo: up.Repo, Kind: kg.Kind, Ref: kg.Ref, Accept: kg.Accept}, true
+	}
 	started := c.Store.Now()
 	out, _ := c.Up.Check(ctx, reg, up, who.creds, who.hash)
 	c.M.checks.WithLabelValues(outcomeName(out)).Inc()
+	if out == NotFound {
+		if !known {
+			c.settleMissing(ctx, reg, key, who, up)
+			return statusOf(NotFound, who.hash == "")
+		}
+		out = Denied // the ref that was proven is gone for these credentials
+	}
+	if out == Allowed {
+		defer c.Store.Know(key, up.Kind, up.Ref, up.Accept)
+	}
 	if c.Store.Record(key, who.tenant, out, started) {
 		return http.StatusOK
 	}
 	return statusOf(out, who.hash == "")
+}
+
+// settleMissing handles a 404 on the proof of a ref the caller chose: the request is not served and the ref alone is noted missing
+// for a short while. The repository is denied for the key only when a ref that was already proven for it answers 401, 403 or 404 too
+// (real revocation, or a registry that hides the repository). A first contact (nothing proven yet) and the anonymous key record
+// nothing about the repository: a 404 on a ref of an attacker's choosing must not deny it for everybody who shares the hash.
+func (c *Cache) settleMissing(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object) {
+	c.Store.NoteMissing(MissKey{Hash: who.hash, Repo: key.Repo, Kind: up.Kind, Ref: up.Ref})
+	if who.hash == "" {
+		return
+	}
+	kg, ok := c.Store.Known(key)
+	if !ok {
+		return
+	}
+	if kg.Kind == up.Kind && kg.Ref == up.Ref {
+		c.Store.Record(key, who.tenant, Denied, c.Store.Now())
+		return
+	}
+	started := c.Store.Now()
+	out, _ := c.Up.Check(ctx, reg, Object{Repo: up.Repo, Kind: kg.Kind, Ref: kg.Ref, Accept: kg.Accept}, who.creds, who.hash)
+	c.M.checks.WithLabelValues("recheck_" + outcomeName(out)).Inc()
+	if out == Denied || out == NotFound {
+		c.Store.Record(key, who.tenant, Denied, started)
+	}
 }
 
 // statusOf is the answer to a request that may not be served. An outage is a 503 with a stable body, so a pod shows ImagePullBackOff and
@@ -242,7 +291,7 @@ func (c *Cache) revalidate(reg Registry, key DecisionKey, who caller, up Object)
 	c.reval.Start(key.Hash+"|"+key.Repo+"|"+who.tenant, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		c.freshCheck(ctx, reg, key, who, up)
+		c.freshCheck(ctx, reg, key, who, up, true)
 	})
 }
 

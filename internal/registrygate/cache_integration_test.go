@@ -473,20 +473,87 @@ func TestAMissingObjectDoesNotPoisonTheDecision(t *testing.T) {
 	}
 }
 
-// A registry that answers 404 for a private repository one cannot read (GHCR, Docker Hub): the 404 on the proof is a denial.
-func TestA404OnTheProofIsDenied(t *testing.T) {
+func (r *rig) putTag(repo, tag string, body []byte) string {
+	d := r.up.put(repo, "manifests", body)
+	r.up.mu.Lock()
+	r.up.objects["/v2/"+repo+"/manifests/"+tag] = body
+	r.up.mu.Unlock()
+	return d
+}
+
+func (r *rig) key(user string) DecisionKey {
+	return DecisionKey{Hash: r.cache.hash("up", Creds{user, "pw"}), Repo: "up/org/private"}
+}
+
+// A 404 on a ref that the caller chose (an attacker's bogus tag) must not deny the repository for everybody who shares the credentials:
+// it is answered 404, noted for that ref only, and a valid tag of the same hash is served right after.
+func TestA404OnABogusTagDoesNotBlockAValidTag(t *testing.T) {
 	r := newRig(t)
-	ld := r.up.put("org/private", "blobs", []byte("layer"))
-	missing := "sha256:" + strings.Repeat("0", 64)
-	if code, _, _ := r.pull("GET", bpath("org/private", missing), alice, "pw", nil); code != 401 {
-		t.Fatalf("a 404 on the proof: %d", code)
+	r.putTag("org/private", "latest", []byte("manifest"))
+	// first contact: nothing proven yet, so nothing is recorded at the repository level
+	if code, _, _ := r.pull("GET", mpath("org/private", "bogus"), alice, "pw", nil); code != 404 {
+		t.Fatalf("a bogus tag at first contact: %d", code)
 	}
-	k := DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}
-	if got := r.cache.Store.Lookup(k, "t1"); got != Refuse {
-		t.Fatalf("the key is denied: %v", got)
+	if got := r.cache.Store.Lookup(r.key("alice"), "t1"); got != Check {
+		t.Fatalf("a first-contact 404 records nothing at the repository level: %v", got)
 	}
-	if code, _, _ := r.pull("GET", bpath("org/private", ld), alice, "pw", nil); code != 401 {
-		t.Fatalf("denied for the real object too, until the denial lapses: %d", code)
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), aliceT, "pw", nil); code != 200 {
+		t.Fatalf("the valid tag of the same hash: %d", code)
+	}
+	// after a proof exists: the same bogus tag again (asked once, answered from the short negative) and another one
+	if !r.cache.Store.Missing(MissKey{Hash: r.key("alice").Hash, Repo: "up/org/private", Kind: "manifests", Ref: "bogus"}) {
+		t.Fatal("the ref is noted missing, for that ref only")
+	}
+	if code, _, _ := r.pull("GET", mpath("org/private", "bogus"), alice, "pw", nil); code != 404 {
+		t.Fatalf("%d", code)
+	}
+	if code, _, _ := r.pull("GET", mpath("org/private", "bogus2"), alice, "pw", nil); code != 404 {
+		t.Fatalf("%d", code)
+	}
+	if got := r.cache.Store.Lookup(r.key("alice"), "t2"); got != Serve {
+		t.Fatalf("the proven ref still answers 200, so the decision is untouched: %v", got)
+	}
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), alice, "pw", nil); code != 200 {
+		t.Fatalf("%d", code)
+	}
+	// the negative lapses
+	r.clock.advance(time.Minute)
+	if r.cache.Store.Missing(MissKey{Hash: r.key("alice").Hash, Repo: "up/org/private", Kind: "manifests", Ref: "bogus"}) {
+		t.Fatal("a negative is kept for the denied window only")
+	}
+}
+
+// The anonymous key never gets a repository-wide refusal from a 404.
+func TestAnAnonymous404DoesNotBlockOthers(t *testing.T) {
+	r := newRig(t)
+	r.putTag("library/nginx", "latest", []byte("public manifest"))
+	if code, _, _ := r.pull("GET", mpath("library/nginx", "bogus"), "", "", nil); code != 401 {
+		t.Fatalf("an anonymous 404 is a 401 (the client comes back with credentials): %d", code)
+	}
+	if got := r.cache.Store.Lookup(DecisionKey{Repo: "up/library/nginx"}, ""); got == Refuse {
+		t.Fatalf("no repository-wide refusal for the anonymous key: %v", got)
+	}
+	if code, _, _ := r.pull("GET", mpath("library/nginx", "latest"), "", "", nil); code != 200 {
+		t.Fatalf("another anonymous pull of the repository: %d", code)
+	}
+}
+
+// Revoked credentials: a ref that was proven answers 404 (a registry that hides the repository), and a 404 for another ref re-checks it,
+// so the repository is denied for the key.
+func TestRevokedCredentialsDenyTheRepositoryOnAKnownRef(t *testing.T) {
+	r := newRig(t)
+	r.putTag("org/private", "latest", []byte("manifest"))
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), alice, "pw", nil); code != 200 {
+		t.Fatal(code)
+	}
+	r.up.mu.Lock()
+	r.up.headStatus = http.StatusNotFound
+	r.up.mu.Unlock()
+	if code, _, _ := r.pull("GET", mpath("org/private", "bogus"), alice, "pw", nil); code != 404 {
+		t.Fatalf("this request is not served: %d", code)
+	}
+	if got := r.cache.Store.Lookup(r.key("alice"), "t1"); got != Refuse {
+		t.Fatalf("the proven ref answers 404 too: the repository is denied for the key: %v", got)
 	}
 }
 

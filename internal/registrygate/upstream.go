@@ -67,9 +67,10 @@ type Object struct {
 func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.Ref }
 
 // Check is the proof of 5.2: the HEAD of the object with the pull's credentials (a token for repository:<repo>:pull first when the
-// registry asks for one). Only a DIRECT 200 from the registry is Allowed. 401, 403 and a refused token are Denied, and so is a 404:
-// GHCR, Docker Hub and others answer 404, not 401, for a private repository the caller cannot read, so on the proof a 404 cannot be
-// told from a refusal (a 404 for an object fetched AFTER a valid proof is NotFound, see Fetch). 429, 5xx, a timeout, DNS and anything
+// registry asks for one). Only a DIRECT 200 from the registry is Allowed. 401, 403 and a refused token are Denied. A 404 is NotFound:
+// GHCR, Docker Hub and others answer 404, not 401, for a private repository the caller cannot read, but the same 404 answers a ref that
+// is only missing, and the ref is the caller's choice, so the proof alone cannot tell them apart: the cache decides (a 404 on a ref that
+// was already proven is a revocation; a 404 on any other ref is recorded for that ref only). 429, 5xx, a timeout, DNS and anything
 // else are Unreachable. A redirect is never a proof (a registry may redirect without having looked at who asks, and a 200 of a CDN says
 // nothing about the credentials): a redirected answer is inconclusive, Unreachable. A token alone is no proof either (Docker Hub gives
 // an empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials in the token cache (the HMAC
@@ -92,8 +93,10 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return Allowed, resp.Header.Clone(), nil
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return Denied, nil, nil
+	case http.StatusNotFound:
+		return NotFound, nil, nil
 	}
 	return Unreachable, nil, nil // 3xx included: inconclusive
 }
