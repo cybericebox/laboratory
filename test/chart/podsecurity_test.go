@@ -334,24 +334,39 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 	}
 }
 
-// The agent runs two replicas by default, spread over nodes, with a budget; and mTLS off needs the insecure flag by name.
+// The agent runs ONE replica by default (reservation fit and quota are serialized inside one process); more than one is refused unless
+// acknowledged, and then it is spread over nodes with a budget. mTLS off needs the insecure flag by name.
 func TestAgentReplicasAndInsecureFlag(t *testing.T) {
-	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml", "-s", "templates/agent/pdb.yaml")...)
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+	if !strings.Contains(out, "replicas: 1") {
+		t.Errorf("the agent must default to one replica:\n%s", out)
+	}
+	// an empty template is an error of helm -s: no output means no budget
+	if pdb, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/pdb.yaml")...); err == nil && strings.Contains(pdb, "PodDisruptionBudget") {
+		t.Errorf("a budget on one replica blocks every drain:\n%s", pdb)
+	}
+	// more than one replica: refused with the reason, until acknowledged
+	if out, err := helmTemplate(t, append(agentSet, "--set", "agent.replicas=2")...); err == nil || !strings.Contains(out, "agent.multiReplicaAck") {
+		t.Errorf("agent.replicas=2 without the acknowledgement must be refused and name the value: %v\n%s", err, out)
+	}
+	out, err = helmTemplate(t, append(agentSet, "--set", "agent.replicas=2", "--set", "agent.multiReplicaAck=true", "-s", "templates/agent/deployment.yaml", "-s", "templates/agent/pdb.yaml")...)
+	if err != nil {
+		t.Fatalf("acknowledged replicas=2: %v\n%s", err, out)
+	}
 	if !strings.Contains(out, "replicas: 2") || !strings.Contains(out, "kind: PodDisruptionBudget") || !strings.Contains(out, "topologySpreadConstraints") {
-		t.Errorf("the agent must default to two replicas with a budget and a spread:\n%s", out)
+		t.Errorf("two acknowledged replicas must be spread over nodes with a budget:\n%s", out)
+	}
+	// the agent switched off: the replica rule does not apply
+	if _, err := helmTemplate(t, "--set", "agent.replicas=3"); err != nil {
+		t.Errorf("agent.replicas is only checked when the agent is enabled: %v", err)
 	}
 	for _, want := range []string{"AGENT_ENROLL_MAX_MESSAGE_BYTES", "AGENT_MAX_CONCURRENT_STREAMS", "AGENT_STREAM_RECHECK", "AGENT_ALLOW_INSECURE"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s", want)
 		}
-	}
-	// one replica: no budget (it would block drains)
-	out, err = helmTemplate(t, append(agentSet, "--set", "agent.replicas=1", "-s", "templates/agent/pdb.yaml")...)
-	if err == nil && strings.Contains(out, "PodDisruptionBudget") {
-		t.Error("a budget on a single replica would block every drain")
 	}
 	// There is one switch: agent.mtls.enabled is gone (a stale values file fails), agent.allowInsecure turns the client check off.
 	if _, err := helmTemplate(t, append(agentSet, "--set", "agent.mtls.enabled=false", "-s", "templates/agent/deployment.yaml")...); err == nil {
