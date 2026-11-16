@@ -116,6 +116,13 @@ func TestChartPassesReconcileWorkers(t *testing.T) {
 			t.Fatalf("%s missing from the operator settings", want)
 		}
 	}
+	// the image cache settings are rendered only with the cache on
+	if out, err = renderChart(t, "--set", "registry.cache.enabled=true"); err != nil || !strings.Contains(out, `IMAGE_CACHE_PIN_CONCURRENCY: "8"`) {
+		t.Fatalf("the pin concurrency is not passed on: %v", err)
+	}
+	if _, err = renderChart(t, "--set", "registry.cache.pinConcurrency=0"); err == nil {
+		t.Fatal("zero pin concurrency must be refused at install time")
+	}
 	if _, err = renderChart(t, "--set", "operator.api.burst=10"); err == nil {
 		t.Fatal("a burst below the rate must be refused at install time")
 	}

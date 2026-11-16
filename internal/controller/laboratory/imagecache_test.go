@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	. "github.com/onsi/ginkgo/v2"
@@ -20,6 +22,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 func cachedLabReconciler(t *testing.T, cache bool, objs ...client.Object) *LabReconciler {
@@ -172,14 +175,42 @@ type fakeResolver struct {
 	digests map[string]string
 	fail    map[string]bool
 	calls   []string
+	mu      sync.Mutex
 }
 
 func (f *fakeResolver) Resolve(_ context.Context, ref string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, ref)
 	if f.fail[ref] {
 		return "", fmt.Errorf("upstream unreachable")
 	}
 	return f.digests[ref], nil
+}
+
+func (f *fakeResolver) called() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+// pinnerOf is the background resolver of a lab reconciler over a fake registry.
+func pinnerOf(res imagecache.Resolver) *imagecache.AsyncResolver {
+	return &imagecache.AsyncResolver{Sources: map[string]imagecache.Resolver{imagecache.OperatorSource: res}}
+}
+
+// settleModes runs ensureModes until the lab no longer waits for its digests, as the controller does when the Pinner wakes it.
+func settleModes(ctx context.Context, r *LabReconciler, lab *laboratoryv1alpha1.Lab) (bool, error) {
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(time.Millisecond) {
+		updated, err := r.ensureModes(ctx, lab)
+		if !reconcileutil.IsWaiting(err) {
+			return updated, err
+		}
+		if lab.Status.ImageCache != nil {
+			return false, fmt.Errorf("a lab that waits must not have decided its mode")
+		}
+	}
+	return false, fmt.Errorf("the lab still waits for its digests")
 }
 
 const (
@@ -202,15 +233,15 @@ func TestLabPinsImagesToDigestsAtCreation(t *testing.T) {
 	lab := pinLab()
 	res := &fakeResolver{digests: map[string]string{"nginx:1.25": digA, "ghcr.io/cybericebox/laboratory-node:v1": digN}}
 	r := cachedLabReconciler(t, true, lab)
-	r.Resolver, r.NetConfigImage = res, "ghcr.io/cybericebox/laboratory-node:v1"
-	if _, err := r.ensureModes(ctx, lab); err != nil {
+	r.Pinner, r.NetConfigImage = pinnerOf(res), "ghcr.io/cybericebox/laboratory-node:v1"
+	if _, err := settleModes(ctx, r, lab); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{"nginx:1.25": digA, "ghcr.io/cybericebox/laboratory-node:v1": digN}
 	if fmt.Sprint(lab.Status.ImageDigests) != fmt.Sprint(want) || lab.Status.ImageWarning != "" {
 		t.Fatalf("digests %v warning %q", lab.Status.ImageDigests, lab.Status.ImageWarning)
 	}
-	for _, c := range res.calls {
+	for _, c := range res.called() {
 		if c == "registry.example.com/team/db:1" {
 			t.Fatal("an image of a registry the cache does not serve is pulled directly and never resolved")
 		}
@@ -225,10 +256,12 @@ func TestLabPinsImagesToDigestsAtCreation(t *testing.T) {
 	}
 
 	// Stamped once: a later reconcile never resolves again.
-	res.calls = nil
+	before := len(res.called())
+	res.mu.Lock()
 	res.digests["nginx:1.25"] = "sha256:moved"
-	if _, err := r.ensureModes(ctx, lab); err != nil || len(res.calls) != 0 || lab.Status.ImageDigests["nginx:1.25"] != digA {
-		t.Fatalf("pins are fixed at creation: %v %v", err, res.calls)
+	res.mu.Unlock()
+	if _, err := r.ensureModes(ctx, lab); err != nil || len(res.called()) != before || lab.Status.ImageDigests["nginx:1.25"] != digA {
+		t.Fatalf("pins are fixed at creation: %v %v", err, res.called())
 	}
 }
 
@@ -236,8 +269,8 @@ func TestLabFallsBackToTagsAndWarnsWhenResolutionFails(t *testing.T) {
 	lab := pinLab()
 	res := &fakeResolver{digests: map[string]string{"ghcr.io/cybericebox/laboratory-node:v1": digN}, fail: map[string]bool{"nginx:1.25": true}}
 	r := cachedLabReconciler(t, true, lab)
-	r.Resolver, r.NetConfigImage = res, "ghcr.io/cybericebox/laboratory-node:v1"
-	if _, err := r.ensureModes(context.Background(), lab); err != nil {
+	r.Pinner, r.NetConfigImage = pinnerOf(res), "ghcr.io/cybericebox/laboratory-node:v1"
+	if _, err := settleModes(context.Background(), r, lab); err != nil {
 		t.Fatal(err)
 	}
 	if _, pinned := lab.Status.ImageDigests["nginx:1.25"]; pinned {
@@ -258,9 +291,9 @@ func TestNoPinningWithoutCacheOrResolver(t *testing.T) {
 	lab := pinLab()
 	res := &fakeResolver{}
 	r := cachedLabReconciler(t, false, lab)
-	r.Resolver = res
-	if _, err := r.ensureModes(context.Background(), lab); err != nil || len(res.calls) != 0 || lab.Status.ImageDigests != nil {
-		t.Fatalf("cache off: nothing is resolved: %v %v", err, res.calls)
+	r.Pinner = pinnerOf(res)
+	if _, err := r.ensureModes(context.Background(), lab); err != nil || len(res.called()) != 0 || lab.Status.ImageDigests != nil {
+		t.Fatalf("cache off: nothing is resolved: %v %v", err, res.called())
 	}
 	lab2 := pinLab()
 	r2 := cachedLabReconciler(t, true, lab2)
@@ -335,5 +368,95 @@ func TestPullKeychainReadsOperatorPullSecrets(t *testing.T) {
 	a, _ = k.Resolve(other.Context())
 	if cfg, _ := a.Authorization(); cfg.Username != "" {
 		t.Fatal("a registry without credentials is asked anonymously")
+	}
+}
+
+// slowResolver answers only when released: a registry that takes its time.
+type slowResolver struct {
+	release chan struct{}
+}
+
+func (s *slowResolver) Resolve(_ context.Context, ref string) (string, error) {
+	<-s.release
+	return digA, nil
+}
+
+// A lab whose digests are not there yet does not hold the worker and decides nothing; the Pinner wakes it when they arrive, and the lab then
+// pins exactly as it did when resolving inside the reconcile.
+func TestLabWaitsForDigestsWithoutBlockingAndIsWoken(t *testing.T) {
+	ctx := context.Background()
+	lab := pinLab()
+	slow := &slowResolver{release: make(chan struct{})}
+	r := cachedLabReconciler(t, true, lab)
+	woken := make(chan string, 4)
+	r.Pinner = pinnerOf(slow)
+	r.Pinner.Notify = func(w string) { woken <- w }
+	r.NetConfigImage = "ghcr.io/cybericebox/laboratory-node:v1"
+
+	start := time.Now()
+	updated, err := r.ensureModes(ctx, lab)
+	if !reconcileutil.IsWaiting(err) || updated {
+		t.Fatalf("a lab waiting for digests: updated=%v err=%v", updated, err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("the reconcile waited for the registry")
+	}
+	if lab.Status.ImageCache != nil || lab.Status.ImageDigests != nil {
+		t.Fatal("nothing is decided while the digests are pending")
+	}
+	// the same lab asking again while it waits starts nothing new
+	if _, err := r.ensureModes(ctx, lab); !reconcileutil.IsWaiting(err) {
+		t.Fatal(err)
+	}
+	close(slow.release)
+	select {
+	case who := <-woken:
+		if who != lab.Namespace+"/"+lab.Name {
+			t.Fatalf("woke %q", who)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lab was not woken")
+	}
+	if _, err := settleModes(ctx, r, lab); err != nil {
+		t.Fatal(err)
+	}
+	if lab.Status.ImageCache == nil || !*lab.Status.ImageCache || lab.Status.ImageDigests["nginx:1.25"] != digA {
+		t.Fatalf("after the wake-up the lab is pinned: %+v", lab.Status)
+	}
+}
+
+// Labs that start together share one resolution per image.
+func TestLabsSharingAnImageResolveItOnce(t *testing.T) {
+	ctx := context.Background()
+	res := &fakeResolver{digests: map[string]string{"nginx:1.25": digA, "ghcr.io/cybericebox/laboratory-node:v1": digN}}
+	pinner := pinnerOf(res)
+	var labs []*laboratoryv1alpha1.Lab
+	var rs []*LabReconciler
+	for i := range 6 {
+		l := pinLab()
+		l.Name = fmt.Sprintf("pin-%d", i)
+		labs = append(labs, l)
+		r := cachedLabReconciler(t, true, l)
+		r.Pinner, r.NetConfigImage = pinner, "ghcr.io/cybericebox/laboratory-node:v1"
+		rs = append(rs, r)
+	}
+	var wg sync.WaitGroup
+	for i := range labs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := settleModes(ctx, rs[i], labs[i]); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := len(res.called()); n != 2 {
+		t.Fatalf("%d resolutions for 6 labs and 2 images: %v", n, res.called())
+	}
+	for _, l := range labs {
+		if l.Status.ImageDigests["nginx:1.25"] != digA {
+			t.Fatalf("%s: %v", l.Name, l.Status.ImageDigests)
+		}
 	}
 }

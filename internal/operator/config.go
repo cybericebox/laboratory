@@ -270,8 +270,10 @@ type CacheConfig struct {
 	// other registry are pulled directly.
 	// PinTTL is how long a resolved image digest is remembered, so labs created in
 	// the same wave run the same image even when the upstream tag moves.
-	PinTTL     time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
-	Registries []string      `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	PinTTL time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
+	// PinConcurrency is how many image tags are resolved at once, in the background, for new labs (IMAGE_CACHE_PIN_CONCURRENCY).
+	PinConcurrency int      `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
+	Registries     []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)
@@ -410,13 +412,8 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("%s %q: %w", name, image, err)
 		}
 	}
-	for name, v := range map[string]int{"LAB_RECONCILE_WORKERS": cfg.LabWorkers, "DEVICE_RECONCILE_WORKERS": cfg.DeviceWorkers, "CONNECTION_RECONCILE_WORKERS": cfg.ConnectionWorkers} {
-		if v < 1 || v > MaxReconcileWorkers {
-			return nil, fmt.Errorf("%s must be between 1 and %d (got %d)", name, MaxReconcileWorkers, v)
-		}
-	}
-	if cfg.APIQPS < 1 || cfg.APIQPS > MaxAPIQPS || cfg.APIBurst < int(cfg.APIQPS) || cfg.APIBurst > 2*MaxAPIQPS {
-		return nil, fmt.Errorf("API_QPS must be between 1 and %d and API_BURST between API_QPS and %d (got %v and %d)", MaxAPIQPS, 2*MaxAPIQPS, cfg.APIQPS, cfg.APIBurst)
+	if err := validateThroughput(cfg); err != nil {
+		return nil, err
 	}
 	if cfg.SchedulerMaxPods < 0 {
 		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")
@@ -528,6 +525,23 @@ func validateRoom(cfg *Config) error {
 		if q, err := resource.ParseQuantity(v); err != nil || q.Sign() < 0 {
 			return fmt.Errorf("%s %q is not a non-negative quantity", name, v)
 		}
+	}
+	return nil
+}
+
+// validateThroughput checks the settings that set how much the operator does at once: the reconcile workers, the client rate limit
+// and the background digest resolutions.
+func validateThroughput(cfg *Config) error {
+	for name, v := range map[string]int{"LAB_RECONCILE_WORKERS": cfg.LabWorkers, "DEVICE_RECONCILE_WORKERS": cfg.DeviceWorkers, "CONNECTION_RECONCILE_WORKERS": cfg.ConnectionWorkers} {
+		if v < 1 || v > MaxReconcileWorkers {
+			return fmt.Errorf("%s must be between 1 and %d (got %d)", name, MaxReconcileWorkers, v)
+		}
+	}
+	if cfg.APIQPS < 1 || cfg.APIQPS > MaxAPIQPS || cfg.APIBurst < int(cfg.APIQPS) || cfg.APIBurst > 2*MaxAPIQPS {
+		return fmt.Errorf("API_QPS must be between 1 and %d and API_BURST between API_QPS and %d (got %v and %d)", MaxAPIQPS, 2*MaxAPIQPS, cfg.APIQPS, cfg.APIBurst)
+	}
+	if cfg.Cache.PinConcurrency < 1 || cfg.Cache.PinConcurrency > 64 {
+		return fmt.Errorf("IMAGE_CACHE_PIN_CONCURRENCY must be between 1 and 64 (got %d)", cfg.Cache.PinConcurrency)
 	}
 	return nil
 }

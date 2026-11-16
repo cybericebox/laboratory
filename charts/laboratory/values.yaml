@@ -933,6 +933,9 @@ registry:
     # resolved digest is remembered for pinTTL; an image that cannot be resolved is
     # pulled by its tag and named in Lab.status.imageWarning.
     pinTTL: 30m
+    # How many tags are resolved at the same time (1 to 64). The resolving runs in the background: a new lab waits for its
+    # digests without holding an operator worker, and one tag is resolved once however many labs ask for it.
+    pinConcurrency: 8
     # Upstream registries to cache. docker.io, ghcr.io, quay.io and registry.k8s.io are
     # built in; others go into extraRegistries.
     registries:

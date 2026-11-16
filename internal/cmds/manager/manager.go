@@ -25,15 +25,18 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -41,8 +44,10 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/cybericebox/laboratory/internal/health"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -198,6 +203,10 @@ func Run() {
 	// Image cache: lab images of labs created while it is on are pulled through it.
 	mirror := cfg.Cache.Rewriter()
 	var resolver imagecache.Resolver
+	var pinner *imagecache.AsyncResolver
+	var pinEvents chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab]
+
+	platforms := laboratorycontroller.NodePlatforms(mgr.GetAPIReader(), labNodeSelector)
 
 	if cfg.Cache.Enabled {
 		// Tags are pinned to digests asked of the upstream registries directly, with
@@ -207,8 +216,29 @@ func Run() {
 			TTL:      cfg.Cache.PinTTL,
 			// One node architecture: pin the platform manifest, so the cache fetches
 			// that image and not every architecture of an index.
-			Platforms: laboratorycontroller.NodePlatforms(mgr.GetAPIReader(), labNodeSelector),
+			Platforms: platforms,
 		}
+		// A new lab does not wait for the registry inside its worker: its tags are resolved in the background, once for all labs, and
+		// the lab is woken when they are there. Only the operator's own pull secrets are used for them (a lab or tenant with
+		// credentials of its own does not use the cache), which is the one credential source here.
+		pinEvents = make(chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab], 4096)
+		pinner = &imagecache.AsyncResolver{
+			Sources:     map[string]imagecache.Resolver{imagecache.OperatorSource: resolver},
+			Scope:       func(ctx context.Context) string { return imagecache.PlatformScope(platforms(ctx)) },
+			Concurrency: cfg.Cache.PinConcurrency,
+			SuccessTTL:  cfg.Cache.PinTTL,
+			Notify: func(waiter string) {
+				ns, name, _ := strings.Cut(waiter, "/")
+				select {
+				case pinEvents <- event.TypedGenericEvent[*laboratoryv1alpha1.Lab]{Object: &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}}:
+				default: // full: the lab looks again by itself after a few seconds
+				}
+			},
+		}
+		ctrlmetrics.Registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "laboratory_image_pin_pending",
+			Help: "Image tag resolutions (digest pinning of new labs) running or queued in the background.",
+		}, func() float64 { return float64(pinner.Pending()) }))
 	}
 
 	statePolicy, stateRegistry, err := laboratorycontroller.SetupState(cfg.State)
@@ -316,7 +346,8 @@ func Run() {
 		MaxLabGateways:            cfg.MaxLabGateways,
 		State:                     statePolicy,
 		Mirror:                    mirror,
-		Resolver:                  resolver,
+		Pinner:                    pinner,
+		PinEvents:                 pinEvents,
 		NetConfigImage:            cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")

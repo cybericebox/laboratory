@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,7 +14,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
@@ -61,10 +64,14 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 			cache = false
 		}
 	}
-	lab.Status.ImageCache = &cache
 	if cache {
-		r.pinImages(ctx, lab)
+		if r.pinImages(ctx, lab) {
+			// Nothing is decided or written until the digests are known; the Pinner wakes the lab when they are. The resolutions run
+			// in the background, so the worker goes on with other labs.
+			return false, reconcileutil.Waiting(errPinningPending, pinningRecheck)
+		}
 	}
+	lab.Status.ImageCache = &cache
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return false, err
 	}
@@ -162,13 +169,19 @@ func throttleStateInfo(old, cur []laboratoryv1alpha1.DeviceRef) (throttled bool)
 	return throttled
 }
 
-// pinImages resolves the image tags of the lab's container devices, and the
-// netconfig image, to digests once, at creation, and records them in the Lab
-// status: the whole lab pulls exactly that content. An image that cannot be
-// resolved is left to its tag and named in Status.ImageWarning.
-func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab) {
-	if r.Resolver == nil {
-		return
+// errPinningPending is why a lab waits: some of its image tags are still being resolved in the background.
+var errPinningPending = errors.New("pinning pending: the image digests are still being resolved")
+
+// pinningRecheck is how soon a lab that waits for digests looks again if the Pinner did not wake it (a lost wake-up, a restart).
+const pinningRecheck = 5 * time.Second
+
+// pinImages resolves the image tags of the lab's container devices, and the netconfig image, to digests once, at creation, and records
+// them in the Lab status: the whole lab pulls exactly that content. An image that cannot be resolved is left to its tag and named in
+// Status.ImageWarning. The resolving is done by the Pinner in the background: while any answer is missing pinImages touches nothing
+// and reports pending (the lab asks again when the Pinner wakes it).
+func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab) (pending bool) {
+	if r.Pinner == nil {
+		return false
 	}
 	var refs []string
 	seen := map[string]bool{}
@@ -186,16 +199,29 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 	if len(refs) > 0 {
 		add(r.NetConfigImage)
 	}
+	waiter := lab.Namespace + "/" + lab.Name
+	answers := make([]imagecache.Lookup, len(refs))
+	for i, ref := range refs {
+		// A lab pulls through the cache only when neither it nor its tenant has registry credentials of its own (ensureModes), so
+		// the tags of a lab are always resolved with the operator's pull secrets.
+		answers[i] = r.Pinner.Lookup(ctx, imagecache.OperatorSource, ref, waiter)
+		if answers[i].Pending {
+			pending = true
+		}
+	}
+	if pending {
+		return true
+	}
 	digests := map[string]string{}
 	var failed []string
-	for _, ref := range refs {
-		d, err := r.Resolver.Resolve(ctx, ref)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s (%v)", ref, err))
+	for i, ref := range refs {
+		if answers[i].Err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%v)", ref, answers[i].Err))
 			continue
 		}
-		digests[ref] = d
+		digests[ref] = answers[i].Digest
 	}
+	r.Pinner.Done(ctx, imagecache.OperatorSource, waiter, refs...)
 	if len(digests) > 0 {
 		lab.Status.ImageDigests = digests
 	}
@@ -205,6 +231,7 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 			r.Recorder.Event(lab, corev1.EventTypeWarning, "ImageNotPinned", lab.Status.ImageWarning)
 		}
 	}
+	return false
 }
 
 // deviceDigests is the pinned digests of a new Device's images: its own image

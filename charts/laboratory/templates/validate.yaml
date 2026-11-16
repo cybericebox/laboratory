@@ -148,6 +148,10 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "operator.api.qps must be between 1 and 2000 and operator.api.burst between qps and 4000 (got %v and %v)" .Values.operator.api.qps .Values.operator.api.burst) }}
 {{- end }}
 
+{{- if or (lt (int .Values.registry.cache.pinConcurrency) 1) (gt (int .Values.registry.cache.pinConcurrency) 64) }}
+{{- fail (printf "registry.cache.pinConcurrency must be between 1 and 64 (got %v)" .Values.registry.cache.pinConcurrency) }}
+{{- end }}
+
 {{- /* Scheduler values: the operator refuses to start on bad ones, so fail at install time. */ -}}
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}
