@@ -41,7 +41,7 @@ spec:
     - expression: "variables.newAnnotations.all(k, k == '{{ $key }}' || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k == '{{ $key }}' || k in variables.newAnnotations)"
       message: "node-state may change only the annotation cybericebox.com/state-persistence of its node"
       reason: Forbidden
-    - expression: "!('{{ $key }}' in variables.newAnnotations) || variables.newAnnotations['{{ $key }}'].matches('^(ready|disabled|unavailable: [A-Z_]+: .{0,500})$')"
+    - expression: "!('{{ $key }}' in variables.newAnnotations) || variables.newAnnotations['{{ $key }}'].matches('^(ready|disabled|unavailable: [A-Z0-9_]+: .{0,500})$')"
       message: "the check annotation is ready, disabled or unavailable: CODE: detail"
       reason: Forbidden
 ---
