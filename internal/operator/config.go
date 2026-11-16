@@ -46,7 +46,7 @@ type Config struct {
 	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
 	InternetEnabled bool `env:"INTERNET_ENABLED" envDefault:"true"`
 	ProxyL7Enabled  bool `env:"PROXY_L7_ENABLED" envDefault:"true"`
-	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"false"`
+	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"true"`
 	ProxyVNCEnabled bool `env:"PROXY_VNC_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).
