@@ -44,8 +44,8 @@ const (
 	LabelProfileMicroVM   = "cybericebox.com/profile-microvm"
 	LabelRuntimeKataCLH   = "cybericebox.com/runtime-kata-clh"
 
-	// AnnotationStatePersistence and AnnotationRuntimeObservation are set on a node by its node-agent with the result of the check it made at
-	// start: "ready", "disabled" (not asked for) or "unavailable: <reason>". The management agent reports what the cluster really
+	// AnnotationStatePersistence and AnnotationRuntimeObservation are set on a node with the result of the check made at
+	// start (state persistence by its node-state, runtime observation by its node-agent): "ready", "disabled" (not asked for) or "unavailable: <reason>". The management agent reports what the cluster really
 	// supports from them, not from the chart values.
 	AnnotationStatePersistence   = "cybericebox.com/state-persistence"
 	AnnotationRuntimeObservation = "cybericebox.com/runtime-observation"

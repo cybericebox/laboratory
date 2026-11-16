@@ -73,3 +73,15 @@ func (r *PreflightRetry) Start(ctx context.Context) error {
 		}
 	}
 }
+
+// EnginePlan says what node-state does with the snapshot engine after its start-up check: start it now, or (asked for, but the check
+// failed) retry the check until it passes. Nothing when persistence was not asked for.
+func EnginePlan(asked bool, result string) (start, retry bool) {
+	if !asked {
+		return false, false
+	}
+	if _, bad := IsUnavailable(result); bad {
+		return false, true
+	}
+	return true, false
+}
