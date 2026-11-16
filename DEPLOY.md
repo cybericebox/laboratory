@@ -48,7 +48,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 ---
 
 > A complete local k0s cluster (Lima VMs, Cilium Gateway, this chart, test lab and checklist) is in
-> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infrastructure/local/cluster`); `make cluster-up` uses the Kind config `hack/kind/kind-config.yaml` of this repo (`KIND_CONFIG`).
+> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infrastructure/providers/local`); `make cluster-up` uses the Kind config `hack/kind/kind-config.yaml` of this repo (`KIND_CONFIG`).
 
 ---
 
@@ -2245,7 +2245,7 @@ registry:
 ```
 
 The class is named `registry.retainClass.name` (default `laboratory-registry`), kept on uninstall, and used for the claim instead of `registry.storageClass`.
-The local stand (`infrastructure/local/cluster/laboratory/values.yaml.tmpl`) and the AWS cluster role already set it. Without it the chart works as before and
+The local stand (`infrastructure/providers/local/laboratory/values.yaml.tmpl`) and the AWS cluster role already set it. Without it the chart works as before and
 the volume is only as durable as the class you name in `registry.storageClass`.
 
 - The reclaim policy is copied into a PersistentVolume when it is made: a volume that already exists keeps the policy it has. To protect one, run
