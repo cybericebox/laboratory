@@ -49,6 +49,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.AccessEntryApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("AccessInclude"):
 		return &applyconfigurationlaboratoryv1alpha1.AccessIncludeApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ActivityEvent"):
+		return &applyconfigurationlaboratoryv1alpha1.ActivityEventApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("AddrSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.AddrSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("CheckRef"):
@@ -123,6 +125,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabAccessFence"):
 		return &applyconfigurationlaboratoryv1alpha1.LabAccessFenceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabActivityReport"):
+		return &applyconfigurationlaboratoryv1alpha1.LabActivityReportApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabActivityReportSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabActivityReportSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabActivityReportStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabActivityReportStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabChecksSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabChecksSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabCreationReceipt"):
