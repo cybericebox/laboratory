@@ -802,10 +802,11 @@ nodeAgent:
 # ============================================================
 # Platform registry (zot): device snapshots and the image cache
 # ============================================================
-# One zot in the release namespace serves two optional features, each with its own
-# switch: devices.statePersistence (snapshots of device state) and registry.cache
-# (a pull-through cache of the lab images). zot itself is ALWAYS installed (it needs nodeAgent.enabled):
-# neither switch decides it, so turning one off never removes the registry or the snapshots in it.
+# One zot in the release namespace serves three optional features, each with its own
+# switch: devices.statePersistence (snapshots of device state), registry.cache (a pull-through cache of the lab images)
+# and registry.platform (the images a lab runs). zot is installed ONLY when at least one of the three is on (it needs
+# nodeAgent.enabled). With all three off there is no zot, no registry Secret or policy and no relay on the nodes. The volume claim
+# is kept (helm.sh/resource-policy: keep), so a feature switched off and on again finds its data.
 registry:
   # Where this component runs. Empty: it follows labWorkloads.nodeSelector / tolerations; set values win (each of the two on its own).
   # The volume is ReadWriteOnce: once bound (WaitForFirstConsumer) it stays on that node, so moving the registry to other nodes

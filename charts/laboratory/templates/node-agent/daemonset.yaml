@@ -212,10 +212,16 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: TUN_SLOTS
               value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
+          {{- if include "laboratory.registryEnabled" . }}
             # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
             # containerd reads it as a plain-HTTP localhost registry.
             - name: STATE_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
+          {{- else }}
+            # No platform registry in this release (no cache, no state persistence, no platform images): no relay on the node.
+            - name: REGISTRY_ENABLED
+              value: "false"
+          {{- end }}
           {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
             - name: STATE_PERSISTENCE_ENABLED
               value: {{ .Values.devices.statePersistence.enabled | quote }}
@@ -235,6 +241,7 @@ spec:
               value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
             - name: STATE_SUPERSEDED_GRACE
               value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
+          {{- if include "laboratory.registryEnabled" . }}
             - name: STATE_REGISTRY_CAPACITY
               value: {{ .Values.registry.size | quote }}
             - name: STATE_REGISTRY_RESERVE
@@ -260,6 +267,7 @@ spec:
                 secretKeyRef:
                   name: laboratory-registry
                   key: password
+          {{- end }}
           {{- end }}
           securityContext:
             {{- if .Values.devices.statePersistence.enabled }}

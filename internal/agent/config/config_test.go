@@ -90,3 +90,21 @@ func TestLoadTuningKnobs(t *testing.T) {
 		t.Errorf("overrides: %q %q %q %q", c.ReleaseNamespace, c.Cache.PullSecretNamespace, c.RegistryAddr, c.PublicVPNEndpoint)
 	}
 }
+
+// With no platform registry in the chart (AGENT_REGISTRY_ENABLED=false) the agent has no registry address (an export is refused), and
+// the image cache cannot be on.
+func TestLoadNoRegistry(t *testing.T) {
+	t.Setenv("AGENT_REGISTRY_ENABLED", "false")
+	t.Setenv("AGENT_REGISTRY_ADDR", "reg.example:5000")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.RegistryAddr != "" {
+		t.Errorf("no registry: address %q", c.RegistryAddr)
+	}
+	t.Setenv("IMAGE_CACHE_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Error("the image cache without a registry must be refused")
+	}
+}

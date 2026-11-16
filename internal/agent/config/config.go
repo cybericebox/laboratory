@@ -164,6 +164,9 @@ type Config struct {
 	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it: snapshot export reads the device snapshots from
 	// it, and PrewarmImages makes the cache fetch through it. Empty = names.RegistryServiceAddr (the chart always installs it there).
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
+	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform images):
+	// the agent has no registry address, a snapshot export is refused and PrewarmImages is off. Default true.
+	RegistryEnabled bool `env:"AGENT_REGISTRY_ENABLED" envDefault:"true"`
 	// RegistryUser and RegistryPassword are the reader account of the registry: the snapshots are not anonymous.
 	RegistryUser     string `env:"AGENT_REGISTRY_USER"`
 	RegistryPassword string `env:"AGENT_REGISTRY_PASSWORD"`
@@ -240,7 +243,12 @@ func Load() (*Config, error) {
 	if err := env.Parse(c); err != nil {
 		return nil, err
 	}
-	if c.RegistryAddr == "" {
+	if !c.RegistryEnabled {
+		if c.Cache.Enabled {
+			return nil, fmt.Errorf("IMAGE_CACHE_ENABLED needs the platform registry, but AGENT_REGISTRY_ENABLED is false")
+		}
+		c.RegistryAddr = ""
+	} else if c.RegistryAddr == "" {
 		c.RegistryAddr = names.RegistryServiceAddr
 	}
 	c.PublicVPNEndpoint = names.WithPublicVPNPort(c.PublicVPNEndpoint)

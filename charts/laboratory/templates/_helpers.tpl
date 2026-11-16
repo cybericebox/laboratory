@@ -294,11 +294,16 @@ Comma-separated names of the registries the image cache serves.
 {{- end }}
 
 {{/*
-Non-empty when the platform registry (zot) is deployed. It always is: neither
-devices.statePersistence nor registry.cache decides it, so flipping one of them never
-removes the registry (and the snapshots in it).
+Non-empty when the platform registry (zot) is deployed: at least one of registry.cache.enabled,
+devices.statePersistence.enabled and registry.platform.enabled is on. Everything that depends on it
+(the node relay, the node-agent, operator and agent settings, the Secrets, the network policies) is
+rendered only then. When all three are off there is no registry: no Deployment, Service, Secret or
+policy, and no relay on the nodes. The volume (registry.size) keeps its claim across an upgrade
+(helm.sh/resource-policy: keep), so switching a feature off and on again finds its data.
 */}}
-{{- define "laboratory.registryEnabled" -}}true{{- end }}
+{{- define "laboratory.registryEnabled" -}}
+{{- if or .Values.registry.cache.enabled .Values.devices.statePersistence.enabled .Values.registry.platform.enabled -}}true{{- end -}}
+{{- end }}
 
 {{/*
 Upstream registries of the image cache as a JSON list of {name, url}: the built-in

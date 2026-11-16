@@ -115,7 +115,7 @@ What gets installed:
 - One `Tenant` per entry of `tenants:`, and `default`
 - Operator (Deployment + RBAC)
 - Node-agent (DaemonSet + RBAC) on every node
-- Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, when enabled, the platform registry
+- Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, only when `registry.cache.enabled`, `devices.statePersistence.enabled` or `registry.platform.enabled` is on, the platform registry (zot)
 - `laboratory-config` ConfigMap with your settings
 
 **The proxy** (`proxy.*`) is the L7 HTTPS proxy, an unprivileged Deployment in `laboratory-proxy`, **two replicas by default**
@@ -168,6 +168,10 @@ WireGuard handling), so after a chart upgrade the operator brings every existing
 re-handshake), and the next group starts when the previous one's pods are rolled out and available, or after 10 minutes if they never become so (a bad image does not
 hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
 With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).
+
+**Slim install: what changed in the defaults (upgrade notes).**
+- **The agent runs one replica** (`agent.replicas: 1`, was 2). A values file that sets more than one is refused until `agent.multiReplicaAck=true` states that the backend does not use reservations through the agent (the quota and fit checks are serialized inside one process); the PodDisruptionBudget is rendered only with more than one replica.
+- **The registry (zot) is installed only when `registry.cache.enabled`, `devices.statePersistence.enabled` or `registry.platform.enabled` is on.** An install that had none of them on loses the zot Deployment, Service, ConfigMap, Secret and network policy on upgrade; the volume claim stays (`helm.sh/resource-policy: keep`). The node-agent stops the `127.0.0.1:5035` relay, the agent and the operator lose their registry settings.
 
 ---
 
@@ -2486,8 +2490,8 @@ registry:
                             #   url: https://registry.example.com
 ```
 
-The registry is always installed; neither `devices.statePersistence.enabled` nor `registry.cache.enabled` decides it, so switching one off never removes zot or the snapshots in it. `statePersistence.enabled` only turns the device snapshots on, `cache.enabled` only the image cache (the full zot image, about 70 MB
-compressed on amd64 and arm64; the cache needs its sync extension), both can be on. Needs `nodeAgent.enabled`.
+**The registry is installed only when something needs it:** at least one of `registry.cache.enabled`, `devices.statePersistence.enabled` and `registry.platform.enabled`. With all three off (the default) the chart renders no zot Deployment, Service, Secret, ConfigMap or network policy, the node-agent starts no `127.0.0.1:5035` relay (`REGISTRY_ENABLED=false`), the agent has no registry address (a snapshot export is refused, PrewarmImages is off), the operator and the agent get no registry Secret reference, and their network policies have no rule for it. Switching the last feature off removes the zot Deployment but not the volume claim (`helm.sh/resource-policy: keep`), so the snapshots and the cache are found again when a feature is switched back on; delete the claim by hand when the data is not wanted. The registry Secret (the generated passwords) is removed and made again with new passwords: a writer outside the release that holds the old `laboratory-registry-platform` password gets the new one from the Secret the chart renders again. `statePersistence.enabled` turns the device snapshots on, `cache.enabled` the image cache (the full zot image, about 70 MB
+compressed on amd64 and arm64; the cache needs its sync extension), `platform.enabled` the platform images; any of them can be on together. Needs `nodeAgent.enabled`.
 
 - **How the nodes reach it.** As for snapshots: the node-agent relays `127.0.0.1:5035` on every node
   to the registry Service, and containerd reads `localhost:<port>` as a plain-HTTP registry, so nothing is configured

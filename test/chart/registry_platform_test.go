@@ -75,7 +75,8 @@ func secretIn(secrets []corev1.Secret, namespace, name string) *corev1.Secret {
 
 // With registry.platform off (the default) the registry has no platform namespace, no account for it and no Secret: nothing changes.
 func TestPlatformRegistryOffRendersNothing(t *testing.T) {
-	cfg, secrets, _ := renderZot(t, agentSet...)
+	// the registry is there for another reason (the image cache), with the platform feature off
+	cfg, secrets, _ := renderZot(t, append(agentSet, "--set", "registry.cache.enabled=true")...)
 	if _, ok := cfg.HTTP.AccessControl.Repositories["platform/**"]; ok {
 		t.Error("platform/** is a repository pattern although registry.platform is off")
 	}
@@ -245,7 +246,7 @@ func TestPlatformRegistryRefusesNamesThatBelongToTheRegistry(t *testing.T) {
 			t.Errorf("an upstream named %q must be refused: %v\n%s", name, err, out)
 		}
 	}
-	out, err := helmTemplate(t, append(agentSet, "--set", "registry.platform.writerNamespaces={Bad_Name}")...)
+	out, err := helmTemplate(t, append(agentSet, "--set", "registry.platform.enabled=true", "--set", "registry.platform.writerNamespaces={Bad_Name}")...)
 	if err == nil || !strings.Contains(out, "is not a namespace name") {
 		t.Errorf("an invalid namespace must be refused: %v\n%s", err, out)
 	}
