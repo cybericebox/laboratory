@@ -92,7 +92,7 @@ func TestClassImagesFollowTheLabMode(t *testing.T) {
 	}
 	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 	got := classImages([]*laboratoryv1alpha1.Lab{mk(true), mk(false)}, rw)
-	want := []string{"localhost:5035/docker.io/library/nginx:1", "nginx:1"}
+	want := []string{"localhost:5035/c/docker.io/library/nginx:1", "nginx:1"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -125,9 +125,9 @@ var _ = Describe("Image cache: device image rewrite", func() {
 		var dep appsv1.Deployment
 		Expect(k8sClient.Get(ctx, req.NamespacedName, &dep)).To(Succeed())
 		spec := dep.Spec.Template.Spec
-		Expect(spec.Containers[0].Image).To(Equal("localhost:5035/docker.io/library/nginx:1.25"))
+		Expect(spec.Containers[0].Image).To(Equal("localhost:5035/c/docker.io/library/nginx:1.25"))
 		Expect(spec.InitContainers).To(HaveLen(1))
-		Expect(spec.InitContainers[0].Image).To(Equal("localhost:5035/ghcr.io/cybericebox/laboratory-node:v1"))
+		Expect(spec.InitContainers[0].Image).To(Equal("localhost:5035/c/ghcr.io/cybericebox/laboratory-node:v1"))
 	})
 
 	It("pulls the digest the lab was pinned to, and the tag when nothing was pinned", func() {
@@ -141,8 +141,8 @@ var _ = Describe("Image cache: device image rewrite", func() {
 		var dep appsv1.Deployment
 		Expect(k8sClient.Get(ctx, req.NamespacedName, &dep)).To(Succeed())
 		spec := dep.Spec.Template.Spec
-		Expect(spec.Containers[0].Image).To(Equal("localhost:5035/docker.io/library/nginx@" + digA))
-		Expect(spec.InitContainers[0].Image).To(Equal("localhost:5035/ghcr.io/cybericebox/laboratory-node:v1"), "no digest for the netconfig image: fall back to its tag")
+		Expect(spec.Containers[0].Image).To(Equal("localhost:5035/c/docker.io/library/nginx@" + digA))
+		Expect(spec.InitContainers[0].Image).To(Equal("localhost:5035/c/ghcr.io/cybericebox/laboratory-node:v1"), "no digest for the netconfig image: fall back to its tag")
 	})
 
 	It("leaves the images alone for a device created without the cache", func() {
@@ -167,7 +167,7 @@ var _ = Describe("Image cache: device image rewrite", func() {
 		Expect(err).NotTo(HaveOccurred())
 		var pod corev1.Pod
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "cache-state", Name: "lab-web-1"}, &pod)).To(Succeed())
-		Expect(pod.Spec.Containers[0].Image).To(Equal("localhost:5035/docker.io/library/nginx:1.25"))
+		Expect(pod.Spec.Containers[0].Image).To(Equal("localhost:5035/c/docker.io/library/nginx:1.25"))
 	})
 })
 
@@ -309,7 +309,7 @@ func TestClassImagesUsePinnedDigests(t *testing.T) {
 	l.Status.ImageDigests = map[string]string{"nginx:1.25": digA}
 	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 	got := classImages([]*laboratoryv1alpha1.Lab{l}, rw)
-	want := []string{"localhost:5035/docker.io/library/nginx@" + digA, "registry.example.com/team/db:1"}
+	want := []string{"localhost:5035/c/docker.io/library/nginx@" + digA, "registry.example.com/team/db:1"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -319,11 +319,11 @@ func TestGroupImagePinning(t *testing.T) {
 	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 	g := &LabGroupReconciler{Mirror: rw, Resolver: &fakeResolver{digests: map[string]string{"ghcr.io/cybericebox/laboratory-lab:v1": digA}}}
 	ctx := context.Background()
-	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/ghcr.io/cybericebox/laboratory-lab@"+digA {
+	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/c/ghcr.io/cybericebox/laboratory-lab@"+digA {
 		t.Fatal(got)
 	}
 	g.Resolver = &fakeResolver{fail: map[string]bool{"ghcr.io/cybericebox/laboratory-lab:v1": true}}
-	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/ghcr.io/cybericebox/laboratory-lab:v1" {
+	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/c/ghcr.io/cybericebox/laboratory-lab:v1" {
 		t.Fatalf("a failed resolution falls back to the tag, got %s", got)
 	}
 	if got := (&LabGroupReconciler{}).cachedImage(ctx, "ns", "ghcr.io/x/y:1"); got != "ghcr.io/x/y:1" {
