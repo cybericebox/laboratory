@@ -185,6 +185,27 @@ func (s *Store) Know(k DecisionKey, kind, ref, accept string) {
 	}
 }
 
+// Holds says whether the key has an Allowed record, and the known ref of it when there is one.
+func (s *Store) Holds(k DecisionKey) (allowed bool, known knownRef, hasKnown bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.recs[k]
+	if r == nil || !r.allowed {
+		return false, knownRef{}, false
+	}
+	if r.known != nil {
+		return true, *r.known, true
+	}
+	return true, knownRef{}, false
+}
+
+// Drop forgets the record of a key: the next request checks upstream again, and a stale answer can no longer be served from it.
+func (s *Store) Drop(k DecisionKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.recs, k)
+}
+
 // Known is the ref a revalidation asks about instead of whatever ref the caller names.
 func (s *Store) Known(k DecisionKey) (knownRef, bool) {
 	s.mu.Lock()
