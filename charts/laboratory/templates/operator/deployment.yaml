@@ -23,6 +23,9 @@ spec:
       annotations:
         # The operator reads its settings as env vars: a changed ConfigMap rolls it.
         checksum/config: {{ include (print $.Template.BasePath "/operator/configmap.yaml") . | sha256sum }}
+        {{- with include "laboratory.scrapeAnnotations" (dict "metrics" .Values.operator.metrics) }}
+        {{- . | nindent 8 }}
+        {{- end }}
       labels:
         control-plane: controller-manager
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
@@ -51,9 +54,21 @@ spec:
           command:
             - /manager
         {{- /* Leader election and the probe port :8081 are the manager's defaults. */}}
-        {{- if not .Values.operator.leaderElection }}
+        {{- if or (not .Values.operator.leaderElection) .Values.operator.metrics.enabled }}
           args:
+          {{- if not .Values.operator.leaderElection }}
             - --leader-elect=false
+          {{- end }}
+          {{- if .Values.operator.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.operator.metrics.port }}
+            - --metrics-secure=false
+          {{- end }}
+        {{- end }}
+        {{- if .Values.operator.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.operator.metrics.port }}
+              protocol: TCP
         {{- end }}
           envFrom:
             - configMapRef:

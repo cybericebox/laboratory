@@ -134,3 +134,35 @@ func TestChartPassesReconcileWorkers(t *testing.T) {
 		t.Fatal("zero workers must be refused at install time")
 	}
 }
+
+func TestChartMetricsEndpointsAreOffByDefaultAndOptIn(t *testing.T) {
+	out, err := renderChart(t)
+	if err != nil {
+		t.Fatal(out)
+	}
+	for _, not := range []string{"metrics-bind-address", "prometheus.io/scrape", "METRICS_ADDR"} {
+		if strings.Contains(out, not) {
+			t.Fatalf("%q is rendered with the metrics off", not)
+		}
+	}
+	out, err = renderChart(t, "--set", "agent.enabled=true",
+		"--set", "operator.metrics.enabled=true", "--set", "operator.metrics.scrapeAnnotations=true",
+		"--set", "nodeAgent.metrics.enabled=true", "--set", "nodeAgent.metrics.port=9500",
+		"--set", "agent.metrics.enabled=true", "--set", "agent.metrics.scrapeAnnotations=true")
+	if err != nil {
+		t.Fatal(out)
+	}
+	for _, want := range []string{"--metrics-bind-address=:8080", "--metrics-secure=false", `prometheus.io/port: "8080"`, `prometheus.io/path: /metrics`,
+		`name: METRICS_ADDR`, `value: ":9500"`, `name: AGENT_METRICS_ADDR`, `prometheus.io/port: "9443"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%q missing with the metrics on", want)
+		}
+	}
+	// the node-agent has the endpoint but, without scrapeAnnotations, no annotation
+	if strings.Count(out, "prometheus.io/scrape") != 2 {
+		t.Fatalf("scrape annotations on %d pods, want the operator and the agent only", strings.Count(out, "prometheus.io/scrape"))
+	}
+	if _, err := renderChart(t, "--set", "agent.metrics.port=70000"); err == nil {
+		t.Fatal("a port out of range must be refused")
+	}
+}

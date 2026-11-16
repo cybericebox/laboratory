@@ -166,6 +166,18 @@ default): the individual values below are used as they are.
 {{- end -}}
 {{- end }}
 
+{{/*
+The scrape annotations of a pod whose metrics endpoint is on (dict "metrics" <values block> ): the plain Prometheus convention, for a
+Prometheus that finds pods by annotation and needs no ServiceMonitor. Nothing when the endpoint or the annotations are off.
+*/}}
+{{- define "laboratory.scrapeAnnotations" -}}
+{{- if and .metrics.enabled .metrics.scrapeAnnotations }}
+prometheus.io/scrape: "true"
+prometheus.io/port: {{ .metrics.port | quote }}
+prometheus.io/path: /metrics
+{{- end }}
+{{- end }}
+
 {{- define "laboratory.sharedEnv" -}}
 {{- include "laboratory.lifecycleProfile" . -}}
 LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}

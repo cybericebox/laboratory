@@ -26,10 +26,16 @@ spec:
       labels:
         app: laboratory-agent
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
-      {{- if and .Values.bandwidth.enabled .Values.bandwidth.reserves.agentMbit }}
+      {{- $scrape := include "laboratory.scrapeAnnotations" (dict "metrics" .Values.agent.metrics) }}
+      {{- if or $scrape (and .Values.bandwidth.enabled .Values.bandwidth.reserves.agentMbit) }}
       annotations:
+        {{- if and .Values.bandwidth.enabled .Values.bandwidth.reserves.agentMbit }}
         # What the agent keeps of its node's bandwidth for itself (Mbit/s), taken off that node only.
         cybericebox.com/bandwidth-reserve: {{ .Values.bandwidth.reserves.agentMbit | quote }}
+        {{- end }}
+        {{- with $scrape }}
+        {{- . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: laboratory-agent
@@ -74,6 +80,11 @@ spec:
             - name: grpc
               containerPort: {{ .Values.agent.grpcPort }}
               protocol: TCP
+            {{- if .Values.agent.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.agent.metrics.port }}
+              protocol: TCP
+            {{- end }}
           # The listener is opened only after the CRD check and the setup, so a bound port means the agent serves (a gRPC probe cannot do
           # mTLS). The startup probe covers the CRD wait of up to a minute.
           startupProbe:
@@ -99,6 +110,10 @@ spec:
           env:
             - name: AGENT_GRPC_PORT
               value: {{ .Values.agent.grpcPort | quote }}
+            {{- if .Values.agent.metrics.enabled }}
+            - name: AGENT_METRICS_ADDR
+              value: {{ printf ":%d" (.Values.agent.metrics.port | int) | quote }}
+            {{- end }}
             - name: AGENT_SHUTDOWN_GRACE
               value: {{ .Values.agent.shutdownGrace | quote }}
             - name: AGENT_ID
