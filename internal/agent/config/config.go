@@ -135,7 +135,7 @@ type Config struct {
 	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
 	InternetEnabled bool `env:"INTERNET_ENABLED" envDefault:"true"`
 	ProxyL7Enabled  bool `env:"PROXY_L7_ENABLED" envDefault:"true"`
-	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"true"`
+	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"false"`
 	ProxyVNCEnabled bool `env:"PROXY_VNC_ENABLED" envDefault:"false"`
 	// TerminalMaxLifetime is the chart's terminal.limits.maxLifetime and VPNFirewall its vpn.firewall: the agent reports them in the activity
 	// feature (the longest console session; whether devices-touched events exist).

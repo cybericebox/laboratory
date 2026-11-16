@@ -49,7 +49,7 @@ type Config struct {
 	// AllowedRegistries are the registries lab images may come from (chart registry.allowedRegistries plus those of the platform's own
 	// images); "*" allows every registry. A Lab with an image from another registry is Failed with REGISTRY_NOT_ALLOWED.
 	AllowedRegistries []string `env:"ALLOWED_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
-	ProxyRDPEnabled   bool     `env:"PROXY_RDP_ENABLED" envDefault:"true"`
+	ProxyRDPEnabled   bool     `env:"PROXY_RDP_ENABLED" envDefault:"false"`
 	ProxyVNCEnabled   bool     `env:"PROXY_VNC_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).

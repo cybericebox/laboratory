@@ -263,14 +263,13 @@ func TestFeatureAdmissionProxyOff(t *testing.T) {
 	accepted(t, f.other.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: ns}}))
 }
 
-// With the L7 proxy on and the defaults (rdp on; terminal and vnc off), http and rdp are admitted and the others are refused.
+// With the L7 proxy on and the defaults (terminal, rdp and vnc off), http is admitted and the others are refused.
 func TestFeatureAdmissionAccessesUnderTheProxy(t *testing.T) {
 	ctx := context.Background()
 	f := startFeatureCluster(t, nil, "--set", "vpn.enabled=false")
 	ns := f.group(t, "proxyon", nil, nil)
 	accepted(t, f.other.Create(ctx, lab(ns, "web", withAccess(laboratoryv1alpha1.AccessHTTP))))
-	accepted(t, f.other.Create(ctx, lab(ns, "desk", withAccess(laboratoryv1alpha1.AccessRDP))))
-	for _, k := range []laboratoryv1alpha1.AccessKind{laboratoryv1alpha1.AccessTerminal, laboratoryv1alpha1.AccessVNC} {
+	for _, k := range []laboratoryv1alpha1.AccessKind{laboratoryv1alpha1.AccessTerminal, laboratoryv1alpha1.AccessRDP, laboratoryv1alpha1.AccessVNC} {
 		refused(t, f.other.Create(ctx, lab(ns, "acc-"+string(k), withAccess(k))), "ACCESS_UNAVAILABLE")
 	}
 	// the VPN is off but the proxy reads the policy: allowed; a client is refused

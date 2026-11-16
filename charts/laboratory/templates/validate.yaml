@@ -162,8 +162,8 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}
 {{- end }}
-{{- if and .Values.proxy.vnc.enabled (not (and .Values.proxy.enabled .Values.proxy.l7.enabled)) }}
-{{- fail "proxy.vnc.enabled needs the L7 proxy (proxy.enabled and proxy.l7.enabled): the access is served and authorized there" }}
+{{- if and (or .Values.proxy.rdp.enabled .Values.proxy.vnc.enabled) (not (and .Values.proxy.enabled .Values.proxy.l7.enabled)) }}
+{{- fail "proxy.rdp.enabled and proxy.vnc.enabled need the L7 proxy (proxy.enabled and proxy.l7.enabled): the access is served and authorized there" }}
 {{- end }}
 {{- if not (has .Values.proxy.wg.mode (list "userspace" "tc" "xdp")) }}
 {{- fail (printf "proxy.wg.mode must be userspace, tc or xdp (got %q)" .Values.proxy.wg.mode) }}
