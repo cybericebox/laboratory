@@ -628,7 +628,7 @@ The operator reconciles several labs, devices and connections at the same time: 
 `operator.workers.connection` (8), each 1 to 64. An object is never worked on by two workers at once; the LabGroup controller always has one
 worker. The device codes of one namespace are drawn one lab after another, and the pools hand out indexes one at a time per process, so a
 burst of labs does not race. All workers share the API client of the operator; raise the numbers in steps and watch the API server latency
-and the operator CPU (the operator limit in `operator.resources` is the first thing a busy burst hits). The client-side rate limit of
+and the operator CPU (the operator limit in `operator.resources`, 2 CPU and 512Mi by default, is a starting value: set it from the load run in AWS). The client-side rate limit of
 the operator's API client is `operator.api.qps` and `operator.api.burst` (200 and 400).
 
 ## Maximum capacity and node autoscaling
