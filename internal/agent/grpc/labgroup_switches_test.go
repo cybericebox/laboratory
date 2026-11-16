@@ -53,21 +53,24 @@ func createGroupLab(t *testing.T, h *Handler, group, name string, kinds ...labor
 	return res.GetResults()[0]
 }
 
-// A new group has its servers OFF unless the item says otherwise; the switches are written on the object explicitly (the old
-// vpn_disabled follows), the projection reports them, and a group made before the fields is reported ON.
-func TestLabGroupSwitchesDefaultOffAndAreExplicit(t *testing.T) {
+// An item that sets neither switch is the old shape (VPN follows vpn_disabled, gateway on); one that sets either gets the explicit
+// meaning (the other is OFF). The switches are written on the object explicitly (the old vpn_disabled follows), the projection reports
+// them, and a group made before the fields is reported ON.
+func TestLabGroupSwitchesLegacyShapeAndExplicitMeaning(t *testing.T) {
 	h, _ := newTestHandler(t)
 	ctx := context.Background()
 	groups := h.cs.LaboratoryV1alpha1().LabGroups()
 	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{
 		{Name: "g-none"},
+		{Name: "g-legacy-off", VpnDisabled: true},
+		{Name: "g-explicit-off", VpnEnabled: proto.Bool(false), InternetEnabled: proto.Bool(false)},
 		{Name: "g-vpn", VpnEnabled: proto.Bool(true)},
 		{Name: "g-net", InternetEnabled: proto.Bool(true)},
 		{Name: "g-both", VpnEnabled: proto.Bool(true), InternetEnabled: proto.Bool(true)},
 		{Name: "g-old", VpnDisabled: true, InternetEnabled: proto.Bool(true)},
 	}})
-	wantStates(t, res, err, stCreated, stCreated, stCreated, stCreated, stCreated)
-	for name, want := range map[string][2]bool{"g-none": {false, false}, "g-vpn": {true, false}, "g-net": {false, true}, "g-both": {true, true}, "g-old": {false, true}} {
+	wantStates(t, res, err, stCreated, stCreated, stCreated, stCreated, stCreated, stCreated, stCreated)
+	for name, want := range map[string][2]bool{"g-none": {true, true}, "g-legacy-off": {false, true}, "g-explicit-off": {false, false}, "g-vpn": {true, false}, "g-net": {false, true}, "g-both": {true, true}, "g-old": {false, true}} {
 		g, err := groups.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -122,7 +125,7 @@ func TestLabGroupSwitchesDefaultOffAndAreExplicit(t *testing.T) {
 func TestLabWithAConnectorIsRefusedWhileTheGroupServerIsOff(t *testing.T) {
 	h, k8s := newTestHandler(t)
 	ctx := context.Background()
-	switchGroup(t, h, k8s, "g-off", &protobuf.LabGroupItem{})
+	switchGroup(t, h, k8s, "g-off", &protobuf.LabGroupItem{VpnEnabled: proto.Bool(false), InternetEnabled: proto.Bool(false)})
 	vpn, net := laboratoryv1alpha1.GatewayKindVPN, laboratoryv1alpha1.GatewayKindInternet
 
 	for _, c := range []struct {
@@ -197,7 +200,7 @@ func TestServerCannotBeTurnedOffWhileALabUsesIt(t *testing.T) {
 func TestClientIsRefusedWhileTheGroupVPNIsOff(t *testing.T) {
 	h, k8s := newTestHandler(t)
 	ctx := context.Background()
-	switchGroup(t, h, k8s, "g-novpn", &protobuf.LabGroupItem{})
+	switchGroup(t, h, k8s, "g-novpn", &protobuf.LabGroupItem{VpnEnabled: proto.Bool(false), InternetEnabled: proto.Bool(false)})
 	res, err := h.CreateLabGroupClients(ctx, &protobuf.CreateLabGroupClientsRequest{Items: []*protobuf.LabGroupClientItem{{LabGroup: "g-novpn", Name: "c1"}}})
 	if err != nil {
 		t.Fatal(err)

@@ -523,19 +523,18 @@ const (
 	kindServerInternet = "internet"
 )
 
-// switchesOf is the switches of a new group from its item: the new fields when set, else the old vpn_disabled (true = off); a switch
-// nobody asks for is OFF. Both are returned as pointers, to be written on the object as given.
+// switchesOf is the switches of a new group from its item. An item that sets NEITHER vpn_enabled NOR internet_enabled is the old shape
+// (a caller made before contract 2.7): the VPN follows vpn_disabled (the default is on) and the gateway is on, as groups always were. A
+// caller that sets either field gets the explicit meaning: the one it leaves unset is OFF. Both are returned as pointers, to be written on
+// the object as given.
 func switchesOf(it *protobuf.LabGroupItem) (vpn, internet *bool) {
-	on := it.VpnEnabled != nil && *it.VpnEnabled
-	off := false
-	if on {
-		vpn = &on
+	var v, i bool
+	if it.VpnEnabled == nil && it.InternetEnabled == nil {
+		v, i = !it.GetVpnDisabled(), true
 	} else {
-		vpn = &off
+		v, i = it.VpnEnabled != nil && *it.VpnEnabled, it.InternetEnabled != nil && *it.InternetEnabled
 	}
-	in := it.InternetEnabled != nil && *it.InternetEnabled
-	internet = &in
-	return vpn, internet
+	return &v, &i
 }
 
 // groupSwitches validates the switches of an item and returns them.

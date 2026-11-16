@@ -272,15 +272,15 @@ message LabGroupItem {
   repeated string deploy_after = 4;
   bool suspended = 5;
   // The old VPN switch (true = no VPN server). Deprecated: send vpn_enabled. Still honoured: true means vpn_enabled false (and sending
-  // vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing (the VPN server is off unless vpn_enabled
-  // says otherwise: see below).
+  // vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing.
   bool vpn_disabled = 6;
   bool probe_while_suspended = 7;
   // The switches of the group's two servers (contract 2.7). The pod of a server exists only while its switch is on, so a group that needs
   // no VPN and no internet costs neither pod. A lab with a VPN gateway, and a LabGroupClient, are refused (reason GROUP_VPN_OFF) in a group
-  // whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. Both are OFF unless
-  // set to true here: an unset field is off for a NEW group (an older caller that sends neither gets a group with no VPN server and no
-  // gateway). A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
+  // whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. An item that sets
+  // NEITHER field is the old shape (a caller made before contract 2.7): the VPN follows vpn_disabled (on unless true) and the gateway is
+  // on. An item that sets EITHER field gets the explicit meaning: the one left unset is OFF, so a platform that always sends both decides
+  // what a group costs. A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
   optional bool vpn_enabled = 13;
   optional bool internet_enabled = 14;
   // The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group

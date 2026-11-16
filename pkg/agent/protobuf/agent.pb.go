@@ -1093,15 +1093,15 @@ type LabGroupItem struct {
 	DeployAfter []string               `protobuf:"bytes,4,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
 	Suspended   bool                   `protobuf:"varint,5,opt,name=suspended,proto3" json:"suspended,omitempty"`
 	// The old VPN switch (true = no VPN server). Deprecated: send vpn_enabled. Still honoured: true means vpn_enabled false (and sending
-	// vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing (the VPN server is off unless vpn_enabled
-	// says otherwise: see below).
+	// vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing.
 	VpnDisabled         bool `protobuf:"varint,6,opt,name=vpn_disabled,json=vpnDisabled,proto3" json:"vpn_disabled,omitempty"`
 	ProbeWhileSuspended bool `protobuf:"varint,7,opt,name=probe_while_suspended,json=probeWhileSuspended,proto3" json:"probe_while_suspended,omitempty"`
 	// The switches of the group's two servers (contract 2.7). The pod of a server exists only while its switch is on, so a group that needs
 	// no VPN and no internet costs neither pod. A lab with a VPN gateway, and a LabGroupClient, are refused (reason GROUP_VPN_OFF) in a group
-	// whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. Both are OFF unless
-	// set to true here: an unset field is off for a NEW group (an older caller that sends neither gets a group with no VPN server and no
-	// gateway). A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
+	// whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. An item that sets
+	// NEITHER field is the old shape (a caller made before contract 2.7): the VPN follows vpn_disabled (on unless true) and the gateway is
+	// on. An item that sets EITHER field gets the explicit meaning: the one left unset is OFF, so a platform that always sends both decides
+	// what a group costs. A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
 	VpnEnabled      *bool `protobuf:"varint,13,opt,name=vpn_enabled,json=vpnEnabled,proto3,oneof" json:"vpn_enabled,omitempty"`
 	InternetEnabled *bool `protobuf:"varint,14,opt,name=internet_enabled,json=internetEnabled,proto3,oneof" json:"internet_enabled,omitempty"`
 	// The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group
