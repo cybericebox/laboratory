@@ -30,7 +30,8 @@ const (
 	Denied
 	// Unreachable: 429, 5xx, a timeout, DNS, a redirect that did not end in a 200: not a denial.
 	Unreachable
-	// NotFound: 404, the object is not there. It says nothing about the repository, so it never changes a decision.
+	// NotFound: a 404. For an object the caller chose it says nothing about the repository (it is not recorded as a decision, only as a
+	// short negative for that ref); it counts against the repository only when a ref that was already proven answers it too.
 	NotFound
 )
 
@@ -62,6 +63,16 @@ type record struct {
 	startedAt time.Time
 	// verified is the set of tenants that passed a fresh check for this key; an allow of one tenant says nothing about another.
 	verified map[string]struct{}
+	// known is a ref of this repository that a direct 200 proved for this hash: the one a revalidation and a 404 re-check ask about.
+	known *knownRef
+}
+
+// knownRef is an object of a repository that answered a direct 200 to these credentials.
+type knownRef struct{ Kind, Ref, Accept string }
+
+// MissKey names a short negative: this ref of this repository is missing for these credentials (or for anybody, when Hash is empty).
+type MissKey struct {
+	Hash, Repo, Kind, Ref string
 }
 
 // Store keeps the decisions in memory: soft state. A restart loses it, and the cost is one fresh check per key, never a wrong allow.
@@ -72,11 +83,12 @@ type Store struct {
 	mu    sync.Mutex
 	recs  map[DecisionKey]*record
 	blobs map[BlobKey]time.Time
+	miss  map[MissKey]time.Time
 }
 
 // NewStore is a store with the given timing.
 func NewStore(t Timing) *Store {
-	return &Store{T: t, Now: time.Now, recs: map[DecisionKey]*record{}, blobs: map[BlobKey]time.Time{}}
+	return &Store{T: t, Now: time.Now, recs: map[DecisionKey]*record{}, blobs: map[BlobKey]time.Time{}, miss: map[MissKey]time.Time{}}
 }
 
 // Lookup is the table of 5.2 for a key and a tenant ("" for the anonymous decision, where the tenant plays no part).
@@ -164,6 +176,52 @@ func (s *Store) verifiedLocked(k DecisionKey, r *record, tenant string, now time
 	return now.Sub(r.checkedAt) <= s.T.StaleIfError
 }
 
+// Know remembers a ref that a direct 200 proved for the key. It does nothing without an allowed record.
+func (s *Store) Know(k DecisionKey, kind, ref, accept string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.recs[k]; r != nil && r.allowed {
+		r.known = &knownRef{kind, ref, accept}
+	}
+}
+
+// Known is the ref a revalidation asks about instead of whatever ref the caller names.
+func (s *Store) Known(k DecisionKey) (knownRef, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.recs[k]; r != nil && r.allowed && r.known != nil {
+		return *r.known, true
+	}
+	return knownRef{}, false
+}
+
+// NoteMissing records that the ref was missing, for DeniedFor: the same ref is answered without asking again. It is no decision about
+// the repository, and it never touches the record of the key.
+func (s *Store) NoteMissing(k MissKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.miss) >= maxBlobProofs {
+		cutoff := s.Now().Add(-s.T.DeniedFor)
+		for old, at := range s.miss {
+			if at.Before(cutoff) {
+				delete(s.miss, old)
+			}
+		}
+		if len(s.miss) >= maxBlobProofs {
+			return
+		}
+	}
+	s.miss[k] = s.Now()
+}
+
+// Missing says whether the ref was found missing within DeniedFor.
+func (s *Store) Missing(k MissKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.miss[k]
+	return ok && s.Now().Sub(at) < s.T.DeniedFor
+}
+
 // BlobKey names the proof that a blob is in a repository for a credential.
 type BlobKey struct {
 	Hash   string
@@ -218,6 +276,11 @@ func (s *Store) Forget() {
 	for k, r := range s.recs {
 		if k.Hash != "" && r.checkedAt.Before(cutoff) {
 			delete(s.recs, k)
+		}
+	}
+	for k, at := range s.miss {
+		if at.Before(s.Now().Add(-s.T.DeniedFor)) {
+			delete(s.miss, k)
 		}
 	}
 	for k, at := range s.blobs {

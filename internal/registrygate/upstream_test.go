@@ -49,8 +49,8 @@ func TestCheckPublicPrivateAndWrongCredentials(t *testing.T) {
 	if o, _ := u.Check(ctx, reg, obj("org/private", dPriv), Creds{"alice", "wrong"}, "h-wrong"); o != Denied {
 		t.Fatalf("a wrong password is refused by the token endpoint: %v", o)
 	}
-	if o, _ := u.Check(ctx, reg, obj("org/private", "sha256:00"), Creds{"alice", "pw"}, "h-alice"); o != Denied {
-		t.Fatalf("a 404 on the proof is a refusal (GHCR and Docker Hub hide a private repository behind it): %v", o)
+	if o, _ := u.Check(ctx, reg, obj("org/private", "sha256:00"), Creds{"alice", "pw"}, "h-alice"); o != NotFound {
+		t.Fatalf("a 404 on the proof is NotFound; the cache decides what it means: %v", o)
 	}
 }
 
