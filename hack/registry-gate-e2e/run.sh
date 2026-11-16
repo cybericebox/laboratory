@@ -230,6 +230,10 @@ mk_secret_with e2e-g6b s "$OUT/g6-raw.json"
 mk_pod e2e-g6b p "$(img priv team/secret "$PRIV")" s
 check g6c "the raw Secret (keyed by the registry host) does not pull a private image through the cache" not_pulled e2e-g6b p
 clean_node e2e-g6b
+# a credential without a username cannot be carried by the cache (the tenant goes into the username): the re-keying makes nothing of it,
+# which is why the platform refuses it at creation (CREDENTIAL_NOT_SUPPORTED) and in the Tenant's condition
+check g6d "a credential without a username leaves nothing to write for the cache" \
+  bash -c '! "$0" -tenant t6 -served pub,priv,docker.io -registry priv -user "" -pass pw >/dev/null 2>&1' "$OUT/keysecret"
 
 # ---- evidence and verdict -----------------------------------------------------------------------------------------------------------
 curl -s localhost:15002/metrics >"$OUT/gate-metrics.txt" 2>/dev/null || true

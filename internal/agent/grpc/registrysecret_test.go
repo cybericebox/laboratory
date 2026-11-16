@@ -312,3 +312,27 @@ func TestCredentialsWithoutAUsernameAreRefusedWhileTheCacheIsOn(t *testing.T) {
 		t.Fatalf("prewarm: %v", err)
 	}
 }
+
+// A tenant whose images.pullSecret has an entry without a username (the operator says so in the Tenant's condition ImageCredentials) has
+// its labs refused at creation while the cache is on, with the same reason, and not when the cache is off.
+func TestCreateLabsRefusesATenantWhoseCredentialsTheCacheCannotCarry(t *testing.T) {
+	ten := newTenantTenant("acme", false, nil)
+	ten.Status.Conditions = []metav1.Condition{{
+		Type: laboratoryv1alpha1.TenantConditionImageCredentials, Status: metav1.ConditionFalse, Reason: "CredentialNotSupported",
+		Message: "CREDENTIAL_NOT_SUPPORTED: registry ghcr.io: credentials need a username for the image cache",
+	}}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{ten})
+	if err := createLabsWithImage(t, h, "acme", "ghcr.io/acme/web:1"); client.IsCredentialNotSupported(err) {
+		t.Fatalf("with the cache off nothing is refused for it: %v", err)
+	}
+	h.features.CacheEnabled = true
+	err := createLabsWithImage(t, h, "acme", "ghcr.io/acme/web:1")
+	if status.Code(err) != codes.InvalidArgument || !client.IsCredentialNotSupported(err) || !strings.Contains(err.Error(), "registry ghcr.io") {
+		t.Fatalf("%v", err)
+	}
+	other := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("fine", false, nil)})
+	other.features.CacheEnabled = true
+	if err := createLabsWithImage(t, other, "fine", "ghcr.io/acme/web:1"); client.IsCredentialNotSupported(err) {
+		t.Fatalf("a tenant without the condition is not refused: %v", err)
+	}
+}

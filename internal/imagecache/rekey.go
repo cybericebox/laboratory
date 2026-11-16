@@ -84,3 +84,35 @@ func RekeyForCache(prefix, tenant string, served []string, docs ...[]byte) ([]by
 	}{out})
 	return raw, len(out), err
 }
+
+// WithoutUsername lists the registries (as the cache names them, sorted) of a dockerconfigjson document whose entry carries no username,
+// served by the cache or not: the cache cannot carry such a credential, because the tenant is written into the username.
+func WithoutUsername(doc []byte) ([]string, error) {
+	if len(doc) == 0 {
+		return nil, nil
+	}
+	var cfg struct {
+		Auths map[string]struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Auth     string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(doc, &cfg); err != nil {
+		return nil, fmt.Errorf("dockerconfigjson: %w", err)
+	}
+	var out []string
+	for host, a := range cfg.Auths {
+		user := a.Username
+		if user == "" && a.Auth != "" {
+			if raw, err := base64.StdEncoding.DecodeString(a.Auth); err == nil {
+				user, _, _ = strings.Cut(string(raw), ":")
+			}
+		}
+		if user == "" {
+			out = append(out, normalizeHost(host))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}

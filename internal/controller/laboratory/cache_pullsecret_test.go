@@ -7,12 +7,16 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -316,4 +320,94 @@ func mustRepo(t *testing.T, s string) name.Repository {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+func tenantWithCreds(name, secret string) *laboratoryv1alpha1.Tenant {
+	return tenantWithPullSecret(name, secret)
+}
+
+func tenantSecretWith(name string, auths map[string][2]string) *corev1.Secret {
+	s := dockerSecret(name, names.TenantsNamespace, auths)
+	return s
+}
+
+// A tenant whose images.pullSecret has an entry without a username cannot use the cache: the Tenant says so in its condition and an event,
+// naming the registry, and the lab of that tenant is refused with the same reason; fixing the Secret clears both.
+func TestTenantCredentialsWithoutAUsernameAreRefusedWhileTheCacheIsOn(t *testing.T) {
+	ctx := context.Background()
+	bad := tenantSecretWith("acme-registry", map[string][2]string{"ghcr.io": {"", "token-only"}, "docker.io": {"u", "p"}})
+	scheme := secretScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tenantWithCreds("acme", "acme-registry"), bad).
+		WithStatusSubresource(&laboratoryv1alpha1.Tenant{}).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &TenantReconciler{Client: c, Scheme: scheme, CacheEnabled: true, Recorder: rec, Now: time.Now}
+	reconcile := func() ctrl.Result {
+		res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "acme"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := reconcile(); res.RequeueAfter <= 0 || res.RequeueAfter > credentialRecheck {
+		t.Errorf("the operator cannot watch Secrets: it looks again by itself: %v", res.RequeueAfter)
+	}
+	ten := getTenantNamed(t, c, "acme")
+	cond := meta.FindStatusCondition(ten.Status.Conditions, laboratoryv1alpha1.TenantConditionImageCredentials)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "CredentialNotSupported" ||
+		!strings.Contains(cond.Message, "CREDENTIAL_NOT_SUPPORTED: registry ghcr.io:") || strings.Contains(cond.Message, "docker.io") || strings.Contains(cond.Message, "token-only") {
+		t.Fatalf("%+v", cond)
+	}
+	select {
+	case ev := <-rec.Events:
+		if !strings.Contains(ev, "Warning") || !strings.Contains(ev, "registry ghcr.io") {
+			t.Fatalf("event %q", ev)
+		}
+	default:
+		t.Fatal("no event")
+	}
+	reconcile()
+	select {
+	case ev := <-rec.Events:
+		t.Fatalf("the event is said once, not at every look: %q", ev)
+	default:
+	}
+
+	// the lab of that tenant is refused with the same reason
+	lab := newLab("l")
+	lab.Labels = map[string]string{names.LabelTenant: "acme"}
+	lr := &LabReconciler{Client: c, Mirror: imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}}
+	if refusal, err := lr.tenantCredentialRefusal(ctx, lab); err != nil || refusal == nil || !strings.HasPrefix(refusal.Error(), "CREDENTIAL_NOT_SUPPORTED: registry ghcr.io") {
+		t.Fatalf("%v %v", refusal, err)
+	}
+	if refusal, _ := (&LabReconciler{Client: c}).tenantCredentialRefusal(ctx, lab); refusal != nil {
+		t.Fatalf("with the cache off nothing is refused: %v", refusal)
+	}
+
+	// fixed: the condition and the refusal are gone
+	fixed := tenantSecretWith("acme-registry", map[string][2]string{"ghcr.io": {"bot", "token"}, "docker.io": {"u", "p"}})
+	fixed.ResourceVersion = bad.ResourceVersion
+	if err := c.Update(ctx, fixed); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if meta.FindStatusCondition(getTenantNamed(t, c, "acme").Status.Conditions, laboratoryv1alpha1.TenantConditionImageCredentials) != nil {
+		t.Error("the condition goes with the problem")
+	}
+	if refusal, _ := lr.tenantCredentialRefusal(ctx, lab); refusal != nil {
+		t.Errorf("%v", refusal)
+	}
+	// the cache off: no condition, no requeue for it
+	r.CacheEnabled = false
+	if res := reconcile(); res.RequeueAfter > 0 && res.RequeueAfter <= credentialRecheck {
+		t.Errorf("no recheck without the cache: %v", res.RequeueAfter)
+	}
+}
+
+func getTenantNamed(t *testing.T, c client.Client, name string) *laboratoryv1alpha1.Tenant {
+	t.Helper()
+	var ten laboratoryv1alpha1.Tenant
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &ten); err != nil {
+		t.Fatal(err)
+	}
+	return &ten
 }

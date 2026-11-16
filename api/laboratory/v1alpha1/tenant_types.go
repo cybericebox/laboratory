@@ -128,6 +128,11 @@ type TenantStatus struct {
 // admin: nothing of the tenant is stopped for it.
 const TenantConditionCapacityShortfall = "CapacityShortfall"
 
+// TenantConditionImageCredentials is False on a tenant while the registry credentials of images.pullSecret cannot be used with the image
+// cache: an entry has no username (the cache writes the tenant into the username). Reason CredentialNotSupported, a message that names the
+// registry; labs of the tenant are refused with the same reason until the Secret is fixed. Absent or True: nothing to fix.
+const TenantConditionImageCredentials = "ImageCredentials"
+
 // TenantConditionGroupsWithdrawn is true on a tenant while some of its groups were withdrawn three times or more in a row
 // because not every pod got a node within the node timeout (a stuck group for the cluster admin); the message names them.
 const TenantConditionGroupsWithdrawn = "GroupsWithdrawnRepeatedly"

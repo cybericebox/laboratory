@@ -2781,10 +2781,13 @@ directly) to this one:
 4. **Agent.** The Secret `laboratory-registry-ca` is created in the agent's namespace by the chart and mounted at
    `/registry-ca`; the agent's `PrewarmImages` uses the gate's TLS port. An agent from before this release still reads zot on
    port 5000, which refuses the cache path.
-5. **Credentials without a username** are refused when a lab is created (`CREDENTIAL_NOT_SUPPORTED`, `InvalidArgument`, the
-   registry named) and in `PrewarmImages`, while the cache is on: the cache writes the tenant into the username, so a token-only
-   credential could not pull through it. A tenant's `images.pullSecret` is not checked at creation (the agent cannot read it); an
-   entry without a username there is dropped from the re-keyed Secret, and the pull of that registry is anonymous.
+5. **Credentials without a username** are refused while the cache is on, with the stable reason `CREDENTIAL_NOT_SUPPORTED`
+   (`InvalidArgument`, the registry named): in `CreateLabs` and `PrewarmImages` for a credential of the call, and for a tenant
+   whose `images.pullSecret` has such an entry. The operator reads that Secret (and again every 5 minutes, it cannot watch
+   Secrets) and sets the Tenant condition `ImageCredentials=False` (reason `CredentialNotSupported`, a message that names the
+   registry) with a Warning event; the agent refuses the tenant's labs at creation with the same reason, and the operator
+   refuses a Lab made by hand (it starts by itself once the Secret is fixed). Fix the Secret (a username is part of every
+   credential the cache carries: a token-only login does not work through it) and the condition goes away.
 6. **Cached data.** Nothing to migrate: the gate fills the cache itself, from the first pull on. Objects the old cache stored
    under `REG/repo` (without `c/`) are not read; delete them with the registry's garbage collection or leave them to the volume.
 

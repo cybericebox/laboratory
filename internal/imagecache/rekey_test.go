@@ -81,3 +81,18 @@ func TestRekeyForCacheNothingToKeep(t *testing.T) {
 		t.Error("a malformed document is an error")
 	}
 }
+
+// The entries a cache cannot carry (no username, in either field) are named, sorted, in the spelling the cache uses.
+func TestWithoutUsername(t *testing.T) {
+	d := doc(t, map[string][2]string{"GHCR.io": {"", "tok"}, "https://index.docker.io/v1/": {"u", "p"}, "quay.io": {"", "x"}})
+	got, err := WithoutUsername(d)
+	if err != nil || len(got) != 2 || got[0] != "ghcr.io" || got[1] != "quay.io" {
+		t.Fatalf("%v %v", got, err)
+	}
+	if got, err := WithoutUsername(nil); got != nil || err != nil {
+		t.Fatalf("%v %v", got, err)
+	}
+	if _, err := WithoutUsername([]byte("{")); err == nil {
+		t.Fatal("a malformed document is an error")
+	}
+}
