@@ -127,6 +127,10 @@ type Config struct {
 	// ActivityReports is the chart's activityReports.enabled (off by default): raw activity facts for the platform, see GetLabGroupActivity.
 	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// TerminalMaxLifetime is the chart's terminal.limits.maxLifetime and VPNFirewall its vpn.firewall: the agent reports them in the activity
+	// feature (the longest console session; whether devices-touched events exist).
+	TerminalMaxLifetime time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
+	VPNFirewall         string        `env:"VPN_FIREWALL" envDefault:"iptables"`
 	// TerminalServed says the device access service and the proxy's console route are deployed (the chart renders both with terminal.enabled).
 	TerminalServed bool `env:"TERMINAL_SERVED" envDefault:"false"`
 	// ChecksMaxTimeLimit is the ceiling of the time limit of one check run in seconds, ChecksManualCooldown the least time between two manual

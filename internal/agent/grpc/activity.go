@@ -33,7 +33,14 @@ const (
 const ActivityDisabledMessage = "activity reports disabled"
 
 func (h *Handler) activityFeature() *protobuf.ActivityFeature {
-	return &protobuf.ActivityFeature{Enabled: h.features.ActivityReports, MaxEvents: activity.MaxEvents, RingMinutes: int32(activity.MaxAge / time.Minute)}
+	f := h.features
+	out := &protobuf.ActivityFeature{Enabled: f.ActivityReports, MaxEvents: activity.MaxEvents, RingMinutes: int32(activity.MaxAge / time.Minute),
+		// no console, no console sessions
+		DeviceTouch: f.ActivityReports && f.VPNFirewall != "nft"}
+	if f.TerminalEnabled && f.TerminalServed {
+		out.ConsoleMaxLifetimeS = int32(f.TerminalMaxLifetime / time.Second)
+	}
+	return out
 }
 
 // GetLabGroupActivity hands the platform the raw activity facts of a group that came after its cursor. The laboratory keeps the facts only in

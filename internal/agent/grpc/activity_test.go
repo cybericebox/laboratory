@@ -184,3 +184,32 @@ func TestActivityReapsReportsOfWritersThatAreGone(t *testing.T) {
 		t.Fatalf("reports left: %v", got)
 	}
 }
+
+// The feature tells the daemon how long a console session can live (an open one older than that has ended) and whether devices-touched
+// events exist at all, so it reports "not reported" and not zero when they cannot.
+func TestActivityFeatureReportsConsoleLifetimeAndDeviceTouch(t *testing.T) {
+	h, _ := activityFixture(t, true)
+	h.features.TerminalEnabled, h.features.TerminalServed, h.features.TerminalMaxLifetime = true, true, 8*time.Hour
+	h.features.VPNFirewall = "iptables"
+	f := h.activityFeature()
+	if !f.Enabled || f.ConsoleMaxLifetimeS != 8*3600 || !f.DeviceTouch {
+		t.Fatalf("iptables: %+v", f)
+	}
+	h.features.VPNFirewall = "" // the default is iptables
+	if !h.activityFeature().DeviceTouch {
+		t.Fatal("an unset firewall is iptables")
+	}
+	h.features.VPNFirewall = "nft"
+	if f := h.activityFeature(); f.DeviceTouch || !f.Enabled {
+		t.Fatalf("nft keeps no connection tracking, so no touch events: %+v", f)
+	}
+	h.features.VPNFirewall = "iptables"
+	h.features.TerminalEnabled = false
+	if f := h.activityFeature(); f.ConsoleMaxLifetimeS != 0 {
+		t.Fatalf("no console, no lifetime: %+v", f)
+	}
+	h.features.ActivityReports = false
+	if f := h.activityFeature(); f.Enabled || f.DeviceTouch {
+		t.Fatalf("off: %+v", f)
+	}
+}

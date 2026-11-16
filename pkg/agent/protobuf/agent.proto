@@ -1192,11 +1192,17 @@ message FeaturesResponse {
 
 // ActivityFeature: enabled is true when the cluster keeps raw activity facts for GetLabGroupActivity (the chart value
 // activityReports.enabled). max_events and ring_minutes bound what the laboratory keeps per writer; a platform that pulls less often than
-// every ring_minutes may lose events (the response says so in gap).
+// every ring_minutes may lose events (the response says so in gap). console_max_lifetime_s (contract 2.6) is the longest a console session
+// lives (terminal.limits.maxLifetime; 0 when the console is off): a console_session still open longer than that after its opening event ended
+// without a closing event (its proxy replica died). device_touch (contract 2.6) is true only when this cluster produces device_touch events:
+// activity reports are on and the VPN firewall keeps connection tracking (iptables); with nft there are none, so a platform reports "not
+// reported" (null) for the devices-touched figure and not zero.
 message ActivityFeature {
   bool enabled = 1;
   int32 max_events = 2;
   int32 ring_minutes = 3;
+  int32 console_max_lifetime_s = 4;
+  bool device_touch = 5;
 }
 
 // VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
