@@ -160,7 +160,8 @@ func TestTuningKnobsStayValues(t *testing.T) {
 		"--set", "agent.monitoring.subscriberBuffer=9", "--set", "agent.monitoring.maxStreamsPerTenant=3",
 		"--set", "nodeAgent.ovsRunHostPath=/run/ovs-x", "--set", "nodeAgent.ovsSocket=/run/ovs-x/db.sock", "--set", "nodeAgent.ovsDBHostPath=/var/lib/ovs-x",
 		"--set", "nodeAgent.grpcSocket=/run/cice/na.sock", "--set", "nodeAgent.ovsBridge=br-x", "--set", "nodeAgent.healthPort=9555",
-		"--set", "nodeAgent.devicePlugin.dir=/var/lib/kubelet/dp-x", "--set", "priorityClasses.group.name=grp-x")
+		"--set", "nodeAgent.devicePlugin.dir=/var/lib/kubelet/dp-x", "--set", "priorityClasses.group.name=grp-x",
+		"--set", "registry.cache.enabled=true") // the registry address is only passed when a registry is installed
 	var cm corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &cm, set...)
 	for k, want := range map[string]string{"VPN_STATS_INTERVAL": "45s", "AGENT_SERVICE_NAMESPACE": "lab-agent-x", "AGENT_SERVICE_ACCOUNT": "laboratory-agent",

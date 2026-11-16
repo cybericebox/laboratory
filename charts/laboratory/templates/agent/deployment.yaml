@@ -110,9 +110,15 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: AGENT_PULL_SECRET_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+          {{- if include "laboratory.registryEnabled" . }}
             # ExportDeviceSnapshot reads the snapshots from the platform registry, PrewarmImages makes the cache fetch through it.
             - name: AGENT_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
+          {{- else }}
+            # No platform registry in this release: no export, no prewarm.
+            - name: AGENT_REGISTRY_ENABLED
+              value: "false"
+          {{- end }}
             # The Monitoring stream (see DEPLOY.md, "Monitoring stream").
             - name: AGENT_MONITORING_JOURNAL_SIZE
               value: {{ .Values.agent.monitoring.journalSize | quote }}
@@ -131,6 +137,7 @@ spec:
               value: {{ $value | quote }}
           {{- end }}
           {{- end }}
+          {{- if include "laboratory.registryEnabled" . }}
             # The snapshots are not anonymous: the agent reads them with the reader account.
             - name: AGENT_REGISTRY_USER
               valueFrom:
@@ -142,6 +149,7 @@ spec:
                 secretKeyRef:
                   name: laboratory-registry-reader
                   key: password
+          {{- end }}
           {{- if .Values.registry.cache.enabled }}
             # PrewarmImages: the agent makes the image cache fetch images ahead of time.
             - name: AGENT_PREWARM_CONCURRENCY

@@ -3,6 +3,7 @@
 package nodeagent
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/cybericebox/laboratory/internal/bandwidth"
@@ -48,7 +49,10 @@ type Config struct {
 	// StateRegistryAddr is host:port of the registry Service (empty = names.RegistryServiceAddr: the chart always installs it there).
 	// The node-agent relays it to 127.0.0.1:StateForwardPort (names.RegistryForwardPort, a constant), so snapshot and cached images are
 	// referenced as localhost:<port>/... and pulled by the node's containerd over plain HTTP without any host configuration.
-	StateRegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
+	StateRegistryAddr string `env:"STATE_REGISTRY_ADDR"`
+	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform
+	// images): the relay is not started and there is no registry address. Default true (a registry exists, as before).
+	RegistryEnabled       bool   `env:"REGISTRY_ENABLED" envDefault:"true"`
 	StateRegistryUser     string `env:"STATE_REGISTRY_USER"`
 	StateRegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
 	StateForwardPort      int
@@ -87,6 +91,13 @@ func LoadConfig() (*Config, error) {
 	cfg := &Config{StateForwardPort: names.RegistryForwardPort}
 	if err := config.Load(cfg); err != nil {
 		return cfg, err
+	}
+	if !cfg.RegistryEnabled {
+		if cfg.StatePersistence {
+			return cfg, fmt.Errorf("STATE_PERSISTENCE_ENABLED needs the platform registry, but REGISTRY_ENABLED is false")
+		}
+		cfg.StateRegistryAddr = "" // no registry: SetupDeviceState starts no relay
+		return cfg, nil
 	}
 	if cfg.StateRegistryAddr == "" {
 		cfg.StateRegistryAddr = names.RegistryServiceAddr

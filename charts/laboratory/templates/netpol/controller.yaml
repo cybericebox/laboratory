@@ -24,6 +24,7 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
+{{- if include "laboratory.registryEnabled" . }}
     # Platform registry (snapshot reset and retention sweep when state persistence is on).
     - toEndpoints:
         - matchLabels:
@@ -32,6 +33,7 @@ spec:
         - ports:
             - port: "5000"
               protocol: TCP
+{{- end }}
 {{- if .Values.registry.cache.enabled }}
     # Image cache: the operator asks the upstream registries for the digest of a tag.
     - toEntities:

@@ -225,7 +225,7 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 }
 
 func TestRegistryNeedsNodeAgent(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "nodeAgent.enabled=false")
+	out, err := helmTemplate(t, "--set", "nodeAgent.enabled=false", "--set", "registry.cache.enabled=true")
 	if err == nil {
 		t.Fatalf("the chart must refuse a registry without the node-agent")
 	}
@@ -424,7 +424,7 @@ func TestAgentGetsTheRegistryReaderAccountForSnapshotExport(t *testing.T) {
 	for name, extra := range map[string][]string{
 		"persistence": {"--set", statePath + "enabled=true"},
 		"cache":       {"--set", "registry.cache.enabled=true"},
-		"neither":     nil,
+		"platform":    {"--set", "registry.platform.enabled=true"},
 	} {
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(agent, extra...)...)
@@ -440,28 +440,77 @@ func TestAgentGetsTheRegistryReaderAccountForSnapshotExport(t *testing.T) {
 	}
 }
 
-// C-1: the registry does not depend on either switch: flipping statePersistence or the cache off never removes zot.
-func TestRegistryIsAlwaysInstalled(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/registry/deployment.yaml", "-s", "templates/registry/service.yaml", "-s", "templates/registry/pvc.yaml", "-s", "templates/registry/secret.yaml")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
+// The registry (zot) is installed only when something needs it: the image cache, state persistence or the platform images. With all three
+// off nothing of it is rendered and everything that depends on it copes: no relay on the nodes, no registry address or Secret reference in
+// the node-agent, the operator and the agent, no network policy rule.
+func TestRegistryIsInstalledOnlyWhenNeeded(t *testing.T) {
+	templates := []string{"templates/registry/deployment.yaml", "templates/registry/service.yaml", "templates/registry/pvc.yaml", "templates/registry/secret.yaml",
+		"templates/registry/configmap.yaml", "templates/netpol/registry.yaml"}
+	for _, tpl := range templates {
+		if out, err := helmTemplate(t, "-s", tpl); err == nil && strings.TrimSpace(out) != "" {
+			t.Errorf("all three switches off: %s must render nothing:\n%s", tpl, out)
+		}
 	}
-	for _, want := range []string{"kind: Deployment", "kind: Service", "kind: PersistentVolumeClaim", "kind: Secret"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("with both switches off the chart must still render %q", want)
+	// the whole release (agent on, to see its side too) mentions the registry nowhere
+	out, err := helmTemplate(t, agentSet...)
+	if err != nil {
+		t.Fatalf("a release without a registry must render: %v\n%s", err, out)
+	}
+	for _, gone := range []string{"laboratory-registry", "STATE_REGISTRY", "AGENT_REGISTRY_ADDR", "AGENT_REGISTRY_USER"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("all three switches off: %q must not appear anywhere", gone)
 		}
 	}
 	var na appsv1.DaemonSet
 	render(t, "templates/node-agent/daemonset.yaml", &na)
-	// The relay is on in the node-agent image whatever the switches are: nothing is passed for it (names.RegistryServiceAddr, RegistryForwardPort).
-	if _, set := envOf(na.Spec.Template.Spec.Containers[0])["STATE_PERSISTENCE_ENABLED"]; set {
+	if env := envOf(na.Spec.Template.Spec.Containers[0]); env["REGISTRY_ENABLED"].Value != "false" {
+		t.Errorf("the node-agent must be told there is no registry (no relay): %q", env["REGISTRY_ENABLED"].Value)
+	}
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, agentSet...)
+	if env := envOf(dep.Spec.Template.Spec.Containers[0]); env["AGENT_REGISTRY_ENABLED"].Value != "false" {
+		t.Errorf("the agent must be told there is no registry: %q", env["AGENT_REGISTRY_ENABLED"].Value)
+	}
+	// runtime observation reads no registry either (its settings sit in the same block as the snapshot engine)
+	out, err = helmTemplate(t, "--set", "lifecycle.runtimeObservation.enabled=true", "-s", "templates/node-agent/daemonset.yaml")
+	if err != nil || strings.Contains(out, "laboratory-registry") {
+		t.Errorf("runtime observation alone needs no registry Secret: %v", err)
+	}
+
+	// each one of the three brings the registry, and the nodes get their relay
+	for name, extra := range map[string][]string{
+		"cache":       {"--set", "registry.cache.enabled=true"},
+		"persistence": {"--set", statePath + "enabled=true"},
+		"platform":    {"--set", "registry.platform.enabled=true"},
+	} {
+		out, err := helmTemplate(t, append(append([]string{}, extra...), "-s", "templates/registry/deployment.yaml", "-s", "templates/registry/service.yaml",
+			"-s", "templates/registry/pvc.yaml", "-s", "templates/registry/secret.yaml")...)
+		if err != nil {
+			t.Fatalf("%s: helm template: %v\n%s", name, err, out)
+		}
+		for _, want := range []string{"kind: Deployment", "kind: Service", "kind: PersistentVolumeClaim", "kind: Secret"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: the registry must render %q", name, want)
+			}
+		}
+		var na appsv1.DaemonSet
+		render(t, "templates/node-agent/daemonset.yaml", &na, extra...)
+		env := envOf(na.Spec.Template.Spec.Containers[0])
+		if env["STATE_REGISTRY_ADDR"].Value == "" || env["REGISTRY_ENABLED"].Value != "" {
+			t.Errorf("%s: the node-agent gets the registry address and no switch-off: %+v", name, env["REGISTRY_ENABLED"])
+		}
+	}
+	// state persistence itself does not depend on the registry being absent: it brings it, and the snapshot engine stays off without it
+	var on appsv1.DaemonSet
+	render(t, "templates/node-agent/daemonset.yaml", &on)
+	if _, set := envOf(on.Spec.Template.Spec.Containers[0])["STATE_PERSISTENCE_ENABLED"]; set {
 		t.Error("the snapshot engine stays off with state persistence off")
 	}
 }
 
 // C-19: the registry volume can be made on a StorageClass with reclaimPolicy Retain, which the chart creates on request.
 func TestRegistryRetainClass(t *testing.T) {
-	on := []string{"--set", "registry.retainClass.create=true", "--set", "registry.retainClass.provisioner=rancher.io/local-path", "--set", "registry.storageClass=ignored"}
+	on := []string{"--set", "registry.cache.enabled=true", "--set", "registry.retainClass.create=true", "--set", "registry.retainClass.provisioner=rancher.io/local-path", "--set", "registry.storageClass=ignored"}
 	out, err := helmTemplate(t, append(on, "-s", "templates/registry/storageclass.yaml", "-s", "templates/registry/pvc.yaml")...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -474,10 +523,10 @@ func TestRegistryRetainClass(t *testing.T) {
 	if strings.Contains(out, "ignored") {
 		t.Error("registry.storageClass is not used when the chart creates the Retain class")
 	}
-	if out, err := helmTemplate(t, "--set", "registry.retainClass.create=true"); err == nil || !strings.Contains(out, "provisioner") {
+	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "--set", "registry.retainClass.create=true"); err == nil || !strings.Contains(out, "provisioner") {
 		t.Errorf("a Retain class without a provisioner must be refused: %v %s", err, out)
 	}
-	if out, err := helmTemplate(t, "-s", "templates/registry/pvc.yaml"); err != nil || strings.Contains(out, "StorageClass") {
+	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "-s", "templates/registry/pvc.yaml"); err != nil || strings.Contains(out, "StorageClass") {
 		t.Errorf("by default the chart creates no StorageClass: %v %s", err, out)
 	}
 }
