@@ -218,7 +218,7 @@ What a laboratory serves is set in the chart, once for the whole cluster. A lab 
 | `checks.enabled` | off | no checker DaemonSet. Refused: a Lab with `spec.checks` | `CHECKS_UNAVAILABLE` |
 | `scheduler.enabled` | on | every pod starts as soon as it exists. Not a refusal: nothing is asked of it by a user object | - |
 
-The device access service (`terminal.enabled`) and the checker (`checks.enabled`) stay two separate DaemonSets. The VPN switch is independent of the proxy: `proxy.enabled=false` does not take the WireGuard demultiplexer away (`vpn.enabled` owns it).
+The device access service (`terminal.enabled`) and the checker (`checks.enabled`) stay two separate DaemonSets. The VPN switch is independent of the proxy: `proxy.enabled=false` does not take the WireGuard demultiplexer away (`vpn.enabled` owns it). So an install that had `proxy.enabled=false` now gets the demultiplexer and, unless `proxy.networkPolicy.enabled=false`, its CiliumNetworkPolicy: a cluster without Cilium sets `proxy.networkPolicy.enabled=false`, and one that does not want the VPN at all sets `vpn.enabled=false` (or `proxy.wg.enabled=false`).
 
 **The switches of a group** (`spec.vpn.enabled`, `spec.gateway.enabled`) are checked by the same policies. The operator copies them onto the group's namespace as the labels `laboratory.cybericebox.com/vpn-enabled` and `/internet-enabled` (`"true"` / `"false"`); the policy reads `namespaceObject`, and only the operator may set these labels (`laboratory-group-namespace-label`). A namespace without the labels (a group made before them, or one not made by the operator) is not checked at the API server; the agent and the operator still check. Reasons: `GROUP_VPN_OFF`, `GROUP_INTERNET_OFF`.
 

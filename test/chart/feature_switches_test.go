@@ -115,3 +115,36 @@ func TestAllowedRegistriesReachTheComponents(t *testing.T) {
 		t.Error("with * there is no image rule")
 	}
 }
+
+// The demultiplexer is rendered by the VPN switch alone, so a cluster that runs the VPN without the proxy gets its objects. Its Cilium
+// policy follows the network policy switch of the proxy section (proxy.networkPolicy.enabled) like the policies of every other component,
+// and proxy.wg.enabled=false takes the whole demux away: a cluster with no Cilium (Kind) installs with either.
+func TestVPNWithoutTheProxyRendersNoCiliumPolicyWhenPoliciesAreOff(t *testing.T) {
+	cilium := func(extra ...string) int {
+		out, err := helmTemplate(t, append([]string{"--set", "proxy.enabled=false"}, extra...)...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		n := 0
+		for _, d := range docs(t, out) {
+			if d["kind"] == "CiliumNetworkPolicy" {
+				if md, _ := d["metadata"].(map[string]any); md["name"] == "laboratory-proxy-wg" {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	if cilium() != 1 {
+		t.Error("vpn on, proxy off, policies on: the demux has its Cilium policy")
+	}
+	if cilium("--set", "proxy.networkPolicy.enabled=false") != 0 {
+		t.Error("policies off: no CiliumNetworkPolicy for the demux")
+	}
+	if cilium("--set", "proxy.wg.enabled=false") != 0 {
+		t.Error("proxy.wg.enabled=false: no demux, no policy")
+	}
+	if cilium("--set", "vpn.enabled=false") != 0 {
+		t.Error("vpn off: no demux, no policy")
+	}
+}

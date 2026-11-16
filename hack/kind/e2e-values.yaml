@@ -52,6 +52,11 @@ labScheduler:
   enabled: false
 proxy:
   enabled: false
+  # the WireGuard demultiplexer follows vpn.enabled, not proxy.enabled: Kind has no Cilium (its policy) and no LoadBalancer for the edge
+  wg:
+    enabled: false
+  networkPolicy:
+    enabled: false
 gateway:
   enabled: false
 certManager:
