@@ -62,7 +62,8 @@ type record struct {
 	// that began before a revocation must not allow again what a later check refused).
 	startedAt time.Time
 	// verified is the set of tenants that passed a fresh check for this key; an allow of one tenant says nothing about another.
-	verified map[string]struct{}
+	// The value is when the check that verified the tenant began: a refusal of a check that began later strips the tenants verified before it.
+	verified map[string]time.Time
 	// known is a ref of this repository that a direct 200 proved for this hash: the one a revalidation and a 404 re-check ask about.
 	known *knownRef
 }
@@ -126,8 +127,11 @@ func (s *Store) Lookup(k DecisionKey, tenant string) Action {
 // keyed by hash, not by tenant). A result never replaces a record made by a check that began LATER: it is dropped, and the request is
 // answered by what the newer record says. An unreachable upstream and a missing object change nothing: the request is served only
 // for a tenant already verified within StaleIfError, and for an anonymous repository that was allowed earlier, whatever its age
-// (public data, no credential to prove).
-func (s *Store) Record(k DecisionKey, tenant string, o Outcome, started time.Time) (serve bool) {
+// (public data, no credential to prove). known is the ref that this allow proved; it is stored in the same step as the allow, and an
+// allow without one is refused, so a record that allows always has a ref to be checked again. No record is ever deleted while a check
+// can still be in flight: a refusal stays as a tombstone that keeps its startedAt, so an earlier-started check can never re-create an
+// allow (Forget drops records only much later than any check lasts).
+func (s *Store) Record(k DecisionKey, tenant string, o Outcome, started time.Time, known *knownRef) (serve bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.Now()
@@ -135,17 +139,25 @@ func (s *Store) Record(k DecisionKey, tenant string, o Outcome, started time.Tim
 	if o == NotFound {
 		return false // a missing object changes no decision and is never served
 	}
+	if o == Allowed && known == nil {
+		return false // an allow is only ever recorded together with a ref that a later check can ask about: no such state exists
+	}
 	if r != nil && started.Before(r.startedAt) && (o == Allowed || o == Denied) {
+		if o == Denied {
+			r.revokeBefore(started) // the newer allow stands, but nobody verified before this refusal keeps the verification
+		}
 		return s.verifiedLocked(k, r, tenant, now)
 	}
 	switch o {
 	case Allowed:
 		if r == nil || !r.allowed {
-			r = &record{allowed: true, verified: map[string]struct{}{}}
+			r = &record{allowed: true, verified: map[string]time.Time{}}
 			s.recs[k] = r
 		}
-		r.checkedAt, r.startedAt = now, started
-		r.verified[tenant] = struct{}{}
+		r.checkedAt, r.startedAt, r.known = now, started, known
+		if at, ok := r.verified[tenant]; !ok || started.After(at) {
+			r.verified[tenant] = started
+		}
 		return true
 	case Denied:
 		s.recs[k] = &record{allowed: false, checkedAt: now, startedAt: started}
@@ -163,6 +175,15 @@ func (s *Store) Record(k DecisionKey, tenant string, o Outcome, started time.Tim
 	return now.Sub(r.checkedAt) <= s.T.StaleIfError
 }
 
+// revokeBefore removes the tenants whose verification began before t: a refusal that began at t says they may have lost access.
+func (r *record) revokeBefore(t time.Time) {
+	for ten, at := range r.verified {
+		if at.Before(t) {
+			delete(r.verified, ten)
+		}
+	}
+}
+
 // verifiedLocked says whether the record lets the tenant be served: an allowed record that holds the tenant, within StaleIfError.
 func (s *Store) verifiedLocked(k DecisionKey, r *record, tenant string, now time.Time) bool {
 	if !r.allowed {
@@ -176,34 +197,26 @@ func (s *Store) verifiedLocked(k DecisionKey, r *record, tenant string, now time
 	return now.Sub(r.checkedAt) <= s.T.StaleIfError
 }
 
-// Know remembers a ref that a direct 200 proved for the key. It does nothing without an allowed record.
-func (s *Store) Know(k DecisionKey, kind, ref, accept string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if r := s.recs[k]; r != nil && r.allowed {
-		r.known = &knownRef{kind, ref, accept}
-	}
-}
-
-// Holds says whether the key has an Allowed record, and the known ref of it when there is one.
-func (s *Store) Holds(k DecisionKey) (allowed bool, known knownRef, hasKnown bool) {
+// SettleMissing applies the result o of the re-check of the key's known ref after a 404 for another ref (started is taken before that
+// re-check). It is one atomic step: it acts only on an allowed record and only when the check began no earlier than the record (a
+// newer record stands); 401, 403 and 404 (Denied, NotFound) turn the record into a refusal tombstone that keeps started, anything else
+// changes nothing.
+func (s *Store) SettleMissing(k DecisionKey, started time.Time, o Outcome) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r := s.recs[k]
 	if r == nil || !r.allowed {
-		return false, knownRef{}, false
+		return
 	}
-	if r.known != nil {
-		return true, *r.known, true
+	if started.Before(r.startedAt) {
+		if o == Denied || o == NotFound {
+			r.revokeBefore(started)
+		}
+		return
 	}
-	return true, knownRef{}, false
-}
-
-// Drop forgets the record of a key: the next request checks upstream again, and a stale answer can no longer be served from it.
-func (s *Store) Drop(k DecisionKey) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.recs, k)
+	if o == Denied || o == NotFound {
+		s.recs[k] = &record{allowed: false, checkedAt: s.Now(), startedAt: started}
+	}
 }
 
 // Known is the ref a revalidation asks about instead of whatever ref the caller names.
