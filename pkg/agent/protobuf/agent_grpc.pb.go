@@ -56,6 +56,7 @@ const (
 	LabManager_RescueDevices_FullMethodName          = "/labmanager.LabManager/RescueDevices"
 	LabManager_RunChecks_FullMethodName              = "/labmanager.LabManager/RunChecks"
 	LabManager_ExportDeviceSnapshot_FullMethodName   = "/labmanager.LabManager/ExportDeviceSnapshot"
+	LabManager_GetLabGroupActivity_FullMethodName    = "/labmanager.LabManager/GetLabGroupActivity"
 )
 
 // LabManagerClient is the client API for LabManager service.
@@ -183,6 +184,13 @@ type LabManagerClient interface {
 	// FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
 	// snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
 	ExportDeviceSnapshot(ctx context.Context, in *DeviceSnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error)
+	// GetLabGroupActivity (contract 2.5) hands the platform the RAW activity facts of one lab group since a cursor: internet egress of the
+	// labs, console sessions, and the lab addresses the VPN clients reached. The laboratory aggregates and stores nothing beyond a short
+	// ring (FeaturesResponse.activity: at most max_events events and ring_minutes minutes per writer); the platform pulls about once a
+	// minute and aggregates. These are data handed only to your own platform through this call; the laboratory sends nothing anywhere by
+	// itself. FailedPrecondition "activity reports disabled": the cluster runs without them (FeaturesResponse.activity.enabled is false).
+	// NotFound: no such group, or it belongs to another tenant. InvalidArgument: a cursor that this agent did not give.
+	GetLabGroupActivity(ctx context.Context, in *GetLabGroupActivityRequest, opts ...grpc.CallOption) (*GetLabGroupActivityResponse, error)
 }
 
 type labManagerClient struct {
@@ -581,6 +589,16 @@ func (c *labManagerClient) ExportDeviceSnapshot(ctx context.Context, in *DeviceS
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LabManager_ExportDeviceSnapshotClient = grpc.ServerStreamingClient[SnapshotChunk]
 
+func (c *labManagerClient) GetLabGroupActivity(ctx context.Context, in *GetLabGroupActivityRequest, opts ...grpc.CallOption) (*GetLabGroupActivityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetLabGroupActivityResponse)
+	err := c.cc.Invoke(ctx, LabManager_GetLabGroupActivity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LabManagerServer is the server API for LabManager service.
 // All implementations must embed UnimplementedLabManagerServer
 // for forward compatibility.
@@ -706,6 +724,13 @@ type LabManagerServer interface {
 	// FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
 	// snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
 	ExportDeviceSnapshot(*DeviceSnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error
+	// GetLabGroupActivity (contract 2.5) hands the platform the RAW activity facts of one lab group since a cursor: internet egress of the
+	// labs, console sessions, and the lab addresses the VPN clients reached. The laboratory aggregates and stores nothing beyond a short
+	// ring (FeaturesResponse.activity: at most max_events events and ring_minutes minutes per writer); the platform pulls about once a
+	// minute and aggregates. These are data handed only to your own platform through this call; the laboratory sends nothing anywhere by
+	// itself. FailedPrecondition "activity reports disabled": the cluster runs without them (FeaturesResponse.activity.enabled is false).
+	// NotFound: no such group, or it belongs to another tenant. InvalidArgument: a cursor that this agent did not give.
+	GetLabGroupActivity(context.Context, *GetLabGroupActivityRequest) (*GetLabGroupActivityResponse, error)
 	mustEmbedUnimplementedLabManagerServer()
 }
 
@@ -826,6 +851,9 @@ func (UnimplementedLabManagerServer) RunChecks(context.Context, *RunChecksReques
 }
 func (UnimplementedLabManagerServer) ExportDeviceSnapshot(*DeviceSnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
 	return status.Error(codes.Unimplemented, "method ExportDeviceSnapshot not implemented")
+}
+func (UnimplementedLabManagerServer) GetLabGroupActivity(context.Context, *GetLabGroupActivityRequest) (*GetLabGroupActivityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLabGroupActivity not implemented")
 }
 func (UnimplementedLabManagerServer) mustEmbedUnimplementedLabManagerServer() {}
 func (UnimplementedLabManagerServer) testEmbeddedByValue()                    {}
@@ -1500,6 +1528,24 @@ func _LabManager_ExportDeviceSnapshot_Handler(srv interface{}, stream grpc.Serve
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LabManager_ExportDeviceSnapshotServer = grpc.ServerStreamingServer[SnapshotChunk]
 
+func _LabManager_GetLabGroupActivity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLabGroupActivityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).GetLabGroupActivity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_GetLabGroupActivity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).GetLabGroupActivity(ctx, req.(*GetLabGroupActivityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LabManager_ServiceDesc is the grpc.ServiceDesc for LabManager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1646,6 +1692,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RunChecks",
 			Handler:    _LabManager_RunChecks_Handler,
+		},
+		{
+			MethodName: "GetLabGroupActivity",
+			Handler:    _LabManager_GetLabGroupActivity_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

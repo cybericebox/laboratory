@@ -79,6 +79,8 @@ type Features struct {
 	MaxLabGateways int
 	// CheckerRequired: checks count as available only while the checker DaemonSet exists (production sets it with ChecksEnabled).
 	CheckerRequired bool
+	// ActivityReports is the chart's activityReports.enabled: the cluster keeps raw activity facts and GetLabGroupActivity answers.
+	ActivityReports bool
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
@@ -149,6 +151,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				Access:          &protobuf.AccessFeature{Http: true, Terminal: f.TerminalEnabled && f.TerminalServed},
 				Bootstrap:       bootstrapFeature(),
 				Vpn:             h.vpnFeature(),
+				Activity:        h.activityFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,
 					DefaultDebounceMs:  f.Debounce.Milliseconds(),

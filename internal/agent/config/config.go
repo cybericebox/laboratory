@@ -123,7 +123,9 @@ type Config struct {
 	MaxLabGateways int `env:"MAX_LAB_GATEWAYS" envDefault:"10"`
 	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled: two independent options, both off by
 	// default. A lab with checks (or a terminal device) is refused while the matching option is off; GetFeatures reports them.
-	ChecksEnabled   bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	ChecksEnabled bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	// ActivityReports is the chart's activityReports.enabled (off by default): raw activity facts for the platform, see GetLabGroupActivity.
+	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
 	// TerminalServed says the device access service and the proxy's console route are deployed (the chart renders both with terminal.enabled).
 	TerminalServed bool `env:"TERMINAL_SERVED" envDefault:"false"`

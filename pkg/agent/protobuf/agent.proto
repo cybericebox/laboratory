@@ -162,6 +162,14 @@ service LabManager {
   // FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
   // snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
   rpc ExportDeviceSnapshot(DeviceSnapshotRequest) returns (stream SnapshotChunk) {}
+
+  // GetLabGroupActivity (contract 2.5) hands the platform the RAW activity facts of one lab group since a cursor: internet egress of the
+  // labs, console sessions, and the lab addresses the VPN clients reached. The laboratory aggregates and stores nothing beyond a short
+  // ring (FeaturesResponse.activity: at most max_events events and ring_minutes minutes per writer); the platform pulls about once a
+  // minute and aggregates. These are data handed only to your own platform through this call; the laboratory sends nothing anywhere by
+  // itself. FailedPrecondition "activity reports disabled": the cluster runs without them (FeaturesResponse.activity.enabled is false).
+  // NotFound: no such group, or it belongs to another tenant. InvalidArgument: a cursor that this agent did not give.
+  rpc GetLabGroupActivity(GetLabGroupActivityRequest) returns (GetLabGroupActivityResponse) {}
 }
 
 message Empty {}
@@ -1178,6 +1186,17 @@ message FeaturesResponse {
   // Which device access kinds this laboratory serves (contract 1.5; docs/specs/2026-11-12-device-access-and-checks.md). Absent = an
   // agent older than the field: only http.
   AccessFeature access = 21;
+  // Activity reports (contract 2.5), off by default. Absent = an agent older than the field.
+  ActivityFeature activity = 22;
+}
+
+// ActivityFeature: enabled is true when the cluster keeps raw activity facts for GetLabGroupActivity (the chart value
+// activityReports.enabled). max_events and ring_minutes bound what the laboratory keeps per writer; a platform that pulls less often than
+// every ring_minutes may lose events (the response says so in gap).
+message ActivityFeature {
+  bool enabled = 1;
+  int32 max_events = 2;
+  int32 ring_minutes = 3;
 }
 
 // VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
@@ -1732,4 +1751,84 @@ message RegistryCredential {
   string registry = 1;  // registry host, optionally with a port ("index.docker.io", "ghcr.io"); no scheme, no path
   string username = 2;
   string password = 3;  // a password or token; required
+}
+
+// ---- activity reports (contract 2.5) -------------------------------------------------
+
+enum ActivityKind {
+  ACTIVITY_KIND_UNSPECIFIED = 0;
+  // Internet egress of a lab: one event per minute, source address and destination address and port. Deltas of that minute.
+  ACTIVITY_KIND_INTERNET_EGRESS = 1;
+  // A console session of a client on a device: an event when it opens and another when it ends, with the same session_id.
+  ACTIVITY_KIND_CONSOLE_SESSION = 2;
+  // The bytes one VPN client exchanged with one lab address in one minute. Deltas of that minute. Needs the iptables VPN firewall.
+  ACTIVITY_KIND_DEVICE_TOUCH = 3;
+}
+
+message GetLabGroupActivityRequest {
+  string lab_group_name = 1;
+  // Empty: from the oldest event the laboratory still keeps. Otherwise next_cursor of an earlier response, unchanged.
+  string cursor = 2;
+  // At most this many events (default 1000, at most 5000).
+  int32 limit = 3;
+  // Only these kinds (empty: all).
+  repeated ActivityKind kinds = 4;
+}
+
+message GetLabGroupActivityResponse {
+  // In time order; events of one writer keep their order.
+  repeated ActivityEvent events = 1;
+  // Pass it back to get the events after these. It is given even when events is empty.
+  string next_cursor = 2;
+  // More events are waiting: call again at once.
+  bool has_more = 3;
+  // The laboratory dropped events the cursor had not reached (a ring was full or too old): totals built from the events are a lower bound.
+  bool gap = 4;
+}
+
+// ActivityEvent is one raw fact. egress and touch are deltas of the minute that ends at at_ms (sum them); console is a point.
+message ActivityEvent {
+  int64 at_ms = 1;
+  string lab_name = 2;
+  oneof fact {
+    InternetEgress egress = 10;
+    ConsoleSession console = 11;
+    DeviceTouch touch = 12;
+  }
+}
+
+// InternetEgress: the traffic of a lab to the internet through its internet gateway (the TCP the gateway proxy carries). source_address is
+// the address the lab used. Which device owns it is for the platform to say: attribution inside a lab is best effort, because an author may
+// set any addresses, a DHCP server may run inside the lab and routing may be complex. The fact that a lab used the internet is reliable.
+message InternetEgress {
+  reserved 1;                 // was device (no lookup of the source device is made)
+  reserved "device";
+  string source_address = 2;
+  string dst_address = 3;
+  int32 dst_port = 4;
+  string protocol = 5;        // tcp
+  int64 bytes_up = 6;         // from the lab
+  int64 bytes_down = 7;       // to the lab
+  int64 first_seen_ms = 8;
+  int64 last_seen_ms = 9;
+  int64 connections = 10;
+}
+
+message ConsoleSession {
+  string session_id = 1;
+  string device = 2;
+  string client = 3;          // the LabGroupClient of the participant
+  int64 opened_at_ms = 4;
+  int64 closed_at_ms = 5;     // 0 on the opening event
+}
+
+// DeviceTouch: what one VPN client exchanged with one lab address (the address is of a lab device, or any address of the lab's network).
+message DeviceTouch {
+  string client = 1;
+  string dst_address = 2;
+  string protocol = 3;
+  int64 bytes_out = 4;        // from the client
+  int64 bytes_in = 5;         // from the lab
+  int64 first_seen_ms = 6;
+  int64 last_seen_ms = 7;
 }
