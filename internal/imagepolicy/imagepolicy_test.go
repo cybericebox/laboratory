@@ -1,6 +1,9 @@
 package imagepolicy
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCheck(t *testing.T) {
 	cases := []struct {
@@ -68,6 +71,25 @@ func TestAllowEntriesAreCanonical(t *testing.T) {
 	for ref, ok := range map[string]bool{"ghcr.io/acme/web": true, "ghcr.io:443/acme/web": true, "nginx": true, "ghcr.io:5000/acme/web": false} {
 		if err := p.Check(ref); (err == nil) != ok {
 			t.Errorf("%q: %v", ref, err)
+		}
+	}
+}
+
+// With the image cache on only the registries it serves can be named; a list that names the others loses them, and "*" or nothing means
+// exactly the served ones.
+func TestServedOnly(t *testing.T) {
+	served := []string{"docker.io", "ghcr.io", "registry.example.com:5000"}
+	for _, tc := range []struct {
+		allowed []string
+		want    string
+	}{
+		{nil, "[docker.io ghcr.io registry.example.com:5000]"},
+		{[]string{"*"}, "[docker.io ghcr.io registry.example.com:5000]"},
+		{[]string{"index.docker.io", "gcr.io", "GHCR.io"}, "[docker.io ghcr.io]"},
+		{[]string{"gcr.io"}, "[]"},
+	} {
+		if got := fmt.Sprint(ServedOnly(tc.allowed, served)); got != tc.want {
+			t.Errorf("%v: %s, want %s", tc.allowed, got, tc.want)
 		}
 	}
 }

@@ -217,6 +217,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "copy image pull secrets")
 		return ctrl.Result{}, err
 	}
+	if err := syncPlatformCacheSecret(ctx, r.Client, r.Mirror, r.ImagePullSecrets, ns); err != nil {
+		logger.Error(err, "write the platform pull secret of the image cache")
+		return ctrl.Result{}, err
+	}
 	if err := syncTenantPullSecret(ctx, r.Client, names.TenantOf(lg.Labels), ns); err != nil {
 		logger.Error(err, "copy the tenant's image pull secret")
 		return ctrl.Result{}, err
@@ -828,7 +832,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	vpnImage := r.cachedImage(ctx, ns, r.VPNImage)
+	vpnImage, err := r.cachedImage(ctx, ns, r.VPNImage)
+	if err != nil {
+		return err
+	}
 	clientSubnet, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return fmt.Errorf("derive VPN client subnet: %w", err)
@@ -847,7 +854,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ServiceAccountName: names.ComponentVPN,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
+					ImagePullSecrets:   r.groupPullSecretRefs(),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -957,7 +964,10 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	gatewayImage := r.cachedImage(ctx, ns, r.GatewayImage)
+	gatewayImage, err := r.cachedImage(ctx, ns, r.GatewayImage)
+	if err != nil {
+		return err
+	}
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: names.ComponentGateway, Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
@@ -972,7 +982,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					ServiceAccountName: names.ComponentGateway,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
+					ImagePullSecrets:   r.groupPullSecretRefs(),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -1449,10 +1459,14 @@ func isVPNPod(pod *corev1.Pod) bool {
 // cachedImage is the reference a new VPN or gateway pod of the group pulls:
 // through the image cache, pinned to the digest of the tag at this moment. When
 // the digest cannot be resolved the tag is used, and the failure is kept for the
-// group status (and the log).
-func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) string {
+// group status (and the log). With the cache on an image the cache cannot serve is
+// refused (imagecache.ErrNotCacheable), never pulled directly.
+func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) (string, error) {
+	if _, err := r.Mirror.RewriteRequired(image); err != nil {
+		return "", fmt.Errorf("group image: %w", err)
+	}
 	if r.Mirror.Prefix == "" || r.Mirror.Rewrite(image) == image {
-		return image
+		return image, nil // the cache is off, or the image is already the cache's own
 	}
 	digest := ""
 	if r.Resolver != nil {
@@ -1464,7 +1478,7 @@ func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) 
 			digest = d
 		}
 	}
-	return r.Mirror.RewritePinned(image, digest)
+	return r.Mirror.RewritePinned(image, digest), nil
 }
 
 func (r *LabGroupReconciler) notePinFailure(ns, what string) {

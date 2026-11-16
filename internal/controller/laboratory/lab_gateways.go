@@ -81,6 +81,12 @@ func (r *LabReconciler) validateRegistries(lab *laboratoryv1alpha1.Lab) error {
 		if err := imagepolicy.RegistryAllowed(r.AllowedRegistries, img); err != nil {
 			return fmt.Errorf("%s: device %q: %v", imagepolicy.ReasonRegistryNotAllowed, lab.Spec.Devices[i].Name, err)
 		}
+		// With the image cache on a container image either goes through it or is refused: there is no direct pull.
+		if lab.Spec.Devices[i].Type == laboratoryv1alpha1.DeviceTypeContainer {
+			if _, err := r.Mirror.RewriteRequired(img); err != nil {
+				return fmt.Errorf("%s: device %q: %v", imagepolicy.ReasonRegistryNotAllowed, lab.Spec.Devices[i].Name, err)
+			}
+		}
 	}
 	return nil
 }

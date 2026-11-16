@@ -76,6 +76,38 @@ func RegistryAllowed(registries []string, ref string) error {
 	return fmt.Errorf("%w: image %q comes from %s, which is not on this laboratory's list of allowed registries", ErrRegistryNotAllowed, ref, host)
 }
 
+// ServedOnly is the list of allowed registries for a laboratory whose image cache is on: the cache serves only the registries it knows,
+// so an image from any other is refused, never pulled directly. An empty list or "*" becomes the served registries; otherwise the
+// entries that are served stay, in the order given. The chart refuses a list with a registry the cache does not serve; this is the same
+// rule where the agent reads its configuration.
+func ServedOnly(allowed, served []string) []string {
+	any := len(allowed) == 0
+	for _, a := range allowed {
+		if strings.TrimSpace(a) == AnyRegistry {
+			any = true
+		}
+	}
+	var out []string
+	if any {
+		for _, s := range served {
+			if full, _ := canonicalHost(s); full != "" {
+				out = append(out, full)
+			}
+		}
+		return out
+	}
+	for _, a := range allowed {
+		full, _ := canonicalHost(a)
+		for _, s := range served {
+			if sf, _ := canonicalHost(s); sf == full && full != "" {
+				out = append(out, full)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // ErrNotPlatform is what Check wraps when PlatformOnly is on and the image is not a platform image by digest.
 var ErrNotPlatform = errors.New("image is not a platform image")
 

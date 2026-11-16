@@ -528,6 +528,9 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	if err := r.refuseUnbootstrappable(device); err != nil {
 		return err
 	}
+	if err := r.refuseUncached(device); err != nil {
+		return err
+	}
 	// Before the incarnation moves: a device that waits for its lab's pull Secret starts
 	// the same incarnation once it is there.
 	pullSecrets, err := r.devicePullSecrets(ctx, device)

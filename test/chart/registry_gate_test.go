@@ -259,3 +259,32 @@ func TestRegistryGateAllowedListWithTheE2EFlags(t *testing.T) {
 		t.Errorf("GATE_ALLOWED_REGISTRIES = %q: the gate must get a list that leaves the third registry out", got)
 	}
 }
+
+// With the image cache on every image goes through it, so every allowed registry (and the registry of every platform image) must be one
+// the cache serves, and "*" cannot be served: the chart refuses the install instead of leaving a registry that would be pulled directly.
+func TestCacheOnRefusesRegistriesItDoesNotServe(t *testing.T) {
+	cache := []string{"--set", "registry.cache.enabled=true"}
+	for name, tc := range map[string]struct {
+		extra []string
+		fail  string
+	}{
+		"default list":      {nil, ""},
+		"unserved registry": {[]string{"--set-json", `registry.allowedRegistries=["docker.io","gcr.io"]`}, `registry "gcr.io"`},
+		"any registry":      {[]string{"--set-json", `registry.allowedRegistries=["*"]`}, `"*" cannot be used`},
+		"served by extra": {[]string{"--set-json", `registry.allowedRegistries=["docker.io","reg.example.com:5000"]`,
+			"--set", "registry.cache.extraRegistries[0].name=reg.example.com:5000", "--set", "registry.cache.extraRegistries[0].url=https://reg.example.com:5000"}, ""},
+		"platform image off the list": {[]string{"--set", "vpn.image.repository=private.example.com/vpn"}, `registry "private.example.com"`},
+	} {
+		out, err := helmTemplate(t, append(append([]string{}, cache...), tc.extra...)...)
+		switch {
+		case tc.fail == "" && err != nil:
+			t.Errorf("%s: %v\n%s", name, err, out)
+		case tc.fail != "" && (err == nil || !strings.Contains(out, tc.fail)):
+			t.Errorf("%s: want a refusal with %q, got %v\n%s", name, tc.fail, err, out)
+		}
+	}
+	// with the cache off the list alone decides, "*" included
+	if _, err := helmTemplate(t, "--set-json", `registry.allowedRegistries=["*"]`); err != nil {
+		t.Errorf("cache off: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -319,15 +320,19 @@ func TestGroupImagePinning(t *testing.T) {
 	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 	g := &LabGroupReconciler{Mirror: rw, Resolver: &fakeResolver{digests: map[string]string{"ghcr.io/cybericebox/laboratory-lab:v1": digA}}}
 	ctx := context.Background()
-	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/c/ghcr.io/cybericebox/laboratory-lab@"+digA {
-		t.Fatal(got)
+	if got, err := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); err != nil || got != "localhost:5035/c/ghcr.io/cybericebox/laboratory-lab@"+digA {
+		t.Fatal(got, err)
 	}
 	g.Resolver = &fakeResolver{fail: map[string]bool{"ghcr.io/cybericebox/laboratory-lab:v1": true}}
-	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/c/ghcr.io/cybericebox/laboratory-lab:v1" {
-		t.Fatalf("a failed resolution falls back to the tag, got %s", got)
+	if got, err := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); err != nil || got != "localhost:5035/c/ghcr.io/cybericebox/laboratory-lab:v1" {
+		t.Fatalf("a failed resolution falls back to the tag, got %s %v", got, err)
 	}
-	if got := (&LabGroupReconciler{}).cachedImage(ctx, "ns", "ghcr.io/x/y:1"); got != "ghcr.io/x/y:1" {
-		t.Fatalf("cache off: %s", got)
+	if got, err := (&LabGroupReconciler{}).cachedImage(ctx, "ns", "ghcr.io/x/y:1"); err != nil || got != "ghcr.io/x/y:1" {
+		t.Fatalf("cache off: %s %v", got, err)
+	}
+	// With the cache on an image it cannot serve is refused, never pulled directly.
+	if got, err := g.cachedImage(ctx, "ns", "registry.example.com/x/y:1"); !errors.Is(err, imagecache.ErrNotCacheable) || got != "" {
+		t.Fatalf("a registry the cache does not serve: %q %v", got, err)
 	}
 	// The failure is kept for the group status once, with the image named.
 	w := g.takePinWarning("ns")

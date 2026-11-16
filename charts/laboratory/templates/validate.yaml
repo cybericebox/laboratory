@@ -227,6 +227,20 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "registry.cache: an upstream registry cannot be named %q (the repository namespaces lab, base and platform belong to the registry itself)" .name) }}
 {{- end }}
 {{- end }}
+{{- /* The cache is on: every image of a lab goes through it, none is pulled directly. So every registry a lab image may come from (the allowed
+list plus the registries of the platform's own images) must be one the cache serves, and "*" (any registry) cannot be served. */}}
+{{- if .Values.registry.cache.enabled }}
+{{- $served := include "laboratory.cacheRegistryNames" . | splitList "," }}
+{{- $allowed := include "laboratory.allowedRegistries" . }}
+{{- if eq $allowed "*" }}
+{{- fail "registry.allowedRegistries: \"*\" cannot be used with registry.cache.enabled: every image goes through the cache, so every allowed registry must be one the cache serves (registry.cache.registries / extraRegistries)" }}
+{{- end }}
+{{- range (splitList "," $allowed) }}
+{{- if and . (not (has . $served)) }}
+{{- fail (printf "registry %q is on registry.allowedRegistries (or is the registry of a platform image) but the image cache does not serve it: add it to registry.cache.extraRegistries with its url (served: %s)" . (join ", " $served)) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- range .Values.registry.platform.writerNamespaces }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString .)) }}
 {{- fail (printf "registry.platform.writerNamespaces: %q is not a namespace name" (toString .)) }}
