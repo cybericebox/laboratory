@@ -7,11 +7,21 @@ manifests.
 
 | Requirement | Version | Why |
 |---|---|---|
-| Kubernetes | **1.33 or newer** (the chart refuses an older cluster: `kubeVersion` in `Chart.yaml` and `templates/validate.yaml`) | device pods run in user namespaces (`spec.hostUsers: false`; below 1.33 the API server can drop the field silently and a device would run in the host user namespace), native sidecars, ValidatingAdmissionPolicy |
+| Kubernetes | **1.35 or newer** (the chart refuses an older cluster: `kubeVersion` in `Chart.yaml` and `templates/validate.yaml`) | KEP-2535 (`KubeletEnsureSecretPulledImages`, beta and on by default from 1.35, alpha and off in 1.33 and 1.34): the kubelet remembers which pull credentials pulled an image and, for a pod whose credentials are not in that record, goes to the registry instead of using the node's copy, so a tenant cannot start another tenant's private image that is already on the node; device pods run in user namespaces (`spec.hostUsers: false`, 1.33), native sidecars, ValidatingAdmissionPolicy |
 | Container runtime | containerd 2.x | user namespaces for pods |
 | Node kernel | 6.3 or newer | idmapped mounts for user-namespace pods |
-| `kubectl` | 1.33+ | |
+| `kubectl` | 1.35+ | |
 | `helm` | 3.12+ | |
+
+**Kubelet settings that go with Kubernetes 1.35** (the pull-credential check; nothing here is set by the chart, it is the kubelet's configuration):
+
+- `featureGates.KubeletEnsureSecretPulledImages: true` is the default from 1.35; do not switch it off.
+- `imagePullCredentialsVerificationPolicy`: the default `NeverVerifyPreloadedImages` is right (the platform preloads no tenant image); `AlwaysVerify` also verifies images the kubelet did not pull.
+- `imageMaximumGCAge` (default `0`, off): set it (for example `24h`). The kubelet's record of which credentials pulled an image has no time to live; it is deleted only when the image leaves the node. A pod
+  with the **same** credentials as an earlier pull is started without asking the registry, so a credential revoked upstream keeps starting new pods on a node that still holds the image. This is not
+  access for another tenant (other credentials are always checked), and it ends when the image is removed from the node: `imageMaximumGCAge` removes images unused for that long, the disk-pressure GC
+  (`imageGCHighThresholdPercent`, default 85) the rest. A rotation that must take effect uses a **new** pull Secret (a new name): the kubelet accepts a changed credential inside the same Secret
+  object without asking the registry. Running pods are never touched.
 
 With `devices.security.userNamespaces: true` (the default) the operator's admission policy also refuses any device pod without `hostUsers: false`, so a
 cluster that ignored the field would fail loudly instead of running devices as host root.
@@ -1859,7 +1869,7 @@ What the gateway may reach itself, and what the proxy connects to, is limited to
   container does not have. The VPN pod carries the annotation `network.cybericebox.com/conntrack-accounting: "true"` and the node-agent sets them in the
   pod's network namespace when it wires the pod (CNI ADD). If that fails the flow collector still counts attempts and replies, only bytes stay zero.
 - **User namespaces** (`devices.security.userNamespaces`, a hidden setting, default `true`): device pods run with `hostUsers: false`, so root in a device is
-  not root on the node. Needs Kubernetes 1.33+, containerd 2 and kernel 6.3+. Check on the cluster that device networking (the veth is moved into the
+  not root on the node. Needs Kubernetes 1.35+ (1.33+ for this field), containerd 2 and kernel 6.3+. Check on the cluster that device networking (the veth is moved into the
   pod namespace by the node-agent), state snapshots, `sudo` and setuid binaries, and images with UIDs above 65535 still work.
 - **Ephemeral storage** (`devices.security.ephemeralStorage`, 2Gi): the writable layer, logs and emptyDirs of one device. Without a limit a device can fill
   the node's disk and DiskPressure evicts other pods. The PID limit is a node setting: set the kubelet's `podPidsLimit` (`--pod-max-pids`) in the
@@ -2356,7 +2366,7 @@ straight from the API server instead of caching them, because an informer would 
 What remains, and why: the operator can still create a RoleBinding in any namespace to the three roles it may bind, so on its own RBAC cannot
 stop a compromised operator from giving itself its working role in, say, `kube-system`. That is the job of the admission policy:
 
-**Admission policy** (`operator.admissionPolicy.enabled`, default on; the chart needs Kubernetes 1.33+ anyway). Three `ValidatingAdmissionPolicy` objects, each with a
+**Admission policy** (`operator.admissionPolicy.enabled`, default on; the chart needs Kubernetes 1.35+ anyway). Three `ValidatingAdmissionPolicy` objects, each with a
 `Deny` binding, apply to the operator's ServiceAccount only (anyone else is unaffected):
 
 - `laboratory-operator-scope`: it may create, change and delete Secrets, ServiceAccounts, Services, Endpoints, pods, Deployments, DaemonSets,
@@ -2939,7 +2949,7 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
    The old Service is gone before a non-atomic `helm upgrade`: if that upgrade fails for another reason, the VPN has no Service until it is run again or rolled back.
 3. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
 4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
-   - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
+   - the cluster is Kubernetes 1.35 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
    - apart from step 2, nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
 
@@ -2999,7 +3009,7 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 
 ### The admission policies are required, and checked (R-8)
 
-- **The chart no longer skips the policies silently.** `operator.admissionPolicy.enabled` (default true) needs a ValidatingAdmissionPolicy cluster (the chart as a whole needs Kubernetes 1.33 or newer, and refuses an older one). The opt-out is explicit: `operator.admissionPolicy.enabled=false` accepts, on purpose, that the operator's ServiceAccount
+- **The chart no longer skips the policies silently.** `operator.admissionPolicy.enabled` (default true) needs a ValidatingAdmissionPolicy cluster (the chart as a whole needs Kubernetes 1.35 or newer, and refuses an older one). The opt-out is explicit: `operator.admissionPolicy.enabled=false` accepts, on purpose, that the operator's ServiceAccount
   can bind its role in any namespace.
 - **The operator checks at start** (`OPERATOR_REQUIRE_ADMISSION_POLICY`, set by the chart from the value above) that the three policies and their bindings exist
   and deny, and that they are enforced: it asks the API server, in dry run (nothing is written), for a RoleBinding in the namespace `default` and for a namespace

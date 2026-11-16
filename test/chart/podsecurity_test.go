@@ -384,20 +384,21 @@ func TestAgentReplicasAndInsecureFlag(t *testing.T) {
 	}
 }
 
-// C-16: the chart refuses a Kubernetes older than 1.33 (user namespaces for device pods, native sidecars, admission policies).
-func TestChartRefusesKubernetesBelow133(t *testing.T) {
-	for _, v := range []string{"1.29.0", "1.30.4", "1.32.9"} {
+// C-16: the chart refuses a Kubernetes older than 1.35 (the kubelet's check of pull credentials, KEP-2535; user namespaces for device pods,
+// native sidecars, admission policies).
+func TestChartRefusesKubernetesBelow135(t *testing.T) {
+	for _, v := range []string{"1.29.0", "1.32.9", "1.33.0", "1.34.7"} {
 		out, err := helmTemplate(t, "--kube-version", v, "-s", "templates/operator/configmap.yaml")
-		if err == nil || !strings.Contains(out, "1.33") {
+		if err == nil || !strings.Contains(out, "1.35") {
 			t.Errorf("%s must be refused with the required version in the message: %v\n%s", v, err, out)
 		}
 	}
-	if out, err := helmTemplate(t, "--kube-version", "1.33.0", "-s", "templates/operator/configmap.yaml"); err != nil {
-		t.Errorf("1.33.0 must render: %v\n%s", err, out)
+	if out, err := helmTemplate(t, "--kube-version", "1.35.0", "-s", "templates/operator/configmap.yaml"); err != nil {
+		t.Errorf("1.35.0 must render: %v\n%s", err, out)
 	}
 	data, err := os.ReadFile("../../charts/laboratory/Chart.yaml")
-	if err != nil || !strings.Contains(string(data), "kubeVersion: \">=1.33.0-0\"") {
-		t.Errorf("Chart.yaml must carry kubeVersion >=1.33.0-0: %v", err)
+	if err != nil || !strings.Contains(string(data), "kubeVersion: \">=1.35.0-0\"") {
+		t.Errorf("Chart.yaml must carry kubeVersion >=1.35.0-0: %v", err)
 	}
 }
 
