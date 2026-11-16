@@ -160,7 +160,7 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 	if o.isTag() {
 		// a tag moves: the one HEAD that resolves it is a fresh check too
 		started := c.Store.Now()
-		out, hdr, _ := c.Up.Head(ctx, reg, up, who.creds, who.hash)
+		out, hdr, _ := c.Up.Proof(ctx, reg, up, who.creds, who.hash)
 		c.M.checks.WithLabelValues(outcomeName(out)).Inc()
 		serve := c.Store.Record(key, who.tenant, out, started)
 		if !serve {
@@ -273,14 +273,15 @@ func (c *Cache) mountSource(repo, digest string) string {
 
 // proveBlob is the proof that THIS blob is in the requesting repository for the caller: one HEAD upstream with the caller's own
 // credentials, kept for MaxAge per credential, repository and digest. It stands before a blob that was not fetched for this
-// repository is linked in or served.
+// repository is linked in or served. Only a direct 200 proves it: a redirect or a 404 is inconclusive, nothing is linked in and the
+// blob is fetched through for this repository instead.
 func (c *Cache) proveBlob(ctx context.Context, reg Registry, o objectRef, who caller) bool {
 	k := BlobKey{Hash: who.hash, Repo: o.fullRepo(), Digest: o.Ref}
 	if c.Store.BlobProven(k) {
 		return true
 	}
 	started := c.Store.Now()
-	out, _, _ := c.Up.Head(ctx, reg, Object{Repo: o.Repo, Kind: kindBlobs, Ref: o.Ref}, who.creds, who.hash)
+	out, _, _ := c.Up.Proof(ctx, reg, Object{Repo: o.Repo, Kind: kindBlobs, Ref: o.Ref}, who.creds, who.hash)
 	c.M.checks.WithLabelValues("blob_" + outcomeName(out)).Inc()
 	if out != Allowed {
 		return false

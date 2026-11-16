@@ -67,19 +67,39 @@ type Object struct {
 func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.Ref }
 
 // Check is the proof of 5.2: the HEAD of the object with the pull's credentials (a token for repository:<repo>:pull first when the
-// registry asks for one). Only a 200 is Allowed. 401, 403 and a refused token are Denied (the credentials have no right to the
-// repository). 404 is NotFound: the object is not there, which says nothing about the repository (it must not become a refusal that
-// holds for every holder of the credentials). 429, 5xx, a timeout, DNS and anything else are Unreachable. A redirect is not a proof
-// (a registry may redirect without having looked at who asks): it is followed, without the Authorization header, and only a 200 at the
-// end is Allowed; a CDN that refuses is Unreachable, never a denial. A token alone is no proof either (Docker Hub gives an
-// empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials in the token cache (the HMAC
+// registry asks for one). Only a DIRECT 200 from the registry is Allowed. 401, 403 and a refused token are Denied, and so is a 404:
+// GHCR, Docker Hub and others answer 404, not 401, for a private repository the caller cannot read, so on the proof a 404 cannot be
+// told from a refusal (a 404 for an object fetched AFTER a valid proof is NotFound, see Fetch). 429, 5xx, a timeout, DNS and anything
+// else are Unreachable. A redirect is never a proof (a registry may redirect without having looked at who asks, and a 200 of a CDN says
+// nothing about the credentials): a redirected answer is inconclusive, Unreachable. A token alone is no proof either (Docker Hub gives
+// an empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials in the token cache (the HMAC
 // hash, never the secret).
 func (u *Upstream) Check(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, error) {
-	out, _, err := u.Head(ctx, reg, o, c, credKey)
+	out, _, err := u.Proof(ctx, reg, o, c, credKey)
 	return out, err
 }
 
-// Head is Check that also returns the headers of the answer (Docker-Content-Digest of a tag, Content-Length of a blob).
+// Proof is Check that also returns the headers of the answer (Docker-Content-Digest of a tag).
+func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, http.Header, error) {
+	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
+	if errors.Is(err, errTokenRefused) {
+		return Denied, nil, nil
+	}
+	if err != nil {
+		return Unreachable, nil, err
+	}
+	defer drain(resp)
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return Allowed, resp.Header.Clone(), nil
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
+		return Denied, nil, nil
+	}
+	return Unreachable, nil, nil // 3xx included: inconclusive
+}
+
+// Head is the HEAD of an object that is not a proof (the headers of a blob served after the decision was made): a redirect is followed
+// without Authorization and only a 200 at the end is Allowed.
 func (u *Upstream) Head(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, http.Header, error) {
 	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
@@ -96,7 +116,7 @@ func (u *Upstream) Head(ctx context.Context, reg Registry, o Object, c Creds, cr
 	return classify(resp.StatusCode, redirected), resp.Header.Clone(), nil
 }
 
-// classify is the meaning of a final answer. After a redirect the answer is the CDN's, not the registry's: only a 200 counts, and a
+// classify is the meaning of a final answer of a data transfer (never of a proof). After a redirect the answer is the CDN's, not the registry's: only a 200 counts, and a
 // refusal there is an outage of the transport, not a denial of the pull.
 func classify(code int, redirected bool) Outcome {
 	switch {
