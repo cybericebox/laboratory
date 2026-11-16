@@ -229,3 +229,44 @@ func sampleCount(t *testing.T, c prometheus.Collector, labels ...string) uint64 
 	}
 	return n
 }
+
+type staticDigest string
+
+func (s staticDigest) Resolve(context.Context, string) (string, error) { return string(s), nil }
+
+// The resolvers of labs' own credentials are separate sources: an answer got with one set is never given to another, one set made by two
+// labs is made once, and a set nobody asks for any more is forgotten.
+func TestCredentialSourcesAreSeparateAndForgotten(t *testing.T) {
+	now := time.Now()
+	a := &AsyncResolver{Sources: map[string]Resolver{OperatorSource: staticDigest("op")}, Now: func() time.Time { return now }, SuccessTTL: time.Minute}
+	made := 0
+	mk := func(d string) func() Resolver {
+		return func() Resolver { made++; return staticDigest(d) }
+	}
+	a.EnsureSource(CredentialSource("one"), mk("d1"))
+	a.EnsureSource(CredentialSource("one"), mk("other"))
+	a.EnsureSource(CredentialSource("two"), mk("d2"))
+	a.EnsureSource(OperatorSource, mk("hijack"))
+	if made != 2 {
+		t.Fatalf("a set is made once, the operator's source is never replaced: %d", made)
+	}
+	lookup := func(source string) string {
+		var l Lookup
+		waitFor(t, source, func() bool { l = a.Lookup(context.Background(), source, "nginx:1", "w"); return !l.Pending })
+		if l.Err != nil {
+			return "err"
+		}
+		return l.Digest
+	}
+	if got := []string{lookup(CredentialSource("one")), lookup(CredentialSource("two")), lookup(OperatorSource)}; got[0] != "d1" || got[1] != "d2" || got[2] != "op" {
+		t.Fatalf("each source answers with its own credentials: %v", got)
+	}
+	now = now.Add(3 * time.Minute) // past twice the success time: unused sets go at the next one made
+	a.EnsureSource(CredentialSource("three"), mk("d3"))
+	if l := a.Lookup(context.Background(), CredentialSource("one"), "other:1", "w"); l.Err == nil {
+		t.Fatal("an unused credential set is forgotten (the lab asks again with EnsureSource)")
+	}
+	if lookup(CredentialSource("three")) != "d3" {
+		t.Fatal("the new one works")
+	}
+}

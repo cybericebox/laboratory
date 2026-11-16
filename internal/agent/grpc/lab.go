@@ -94,10 +94,8 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	for id, v := range variants {
-		if h.features.CacheEnabled {
-			if err := requireUsernames(fmt.Sprintf("variant %q: ", id), v.creds); err != nil {
-				return nil, err
-			}
+		if err := h.checkCacheCredentials(id, v.creds); err != nil {
+			return nil, err
 		}
 		if err := gatewayspec.Validate(&v.spec, h.maxLabGateways()); err != nil {
 			return nil, invalid("variant %q: %v", id, err)
@@ -795,4 +793,12 @@ func (h *Handler) refusedBeforeCreate(ctx context.Context, items []*protobuf.Lab
 		return nil, err
 	}
 	return h.persistenceRefusals(ctx, items, variants, over)
+}
+
+// checkCacheCredentials refuses the credentials of a variant that the image cache cannot carry (a credential without a username).
+func (h *Handler) checkCacheCredentials(variant string, creds []*protobuf.RegistryCredential) error {
+	if !h.features.CacheEnabled {
+		return nil
+	}
+	return requireUsernames(fmt.Sprintf("variant %q: ", variant), creds)
 }

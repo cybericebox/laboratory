@@ -119,7 +119,7 @@ func TestDevicePodsGetTheTenantsPullSecretOnly(t *testing.T) {
 	}
 }
 
-// A tenant with registry credentials of its own goes through the cache too (the gate proves its pulls with them), unpinned.
+// A tenant with registry credentials of its own goes through the cache too (the gate proves its pulls with them).
 func TestTenantWithOwnCredentialsUsesTheImageCache(t *testing.T) {
 	ctx := context.Background()
 	for _, tenant := range []string{"acme", "plain", ""} {
@@ -134,9 +134,6 @@ func TestTenantWithOwnCredentialsUsesTheImageCache(t *testing.T) {
 		}
 		if !*lab.Status.ImageCache {
 			t.Errorf("tenant %q: every lab goes through the cache when it is on", tenant)
-		}
-		if tenant == "acme" && len(lab.Status.ImageDigests) != 0 {
-			t.Errorf("a tenant with credentials: no pinning: %v", lab.Status.ImageDigests)
 		}
 	}
 }

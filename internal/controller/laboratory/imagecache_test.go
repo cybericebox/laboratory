@@ -28,7 +28,7 @@ import (
 
 func cachedLabReconciler(t *testing.T, cache bool, objs ...client.Object) *LabReconciler {
 	t.Helper()
-	c := fake.NewClientBuilder().WithScheme(pruneScheme(t)).WithObjects(objs...).
+	c := fake.NewClientBuilder().WithScheme(secretScheme(t)).WithObjects(objs...).
 		WithStatusSubresource(&laboratoryv1alpha1.Lab{}).Build()
 	r := &LabReconciler{Client: c}
 	if cache {

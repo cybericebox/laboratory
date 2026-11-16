@@ -19,6 +19,7 @@ package manager
 import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
+	"github.com/google/go-containerregistry/pkg/authn"
 
 	"context"
 	"crypto/tls"
@@ -220,8 +221,8 @@ func Run() {
 			Platforms: platforms,
 		}
 		// A new lab does not wait for the registry inside its worker: its tags are resolved in the background, once for all labs, and
-		// the lab is woken when they are there. Only the operator's own pull secrets are used for them (a lab or tenant with
-		// credentials of its own does not use the cache), which is the one credential source here.
+		// the lab is woken when they are there. The operator's own pull secrets are the source for labs without credentials; a lab with
+		// credentials of its own (or its tenant's) adds a source of its own, made of those credentials only (EnsureSource).
 		pinEvents = make(chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab], 4096)
 		pinner = &imagecache.AsyncResolver{
 			Sources:     map[string]imagecache.Resolver{imagecache.OperatorSource: resolver},
@@ -353,8 +354,12 @@ func Run() {
 		State:                     statePolicy,
 		Mirror:                    mirror,
 		Pinner:                    pinner,
-		PinEvents:                 pinEvents,
-		NetConfigImage:            cfg.NetConfigImage,
+		CredentialResolver: func(kc authn.Keychain) imagecache.Resolver {
+			// the lab's own credentials only: the digest of a private image, asked of its registry directly
+			return &imagecache.RegistryResolver{Keychain: kc, TTL: cfg.Cache.PinTTL, Platforms: platforms}
+		},
+		PinEvents:      pinEvents,
+		NetConfigImage: cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
