@@ -15,6 +15,8 @@ import (
 type Gate struct {
 	proxy *httputil.ReverseProxy
 	zot   string
+	// Cache is the cache path (/v2/c/...). Without it that path is refused: zot is never reached by it.
+	Cache http.Handler
 }
 
 // New makes the gate for a zot at addr (host:port, plain HTTP, on the loopback of the pod).
@@ -42,6 +44,14 @@ func New(zotAddr string) (*Gate, error) {
 func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := checkPath(r.URL.EscapedPath()); err != nil {
 		http.Error(w, "bad request path", http.StatusBadRequest)
+		return
+	}
+	if isCache(r) {
+		if g.Cache == nil {
+			refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "the image cache is off", false)
+			return
+		}
+		g.Cache.ServeHTTP(w, r)
 		return
 	}
 	g.proxy.ServeHTTP(w, r)

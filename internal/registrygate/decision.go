@@ -96,7 +96,11 @@ func (s *Store) Lookup(k DecisionKey, tenant string) Action {
 	if age <= s.T.MaxAge {
 		return Serve
 	}
-	return ServeStale
+	if age <= s.T.StaleIfError {
+		return ServeStale
+	}
+	// older than any stale answer may be: ask upstream before serving, so an outage then ends in a refusal (5.2, point 5)
+	return Check
 }
 
 // Record stores the outcome of a fresh check and says whether the request may be served. An allow adds the tenant to the verified set
