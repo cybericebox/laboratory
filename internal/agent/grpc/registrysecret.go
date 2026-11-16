@@ -7,12 +7,16 @@ import (
 	"regexp"
 	"strings"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -57,6 +61,22 @@ func validateRegistryCredentials(creds []*protobuf.RegistryCredential) error {
 		}
 		if len(c.GetUsername()) > maxRegistryUsernameLen || strings.Contains(c.GetUsername(), ":") {
 			return invalid("registry_credentials[%d] (%s): username must be at most %d bytes without ':'", i, host, maxRegistryUsernameLen)
+		}
+	}
+	return nil
+}
+
+// requireUsernames refuses credentials without a username when the image cache is on: the cache writes the tenant into the username
+// ("<tenant>~<user>"), so a credential made of a token alone could never reach the registry through it, and the pod would fail to pull
+// later with a message that does not say why. The platform sees the refusal at creation, with the registry named.
+func requireUsernames(prefix string, creds []*protobuf.RegistryCredential) error {
+	for _, c := range creds {
+		if c.GetUsername() == "" {
+			st := status.Newf(codes.InvalidArgument, "%s%s: registry %s: credentials need a username for the image cache", prefix, client.ReasonCredentialNotSupported, c.GetRegistry())
+			if withInfo, err := st.WithDetails(&errdetails.ErrorInfo{Reason: client.ReasonCredentialNotSupported, Domain: client.ErrorDomain}); err == nil {
+				st = withInfo
+			}
+			return st.Err()
 		}
 	}
 	return nil

@@ -17,6 +17,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -276,5 +277,38 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	})
 	if err := NewHandler(nil, k2, nil).writeRegistrySecret(context.Background(), lab, []*protobuf.RegistryCredential{regCred("ghcr.io", "u", "p")}); !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("persistent conflict: %v", err)
+	}
+}
+
+// With the image cache on a credential without a username is refused where the lab is created, with a stable reason that names the
+// registry: the cache writes the tenant into the username, so such a credential could never pull, and the pod would only fail later.
+func TestCredentialsWithoutAUsernameAreRefusedWhileTheCacheIsOn(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k8s, "team-lab", "team-lab", nil)
+	req := &protobuf.CreateLabsRequest{
+		Variants: []*protobuf.LabVariant{{VariantId: "tok", SpecJson: specJSON("web"), RegistryCredentials: []*protobuf.RegistryCredential{regCred("ghcr.io", "", "token-only")}}},
+		Items:    []*protobuf.LabItem{{LabGroup: "team-lab", Name: "l1", VariantId: "tok"}},
+	}
+	if res, err := h.CreateLabs(ctx, req); err != nil {
+		t.Fatalf("with the cache off a token-only credential is accepted as before: %v %v", res, err)
+	}
+	h.features.CacheEnabled = true
+	req.Items[0].Name = "l2"
+	_, err := h.CreateLabs(ctx, req)
+	if status.Code(err) != codes.InvalidArgument || !client.IsCredentialNotSupported(err) ||
+		!strings.Contains(err.Error(), "registry ghcr.io") || !strings.Contains(err.Error(), `variant "tok"`) {
+		t.Fatalf("%v", err)
+	}
+	if strings.Contains(err.Error(), "token-only") {
+		t.Fatal("the secret never appears in an error")
+	}
+	if _, err := h.cs.LaboratoryV1alpha1().Labs("team-lab").Get(ctx, "l2", metav1.GetOptions{}); err == nil {
+		t.Fatal("nothing was created")
+	}
+	// the same for a prewarm call
+	h.SetPrewarm(PrewarmConfig{Enabled: true, RegistryAddr: "127.0.0.1:1", Registries: []string{"ghcr.io"}})
+	if _, err := h.PrewarmImages(ctx, &protobuf.PrewarmImagesRequest{Images: []string{"ghcr.io/o/a:1"}, RegistryCredentials: req.Variants[0].RegistryCredentials}); !client.IsCredentialNotSupported(err) {
+		t.Fatalf("prewarm: %v", err)
 	}
 }

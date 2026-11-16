@@ -134,6 +134,9 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 	if err := validateRegistryCredentials(in.GetRegistryCredentials()); err != nil {
 		return nil, err
 	}
+	if err := requireUsernames("", in.GetRegistryCredentials()); err != nil {
+		return nil, err
+	}
 	refuse := func(img string) (protobuf.PrewarmState, string) {
 		if err := policy.Check(img); err != nil {
 			return protobuf.PrewarmState_PREWARM_STATE_FAILED, err.Error()

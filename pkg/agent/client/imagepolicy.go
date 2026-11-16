@@ -26,6 +26,20 @@ func IsRegistryNotAllowed(err error) bool {
 	return hasReason(st, ReasonRegistryNotAllowed)
 }
 
+// ReasonCredentialNotSupported is the ErrorInfo reason (domain ErrorDomain, codes.InvalidArgument) of a request refused because a
+// registry credential has no username while the laboratory's image cache is on: the cache carries the tenant in the username
+// ("<tenant>~<user>"), so a credential made of a token alone cannot reach the registry through it. The message names the registry.
+const ReasonCredentialNotSupported = "CREDENTIAL_NOT_SUPPORTED"
+
+// IsCredentialNotSupported reports whether err is the refusal of a registry credential that has no username.
+func IsCredentialNotSupported(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		return false
+	}
+	return hasReason(st, ReasonCredentialNotSupported)
+}
+
 func hasReason(st *status.Status, reason string) bool {
 	for _, d := range st.Details() {
 		if info, ok := d.(*errdetails.ErrorInfo); ok && info.Domain == ErrorDomain && info.Reason == reason {
