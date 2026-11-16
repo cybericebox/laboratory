@@ -101,6 +101,8 @@ spec:
       value: {{ .Values.proxy.l7.livePerGroup | quote }}
     - name: LIVE_TOTAL
       value: {{ .Values.proxy.l7.liveTotal | quote }}
+    - name: ACTIVITY_REPORTS
+      value: {{ .Values.activityReports.enabled | quote }}
     - name: AUTH_RATE
       value: {{ .Values.proxy.l7.authRate | quote }}
     - name: AUTH_BURST

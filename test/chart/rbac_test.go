@@ -310,7 +310,9 @@ func TestProxyReportsRoleIsLeastPrivilege(t *testing.T) {
 			}
 		}
 	}
-	if len(got) != 2 || strings.Join(got["labtrafficreports"], ",") != "get,create" || strings.Join(got["labtrafficreports/status"], ",") != "update" {
+	// The two traffic reports and, for the console sessions of activity reports, the proxy's own LabActivityReport ring: the same verbs.
+	if len(got) != 4 || strings.Join(got["labtrafficreports"], ",") != "get,create" || strings.Join(got["labtrafficreports/status"], ",") != "update" ||
+		strings.Join(got["labactivityreports"], ",") != "get,create" || strings.Join(got["labactivityreports/status"], ",") != "update" {
 		t.Fatalf("proxy reports role = %v", got)
 	}
 }

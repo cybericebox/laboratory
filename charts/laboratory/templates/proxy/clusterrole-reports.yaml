@@ -14,6 +14,13 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports" ]
     verbs: [ "get", "create" ]
+  # Console sessions, only with activityReports.enabled: the replica keeps its own LabActivityReport ring (get, create, then status update).
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labactivityreports" ]
+    verbs: [ "get", "create" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labactivityreports/status" ]
+    verbs: [ "update" ]
   # The writer reads the report (get), creates it when missing (create) and replaces its status (status update): nothing else.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports/status" ]
