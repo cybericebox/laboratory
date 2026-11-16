@@ -1272,12 +1272,15 @@ agent:
   # Public domain for the agent's TLS certificate + TLSRoute hostname. Empty = ctl.<operator.baseDomain>.
   domain: ""
 
-  # Replicas of the agent. Two by default: the agent is the one door every tenant uses, and one replica that is restarted (or
-  # killed by an oversized request) takes every tenant's API and monitoring down with it. Each replica serves any call; the
-  # state that lives in memory (the image-prewarm progress, the Monitoring journal) is per replica and rebuilt when a client
-  # reconnects to the other one. A backend that uses reservations runs 1: the quota and fit checks of reservations are
-  # serialized inside one agent process only (DEPLOY.md, "Reservations through the agent").
-  replicas: 2
+  # Replicas of the agent. One by default: one platform is one client and one agent is enough; scale only if one cannot cope.
+  # The quota and fit checks of reservations are serialized inside one agent process only (a lock per tenant and per reservation,
+  # DEPLOY.md, "Reservations through the agent"), so a second replica can let two reservations past the quota together. The chart
+  # therefore REFUSES more than one replica unless multiReplicaAck is true: an explicit statement that this backend does not
+  # use reservations through the agent (or accepts that race). The state in memory (the image-prewarm progress, the Monitoring
+  # journal) is per replica and rebuilt when a client reconnects to another one.
+  replicas: 1
+  # Acknowledge that more than one replica is meant (see replicas). Needed only for replicas > 1.
+  multiReplicaAck: false
   podDisruptionBudget:
     enabled: true
     minAvailable: 1

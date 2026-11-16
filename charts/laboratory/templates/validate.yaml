@@ -242,3 +242,9 @@ at install time instead of shipping a broken deployment.
 {{- if and .Values.nodeAgent.enabled (not .Values.operator.admissionPolicy.enabled) }}
 {{- fail "nodeAgent.enabled needs operator.admissionPolicy.enabled=true: the policies keep the lg-* namespace boundary of cni-gate (a pod outside it goes to the real CNI without the node-agent) and confine the node-agent's writes. Without them a lab pod could land in a namespace the node-agent never wires." }}
 {{- end }}
+
+{{- /* One agent replica: the quota and fit checks of reservations are serialized inside one process (a lock per tenant and per reservation), so a
+       second replica can let two reservations past the quota together. More than one needs an explicit acknowledgement. */ -}}
+{{- if and .Values.agent.enabled (gt (int .Values.agent.replicas) 1) (not .Values.agent.multiReplicaAck) }}
+{{- fail (printf "agent.replicas is %d: the reservation quota and fit checks are serialized inside one agent process, so more than one replica can let two reservations past the quota together (DEPLOY.md, \"Reservations through the agent\"). Keep agent.replicas=1 (one platform is one client), or set agent.multiReplicaAck=true to state that this backend does not use reservations through the agent." (int .Values.agent.replicas)) }}
+{{- end }}

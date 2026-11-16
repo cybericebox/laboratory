@@ -1169,9 +1169,10 @@ accepted.
 **One agent replica for reservations.** The quota check and the fit check below are serialized inside one agent process
 (a lock per tenant, a lock per reservation), not across replicas. Two replicas that take calls of the same tenant at the
 same time may both let a reservation through the quota check, and nothing behind the agent checks the quota of
-reservations again. A backend that uses reservations therefore runs the agent with **`agent.replicas: 1`** (the chart
-default is 2 for availability; with one replica keep `podDisruptionBudget.minAvailable` at 0 or switch the budget off, or
-a node drain waits for it).
+reservations again. The chart default is therefore **`agent.replicas: 1`** (one platform is one client, one agent is enough;
+scale only if one cannot cope), and the chart **refuses more than one replica** unless `agent.multiReplicaAck=true` states
+that this backend does not use reservations through the agent. With one replica there is no PodDisruptionBudget (it would
+block every node drain); the agent restarts on the same terms as before, and the platform reconnects.
 
 **Groups and labs.** `LabGroupItem.reservation_id` and `LabItem.reservation_id` name the reservation; the agent writes
 the reserved label `laboratory.cybericebox.com/reservation` from the field (never from client labels: the prefix stays
@@ -2044,8 +2045,9 @@ The agent is reachable by anyone who can reach its host, so what a caller withou
 - **The token is found by a label.** The operator labels a Tenant with the start of its unused token's hash (`laboratory.cybericebox.com/enrollment-token`), so an
   Enroll costs one narrow, cached list instead of a read of every Tenant. A token issued before the label existed gets it when the operator next reconciles the Tenant
   (at its start): until then that token is not found, and the admin can ask for a new one.
-- **Two replicas** (`agent.replicas`, default 2) spread over nodes with a PodDisruptionBudget (`minAvailable: 1`): an agent that is restarted does not take every
-  tenant down. The Monitoring journal and the prewarm progress are per replica.
+- **One replica by default** (`agent.replicas: 1`, one platform is one client). More than one is refused unless `agent.multiReplicaAck=true` (reservation fit and quota
+  are serialized per process, see "Reservations through the agent"); acknowledged replicas are spread over nodes with a PodDisruptionBudget (`minAvailable: 1`). The Monitoring
+  journal and the prewarm progress are per replica.
 - **mTLS off is development only**: the agent always serves TLS and asks for client certificates; the one switch `agent.allowInsecure=true`
   (`AGENT_ALLOW_INSECURE=true`) turns the client-certificate check off and makes every caller the default tenant. (`agent.mtls.enabled`, `AGENT_TLS_ENABLED` and
   `AGENT_MTLS_ENABLED` are gone.)
