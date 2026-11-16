@@ -145,7 +145,9 @@ func (c *Collector) rollLocked() {
 	}
 	c.start = now
 	c.rows, c.caps, c.denials = map[rowKey]*Row{}, map[capKey]int64{}, map[capKey]int64{}
-	c.flows = map[flowKey]*FlowRow{}
+	if c.Detail {
+		c.flows = map[flowKey]*FlowRow{}
+	}
 }
 
 func (c *Collector) row(lab, host string) *Row {

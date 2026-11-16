@@ -1,6 +1,7 @@
 package flowacct
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 	"time"
@@ -23,6 +24,12 @@ func TestTouchesAreOffByDefault(t *testing.T) {
 	if got := c.TakeTouches(t0.Add(2 * time.Minute)); len(got) != 0 {
 		t.Fatalf("touches = %+v", got)
 	}
+	// off is a true no-op: not even the maps exist
+	if c.touchLast != nil || c.touchBucket != nil || c.touchDone != nil {
+		t.Fatalf("state with touches off: %v %v %v", c.touchLast, c.touchBucket, c.touchDone)
+	}
+	r := &Reporter{Collector: c}
+	r.emitTouches(context.TODO(), t0.Add(2*time.Minute)) // no hub: returns at once
 }
 
 // The bytes a flow moves are added per minute and per (client, lab address); a finished minute is taken once.

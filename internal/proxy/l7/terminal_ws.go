@@ -83,11 +83,16 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	browser.SetReadLimit(wire.MaxFrame)
 	defer func() { _ = browser.CloseNow() }()
 
-	id := newSessionID()
-	opened := time.Now()
-	h.reportConsole(sess, id, opened, time.Time{})
+	var id string
+	var opened time.Time
+	if h.activity != nil { // off: no id, no clock reading
+		id, opened = newSessionID(), time.Now()
+		h.reportConsole(sess, id, opened, time.Time{})
+	}
 	reason := h.relayConsole(ctx, browser, sess, entry)
-	h.reportConsole(sess, id, opened, time.Now())
+	if h.activity != nil {
+		h.reportConsole(sess, id, opened, time.Now())
+	}
 	// The console is over for everything that looks it up before the browser has even acknowledged the close.
 	t.remove(sess)
 	t.cfg.Log.Info("console end", "reason", reason, "lab", sess.lab, "device", sess.dev, "namespace", sess.namespace, "client", sess.client, "group", sess.group,

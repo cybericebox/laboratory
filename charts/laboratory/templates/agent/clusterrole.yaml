@@ -73,10 +73,10 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports", "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
     verbs: [ "get", "list", "watch" ]
-  # The activity reports (activityReports.enabled): GetLabGroupActivity reads the rings of the writers, and deletes the report of a writer that is gone.
+  # The activity reports (activityReports.enabled): GetLabGroupActivity lists the rings of the writers on demand (no watch, no informer), and deletes the report of a writer that is gone.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labactivityreports" ]
-    verbs: [ "get", "list", "watch", "delete" ]
+    verbs: [ "get", "list", "delete" ]
   # ResetDevices and RescueDevices set the state controls in a device's spec.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "devices" ]
