@@ -2209,6 +2209,17 @@ local-path volume, keeps its owner and zot fails with `open /var/lib/registry/ca
 The registry pod therefore has one init container, `own-data`, that runs `chown -R 65532:65532 /var/lib/registry` as root with only the CHOWN, DAC_OVERRIDE
 and FOWNER capabilities and a read-only root file system, and does nothing else. It runs on every start (a no-op once the volume is owned), so no manual step is needed; on a large volume the first start takes as long as the chown.
 
+### The registry gate
+
+The registry pod has two containers: **zot** (the storage) and the **gate** (`/node registry-gate`, the image of the node). The Service `laboratory-registry:5000` targets the gate's port 5000; zot listens on
+`127.0.0.1:5001` of the pod only, so there is no path to zot that does not pass the gate (and no kubelet probe on zot: the gate's `/readyz`, on port 5002, answers only while zot accepts a connection, so a pod
+whose zot is down is not ready and the Service stops sending it requests). The relay on the nodes (`127.0.0.1:5035`), the operator and the agent are unchanged; they reach the same Service name and port.
+
+What the gate does today: it passes every request under `/v2` to zot unchanged, with the client's own `Authorization` (zot's accounts decide), keeping the client's `Host` (zot builds the `Location` of an upload
+from it), streaming blobs and never buffering them. It answers `400` to a path that two components could read differently (a `.` or `..` segment, an empty segment, an encoded slash, backslash or dot, a control
+character, anything outside `/v2`) and `502` when zot is down. It reads no Secret, mounts no volume and writes nothing. Resources: `registry.gate.resources`. The per-pull check of the image cache, the fill and the decision
+table are built on this (docs/research/2026-11-16-zot-tenant-cache.md); zot's own sync still fills the cache until then.
+
 ### Registry volume: keep the data when the claim goes
 
 The registry volume (`laboratory-registry`, `registry.size`) holds every device snapshot. `helm.sh/resource-policy: keep` protects the claim from
