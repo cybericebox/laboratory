@@ -124,6 +124,14 @@ func TestRegistryGateCacheWiring(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, vars[k].Value, want)
 		}
 	}
+	// the gate refuses a registry that is not on registry.allowedRegistries before any upstream call: the same list as the operator's
+	if got := vars["GATE_ALLOWED_REGISTRIES"].Value; !strings.Contains(","+got+",", ",ghcr.io,") || strings.Contains(got, "*") {
+		t.Errorf("GATE_ALLOWED_REGISTRIES = %q: want the chart's allowedRegistries", got)
+	}
+	any := containerNamed(registryPod(t, "--set", "registry.cache.enabled=true", "--set-json", `registry.allowedRegistries=["*"]`), "gate")
+	if got := envOf(*any)["GATE_ALLOWED_REGISTRIES"].Value; got != "*" {
+		t.Errorf("a list with * allows every registry: %q", got)
+	}
 	mounts := map[string]corev1.VolumeMount{}
 	for _, m := range gate.VolumeMounts {
 		mounts[m.Name] = m

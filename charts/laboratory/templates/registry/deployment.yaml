@@ -110,6 +110,9 @@ spec:
               value: "true"
             - name: GATE_TLS_LISTEN
               value: ":5443"
+            # registry.allowedRegistries (plus the platform's own images): a registry that is not on it is refused before any upstream call.
+            - name: GATE_ALLOWED_REGISTRIES
+              value: {{ include "laboratory.allowedRegistries" . | quote }}
             - name: GATE_DECISION_MAX_AGE
               value: {{ $r.cache.decisionMaxAge | quote }}
             - name: GATE_DENIED_FOR

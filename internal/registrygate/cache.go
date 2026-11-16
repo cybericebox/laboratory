@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
 )
 
 const (
@@ -29,6 +31,9 @@ const (
 // shared copy in zot that is served only after the proof (docs/research/2026-11-16-zot-tenant-cache.md, section 5).
 type Cache struct {
 	Registries *RegistrySet
+	// Allowed is the laboratory's list of registries lab images may come from (the chart's registry.allowedRegistries). A registry that is
+	// not on it is refused before anything else, and no upstream is called for it. Empty or "*": every registry of Registries.
+	Allowed []string
 	// Key is the secret of the credential hash: HMAC-SHA256(Key, registry, user, secret). The hash never leaves the process.
 	Key   []byte
 	Up    *Upstream
@@ -93,7 +98,7 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reg, ok := c.Registries.Get(o.Registry)
-	if !ok {
+	if !ok || !c.registryAllowed(o.Registry) {
 		c.M.refusals.WithLabelValues("not_allowed").Inc()
 		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
 		return
@@ -618,4 +623,18 @@ func (c *Cache) streamThrough(w http.ResponseWriter, r *http.Request, reg Regist
 	}
 	defer func() { _ = resp.Body.Close() }()
 	streamFrom(w, r, resp, digest)
+}
+
+// registryAllowed says whether the registry is on the laboratory's allowed list (the same canonical spelling as the operator and the agent).
+func (c *Cache) registryAllowed(name string) bool {
+	if len(c.Allowed) == 0 {
+		return true
+	}
+	want := imagepolicy.CanonicalRegistry(name)
+	for _, a := range c.Allowed {
+		if a = strings.TrimSpace(a); a == imagepolicy.AnyRegistry || imagepolicy.CanonicalRegistry(a) == want {
+			return true
+		}
+	}
+	return false
 }
