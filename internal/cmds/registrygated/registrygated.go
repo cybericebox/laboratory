@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,11 +24,43 @@ import (
 
 // Config comes from the environment the chart sets.
 type Config struct {
-	// Listen is the registry port of the pod (the Service's target); HealthListen the port of the probes.
+	// Listen is the registry port of the pod (the Service's target); HealthListen the port of the probes and the metrics.
 	Listen       string `env:"GATE_LISTEN" envDefault:":5000"`
 	HealthListen string `env:"GATE_HEALTH_LISTEN" envDefault:":5002"`
 	// Zot is where zot listens: the loopback of the pod.
 	Zot string `env:"GATE_ZOT_ADDR" envDefault:"127.0.0.1:5001"`
+
+	// CacheEnabled turns the cache path (/v2/c/...) on. Off, that path answers 404 and the rest is the pass-through.
+	CacheEnabled bool `env:"GATE_CACHE_ENABLED" envDefault:"false"`
+	// RegistriesFile is the list of upstream registries the cache may call (JSON), reloaded when it changes.
+	RegistriesFile string `env:"GATE_REGISTRIES_FILE" envDefault:"/etc/gate/registries.json"`
+	// KeyFile is the secret of the credential hash; ZotUser and ZotPassFile are the gate's own account in zot.
+	KeyFile     string `env:"GATE_KEY_FILE" envDefault:"/etc/gate-secret/key"`
+	ZotUser     string `env:"GATE_ZOT_USER" envDefault:"gate"`
+	ZotPassFile string `env:"GATE_ZOT_PASSWORD_FILE" envDefault:"/etc/gate-secret/password"`
+	// AnonymousFillFile is an optional dockerconfigjson: a login per registry for filling images proved public.
+	AnonymousFillFile string `env:"GATE_ANONYMOUS_FILL_FILE"`
+
+	// The decision table (5.2).
+	MaxAge       time.Duration `env:"GATE_DECISION_MAX_AGE" envDefault:"2m"`
+	DeniedFor    time.Duration `env:"GATE_DENIED_FOR" envDefault:"30s"`
+	StaleIfError time.Duration `env:"GATE_STALE_IF_ERROR" envDefault:"10m"`
+
+	// DataDir is the volume of zot, mounted read-only to measure it; DiskHighWater is the percent above which a miss is not stored.
+	DataDir       string `env:"GATE_DATA_DIR" envDefault:"/var/lib/registry"`
+	DiskHighWater int    `env:"GATE_DISK_HIGH_WATER" envDefault:"90"`
+	// UpstreamTimeout bounds the wait for an upstream answer (a blob body has no deadline of its own).
+	UpstreamTimeout time.Duration `env:"GATE_UPSTREAM_TIMEOUT" envDefault:"30s"`
+}
+
+func fatal(log interface{ Error(error, string, ...any) }, err error, msg string) {
+	log.Error(err, msg)
+	os.Exit(1)
+}
+
+func readSecret(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	return strings.TrimSpace(string(b)), err
 }
 
 // Run is the command "/node registry-gate".
@@ -36,16 +69,20 @@ func Run() {
 	log := ctrl.Log.WithName("registry-gate")
 	var cfg Config
 	if err := config.Load(&cfg); err != nil {
-		log.Error(err, "load config")
-		os.Exit(1)
+		fatal(log, err, "load config")
 	}
 	gate, err := registrygate.New(cfg.Zot)
 	if err != nil {
-		log.Error(err, "gate")
-		os.Exit(1)
+		fatal(log, err, "gate")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	metrics := registrygate.NewMetrics()
+	gate.Metrics = metrics.Handler()
+	if cfg.CacheEnabled {
+		gate.Cache = buildCache(ctx, cfg, metrics, log)
+	}
 
 	servers := []*http.Server{
 		registrygate.NewServer(cfg.Listen, gate),
@@ -55,12 +92,11 @@ func Run() {
 	for _, s := range servers {
 		go func() { errs <- s.ListenAndServe() }()
 	}
-	log.Info("registry gate", "listen", cfg.Listen, "health", cfg.HealthListen, "zot", cfg.Zot)
+	log.Info("registry gate", "listen", cfg.Listen, "health", cfg.HealthListen, "zot", cfg.Zot, "cache", cfg.CacheEnabled)
 	select {
 	case err := <-errs:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Error(err, "serve")
-			os.Exit(1)
+			fatal(log, err, "serve")
 		}
 	case <-ctx.Done():
 	}
@@ -69,4 +105,57 @@ func Run() {
 	for _, s := range servers {
 		_ = s.Shutdown(shutdown)
 	}
+}
+
+func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log interface {
+	Error(error, string, ...any)
+	Info(string, ...any)
+}) http.Handler {
+	key, err := readSecret(cfg.KeyFile)
+	if err != nil || key == "" {
+		fatal(log, err, "read the credential hash key")
+	}
+	pass, err := readSecret(cfg.ZotPassFile)
+	if err != nil || pass == "" {
+		fatal(log, err, "read the zot password")
+	}
+	regs := &registrygate.RegistrySet{}
+	if err := regs.Watch(ctx, cfg.RegistriesFile, 10*time.Second, func(err error) {
+		log.Error(err, "the list of registries is not reloaded; the old one stays in force")
+	}); err != nil {
+		fatal(log, err, "load the list of registries")
+	}
+	store := registrygate.NewStore(registrygate.Timing{MaxAge: cfg.MaxAge, DeniedFor: cfg.DeniedFor, StaleIfError: cfg.StaleIfError})
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				store.Forget()
+			}
+		}
+	}()
+	c := registrygate.NewCache(regs, []byte(key), registrygate.NewUpstream(cfg.UpstreamTimeout),
+		registrygate.NewZot(cfg.Zot, cfg.ZotUser, pass), store, m)
+	disk := &registrygate.DiskWatch{Path: cfg.DataDir, HighWater: cfg.DiskHighWater}
+	c.DiskFull = disk.Full
+	if cfg.AnonymousFillFile != "" {
+		data, err := os.ReadFile(cfg.AnonymousFillFile)
+		if err != nil {
+			fatal(log, err, "read the anonymous fill credentials")
+		}
+		var list []registrygate.Registry
+		for _, n := range regs.Names() {
+			if r, ok := regs.Get(n); ok {
+				list = append(list, r)
+			}
+		}
+		if c.Fill, err = registrygate.ParseAnonymousFill(data, list); err != nil {
+			fatal(log, err, "parse the anonymous fill credentials")
+		}
+	}
+	return c
 }

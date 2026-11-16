@@ -40,11 +40,14 @@ type token struct {
 	expires time.Time
 }
 
-// NewUpstream is an upstream client that never follows a redirect by itself: the gate decides what a redirect may carry.
-func NewUpstream(timeout time.Duration) *Upstream {
+// NewUpstream is an upstream client that never follows a redirect by itself: the gate decides what a redirect may carry. headerTimeout
+// bounds the wait for the answer of a request; the body of a blob has no deadline of its own (it is as long as the layer is).
+func NewUpstream(headerTimeout time.Duration) *Upstream {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = headerTimeout
 	return &Upstream{
 		HTTP: &http.Client{
-			Timeout:       timeout,
+			Transport:     tr,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		Now:    time.Now,

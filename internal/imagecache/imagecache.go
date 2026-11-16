@@ -1,10 +1,13 @@
 // Package imagecache rewrites image references so the nodes pull them through
-// the platform's in-cluster pull-through cache (zot with on-demand sync).
+// the platform's in-cluster image cache (the registry gate in front of zot).
 //
 // The cache is served on every node as localhost:<port> by the node-agent's
 // registry forwarder. A reference REG/repo:tag becomes
-// localhost:<port>/REG/repo:tag; the cache maps the REG prefix back to the
-// upstream registry, so the layout needs no per-image configuration.
+// localhost:<port>/c/REG/repo:tag; the gate maps the REG segment back to the
+// upstream registry of its list (allowed registries), so the layout needs no
+// per-image configuration. The c/ segment keeps the cache apart from the
+// snapshots and platform images, which the gate does not check against an
+// upstream.
 package imagecache
 
 import (
@@ -12,6 +15,9 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 )
+
+// CacheSegment is the first path segment of the cache under the registry's address.
+const CacheSegment = "c"
 
 // DefaultRegistries are the upstream registries the chart configures by default.
 var DefaultRegistries = []string{"docker.io", "ghcr.io", "quay.io", "registry.k8s.io"}
@@ -50,7 +56,7 @@ func (r Rewriter) Rewrite(ref string) string {
 	if !r.serves(reg) {
 		return ref
 	}
-	out := r.Prefix + "/" + reg + "/" + parsed.Context().RepositoryStr()
+	out := r.Prefix + "/" + CacheSegment + "/" + reg + "/" + parsed.Context().RepositoryStr()
 	switch p := parsed.(type) {
 	case name.Digest:
 		return out + "@" + p.DigestStr()

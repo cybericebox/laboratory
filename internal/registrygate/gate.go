@@ -3,6 +3,7 @@ package registrygate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -15,6 +16,8 @@ import (
 type Gate struct {
 	proxy *httputil.ReverseProxy
 	zot   string
+	// Metrics is served on the health port, when set.
+	Metrics http.Handler
 	// Cache is the cache path (/v2/c/...). Without it that path is refused: zot is never reached by it.
 	Cache http.Handler
 }
@@ -68,10 +71,39 @@ func (g *Gate) Ready(ctx context.Context) error {
 	return c.Close()
 }
 
-// HealthHandler serves /healthz (the process answers) and /readyz (zot answers) on a port of its own.
+// zotAlive asks zot for its API root over the loopback: any answer below 500 (401 is zot asking for credentials) shows it serves.
+func (g *Gate) zotAlive(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+g.zot+"/v2/", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusInternalServerError {
+		return fmt.Errorf("zot answers %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// HealthHandler serves /healthz (the gate answers and zot answers on /v2/), /readyz (zot accepts a connection) and, when there are
+// metrics, /metrics, on a port of its own.
 func (g *Gate) HealthHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := g.zotAlive(r.Context()); err != nil {
+			http.Error(w, "the registry store does not answer", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
+	if g.Metrics != nil {
+		mux.Handle("/metrics", g.Metrics)
+	}
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := g.Ready(r.Context()); err != nil {
 			http.Error(w, "the registry store is not reachable", http.StatusServiceUnavailable)

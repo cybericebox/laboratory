@@ -79,8 +79,8 @@ func TestGateAnswers502WhenZotIsDownAndReadyzFollows(t *testing.T) {
 		t.Fatal("zot is up: both probes must pass")
 	}
 	srv.Close()
-	if probe("/healthz") != http.StatusOK {
-		t.Fatal("liveness is the gate's own")
+	if probe("/healthz") != http.StatusServiceUnavailable {
+		t.Fatal("liveness includes zot's /v2/: with zot gone it fails")
 	}
 	if probe("/readyz") != http.StatusServiceUnavailable {
 		t.Fatal("readiness must follow zot")
