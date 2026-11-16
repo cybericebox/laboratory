@@ -49,8 +49,8 @@ func TestCheckPublicPrivateAndWrongCredentials(t *testing.T) {
 	if o, _ := u.Check(ctx, reg, obj("org/private", dPriv), Creds{"alice", "wrong"}, "h-wrong"); o != Denied {
 		t.Fatalf("a wrong password is refused by the token endpoint: %v", o)
 	}
-	if o, _ := u.Check(ctx, reg, obj("org/private", "sha256:00"), Creds{"alice", "pw"}, "h-alice"); o != NotFound {
-		t.Fatalf("an object that does not exist is NotFound, not a refusal of the repository: %v", o)
+	if o, _ := u.Check(ctx, reg, obj("org/private", "sha256:00"), Creds{"alice", "pw"}, "h-alice"); o != Denied {
+		t.Fatalf("a 404 on the proof is a refusal (GHCR and Docker Hub hide a private repository behind it): %v", o)
 	}
 }
 
@@ -142,9 +142,9 @@ func TestFetchRefusesARedirectToAnotherHostOverPlainHTTP(t *testing.T) {
 	}
 }
 
-// A redirect is no proof of access: a registry may redirect without looking at who asks. It is followed without Authorization and only
-// a 200 at the end is Allowed; a CDN that refuses or fails is an outage of the transport, never a denial, and a redirect over plain
-// http to another host is not followed.
+// A redirect is no proof of access: a registry may redirect without looking at who asks, and a 200 of a CDN says nothing about the
+// credentials. The proof must be a direct 200; a redirected answer, whatever it ends in, is inconclusive (Unreachable), never Allowed
+// and never a denial. A redirect over plain http to another host is not followed at all.
 func TestARedirectIsNoProof(t *testing.T) {
 	f := newFakeUpstream(t)
 	f.users["alice"] = "pw"
@@ -156,14 +156,14 @@ func TestARedirectIsNoProof(t *testing.T) {
 	reg := f.registry("up")
 	ctx := context.Background()
 
-	if o, _ := u.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o != Allowed || len(f.authSeen) != 1 || f.authSeen[0] != "" {
-		t.Fatalf("followed without Authorization, 200 at the end: %v %q", o, f.authSeen)
-	}
-	for _, code := range []int{401, 403, 404, 500} {
+	for _, code := range []int{0, 401, 403, 404, 500} {
 		f.cdnStatus = code
 		if o, _ := u.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o != Unreachable {
-			t.Errorf("the CDN answers %d: that is not the registry's word, the outcome is Unreachable, got %v", code, o)
+			t.Errorf("redirected manifest (the CDN answers %d): inconclusive, got %v", code, o)
 		}
+	}
+	if len(f.authSeen) != 0 {
+		t.Fatalf("the gate must not follow a redirect for a proof: %q", f.authSeen)
 	}
 	f.cdnStatus = 0
 	f.plainCDN = true
@@ -172,4 +172,20 @@ func TestARedirectIsNoProof(t *testing.T) {
 	if o, _ := u2.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o == Allowed {
 		t.Fatalf("a redirect over plain http to another host is not followed: %v", o)
 	}
+}
+
+// A data transfer (Fetch) after the decision may follow a redirect, without Authorization.
+func TestAFetchFollowsARedirectWithoutAuthorization(t *testing.T) {
+	f := newFakeUpstream(t)
+	f.users["alice"] = "pw"
+	f.repos["org/private"] = map[string]bool{"alice": true}
+	d := f.put("org/private", "blobs", []byte("layer"))
+	f.redirect = true
+	u := NewUpstream(5 * time.Second)
+	u.HTTP.Transport = f.cdn.Client().Transport
+	resp, o, _ := u.Fetch(context.Background(), f.registry("up"), Object{Repo: "org/private", Kind: "blobs", Ref: d}, Creds{"alice", "pw"}, "h")
+	if o != Allowed || resp == nil || len(f.authSeen) != 1 || f.authSeen[0] != "" {
+		t.Fatalf("%v %q", o, f.authSeen)
+	}
+	_ = resp.Body.Close()
 }

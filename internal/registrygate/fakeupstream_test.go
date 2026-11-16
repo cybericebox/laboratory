@@ -35,7 +35,9 @@ type fakeUpstream struct {
 	plainCDN   bool // ... to the plain-http one
 	// redirectManifests: manifests redirect to the CDN too, whoever asks (a registry that redirects without looking at who asks).
 	redirectManifests bool
-	cdnStatus         int // when set, the CDN answers this instead of the object
+	headStatus        int  // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
+	redirectHeads     bool // blob HEADs redirect too (not only the GET)
+	cdnStatus         int  // when set, the CDN answers this instead of the object
 	calls             map[string]*atomic.Int64
 	authSeen          []string // Authorization header of every request to the CDN
 }
@@ -187,13 +189,17 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	body, found := f.objects[r.URL.Path]
-	redirect := f.redirect
+	redirect, redirectHeads, headStatus := f.redirect, f.redirectHeads, f.headStatus
 	f.mu.Unlock()
+	if headStatus != 0 && r.Method == http.MethodHead {
+		w.WriteHeader(headStatus)
+		return
+	}
 	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if redirect && strings.Contains(r.URL.Path, "/blobs/") && r.Method == http.MethodGet {
+	if redirect && strings.Contains(r.URL.Path, "/blobs/") && (r.Method == http.MethodGet || redirectHeads) {
 		target := f.cdn.URL
 		if f.plainCDN {
 			target = f.cdnPlain.URL

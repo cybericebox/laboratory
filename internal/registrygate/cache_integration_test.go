@@ -453,24 +453,90 @@ func TestMountNeedsAndCachesTheBlobProof(t *testing.T) {
 	}
 }
 
-// A missing object does not become a refusal of the repository for everybody who holds the credentials.
+// An object that is missing AFTER a valid proof is a 404 for that object and does not become a refusal of the repository.
 func TestAMissingObjectDoesNotPoisonTheDecision(t *testing.T) {
 	r := newRig(t)
 	ld := r.up.put("org/private", "blobs", []byte("a real layer"))
 	missing := "sha256:" + strings.Repeat("0", 64)
+	if code, _, _ := r.pull("GET", bpath("org/private", ld), alice, "pw", nil); code != 200 { // the proof
+		t.Fatalf("%d", code)
+	}
 	if code, _, _ := r.pull("GET", bpath("org/private", missing), alice, "pw", nil); code != 404 {
 		t.Fatalf("a digest the repository does not have: %d", code)
 	}
-	if got := r.cache.Store.Lookup(DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}, "t1"); got == Refuse {
-		t.Fatal("a 404 must not become a refusal")
+	if got := r.cache.Store.Lookup(DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}, "t1"); got != Serve {
+		t.Fatalf("a 404 after the proof must not change the decision: %v", got)
 	}
-	for _, tenant := range []string{alice, aliceT} {
-		if code, _, _ := r.pull("GET", bpath("org/private", ld), tenant, "pw", nil); code != 200 {
-			t.Fatalf("the same credentials still work for %s: %d", tenant, code)
-		}
-	}
-	// ... and the reverse: a repository the credentials have no right to is still refused (401), not hidden as a 404
+	// ... and a repository the credentials have no right to is refused (401)
 	if code, _, _ := r.pull("GET", bpath("org/private", ld), mal, "pw", nil); code != 401 {
 		t.Fatalf("a refusal stays a refusal: %d", code)
+	}
+}
+
+// A registry that answers 404 for a private repository one cannot read (GHCR, Docker Hub): the 404 on the proof is a denial.
+func TestA404OnTheProofIsDenied(t *testing.T) {
+	r := newRig(t)
+	ld := r.up.put("org/private", "blobs", []byte("layer"))
+	missing := "sha256:" + strings.Repeat("0", 64)
+	if code, _, _ := r.pull("GET", bpath("org/private", missing), alice, "pw", nil); code != 401 {
+		t.Fatalf("a 404 on the proof: %d", code)
+	}
+	k := DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}
+	if got := r.cache.Store.Lookup(k, "t1"); got != Refuse {
+		t.Fatalf("the key is denied: %v", got)
+	}
+	if code, _, _ := r.pull("GET", bpath("org/private", ld), alice, "pw", nil); code != 401 {
+		t.Fatalf("denied for the real object too, until the denial lapses: %d", code)
+	}
+}
+
+// A background revalidation that gets 404 for the proof denies the key: access was revoked and the registry hides the repository.
+func TestARevalidation404Denies(t *testing.T) {
+	r := newRig(t)
+	d := r.up.put("org/private", "manifests", []byte("m"))
+	if code, _, _ := r.pull("GET", mpath("org/private", d), alice, "pw", nil); code != 200 {
+		t.Fatal(code)
+	}
+	k := DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}
+	r.clock.advance(3 * time.Minute) // past max-age, within stale-if-error: ServeStale
+	r.up.mu.Lock()
+	r.up.headStatus = http.StatusNotFound // the registry now hides the repository from these credentials
+	r.up.mu.Unlock()
+	if code, _, _ := r.pull("GET", mpath("org/private", d), alice, "pw", nil); code != 200 {
+		t.Fatalf("the stale answer is served while it revalidates: %d", code)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for r.cache.Store.Lookup(k, "t1") != Refuse && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := r.cache.Store.Lookup(k, "t1"); got != Refuse {
+		t.Fatalf("a 404 on the revalidation denies the key: %v", got)
+	}
+}
+
+// A blob HEAD that redirects is inconclusive: nothing is mounted, the blob is fetched through for this repository (and a fetch that the
+// upstream refuses still fails there).
+func TestARedirectedBlobProofMountsNothing(t *testing.T) {
+	r := newRig(t)
+	r.up.repos["org/other"] = map[string]bool{"alice": true}
+	shared := bytes.Repeat([]byte("S"), 2048)
+	sd := r.up.put("org/private", "blobs", shared)
+	r.up.put("org/other", "blobs", shared)
+	om := r.up.put("org/other", "manifests", []byte("m"))
+	if code, _, _ := r.pull("GET", bpath("org/private", sd), alice, "pw", nil); code != 200 {
+		t.Fatal(code)
+	}
+	if code, _, _ := r.pull("GET", mpath("org/other", om), alice, "pw", nil); code != 200 { // the decision for org/other, from a direct 200
+		t.Fatal(code)
+	}
+	r.up.mu.Lock()
+	r.up.redirect, r.up.redirectHeads = true, true
+	r.up.mu.Unlock()
+	gets := r.up.n("GET org/other")
+	if code, body, _ := r.pull("GET", bpath("org/other", sd), alice, "pw", nil); code != 200 || !bytes.Equal(body, shared) {
+		t.Fatalf("%d", code)
+	}
+	if r.up.n("GET org/other") == gets {
+		t.Fatal("an inconclusive proof means the blob is downloaded for this repository, not mounted")
 	}
 }
