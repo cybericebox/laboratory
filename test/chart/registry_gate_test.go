@@ -237,3 +237,25 @@ func TestRegistryGateTLSHop(t *testing.T) {
 		t.Errorf("no cache, no TLS: %+v", off["STATE_REGISTRY_ADDR"])
 	}
 }
+
+// The gate of the kind E2E: the chart is rendered with the exact flags of hack/registry-gate-e2e/run.sh, and the allowed list that the gate
+// gets holds the two registries that the test uses and not the third one it knows (so the refusal is tested end to end).
+func TestRegistryGateAllowedListWithTheE2EFlags(t *testing.T) {
+	spec := registryPod(t,
+		"--set", "registry.cache.enabled=true", "--set-json", "registry.cache.registries=[]",
+		"--set-json", `registry.allowedRegistries=["pub","priv"]`,
+		"--set", "registry.cache.extraRegistries[0].name=pub", "--set", "registry.cache.extraRegistries[0].url=http://upstream-pub.laboratory-system.svc:5000",
+		"--set", "registry.cache.extraRegistries[1].name=priv", "--set", "registry.cache.extraRegistries[1].url=http://upstream-priv.laboratory-system.svc:5000",
+		"--set", "registry.cache.extraRegistries[2].name=off", "--set", "registry.cache.extraRegistries[2].url=http://upstream-pub.laboratory-system.svc:5000",
+	)
+	got := envOf(*containerNamed(spec, "gate"))["GATE_ALLOWED_REGISTRIES"].Value
+	list := ","+got+","
+	for _, want := range []string{",pub,", ",priv,"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("GATE_ALLOWED_REGISTRIES = %q misses %s", got, want)
+		}
+	}
+	if strings.Contains(list, ",off,") || strings.Contains(got, "*") || got == "" {
+		t.Errorf("GATE_ALLOWED_REGISTRIES = %q: the gate must get a list that leaves the third registry out", got)
+	}
+}

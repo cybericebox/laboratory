@@ -63,6 +63,7 @@ helm template x charts/laboratory --namespace "$NS" \
   --set registry.cache.enabled=true --set-json 'registry.cache.registries=[]' --set-json 'registry.allowedRegistries=["pub","priv"]' \
   --set 'registry.cache.extraRegistries[0].name=pub' --set "registry.cache.extraRegistries[0].url=http://upstream-pub.$NS.svc:5000" \
   --set 'registry.cache.extraRegistries[1].name=priv' --set "registry.cache.extraRegistries[1].url=http://upstream-priv.$NS.svc:5000" \
+  --set 'registry.cache.extraRegistries[2].name=off' --set "registry.cache.extraRegistries[2].url=http://upstream-pub.$NS.svc:5000" \
   --set registry.gate.resources.requests.cpu=50m \
   -s templates/registry/deployment.yaml -s templates/registry/service.yaml -s templates/registry/configmap.yaml \
   -s templates/registry/gate-configmap.yaml -s templates/registry/secret.yaml -s templates/registry/tls-secret.yaml \
@@ -174,6 +175,16 @@ mk_secret e2e-g4b s 't3~alice' pw
 mk_pod e2e-g4b p "$(img priv team/secret "$PRIV")" s
 check g4c "the same tenant again" pulled e2e-g4b p
 check g4d "...inside the decision max-age no new check goes upstream" test "$(metric 'registry_gate_upstream_checks_total{outcome="allowed"}')" = "$allowed"
+
+# ---- g5: a registry the gate knows but registry.allowedRegistries does not list ----------------------------------------------------
+say "== g5"
+refused=$(metric 'registry_gate_cache_refusals_total{reason="not_allowed"}')
+gets=$(upstream_gets upstream-pub team/app)
+mk_pod e2e-g5 p "$(img off team/app "$PUB")"
+check g5a "an image of a registry that is not on allowedRegistries is not pulled" not_pulled e2e-g5 p
+check g5b "...the gate refused it as not allowed" gt "$(metric 'registry_gate_cache_refusals_total{reason="not_allowed"}')" "$refused"
+check g5c "...and no upstream registry was called for it" test "$(upstream_gets upstream-pub team/app)" -eq "$gets"
+clean_node e2e-g5
 
 # ---- evidence and verdict -----------------------------------------------------------------------------------------------------------
 curl -s localhost:15002/metrics >"$OUT/gate-metrics.txt" 2>/dev/null || true
