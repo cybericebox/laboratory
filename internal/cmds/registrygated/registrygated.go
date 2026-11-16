@@ -40,6 +40,9 @@ type Config struct {
 	CacheEnabled bool `env:"GATE_CACHE_ENABLED" envDefault:"false"`
 	// RegistriesFile is the list of upstream registries the cache may call (JSON), reloaded when it changes.
 	RegistriesFile string `env:"GATE_REGISTRIES_FILE" envDefault:"/etc/gate/registries.json"`
+	// AllowedRegistries is the laboratory's list of registries lab images may come from (registry.allowedRegistries): a cache request for
+	// another registry is refused before any upstream call. Empty or "*": every registry of the list above.
+	AllowedRegistries []string `env:"GATE_ALLOWED_REGISTRIES" envSeparator:","`
 	// KeyFile is the secret of the credential hash; ZotUser and ZotPassFile are the gate's own account in zot.
 	KeyFile     string `env:"GATE_KEY_FILE" envDefault:"/etc/gate-secret/key"`
 	ZotUser     string `env:"GATE_ZOT_USER" envDefault:"gate"`
@@ -157,6 +160,7 @@ func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log in
 	}()
 	c := registrygate.NewCache(regs, []byte(key), registrygate.NewUpstream(cfg.UpstreamTimeout),
 		registrygate.NewZot(cfg.Zot, cfg.ZotUser, pass), store, m)
+	c.Allowed = cfg.AllowedRegistries
 	disk := &registrygate.DiskWatch{Path: cfg.DataDir, HighWater: cfg.DiskHighWater}
 	c.DiskFull = disk.Full
 	if cfg.AnonymousFillFile != "" {

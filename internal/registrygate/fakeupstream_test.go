@@ -220,3 +220,14 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(body)
 	}
 }
+
+// total is the number of calls of every kind that reached the upstream.
+func (f *fakeUpstream) total() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for _, c := range f.calls {
+		n += c.Load()
+	}
+	return n
+}

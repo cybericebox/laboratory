@@ -660,3 +660,25 @@ func TestATagWithoutADigestStillLeavesAKnownRef(t *testing.T) {
 		t.Fatalf("the allow is recorded with the tag as its known ref: %v %+v", ok, kg)
 	}
 }
+
+// A registry that is not on the laboratory's allowed list is refused before any upstream call, even when the gate knows its URL.
+func TestARegistryOffTheAllowedListIsRefusedBeforeUpstream(t *testing.T) {
+	r := newRig(t)
+	d := r.putTag("org/private", "latest", []byte("manifest"))
+	r.cache.Allowed = []string{"docker.io", "ghcr.io"} // "up" is not among them
+	before := r.up.total()
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), alice, "pw", nil); code != 403 {
+		t.Fatalf("%d", code)
+	}
+	if r.up.total() != before {
+		t.Fatal("no upstream call for a registry that is not allowed")
+	}
+	r.cache.Allowed = []string{"UP"} // the canonical spelling is compared
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), alice, "pw", nil); code != 200 {
+		t.Fatalf("an allowed registry: %d %s", code, d)
+	}
+	r.cache.Allowed = []string{"ghcr.io", "*"}
+	if code, _, _ := r.pull("GET", mpath("org/private", "latest"), carol, "pw", nil); code != 200 {
+		t.Fatalf("* allows every registry of the gate's list: %d", code)
+	}
+}
