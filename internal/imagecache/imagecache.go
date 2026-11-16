@@ -11,6 +11,8 @@
 package imagecache
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -28,6 +30,35 @@ type Rewriter struct {
 	Prefix string
 	// Registries are the upstream registries the cache serves (docker.io, ghcr.io, ...).
 	Registries []string
+}
+
+// ErrNotCacheable is what RewriteRequired wraps when the cache is on and the image cannot go through it: a reference that does not
+// parse, or a registry the cache does not serve. The cache being on, such an image is refused, never pulled directly: a direct pull
+// would bypass the gate, the credentials rule and the allowed list at once.
+var ErrNotCacheable = errors.New("the image cannot be pulled through the image cache")
+
+// Enabled says whether images are pulled through a cache at all.
+func (r Rewriter) Enabled() bool { return r.Prefix != "" }
+
+// RewriteRequired is Rewrite for a cache that is on: the reference to pull through the cache, or an error wrapping ErrNotCacheable when
+// the reference is malformed or its registry is not served. A reference that already points at the cache (a snapshot, a platform image)
+// passes unchanged. With the cache off (no prefix) the reference is returned as is.
+func (r Rewriter) RewriteRequired(ref string) (string, error) {
+	if r.Prefix == "" || ref == "" || strings.HasPrefix(ref, r.Prefix+"/") {
+		return ref, nil
+	}
+	parsed, err := name.ParseReference(ref)
+	if err != nil {
+		return "", fmt.Errorf("%w: %q is not a valid image reference", ErrNotCacheable, ref)
+	}
+	reg := parsed.Context().RegistryStr()
+	if reg == name.DefaultRegistry {
+		reg = "docker.io"
+	}
+	if !r.serves(reg) {
+		return "", fmt.Errorf("%w: the registry %s of %q is not served by the cache", ErrNotCacheable, reg, ref)
+	}
+	return r.Rewrite(ref), nil
 }
 
 // Rewrite returns the reference to pull through the cache. It returns ref

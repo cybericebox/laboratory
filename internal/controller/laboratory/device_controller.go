@@ -531,6 +531,21 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 	return labels, selectorLabels, annotations, podSpec
 }
 
+// refuseUncached refuses to start a device made for the image cache whose image the cache cannot serve (the list of served registries
+// changed since the lab was admitted): it is never pulled directly.
+func (r *DeviceReconciler) refuseUncached(device *laboratoryv1alpha1.Device) error {
+	if device.Spec.ImageMirror == "" {
+		return nil
+	}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	for _, img := range []string{device.Spec.Image, r.NetConfigImage} {
+		if _, err := rw.RewriteRequired(img); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // deviceImage is the reference the node pulls for an image of the device:
 // through the image cache when the device was created for it, else as is.
 func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image string) string {
@@ -546,6 +561,9 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 		return err
 	}
 	if err := r.refuseUnbootstrappable(device); err != nil {
+		return err
+	}
+	if err := r.refuseUncached(device); err != nil {
 		return err
 	}
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device)

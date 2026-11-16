@@ -22,6 +22,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
@@ -97,7 +98,15 @@ func Run() {
 	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
 	h.SetPlatformImages(cfg.Cache.NodePrefix, cfg.ImagePlatformOnly)
-	h.SetAllowedRegistries(cfg.AllowedRegistries)
+	allowedRegistries := cfg.AllowedRegistries
+	if cfg.Cache.Enabled {
+		// The image cache is on: an image goes through it or is refused, so only the registries it serves may be named. An empty
+		// answer would read as "every registry", so it is a registry that no image has.
+		if allowedRegistries = imagepolicy.ServedOnly(cfg.AllowedRegistries, cfg.Cache.Registries); len(allowedRegistries) == 0 {
+			allowedRegistries = []string{"-"}
+		}
+	}
+	h.SetAllowedRegistries(allowedRegistries)
 	var labSelector map[string]string
 	var labTolerations []corev1.Toleration
 	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &labSelector); err != nil {

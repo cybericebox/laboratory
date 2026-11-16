@@ -983,8 +983,9 @@ registry:
   # devices, VPN and gateway pods of labs created while the cache is on into
   # localhost:5035/REG/repo:tag; zot fetches each image from REG on the first
   # pull (on-demand sync) and serves it from its volume afterwards. The mode is fixed
-  # on each lab at creation; flipping the switch never changes existing labs. Snapshot
-  # images and references to registries not listed below are pulled directly.
+  # on each lab at creation; flipping the switch never changes existing labs. With the cache on every image of a lab goes
+  # through it: an image of a registry that is not listed below, or that does not parse, is refused, never pulled directly, so every
+  # registry of allowedRegistries must be listed below (the chart refuses an install where one is not).
   cache:
     enabled: false
     # A cached image nobody pulled for this long is deleted (zot retention, then GC); an

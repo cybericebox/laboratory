@@ -1,6 +1,9 @@
 package imagecache
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestRewrite(t *testing.T) {
 	r := Rewriter{Prefix: "localhost:5035", Registries: DefaultRegistries}
@@ -101,5 +104,29 @@ func TestPlatformImagesAreNeverRewritten(t *testing.T) {
 	}
 	if DigestOf(ref) != digest {
 		t.Errorf("the digest of a platform image is read from the reference: %q", DigestOf(ref))
+	}
+}
+
+// With the cache on an image that cannot go through it is refused, never pulled directly.
+func TestRewriteRequiredRefusesWhatTheCacheCannotServe(t *testing.T) {
+	r := Rewriter{Prefix: "localhost:5035", Registries: []string{"docker.io", "ghcr.io"}}
+	for ref, want := range map[string]string{
+		"nginx":                              "localhost:5035/c/docker.io/library/nginx:latest",
+		"ghcr.io/org/app:1":                  "localhost:5035/c/ghcr.io/org/app:1",
+		"localhost:5035/lab/snapshots/x:tag": "localhost:5035/lab/snapshots/x:tag", // already the cache
+	} {
+		got, err := r.RewriteRequired(ref)
+		if err != nil || got != want {
+			t.Errorf("%s: %q %v, want %q", ref, got, err, want)
+		}
+	}
+	for _, ref := range []string{"gcr.io/x/y:1", "registry.example.com:5000/a/b", "NOT A REF", "ghcr.io/Org/App"} {
+		if got, err := r.RewriteRequired(ref); !errors.Is(err, ErrNotCacheable) || got != "" {
+			t.Errorf("%s must be refused: %q %v", ref, got, err)
+		}
+	}
+	off := Rewriter{}
+	if got, err := off.RewriteRequired("gcr.io/x/y:1"); err != nil || got != "gcr.io/x/y:1" {
+		t.Errorf("with the cache off the reference is left alone: %q %v", got, err)
 	}
 }
