@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
 )
 
@@ -371,6 +372,7 @@ func (c *Cache) serveManifest(w http.ResponseWriter, r *http.Request, reg Regist
 			defer func() { _ = resp.Body.Close() }()
 			c.M.cache.WithLabelValues("manifest", "hit").Inc()
 			c.holds(repo, o.Ref)
+			w.Header().Set(imagecache.HeaderGateCache, imagecache.GateCacheHit)
 			streamFrom(w, r, resp, o.Ref)
 			return
 		}
@@ -523,6 +525,7 @@ func (c *Cache) serveBlobFromZot(w http.ResponseWriter, r *http.Request, repo, d
 		}
 		copyHeaders(w, hdr, "Content-Length", "Content-Type")
 		w.Header().Set("Docker-Content-Digest", digest)
+		w.Header().Set(imagecache.HeaderGateCache, imagecache.GateCacheHit) // stored: the prewarm asks for it
 		w.WriteHeader(http.StatusOK)
 		return true
 	}
@@ -533,6 +536,7 @@ func (c *Cache) serveBlobFromZot(w http.ResponseWriter, r *http.Request, repo, d
 	defer func() { _ = resp.Body.Close() }()
 	c.M.cache.WithLabelValues("blob", "hit").Inc()
 	c.holds(repo, digest)
+	w.Header().Set(imagecache.HeaderGateCache, imagecache.GateCacheHit)
 	streamFrom(w, r, resp, digest)
 	return true
 }
