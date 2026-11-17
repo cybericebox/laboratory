@@ -2496,6 +2496,13 @@ Requirements on the nodes (nothing has to be installed or configured on the host
   capability. Kubernetes 1.30 or newer is needed for the field. On nodes without AppArmor (kind, SELinux distributions) it
   changes nothing, which is also why kind never shows the failure.
 
+Residual risk of the Secret rule. With `devices.statePersistence.enabled` the node-state ClusterRole holds `get` on Secrets in all namespaces
+(without the switch the rule is not rendered). The pull Secrets of a device pod live in lab namespaces the operator creates at run time, so the
+chart cannot name them; node-state's code reads only the pull Secrets of a device pod of its own node, but RBAC does not enforce that and an
+admission policy cannot restrict reads. If a node-state pod were taken over, it could read any Secret whose name it knows (for example the
+registry and device access Secrets of the platform, and the pull Secrets of other tenants), on other nodes too. This is planned to be replaced
+by credentials delivered by the operator, after which the rule goes away.
+
 A node-state that still runs under an enforced `cri-containerd` profile (a chart older than this fix, or a policy that
 overrides the profile) checks it at startup: it logs one error `state persistence is on but snapshots cannot be taken on
 this node` (it reaches the error journal), puts `AppArmor blocks snapshots: ...` on every device it follows, and takes
