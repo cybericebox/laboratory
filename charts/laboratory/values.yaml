@@ -1073,6 +1073,10 @@ devices:
     # mounts read-only overlay views of a device's layers, so under it every snapshot fails with "permission denied". It also has SYS_ADMIN
     # and DAC_READ_SEARCH; the node-agent has neither Unconfined nor DAC_READ_SEARCH. A node-state that still finds itself under that
     # profile says so in its log and on every device it follows. Needs the platform registry (the engine pushes through the node-agent's relay).
+    # Residual risk: with this on, the node-state ServiceAccount may `get` Secrets in every namespace (the pull Secrets of a device pod
+    # live in lab namespaces the operator creates later, so RBAC cannot name them; the code reads only those of a pod of its own node).
+    # If a node-state pod were taken over, it could read any Secret whose name it knows, also on other nodes and of other tenants. The
+    # rule exists only with this switch on, and is to be replaced by credentials the operator delivers.
     enabled: false
 
     # How long a device's writable layer must stay quiet before a snapshot is taken.

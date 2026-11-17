@@ -44,10 +44,12 @@ rules:
     verbs: [ get ]
   {{- end }}
   # The annotation of its own node (cybericebox.com/state-persistence); the admission policy laboratory-node-state-annotation limits the
-  # patch to that one annotation of its own node.
+  # patch to that one annotation of its own node. No node patch privilege exists without it.
+  {{- if .Values.operator.admissionPolicy.enabled }}
   - apiGroups: [ "" ]
     resources: [ nodes ]
     verbs: [ patch ]
+  {{- end }}
   - apiGroups: [ "" ]
     resources: [ events ]
     verbs: [ create, patch ]
