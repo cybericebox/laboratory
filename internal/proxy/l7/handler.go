@@ -3,7 +3,6 @@ package l7
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -352,23 +351,6 @@ func (b *countingBody) Read(p []byte) (int, error) {
 		b.request.Incomplete()
 	}
 	return n, err
-}
-
-// ServiceResolver builds a BackendResolver that determines backend URL from Service named port.
-// getServiceProtocol(task, namespace) returns the Service's first port name ("http" or "https").
-func ServiceResolver(getServiceProtocol func(task, namespace string) (string, error)) BackendResolver {
-	return func(task, groupID string) (string, error) {
-		ns := GroupNamespace(groupID)
-		proto, err := getServiceProtocol(task, ns)
-		if err != nil {
-			return "", err
-		}
-		port := 80
-		if proto == schemeHTTPS {
-			port = 443
-		}
-		return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", proto, task, ns, port), nil
-	}
 }
 
 // stripSessionCookie removes the Set-Cookie headers that name the proxy's session cookie, whatever their attributes

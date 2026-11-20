@@ -62,15 +62,6 @@ type L7Config struct {
 	LiveTotal      int     `env:"LIVE_TOTAL" envDefault:"2500"`
 	AuthRate       float64 `env:"AUTH_RATE" envDefault:"5"`
 	AuthBurst      int     `env:"AUTH_BURST" envDefault:"20"`
-	// ProxyProtocolFrom lists the peers (IPs or CIDRs) whose connections may start with a PROXY protocol header (v1 or v2): the edge
-	// that carries the client's address. For such a peer the header is optional and, when present, gives the connection's address;
-	// every other peer's header is read and ignored, so nobody can claim an address. Empty: the feature is off.
-	ProxyProtocolFrom []string `env:"L7_PROXY_PROTOCOL_FROM" envSeparator:","`
-	// ProxyProtocolSecrets are the shared secrets (one, or two while rotating: current and next) the edge puts in the TLV of type
-	// ProxyProtocolTLVType of its PROXY v2 header. When set, a header's address is believed only if its TLV equals one of them; any other
-	// connection keeps the peer address. Empty: no secret required. They are credentials: never logged.
-	ProxyProtocolSecrets []string `env:"L7_PROXY_PROTOCOL_SECRETS" envSeparator:","`
-	ProxyProtocolTLVType uint8    `env:"L7_PROXY_PROTOCOL_TLV_TYPE" envDefault:"224"`
 
 	// The console (docs/specs/2026-11-12-device-access-and-checks.md): TerminalEnabled serves it on a host of its own per device (names.AccessHostLabel, the kind of access in the last character of the first label) under
 	// BaseDomain, relayed to the device access service pods of TerminalNamespace on TerminalPort. The limits mirror the chart values of the

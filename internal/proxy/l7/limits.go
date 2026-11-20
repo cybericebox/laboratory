@@ -153,8 +153,7 @@ const (
 	coarseMul    = 10 // the network bucket is this many times the address one
 )
 
-// preAuthKeys are the two keys of the client the proxy resolved for the connection (the PROXY protocol header of the trusted edge, else the
-// peer): the fine one (IPv4 address, IPv6 /64) and the coarse one (IPv4 /24, IPv6 /48), so one client cannot rotate through many keys.
+// preAuthKeys are the two keys of the client of the connection (the TCP peer: the load balancer keeps the client address): the fine one (IPv4 address, IPv6 /64) and the coarse one (IPv4 /24, IPv6 /48), so one client cannot rotate through many keys.
 func preAuthKeys(r *http.Request) (fine, coarse string) {
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {
