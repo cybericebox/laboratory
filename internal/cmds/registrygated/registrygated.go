@@ -187,7 +187,12 @@ func Run() {
 		tlsPort := i == 0
 		go func() {
 			if tlsPort {
-				errs <- s.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+				ln, err := registrygate.NewDeadlineListener(s.Addr, 10*time.Second)
+				if err != nil {
+					errs <- err
+					return
+				}
+				errs <- s.ServeTLS(ln, cfg.TLSCertFile, cfg.TLSKeyFile)
 				return
 			}
 			errs <- s.ListenAndServe()

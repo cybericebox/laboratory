@@ -171,5 +171,35 @@ func NewServer(addr string, h http.Handler) *http.Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    16 << 10,
+		// the listener gives a new connection a deadline for the TLS handshake and the first request line; it is lifted once a request is
+		// being served, so that long uploads and pulls are not cut
+		ConnState: func(c net.Conn, st http.ConnState) {
+			if st == http.StateActive {
+				_ = c.SetReadDeadline(time.Time{})
+			}
+		},
 	}
+}
+
+// NewDeadlineListener listens on addr and gives every accepted connection d to finish its TLS handshake and send its first request.
+func NewDeadlineListener(addr string, d time.Duration) (net.Listener, error) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return &deadlineListener{Listener: l, d: d}, nil
+}
+
+type deadlineListener struct {
+	net.Listener
+	d time.Duration
+}
+
+func (l *deadlineListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetReadDeadline(time.Now().Add(l.d))
+	return c, nil
 }

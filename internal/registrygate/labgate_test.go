@@ -69,6 +69,18 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (z *fakeZot) count(method, pathPart string) int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	c := 0
+	for _, r := range z.reqs {
+		if r.method == method && strings.Contains(r.path, pathPart) {
+			c++
+		}
+	}
+	return c
+}
+
 func (z *fakeZot) total() int {
 	z.mu.Lock()
 	defer z.mu.Unlock()
@@ -334,11 +346,17 @@ func TestUploadSessionsAreBoundToTheNodeAndTheRepository(t *testing.T) {
 	}
 	// the device leaves the node: the session is refused although the repository is the same
 	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev1", Node: "node-b", StateEnabled: true, Tenant: "acme"})
-	if c := patch(tokA, repoD1, sess); c != 403 {
-		t.Fatalf("the device is no longer on the node: %d", c)
+	if c := patch(tokA, repoD1, sess); c != 404 {
+		t.Fatalf("the device is no longer on the node: the session is unknown: %d", c)
+	}
+	if r.zot.count("DELETE", "/blobs/uploads/"+sess) != 1 {
+		t.Fatal("zot must be told to cancel the session")
 	}
 	// finishing a session ends it
 	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev1", Node: "node-a", StateEnabled: true, Tenant: "acme"})
+	w2 := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+	loc2 := w2.Header().Get("Location")
+	sess = loc2[strings.LastIndex(loc2, "/")+1:]
 	if c := r.do(tokA, "PUT", "/v2/"+repoD1+"/blobs/uploads/"+sess+"?digest="+dg("a"), strings.NewReader("1"), nil).Code; c != 201 {
 		t.Fatalf("commit: %d", c)
 	}
@@ -826,5 +844,50 @@ func TestUploadID(t *testing.T) {
 		if got := uploadID(in); got != want {
 			t.Errorf("%q: %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Review finding 7: the session table is bounded per device and per node, and what makes room is the owner's own oldest session.
+func TestSessionTableEvictsOnlyTheOwnersSessions(t *testing.T) {
+	r := newLabRig(t)
+	r.lab.Limits.Budget = 0
+	start := func(token, repo string) string {
+		w := r.do(token, "POST", upPath(repo), nil, nil)
+		if w.Code != 202 {
+			t.Fatalf("start: %d", w.Code)
+		}
+		loc := w.Header().Get("Location")
+		return loc[strings.LastIndex(loc, "/")+1:]
+	}
+	patch := func(token, repo, id string) int {
+		*r.clk = r.clk.Add(time.Second)
+		return r.do(token, "PATCH", "/v2/"+repo+"/blobs/uploads/"+id, strings.NewReader("1"), nil).Code
+	}
+	other := start(tokB, "lab/lg-acme/lab1/dev2")
+	first := start(tokA, repoD1)
+	var last string
+	for i := 0; i < maxSessionsPerDevice+5; i++ {
+		*r.clk = r.clk.Add(time.Second)
+		last = start(tokA, repoD1)
+	}
+	if c := patch(tokA, repoD1, first); c != 404 {
+		t.Fatalf("the oldest session of the device made room: %d", c)
+	}
+	if c := patch(tokA, repoD1, last); c != 202 {
+		t.Fatalf("the newest is kept: %d", c)
+	}
+	if c := patch(tokB, "lab/lg-acme/lab1/dev2", other); c != 202 {
+		t.Fatalf("another node's session must survive: %d", c)
+	}
+	r.lab.mu.Lock()
+	n := 0
+	for _, s := range r.lab.sess {
+		if s.repo == repoD1 {
+			n++
+		}
+	}
+	r.lab.mu.Unlock()
+	if n > maxSessionsPerDevice {
+		t.Fatalf("%d sessions for one device", n)
 	}
 }

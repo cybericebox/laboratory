@@ -67,10 +67,12 @@ type LabGate struct {
 	Now      func() time.Time
 	M        *Metrics
 
-	proxy *httputil.ReverseProxy
-	mu    sync.Mutex
-	state map[string]*pushState // by repository
-	sess  map[string]uploadSession
+	proxy      *httputil.ReverseProxy
+	zot        *url.URL
+	user, pass string
+	mu         sync.Mutex
+	state      map[string]*pushState // by repository
+	sess       map[string]uploadSession
 }
 
 type charge struct {
@@ -93,13 +95,16 @@ type uploadSession struct {
 }
 
 const (
-	maxSessions      = 20000
-	maxManifestBlobs = 512
+	maxSessions = 20000
+	// the sessions one device and one node may have open at once
+	maxSessionsPerDevice = 32
+	maxSessionsPerNode   = 512
+	maxManifestBlobs     = 512
 )
 
 // NewLabGate makes the gate for snapshot repositories forwarding to zot with the account user:pass.
 func NewLabGate(zot *url.URL, user, pass string) *LabGate {
-	g := &LabGate{state: map[string]*pushState{}, sess: map[string]uploadSession{}}
+	g := &LabGate{state: map[string]*pushState{}, sess: map[string]uploadSession{}, zot: zot, user: user, pass: pass}
 	g.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(zot)
@@ -197,6 +202,11 @@ func (g *LabGate) Serve(w http.ResponseWriter, r *http.Request, p Principal) {
 	}
 	dev, ok := g.Schedule.Device(lp.NS, lp.Lab, lp.Dev)
 	if !ok || !dev.StateEnabled || !g.deviceOnNode(dev, p.Node) {
+		if lp.Kind == kindUploads && lp.Ref != "" && g.dropSession(r.Context(), lp, p) {
+			// the device is gone or moved: the session it had open is unknown from now on, and zot is told to forget it
+			g.deny(w, refusal{http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "unknown upload session", 0})
+			return
+		}
 		g.deny(w, denied) // not snapshot-backed, or not on the calling node: the node has no right to this repository
 		return
 	}
@@ -566,10 +576,7 @@ func (g *LabGate) afterZot(resp *http.Response) {
 	case lp.Kind == kindUploads && req.Method == http.MethodPost && resp.StatusCode == http.StatusAccepted:
 		if id := uploadID(resp.Header.Get("Location")); id != "" {
 			g.mu.Lock()
-			if len(g.sess) >= maxSessions {
-				g.pruneSessionsLocked()
-			}
-			g.sess[id] = uploadSession{node: principalNode(req), repo: lp.Repo, started: g.now()}
+			g.admitSessionLocked(id, uploadSession{node: principalNode(req), repo: lp.Repo, started: g.now()})
 			g.mu.Unlock()
 		}
 	case lp.Kind == kindUploads && lp.Ref != "" && (resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusNotFound):
@@ -595,19 +602,41 @@ func principalNode(r *http.Request) string {
 	return n
 }
 
-func (g *LabGate) pruneSessionsLocked() {
-	cutoff := g.now().Add(-time.Hour)
-	for id, s := range g.sess {
-		if s.started.Before(cutoff) {
-			delete(g.sess, id)
+// admitSessionLocked records a session. The table is bounded per device and per node, and what is evicted to make room is always the
+// oldest session of the same owner (the same device, the same node): one node can never push another node's sessions out. If the table is
+// full of other nodes' sessions this one is not recorded (its uploads are then answered "unknown" and the node starts again).
+func (g *LabGate) admitSessionLocked(id string, s uploadSession) {
+	evictOldest := func(match func(uploadSession) bool) {
+		var oldID string
+		var oldAt time.Time
+		for k, o := range g.sess {
+			if match(o) && (oldID == "" || o.started.Before(oldAt)) {
+				oldID, oldAt = k, o.started
+			}
 		}
+		delete(g.sess, oldID)
 	}
-	for id := range g.sess {
-		if len(g.sess) < maxSessions {
-			break
+	count := func(match func(uploadSession) bool) int {
+		n := 0
+		for _, o := range g.sess {
+			if match(o) {
+				n++
+			}
 		}
-		delete(g.sess, id)
+		return n
 	}
+	sameRepo := func(o uploadSession) bool { return o.repo == s.repo }
+	sameNode := func(o uploadSession) bool { return o.node == s.node }
+	for count(sameRepo) >= maxSessionsPerDevice {
+		evictOldest(sameRepo)
+	}
+	for count(sameNode) >= maxSessionsPerNode {
+		evictOldest(sameNode)
+	}
+	if len(g.sess) >= maxSessions {
+		return
+	}
+	g.sess[id] = s
 }
 
 func uploadID(location string) string {
@@ -704,4 +733,33 @@ func (g *LabGate) blobSize(ctx context.Context, repo, digest string) (int64, boo
 		return 0, false, errors.New("the registry gave no blob size")
 	}
 	return n, true, nil
+}
+
+// dropSession ends the upload session lp.Ref if it is the calling node's own for this repository, and cancels it in zot. It reports
+// whether there was one.
+func (g *LabGate) dropSession(ctx context.Context, lp labPath, p Principal) bool {
+	g.mu.Lock()
+	sess, ok := g.sess[lp.Ref]
+	if ok && sess.node == p.Node && sess.repo == lp.Repo {
+		delete(g.sess, lp.Ref)
+	} else {
+		ok = false
+	}
+	g.mu.Unlock()
+	if !ok || g.zot == nil {
+		return ok
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	u := *g.zot
+	u.Path = "/v2/" + lp.Repo + "/blobs/uploads/" + lp.Ref
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
+	if err != nil {
+		return true
+	}
+	req.SetBasicAuth(g.user, g.pass)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		_ = resp.Body.Close()
+	}
+	return true
 }

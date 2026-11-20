@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +230,38 @@ func TestAnythingElseIsDenied(t *testing.T) {
 	}
 	if w := do(g, http.MethodPost, "/v2/", map[string]string{HeaderNodeToken: "operator-token"}); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /v2/: %d", w.Code)
+	}
+}
+
+// Review finding 11: a connection that never finishes its TLS handshake is closed, and one that is being served is not cut.
+func TestAConnectionThatNeverSpeaksIsClosed(t *testing.T) {
+	ln, err := NewDeadlineListener("127.0.0.1:0", 200*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // longer than the handshake deadline: a request being served is not cut
+		_, _ = w.Write([]byte("ok"))
+	}))
+	srv.ReadHeaderTimeout = 0 // over plain HTTP the header timeout would replace the listener's deadline; a TLS server keeps it for the handshake
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the silent connection must be closed by the server, got %v", err)
+	}
+	resp, err := http.Get("http://" + ln.Addr().String() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "ok" {
+		t.Fatalf("%q", b)
 	}
 }
