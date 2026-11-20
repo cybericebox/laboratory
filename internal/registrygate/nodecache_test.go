@@ -422,11 +422,11 @@ func TestTheAgentIsBoundedInWhatItRunsAtOnce(t *testing.T) {
 func TestParseCacheImage(t *testing.T) {
 	d := "sha256:" + strings.Repeat("a", 64)
 	for in, want := range map[string]imageRef{
-		"localhost:5035/c/acme/docker.io/library/nginx:1.27":      {"acme", "docker.io", "library/nginx", "1.27", ""},
-		"localhost:5035/c/acme/docker.io/library/nginx@" + d:      {"acme", "docker.io", "library/nginx", "", d},
-		"localhost:5035/c/acme/docker.io/library/nginx:1.27@" + d: {"acme", "docker.io", "library/nginx", "1.27", d},
-		"localhost:5035/c/platform/ghcr.io/org/img":               {"platform", "ghcr.io", "org/img", "", ""},
-		"10.0.0.1:5035/c/t-0123456789ab/localhost:5000/team/i:v1": {"t-0123456789ab", "localhost:5000", "team/i", "v1", ""},
+		"localhost:5035/c/acme/docker.io/library/nginx:1.27":      {"localhost:5035", "acme", "docker.io", "library/nginx", "1.27", ""},
+		"localhost:5035/c/acme/docker.io/library/nginx@" + d:      {"localhost:5035", "acme", "docker.io", "library/nginx", "", d},
+		"localhost:5035/c/acme/docker.io/library/nginx:1.27@" + d: {"localhost:5035", "acme", "docker.io", "library/nginx", "1.27", d},
+		"localhost:5035/c/platform/ghcr.io/org/img":               {"localhost:5035", "platform", "ghcr.io", "org/img", "", ""},
+		"10.0.0.1:5035/c/t-0123456789ab/localhost:5000/team/i:v1": {"10.0.0.1:5035", "t-0123456789ab", "localhost:5000", "team/i", "v1", ""},
 	} {
 		got, ok := parseCacheImage(in)
 		if !ok || got != want {
@@ -437,5 +437,78 @@ func TestParseCacheImage(t *testing.T) {
 		if _, ok := parseCacheImage(in); ok {
 			t.Errorf("%s is no cache image", in)
 		}
+	}
+}
+
+// Review finding 1: a grant rebuilt after a restart needs the same upstream proof as a manifest request. A tenant whose credentials the
+// upstream refuses, with a pod that pins the digest of another tenant's private image that is already cached, gets nothing.
+func TestARebuiltGrantNeedsTheUpstreamProof(t *testing.T) {
+	n := newNodeRig(t)
+	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("other"), dockerConfig("up", "alice", "pw"))
+	n.devicePod("lg-other", "dev-other", "node-b", pfx+"other/up/org/private@"+n.md)
+	if code, _, _ := n.get(tokB, "GET", n.mp("other", "org/private", n.md), nil); code != 200 {
+		t.Fatalf("the owner fills the cache: %d", code)
+	}
+	for _, d := range []string{n.ld, n.cfg} {
+		if code, _, _ := n.get(tokB, "GET", n.bp("other", "org/private", d), nil); code != 200 {
+			t.Fatalf("the owner pulls the layers: %d", code)
+		}
+	}
+	// acme's own credentials do not open org/private upstream
+	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("acme"), dockerConfig("up", "bob", "wrong"))
+	n.devicePod("lg-acme", "dev-thief", "node-a", pfx+"acme/up/org/private@"+n.md)
+	n.forget()
+	for _, d := range []string{n.ld, n.cfg} {
+		if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", d), nil); code == 200 {
+			t.Fatalf("a layer of another tenants private image was served without proof: %d", code)
+		}
+	}
+	// the manifest itself is refused too
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", n.md), nil); code != 403 {
+		t.Fatalf("manifest: %d", code)
+	}
+	// with the right credentials the rebuild works
+	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("acme"), dockerConfig("up", "alice", "pw"))
+	n.forget()
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 200 {
+		t.Fatalf("with proof: %d", code)
+	}
+}
+
+// Review finding 11: a grant dies with the pod that earned it, a finished pod pulls nothing, and an image that is not <host>/c/... is no
+// cache reference.
+func TestAGrantDiesWithItsPodAndAFinishedPodPullsNothing(t *testing.T) {
+	n := newNodeRig(t)
+	n.devicePod("lg-acme", "dev-tag", "node-a", pfx+"acme/up/library/nginx:latest")
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "library/nginx", "latest"), nil); code != 200 {
+		t.Fatal(code)
+	}
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "library/nginx", n.nginxLd), nil); code != 200 {
+		t.Fatal(code)
+	}
+	n.sch.DeletePod("lg-acme", "dev-tag")
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "library/nginx", n.nginxLd), nil); code == 200 {
+		t.Fatalf("the pod is gone, the grant must not outlive it: %d", code)
+	}
+	// a pod that has finished does not pull again
+	n.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "done", UID: "u-done", Node: "node-a", Phase: "Succeeded", Images: []string{pfx + "acme/up/library/nginx:latest"},
+		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "library/nginx", "latest"), nil); code != 403 {
+		t.Fatalf("a Succeeded pod: %d", code)
+	}
+}
+
+func TestParseCacheImageNeedsTheHostForm(t *testing.T) {
+	for _, bad := range []string{"evil.example/mirror/c/acme/up/x/y:1", "/c/acme/up/x/y", "c/acme/up/x/y", "a/b/c/c/acme/up/x"} {
+		if _, ok := parseCacheImage(bad); ok {
+			t.Errorf("%q is no cache reference", bad)
+		}
+	}
+	if ref, ok := parseCacheImage("localhost:5035/c/acme/up/org/x:1"); !ok || ref.Host != "localhost:5035" || ref.Seg != "acme" {
+		t.Fatalf("%+v %v", ref, ok)
+	}
+	c := &Cache{ImageHost: "localhost:5035"}
+	if _, ok := c.parseImage("other.example:5035/c/acme/up/org/x:1"); ok {
+		t.Fatal("another host than the gate's")
 	}
 }

@@ -35,10 +35,12 @@ type Cache struct {
 	// not on it is refused before anything else, and no upstream is called for it. Empty or "*": every registry of Registries.
 	Allowed []string
 	// Key is the secret of the credential hash: HMAC-SHA256(Key, registry, user, secret). The hash never leaves the process.
-	Key   []byte
-	Up    *Upstream
-	Zot   *Zot
-	Store *Store
+	Key []byte
+	// ImageHost is the host the nodes pull from (GATE_IMAGE_HOST, "localhost:5035"); empty: any host in front of /c/.
+	ImageHost string
+	Up        *Upstream
+	Zot       *Zot
+	Store     *Store
 	// DiskFull says that the volume is above its high-water mark: a miss is then streamed through and not stored.
 	DiskFull func() bool
 	// Fill is the optional login used to fill an image proved public (rate-limit relief); never for a private one.
@@ -194,7 +196,8 @@ func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, 
 	}
 	// a digest of a manifest that was served on this node's claim (a child manifest, a config, a layer) is allowed by the grant
 	if !o.isTag() {
-		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok {
+		// a grant lives while something on the node still names the repository: it dies with its pod
+		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok && c.anyPodFor(p.Node, tenant, o) {
 			c.serveGranted(w, r, reg, o, p, cr)
 			return
 		}
@@ -220,21 +223,36 @@ func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, 
 	c.serveChecked(w, r, reg, o, who, &p)
 }
 
-// blobWithoutGrant: a blob request with no live grant. After a restart of the gate the grant of a digest-pinned reference is rebuilt from
-// what zot holds; otherwise the kubelet is told to ask for the manifest again.
+// blobWithoutGrant: a blob request with no live grant. After a restart of the gate the grant of a digest-pinned reference is rebuilt, but
+// only after the same upstream proof a manifest request needs: the pinned manifest is proved with the credentials of that pod's tenant (and
+// lab) and the grant is made on success only; otherwise the kubelet is told to ask for the manifest again.
 func (c *Cache) blobWithoutGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, p Principal, tenant string) {
-	if pins := c.pinnedDigests(p.Node, tenant, o); len(pins) > 0 {
-		cands := c.Creds.Candidates(o.Tenant, reg, nil)
-		c.rebuildGrant(r.Context(), p.Node, tenant, o, cands[0])
-		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok {
-			c.serveGranted(w, r, reg, o, p, cr)
-			return
-		}
-	}
-	if !c.anyPodFor(p.Node, tenant, o) {
-		// no pod of this node names the repository at all: the same refusal as for any request nothing on the node asks for
+	if !c.anyPodFor(p.Node, tenant, o) { // nothing on the node names this repository (any more): no grant is honoured
 		c.M.refusals.WithLabelValues("no_pod").Inc()
 		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
+		return
+	}
+	for _, d := range c.pinnedDigests(p.Node, tenant, o) {
+		om := o
+		om.Kind, om.Ref = kindManifests, d
+		labs, ok := c.scheduleMatch(p.Node, tenant, om)
+		if !ok {
+			continue
+		}
+		up := Object{Repo: om.Repo, Kind: kindManifests, Ref: d}
+		for _, cr := range c.Creds.Candidates(o.Tenant, reg, labs) {
+			cl := caller{tenant: o.Tenant, creds: cr}
+			if !cr.anonymous() {
+				cl.hash = c.hash(o.Registry, cr)
+			}
+			if _, status := c.authorize(r.Context(), reg, om, up, cl); status == http.StatusOK {
+				c.rebuildGrant(r.Context(), p.Node, om, d, cr)
+				break
+			}
+		}
+	}
+	if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok {
+		c.serveGranted(w, r, reg, o, p, cr)
 		return
 	}
 	c.M.refusals.WithLabelValues("no_grant").Inc()

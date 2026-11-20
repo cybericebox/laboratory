@@ -13,6 +13,7 @@ import (
 
 // imageRef is a reference in a pod, as the operator writes it: <prefix>/c/<segment>/<registry>/<repo>[:tag][@sha256:<digest>].
 type imageRef struct {
+	Host     string
 	Seg      string
 	Registry string
 	Repo     string
@@ -25,11 +26,11 @@ func (i imageRef) fullRepo() string { return i.Registry + "/" + i.Repo }
 // parseCacheImage reads a container image string of a pod; ok is false for an image that does not go through the cache.
 func parseCacheImage(image string) (imageRef, bool) {
 	i := strings.Index(image, "/c/")
-	if i < 0 {
-		return imageRef{}, false
+	if i <= 0 || strings.Contains(image[:i], "/") {
+		return imageRef{}, false // the cache is addressed as <host>/c/...: anything with another path in front is not it
 	}
 	rest := image[i+len("/c/"):]
-	var out imageRef
+	out := imageRef{Host: image[:i]}
 	if at := strings.LastIndex(rest, "@"); at >= 0 {
 		out.Digest, rest = rest[at+1:], rest[:at]
 	}
@@ -46,6 +47,15 @@ func parseCacheImage(image string) (imageRef, bool) {
 		return imageRef{}, false
 	}
 	return out, true
+}
+
+// parseImage is parseCacheImage that also checks the host when the gate knows the one the nodes pull from (ImageHost).
+func (c *Cache) parseImage(image string) (imageRef, bool) {
+	ref, ok := parseCacheImage(image)
+	if ok && c.ImageHost != "" && ref.Host != c.ImageHost {
+		return imageRef{}, false
+	}
+	return ref, ok
 }
 
 // matches says whether a request for ref of o is exactly what the reference names: a digest-pinned image allows that digest only, a tag
@@ -86,11 +96,11 @@ func (c *Cache) scheduleMatch(node, tenant string, o objectRef) ([]LabRef, bool)
 	seen := map[LabRef]bool{}
 	ok := false
 	for _, pod := range c.Schedule.PodsOnNode(node) {
-		if pod.Terminating {
+		if pod.Ended() { // a pod that finished or is going away pulls nothing more
 			continue
 		}
 		for _, img := range pod.Images {
-			ref, isCache := parseCacheImage(img)
+			ref, isCache := c.parseImage(img)
 			if !isCache || !ref.matches(o) || !c.podOfTenant(pod, o.Tenant, tenant) {
 				continue
 			}
@@ -112,7 +122,7 @@ func (c *Cache) scheduleMatch(node, tenant string, o objectRef) ([]LabRef, bool)
 			continue
 		}
 		for _, img := range ip.Images {
-			if ref, isCache := parseCacheImage(img); isCache && ref.matches(o) {
+			if ref, isCache := c.parseImage(img); isCache && ref.matches(o) {
 				ok = true
 			}
 		}
@@ -125,11 +135,11 @@ func (c *Cache) scheduleMatch(node, tenant string, o objectRef) ([]LabRef, bool)
 func (c *Cache) pinnedDigests(node, tenant string, o objectRef) []string {
 	var out []string
 	for _, pod := range c.Schedule.PodsOnNode(node) {
-		if pod.Terminating {
+		if pod.Ended() { // a pod that finished or is going away pulls nothing more
 			continue
 		}
 		for _, img := range pod.Images {
-			ref, isCache := parseCacheImage(img)
+			ref, isCache := c.parseImage(img)
 			if isCache && ref.Digest != "" && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() && c.podOfTenant(pod, o.Tenant, tenant) {
 				out = append(out, ref.Digest)
 			}
@@ -142,11 +152,11 @@ func (c *Cache) pinnedDigests(node, tenant string, o objectRef) []string {
 // digest: a blob request for a repository nothing on the node names is refused outright.
 func (c *Cache) anyPodFor(node, tenant string, o objectRef) bool {
 	for _, pod := range c.Schedule.PodsOnNode(node) {
-		if pod.Terminating {
+		if pod.Ended() { // a pod that finished or is going away pulls nothing more
 			continue
 		}
 		for _, img := range pod.Images {
-			ref, isCache := parseCacheImage(img)
+			ref, isCache := c.parseImage(img)
 			if isCache && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() && c.podOfTenant(pod, o.Tenant, tenant) {
 				return true
 			}
@@ -157,7 +167,7 @@ func (c *Cache) anyPodFor(node, tenant string, o objectRef) bool {
 			continue
 		}
 		for _, img := range ip.Images {
-			if ref, isCache := parseCacheImage(img); isCache && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() {
+			if ref, isCache := c.parseImage(img); isCache && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() {
 				return true
 			}
 		}
@@ -194,23 +204,22 @@ func childDigests(body []byte) []string {
 	return out
 }
 
-// rebuildGrant restores the grant of a digest-pinned reference after the gate restarted: it reads the manifest the gate holds in zot,
-// checks that its digest is the one the pod names, and records its children (and the children of child indexes, one level down).
-func (c *Cache) rebuildGrant(ctx context.Context, node, tenant string, o objectRef, creds Creds) {
-	for _, d := range c.pinnedDigests(node, tenant, o) {
-		body, err := c.Zot.ManifestBody(ctx, o.zotRepo(), d)
-		if err != nil || body == nil || sha256Digest(body) != d {
-			continue
-		}
-		digests := []string{d}
-		for _, ch := range childDigests(body) {
-			digests = append(digests, ch)
-			if cb, err := c.Zot.ManifestBody(ctx, o.zotRepo(), ch); err == nil && cb != nil && sha256Digest(cb) == ch {
-				digests = append(digests, childDigests(cb)...)
-			}
-		}
-		c.Grants.Add(node, o.Tenant, o.fullRepo(), creds, digests...)
+// rebuildGrant records the grant of one digest-pinned manifest that has just passed the upstream proof (the caller's job): it reads the
+// manifest the gate holds in zot, checks that its digest is the pinned one, and records its children (and the children of child indexes,
+// one level down).
+func (c *Cache) rebuildGrant(ctx context.Context, node string, o objectRef, d string, creds Creds) {
+	body, err := c.Zot.ManifestBody(ctx, o.zotRepo(), d)
+	if err != nil || body == nil || sha256Digest(body) != d {
+		return
 	}
+	digests := []string{d}
+	for _, ch := range childDigests(body) {
+		digests = append(digests, ch)
+		if cb, err := c.Zot.ManifestBody(ctx, o.zotRepo(), ch); err == nil && cb != nil && sha256Digest(cb) == ch {
+			digests = append(digests, childDigests(cb)...)
+		}
+	}
+	c.Grants.Add(node, o.Tenant, o.fullRepo(), creds, digests...)
 }
 
 func sha256Digest(b []byte) string {

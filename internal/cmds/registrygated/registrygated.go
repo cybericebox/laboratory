@@ -50,6 +50,8 @@ type Config struct {
 	PullGrace     time.Duration `env:"GATE_PULL_GRACE" envDefault:"2m"`
 	GrantMaxAge   time.Duration `env:"GATE_GRANT_MAX_AGE" envDefault:"1h"`
 	RequireDigest bool          `env:"GATE_REQUIRE_DIGEST" envDefault:"false"`
+	// ImageHost is the host the nodes pull cache images from (<host>/c/...); empty: any host in front of /c/.
+	ImageHost string `env:"GATE_IMAGE_HOST"`
 	// AgentMaxFills is how many prewarm requests of the agent are served at once.
 	AgentMaxFills int `env:"GATE_AGENT_MAX_FILLS" envDefault:"8"`
 
@@ -252,7 +254,7 @@ func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log lo
 	c.DiskFull = disk.Full
 	c.Schedule, c.Creds, c.MaxStale = sch, secrets, cfg.APIStaleMax
 	c.Grants = &registrygate.Grants{Grace: cfg.PullGrace, MaxAge: cfg.GrantMaxAge}
-	c.RequireDigest, c.AgentMaxFills = cfg.RequireDigest, cfg.AgentMaxFills
+	c.RequireDigest, c.AgentMaxFills, c.ImageHost = cfg.RequireDigest, cfg.AgentMaxFills, cfg.ImageHost
 	if cfg.AnonymousFillFile != "" {
 		data, err := os.ReadFile(cfg.AnonymousFillFile)
 		if err != nil {
