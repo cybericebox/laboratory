@@ -81,6 +81,14 @@ func (z *fakeZot) count(method, pathPart string) int {
 	return c
 }
 
+// list is a copy of what zot has received so far; the handlers of a cut request may still be finishing, so it settles for a moment first.
+func (z *fakeZot) list() []zotReq {
+	time.Sleep(100 * time.Millisecond)
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return append([]zotReq(nil), z.reqs...)
+}
+
 func (z *fakeZot) total() int {
 	z.mu.Lock()
 	defer z.mu.Unlock()
@@ -313,7 +321,7 @@ func TestOnlyCheckedRequestsReachZotWithTheGatesAccount(t *testing.T) {
 	if w.Code != 200 || r.zot.total() != 1 {
 		t.Fatalf("%d %d", w.Code, r.zot.total())
 	}
-	zr := r.zot.reqs[0]
+	zr := r.zot.list()[0]
 	if zr.cibHeaders != 0 || !strings.HasPrefix(zr.auth, "Basic ") || zr.auth == "Basic ZXZpbDpldmls" {
 		t.Fatalf("zot saw %+v", zr)
 	}
@@ -483,7 +491,7 @@ func TestPushBudgetSlidingWindow(t *testing.T) {
 	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 600)), nil); w.Code != 202 {
 		t.Fatalf("600 of 1000: %d", w.Code)
 	}
-	if got := r.zot.reqs[len(r.zot.reqs)-1].body; got != 600 {
+	if got := func() int64 { l := r.zot.list(); return l[len(l)-1].body }(); got != 600 {
 		t.Fatalf("zot got %d bytes", got)
 	}
 	w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 600)), nil)
@@ -491,12 +499,12 @@ func TestPushBudgetSlidingWindow(t *testing.T) {
 		t.Fatalf("600 more: %d %v %s", w.Code, w.Header(), w.Body.String())
 	}
 	// an upload with no length is cut at the line: zot never receives more than what is left, and nothing beyond the budget is charged
-	before := len(r.zot.reqs)
+	before := len(r.zot.list())
 	req := httptest.NewRequest("PATCH", "http://x"+s1, io.NopCloser(bytes.NewReader(make([]byte, 5000))))
 	req.ContentLength = -1
 	req.Header.Set(HeaderNodeToken, tokA)
 	r.gate.ServeHTTP(httptest.NewRecorder(), req)
-	for _, z := range r.zot.reqs[before:] {
+	for _, z := range r.zot.list()[before:] {
 		if z.body > 400 {
 			t.Fatalf("the body was not cut at the budget: %+v", z)
 		}
@@ -595,7 +603,7 @@ func TestConcurrentUploadsShareTheBudget(t *testing.T) {
 	}
 	wg.Wait()
 	var total int64
-	for _, z := range r.zot.reqs {
+	for _, z := range r.zot.list() {
 		if z.method == "PATCH" {
 			total += z.body
 		}
