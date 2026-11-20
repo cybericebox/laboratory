@@ -49,7 +49,7 @@ type Config struct {
 
 	// The platform registry (zot): the snapshots of device state and the image cache.
 	//
-	// StateRegistryAddr is host:port of the registry Service (empty = names.RegistryServiceAddr: the chart always installs it there).
+	// StateRegistryAddr is host:port of the registry gate's TLS port (empty = names.RegistryGateAddr: the chart always installs it there).
 	// The node-agent relays it to 127.0.0.1:StateForwardPort (names.RegistryForwardPort, a constant), so snapshot and cached images are
 	// referenced as localhost:<port>/... and pulled by the node's containerd over plain HTTP without any host configuration.
 	StateRegistryAddr string `env:"STATE_REGISTRY_ADDR"`
@@ -101,7 +101,7 @@ func LoadConfig() (*Config, error) {
 		return cfg, nil
 	}
 	if cfg.StateRegistryAddr == "" {
-		cfg.StateRegistryAddr = names.RegistryServiceAddr
+		cfg.StateRegistryAddr = names.RegistryGateAddr
 	}
 	return cfg, nil
 }
@@ -111,6 +111,7 @@ func (c *Config) PreflightInput() PreflightInput {
 	return PreflightInput{
 		Persistence: c.StatePersistence, Observation: c.RuntimeObservation,
 		ContainerdRoot: c.ContainerdRoot, CRISock: c.CRISock, CgroupRoot: c.CgroupRoot, RegistryAddr: c.StateRegistryAddr,
+		RegistryCAFile: c.StateRegistryCAFile, RegistryTokenFile: c.RegistryTokenFile,
 	}
 }
 
