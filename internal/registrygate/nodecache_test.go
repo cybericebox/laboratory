@@ -264,34 +264,40 @@ func TestGrantsExpireWithTheGraceAndTheMaximumAge(t *testing.T) {
 	}
 }
 
-// After a restart of the gate the grants are gone: a digest-pinned reference rebuilds its grant from what zot holds.
-func TestAGateRestartRebuildsTheGrantOfADigestPinnedReference(t *testing.T) {
-	n := newNodeRig(t)
-	n.devicePod("lg-acme", "dev-pinned", "node-a", pfx+"acme/up/org/private@"+n.md)
-	for _, d := range []string{n.md} {
-		if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", d), nil); code != 200 {
-			t.Fatalf("manifest: %d", code)
+// After a restart of the gate the grants are gone and nothing rebuilds them (2.4.2): a blob is 404 BLOB_UNKNOWN whatever the kind of
+// reference, and the pull that starts again with the manifest makes the grant through the whole proof.
+func TestAGateRestartRebuildsNothing(t *testing.T) {
+	for name, image := range map[string]func(n *nodeRig) string{
+		"digest": func(n *nodeRig) string { return pfx + "acme/up/org/private@" + n.md },
+		"tag":    func(n *nodeRig) string { return pfx + "acme/up/org/private:latest" },
+	} {
+		n := newNodeRig(t)
+		if name == "tag" {
+			n.md = n.putTag("org/private", "latest", manifestBody(n.cfg, n.ld))
 		}
-	}
-	for _, d := range []string{n.ld, n.cfg} {
-		if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", d), nil); code != 200 {
-			t.Fatalf("blob: %d", code)
+		n.devicePod("lg-acme", "dev", "node-a", image(n))
+		ref := n.md
+		if name == "tag" {
+			ref = "latest"
 		}
-	}
-	// the gate restarts: no grants
-	n.cache.Grants = &Grants{Now: func() time.Time { return *n.clk }}
-	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 200 {
-		t.Fatalf("a digest-pinned reference rebuilds the grant: %d", code)
-	}
-	// a tag reference cannot: the kubelet is told to ask for the manifest again
-	n2 := newNodeRig(t)
-	n2.devicePod("lg-acme", "dev-tag", "node-a", pfx+"acme/up/library/nginx:latest")
-	if code, _, _ := n2.get(tokA, "GET", n2.mp("acme", "library/nginx", "latest"), nil); code != 200 {
-		t.Fatal(code)
-	}
-	n2.cache.Grants = &Grants{Now: func() time.Time { return *n2.clk }}
-	if code, _, _ := n2.get(tokA, "GET", n2.bp("acme", "library/nginx", n2.nginxLd), nil); code != 404 {
-		t.Fatalf("a tag reference after a restart: %d", code)
+		if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", ref), nil); code != 200 {
+			t.Fatalf("%s manifest: %d", name, code)
+		}
+		if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 200 {
+			t.Fatalf("%s blob: %d", name, code)
+		}
+		n.forget()
+		code, body, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil)
+		if code != 404 || !strings.Contains(string(body), "BLOB_UNKNOWN") {
+			t.Fatalf("%s after a restart: %d %s", name, code, body)
+		}
+		// the kubelet starts again with the manifest: the proof is made and so is the grant
+		if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", ref), nil); code != 200 {
+			t.Fatalf("%s manifest again: %d", name, code)
+		}
+		if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 200 {
+			t.Fatalf("%s blob again: %d", name, code)
+		}
 	}
 }
 
@@ -440,9 +446,10 @@ func TestParseCacheImage(t *testing.T) {
 	}
 }
 
-// Review finding 1: a grant rebuilt after a restart needs the same upstream proof as a manifest request. A tenant whose credentials the
-// upstream refuses, with a pod that pins the digest of another tenant's private image that is already cached, gets nothing.
-func TestARebuiltGrantNeedsTheUpstreamProof(t *testing.T) {
+// Review finding 1: a manifest that is merely present in zot authorises nothing. A tenant whose credentials the upstream refuses, with a pod
+// that pins the digest of another tenant's private image that is already cached, gets no blob and no manifest; and even with credentials
+// that would pass, a blob without a grant is 404 (no rebuild).
+func TestAManifestInZotAuthorisesNothing(t *testing.T) {
 	n := newNodeRig(t)
 	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("other"), dockerConfig("up", "alice", "pw"))
 	n.devicePod("lg-other", "dev-other", "node-b", pfx+"other/up/org/private@"+n.md)
@@ -454,24 +461,31 @@ func TestARebuiltGrantNeedsTheUpstreamProof(t *testing.T) {
 			t.Fatalf("the owner pulls the layers: %d", code)
 		}
 	}
-	// acme's own credentials do not open org/private upstream
 	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("acme"), dockerConfig("up", "bob", "wrong"))
 	n.devicePod("lg-acme", "dev-thief", "node-a", pfx+"acme/up/org/private@"+n.md)
 	n.forget()
 	for _, d := range []string{n.ld, n.cfg} {
-		if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", d), nil); code == 200 {
-			t.Fatalf("a layer of another tenants private image was served without proof: %d", code)
+		if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", d), nil); code != 404 {
+			t.Fatalf("a layer without a grant: %d", code)
 		}
 	}
-	// the manifest itself is refused too
 	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", n.md), nil); code != 403 {
 		t.Fatalf("manifest: %d", code)
 	}
-	// with the right credentials the rebuild works
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 404 {
+		t.Fatalf("a refused manifest makes no grant: %d", code)
+	}
+	// right credentials, but the blob alone still has no grant: only the manifest makes one
 	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("acme"), dockerConfig("up", "alice", "pw"))
 	n.forget()
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 404 {
+		t.Fatalf("no rebuild: %d", code)
+	}
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", n.md), nil); code != 200 {
+		t.Fatal(code)
+	}
 	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 200 {
-		t.Fatalf("with proof: %d", code)
+		t.Fatalf("with the grant: %d", code)
 	}
 }
 

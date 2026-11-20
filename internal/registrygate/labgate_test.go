@@ -23,6 +23,7 @@ type fakeZot struct {
 	next      int
 	latest    string // Docker-Content-Digest of "latest" before a push
 	putDigest string
+	fail      []int // statuses to answer with, once each, in place of the normal answer
 }
 
 type zotReq struct {
@@ -42,6 +43,13 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	z.mu.Lock()
 	z.reqs = append(z.reqs, zotReq{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), cib, n})
+	if len(z.fail) > 0 {
+		code := z.fail[0]
+		z.fail = z.fail[1:]
+		z.mu.Unlock()
+		w.WriteHeader(code)
+		return
+	}
 	z.next++
 	id := fmt.Sprintf("sess-%d", z.next)
 	latest, put := z.latest, z.putDigest
@@ -87,6 +95,12 @@ func (z *fakeZot) list() []zotReq {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	return append([]zotReq(nil), z.reqs...)
+}
+
+func (z *fakeZot) failNext(code int) {
+	z.mu.Lock()
+	z.fail = append(z.fail, code)
+	z.mu.Unlock()
 }
 
 func (z *fakeZot) total() int {
@@ -210,6 +224,8 @@ func newLabRig(t *testing.T) *labRig {
 	g.Lab = r.lab
 	r.gate = g
 	// the cluster: two nodes, the devices of one lab
+	r.sch.SetGroup("lg-acme", "acme")
+	r.sch.SetGroup("lg-other", "other")
 	r.sch.SetPod(PodInfo{Namespace: "laboratory-system", Name: "agent-a", UID: "uid-a", Node: "node-a", Phase: "Running"})
 	r.sch.SetPod(PodInfo{Namespace: "laboratory-system", Name: "agent-b", UID: "uid-b", Node: "node-b", Phase: "Running"})
 	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev1", Node: "node-a", StateEnabled: true, Tenant: "acme"})
@@ -380,53 +396,119 @@ func TestUploadSessionsAreBoundToTheNodeAndTheRepository(t *testing.T) {
 	}
 }
 
-// Review finding 2: a mount source is the image that very device runs on the calling node, and the digest must be in that image's grant.
-func TestBlobMountsOnlyFromBaseOrTheImageOfTheSameDevice(t *testing.T) {
+// Review finding 2 / 2.4.3: the gate computes the mount source itself, from the image of that very device on the calling node, bound to the
+// device's tenant, and only a digest that image's live proven grant covers can be mounted; nothing is ever mounted from base.
+func TestBlobMountsOnlyFromTheDevicesOwnProvenImage(t *testing.T) {
 	r := newLabRig(t)
 	now := func() time.Time { return *r.clk }
-	r.lab.Cache = &Cache{Grants: &Grants{Now: now}}
-	devPod := func(name, dev, node, image string) {
-		r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: name, UID: "u-" + name, Node: node, Phase: "Running", Images: []string{image},
+	r.lab.Cache = &Cache{Grants: &Grants{Now: now}, Schedule: r.sch}
+	devPod := func(name, ns, dev, node, image string) {
+		r.sch.SetPod(PodInfo{Namespace: ns, Name: name, UID: "u-" + name, Node: node, Phase: "Running", Images: []string{image},
 			Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: dev}})
 	}
-	devPod("p1", "dev1", "node-a", "localhost:5035/c/acme/docker.io/library/nginx:1")
-	devPod("p2", "plain", "node-a", "localhost:5035/c/acme/docker.io/library/redis:7")
-	devPod("p3", "dev2", "node-b", "localhost:5035/c/acme/docker.io/library/nginx:1")
+	const nginx = "docker.io/library/nginx"
+	devPod("p1", "lg-acme", "dev1", "node-a", "localhost:5035/c/acme/"+nginx+"@"+dg("1")) // pinned: the index dg(1) lists child dg(2)
+	devPod("p2", "lg-acme", "plain", "node-a", "localhost:5035/c/acme/docker.io/library/redis:7")
+	devPod("p3", "lg-acme", "dev2", "node-b", "localhost:5035/c/acme/"+nginx+"@"+dg("1"))
 	g := r.lab.Cache.Grants
-	g.Add("node-a", "acme", "docker.io/library/nginx", Creds{}, dg("a"))
-	g.Add("node-a", "acme", "docker.io/library/redis", Creds{}, dg("a"))
-	g.Add("node-a", "other", "up/org/private", Creds{}, dg("a")) // another tenant's image, cached and granted to someone else
-	mount := func(token, repo, from, digest string) int {
-		return r.do(token, "POST", upPath(repo)+"?mount="+digest+"&from="+from, nil, nil).Code
-	}
-	for _, c := range []struct {
-		name, token, repo, from, digest string
-		want                            int
-	}{
-		{"base", tokA, repoD1, "base", dg("a"), 201},
-		{"the image the device runs, a granted digest", tokA, repoD1, "c/docker.io/library/nginx", dg("a"), 201},
-		{"the same image, a digest no grant holds", tokA, repoD1, "c/docker.io/library/nginx", dg("b"), 403},
-		{"an image of another device of the lab", tokA, repoD1, "c/docker.io/library/redis", dg("a"), 403},
-		{"another tenant's cached image", tokA, repoD1, "c/up/org/private", dg("a"), 403},
-		{"an image nothing on the node runs", tokA, repoD1, "c/docker.io/library/mysql", dg("a"), 403},
-		{"the image of the device on another node", tokB, "lab/lg-acme/lab1/dev2", "c/docker.io/library/nginx", dg("a"), 403},
-		{"another device's snapshots", tokA, repoD1, "lab/lg-acme/lab1/dev2", dg("a"), 403},
-		{"no source", tokA, repoD1, "", dg("a"), 403},
-		{"no digest", tokA, repoD1, "c/docker.io/library/nginx", "", 403},
-		{"traversal", tokA, repoD1, "c/../base", dg("a"), 403},
-		{"platform", tokA, repoD1, "platform/x", dg("a"), 403},
-		{"cx prefix", tokA, repoD1, "cx/docker.io", dg("a"), 403},
-	} {
-		if got := mount(c.token, c.repo, c.from, c.digest); got != c.want {
-			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+	add := func(node, seg, repo, tag, root string, kids ...string) {
+		t.Helper()
+		if err := g.Add(node, seg, repo, Creds{}, tag, root, kids); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// the pod ends: its image no longer opens a mount
-	devPod("p1", "dev1", "node-a", "localhost:5035/c/acme/docker.io/library/nginx:1")
-	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p1", UID: "u-p1", Node: "node-a", Phase: "Failed", Images: []string{"localhost:5035/c/acme/docker.io/library/nginx:1"},
+	add("node-a", "acme", nginx, "", dg("1"), dg("2"))
+	add("node-a", "acme", nginx, "", dg("2"), dg("3"), dg("4")) // the child manifest lists layers 3 and 4
+	add("node-a", "acme", nginx, "", dg("5"), dg("6"))          // ANOTHER image of the same repository (some other pod's), layer 6
+	add("node-a", "acme", "docker.io/library/redis", "7", dg("7"), dg("8"))
+	add("node-a", "other", "docker.io/library/secret", "", dg("9"), dg("a")) // another tenant's cached image on the node
+	add("node-b", "acme", nginx, "", dg("1"), dg("2"))
+	mount := func(token, repo, digest, from string) int {
+		q := "?mount=" + digest
+		if from != "" {
+			q += "&from=" + from
+		}
+		return r.do(token, "POST", upPath(repo)+q, nil, nil).Code
+	}
+	for _, c := range []struct {
+		name, token, repo, digest, from string
+		want                            int
+	}{
+		{"a layer of the pinned image", tokA, repoD1, dg("3"), "", 201},
+		{"the pinned index itself", tokA, repoD1, dg("1"), "", 201},
+		{"the caller's from is ignored", tokA, repoD1, dg("4"), "base", 201},
+		{"a digest granted for ANOTHER image of the same repository", tokA, repoD1, dg("6"), "", 403},
+		{"the same, with a from naming that repository", tokA, repoD1, dg("6"), "c/" + nginx, 403},
+		{"a digest no grant holds", tokA, repoD1, dg("b"), "", 403},
+		{"an image of another device of the lab", tokA, repoD1, dg("8"), "c/docker.io/library/redis", 403},
+		{"another tenant's cached image", tokA, repoD1, dg("a"), "c/docker.io/library/secret", 403},
+		{"the same layer on the device of another node", tokB, "lab/lg-acme/lab1/dev2", dg("3"), "", 403}, // node-b holds no grant of dg(3)
+		{"no digest", tokA, repoD1, "", "c/" + nginx, 202},                                                // not a mount: an ordinary upload start
+	} {
+		want := c.want
+		if got := mount(c.token, c.repo, c.digest, c.from); got != want {
+			t.Errorf("%s: %d, want %d", c.name, got, want)
+		}
+	}
+	// the source the gate sent to zot is the one it computed
+	for _, z := range r.zot.list() {
+		if strings.Contains(z.query, "mount=") && !strings.Contains(z.query, "from=c%2Fdocker.io%2Flibrary%2Fnginx") {
+			t.Errorf("zot got %q: the gate must name the source itself", z.query)
+		}
+		if strings.Contains(z.query, "base") {
+			t.Errorf("a mount from base reached zot: %q", z.query)
+		}
+	}
+	// a device pod whose image string carries ANOTHER tenant's segment gets nothing, nor does the platform segment
+	devPod("p4", "lg-acme", "dev1", "node-a", "localhost:5035/c/other/docker.io/library/secret@"+dg("9"))
+	if got := mount(tokA, repoD1, dg("a"), ""); got != 403 {
+		t.Errorf("a pod of tenant acme naming tenant other's image: %d", got)
+	}
+	add("node-a", "platform", "docker.io/library/vpn", "", dg("c"), dg("d"))
+	devPod("p5", "lg-acme", "dev1", "node-a", "localhost:5035/c/platform/docker.io/library/vpn@"+dg("c"))
+	if got := mount(tokA, repoD1, dg("d"), ""); got != 403 {
+		t.Errorf("the platform segment: %d", got)
+	}
+	// a pod in a namespace of another tenant's group does not count for this device
+	devPod("p6", "lg-other", "dev1", "node-a", "localhost:5035/c/acme/"+nginx+"@"+dg("1"))
+	r.sch.DeletePod("lg-acme", "p1")
+	if got := mount(tokA, repoD1, dg("3"), ""); got != 403 {
+		t.Errorf("no pod of this device names the image any more: %d", got)
+	}
+	// a tag pod: the tag covers what it was served as
+	devPod("p7", "lg-acme", "dev1", "node-a", "localhost:5035/c/acme/docker.io/library/redis:7")
+	if got := mount(tokA, repoD1, dg("8"), ""); got != 201 {
+		t.Errorf("a tag reference covers its manifest's layers: %d", got)
+	}
+	// a finished pod's image opens nothing
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p7", UID: "u-p7", Node: "node-a", Phase: "Failed", Images: []string{"localhost:5035/c/acme/docker.io/library/redis:7"},
 		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
-	if got := mount(tokA, repoD1, "c/docker.io/library/nginx", dg("a")); got != 403 {
+	if got := mount(tokA, repoD1, dg("8"), ""); got != 403 {
 		t.Errorf("a finished pod: %d", got)
+	}
+}
+
+// An upload into the device repository of a digest that is in the grant is the image's layer (not budgeted); any other digest is the
+// snapshot's own layer and counts.
+func TestUploadOfAGrantedDigestIsNotBudgeted(t *testing.T) {
+	r := newLabRig(t) // budget 1000
+	r.lab.Cache = &Cache{Grants: &Grants{Now: func() time.Time { return *r.clk }}, Schedule: r.sch}
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p1", UID: "u1", Node: "node-a", Phase: "Running", Images: []string{"localhost:5035/c/acme/docker.io/library/x@" + dg("1")},
+		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	if err := r.lab.Cache.Grants.Add("node-a", "acme", "docker.io/library/x", Creds{}, "", dg("1"), []string{dg("2")}); err != nil {
+		t.Fatal(err)
+	}
+	w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+	loc := w.Header().Get("Location")
+	s1 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	if w := r.do(tokA, "PUT", s1+"?digest="+dg("2"), bytes.NewReader(make([]byte, 5000)), nil); w.Code != 201 {
+		t.Fatalf("the image's own layer: %d", w.Code)
+	}
+	w = r.do(tokA, "POST", upPath(repoD1), nil, nil)
+	loc = w.Header().Get("Location")
+	s2 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	if w := r.do(tokA, "PUT", s2+"?digest="+dg("9"), bytes.NewReader(make([]byte, 5000)), nil); w.Code != 429 {
+		t.Fatalf("the snapshot's own layer over the budget: %d", w.Code)
 	}
 }
 
@@ -462,15 +544,10 @@ func TestMinIntervalAndTheExitSnapshot(t *testing.T) {
 	if w := put(); w.Code != 201 {
 		t.Fatalf("the exit snapshot: %d", w.Code)
 	}
-	if w := put(); w.Code != 429 {
-		t.Fatalf("the same pod's exit is used once: %d", w.Code)
-	}
-	pod2 := pod
-	pod2.UID, pod2.Name, pod2.Terminating, pod2.Phase = "pod-2", "dev1-1", true, "Running"
-	r.sch.SetPod(pod2)
 	if w := put(); w.Code != 201 {
-		t.Fatalf("a terminating pod is an ended pod: %d", w.Code)
+		t.Fatalf("a device whose pod stays ended is held to the per-hour exit limit, not to the interval: %d", w.Code)
 	}
+	r.sch.DeletePod("lg-acme", "dev1-0")
 	// a pod of another device, or on another node, is no exit of this one
 	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "x", UID: "pod-3", Node: "node-b", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
 	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "y", UID: "pod-4", Node: "node-a", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev2"}})
@@ -552,32 +629,75 @@ func TestPushBudgetIsPerDeviceAndTheExitSnapshotHasAPoolOfItsOwn(t *testing.T) {
 	}
 }
 
-// Review finding 5: a pod that keeps crashing gets a limited number of exit slots per window, and an exit push has a ceiling.
-func TestExitSlotsAreLimitedOverTime(t *testing.T) {
+// Review finding 5 / 2.4.4: exit pushes are limited per device per hour whatever the pod UIDs, and one exit push has a ceiling.
+func TestExitPushesAreLimitedPerDeviceNotPerPod(t *testing.T) {
 	r := newLabRig(t)
 	r.zot.putDigest = dg("1")
 	crash := func(i int) {
 		r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: fmt.Sprintf("dev1-%d", i), UID: fmt.Sprintf("pod-%d", i), Node: "node-a", Phase: "Failed",
 			Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
 	}
-	put := func() int {
-		return r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(nil)), nil).Code
+	put := func() *httptest.ResponseRecorder {
+		return r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(nil)), nil)
 	}
-	for i := 1; i <= 3; i++ {
-		crash(i)
-		if c := put(); c != 201 {
-			t.Fatalf("exit %d: %d", i, c)
+	for i := 1; i <= 6; i++ {
+		crash(i) // a new pod UID every time: no help
+		if w := put(); w.Code != 201 {
+			t.Fatalf("exit %d: %d", i, w.Code)
 		}
 	}
-	crash(4)
-	if c := put(); c != 429 {
-		t.Fatalf("the fourth crash within the window has no free slot: %d", c)
+	crash(7)
+	w := put()
+	if w.Code != 429 || !strings.Contains(w.Body.String(), CodeExitLimit) || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("the seventh in the hour: %d %s", w.Code, w.Body.String())
+	}
+	// uploads of that exit push are refused too, not only the manifest
+	if w := r.do(tokA, "POST", upPath(repoD1), nil, nil); w.Code != 429 || !strings.Contains(w.Body.String(), CodeExitLimit) {
+		t.Fatalf("an upload start: %d %s", w.Code, w.Body.String())
 	}
 	*r.clk = r.clk.Add(time.Hour + time.Minute)
 	r.sch.Confirm()
-	crash(5)
-	if c := put(); c != 201 {
-		t.Fatalf("a new window: %d", c)
+	if w := put(); w.Code != 201 {
+		t.Fatalf("a new hour: %d", w.Code)
+	}
+}
+
+func TestAnExitPushHasACeilingOfItsOwn(t *testing.T) {
+	r := newLabRig(t) // budget 1000
+	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev1", Node: "node-a", StateEnabled: true, Tenant: "acme", WriteQuotaBytes: 300})
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "dev1-0", UID: "pod-1", Node: "node-a", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+	loc := w.Header().Get("Location")
+	s1 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	w = r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 500)), nil)
+	if w.Code != 429 || !strings.Contains(w.Body.String(), CodeExitLimit) {
+		t.Fatalf("500 against the device's write quota of 300: %d %s", w.Code, w.Body.String())
+	}
+	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 300)), nil); w.Code != 202 {
+		t.Fatalf("300: %d", w.Code)
+	}
+	r.lab.Limits.ExitMaxBytes = 1000 // the explicit setting beats the device's quota
+	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev1", Node: "node-a", StateEnabled: true, Tenant: "acme", WriteQuotaBytes: 300})
+	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 600)), nil); w.Code != 202 {
+		t.Fatalf("GATE_EXIT_MAX_BYTES: %d", w.Code)
+	}
+}
+
+// 2.4.4: a request zot refuses gives its reservation back.
+func TestAReservationIsReturnedWhenZotRefuses(t *testing.T) {
+	r := newLabRig(t) // budget 1000
+	w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+	loc := w.Header().Get("Location")
+	s1 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	r.zot.failNext(http.StatusBadRequest)
+	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 800)), nil); w.Code != 400 {
+		t.Fatalf("zot refuses: %d", w.Code)
+	}
+	if used, _ := r.lab.used(repoD1, false, *r.clk); used != 0 {
+		t.Fatalf("%d bytes stay charged for a request that stored nothing", used)
+	}
+	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 800)), nil); w.Code != 202 {
+		t.Fatalf("the budget is whole again: %d", w.Code)
 	}
 }
 
@@ -855,48 +975,45 @@ func TestUploadID(t *testing.T) {
 	}
 }
 
-// Review finding 7: the session table is bounded per device and per node, and what makes room is the owner's own oldest session.
-func TestSessionTableEvictsOnlyTheOwnersSessions(t *testing.T) {
+// Review finding 7 / 2.4.6a: open upload sessions are limited per device (4) and per node (64); one node cannot use up another's room.
+func TestUploadSessionsAreLimitedPerDeviceAndPerNode(t *testing.T) {
 	r := newLabRig(t)
 	r.lab.Limits.Budget = 0
-	start := func(token, repo string) string {
-		w := r.do(token, "POST", upPath(repo), nil, nil)
-		if w.Code != 202 {
-			t.Fatalf("start: %d", w.Code)
-		}
-		loc := w.Header().Get("Location")
-		return loc[strings.LastIndex(loc, "/")+1:]
+	r.lab.Limits.UploadsPerNode = 6
+	start := func(token, repo string) *httptest.ResponseRecorder {
+		return r.do(token, "POST", upPath(repo), nil, nil)
 	}
-	patch := func(token, repo, id string) int {
-		*r.clk = r.clk.Add(time.Second)
-		return r.do(token, "PATCH", "/v2/"+repo+"/blobs/uploads/"+id, strings.NewReader("1"), nil).Code
-	}
-	other := start(tokB, "lab/lg-acme/lab1/dev2")
-	first := start(tokA, repoD1)
-	var last string
-	for i := 0; i < maxSessionsPerDevice+5; i++ {
-		*r.clk = r.clk.Add(time.Second)
-		last = start(tokA, repoD1)
-	}
-	if c := patch(tokA, repoD1, first); c != 404 {
-		t.Fatalf("the oldest session of the device made room: %d", c)
-	}
-	if c := patch(tokA, repoD1, last); c != 202 {
-		t.Fatalf("the newest is kept: %d", c)
-	}
-	if c := patch(tokB, "lab/lg-acme/lab1/dev2", other); c != 202 {
-		t.Fatalf("another node's session must survive: %d", c)
-	}
-	r.lab.mu.Lock()
-	n := 0
-	for _, s := range r.lab.sess {
-		if s.repo == repoD1 {
-			n++
+	for i := 0; i < 4; i++ {
+		if w := start(tokA, repoD1); w.Code != 202 {
+			t.Fatalf("session %d: %d", i, w.Code)
 		}
 	}
-	r.lab.mu.Unlock()
-	if n > maxSessionsPerDevice {
-		t.Fatalf("%d sessions for one device", n)
+	w := start(tokA, repoD1)
+	if w.Code != 429 || !strings.Contains(w.Body.String(), CodeUploadLimit) {
+		t.Fatalf("the fifth for one device: %d %s", w.Code, w.Body.String())
+	}
+	// another device on the same node: the node's own limit (6 in all)
+	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev3", Node: "node-a", StateEnabled: true, Tenant: "acme"})
+	d3 := "lab/lg-acme/lab1/dev3"
+	for i := 0; i < 2; i++ {
+		if w := start(tokA, d3); w.Code != 202 {
+			t.Fatalf("dev3 session %d: %d", i, w.Code)
+		}
+	}
+	if w := start(tokA, d3); w.Code != 429 {
+		t.Fatalf("the node is at its limit: %d", w.Code)
+	}
+	// another node is not affected
+	if w := start(tokB, "lab/lg-acme/lab1/dev2"); w.Code != 202 {
+		t.Fatalf("another node: %d", w.Code)
+	}
+	// finishing a session makes room; so does time (a session left alone for an hour is forgotten)
+	loc := r.do(tokB, "POST", upPath("lab/lg-acme/lab1/dev2"), nil, nil).Header().Get("Location")
+	_ = loc
+	*r.clk = r.clk.Add(2 * time.Hour)
+	r.sch.Confirm()
+	if w := start(tokA, repoD1); w.Code != 202 {
+		t.Fatalf("an hour later: %d", w.Code)
 	}
 }
 

@@ -49,24 +49,6 @@ func parseLabPath(escaped string) (labPath, bool) {
 	return p, true
 }
 
-// mountFromAllowed says whether a blob mount may take its blob from repository from: the shared base image, or a cache repository
-// (the way a first snapshot reuses the layers of its base image). Another device's snapshot repository is never a source.
-func mountFromAllowed(from string) bool {
-	// from comes out of the decoded query already; it is never decoded a second time
-	if from == "base" {
-		return true
-	}
-	if !strings.HasPrefix(from, "c/") {
-		return false
-	}
-	for _, seg := range strings.Split(from, "/") {
-		if seg == "" || seg == "." || seg == ".." {
-			return false
-		}
-	}
-	return true
-}
-
 // isSharedRead says whether the path is a read of the shared "base" repository (the operator's).
 func isBasePath(escaped string) bool {
 	return strings.HasPrefix(escaped, "/v2/base/")

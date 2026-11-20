@@ -1,7 +1,6 @@
 package registrygate
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -129,24 +128,6 @@ func (c *Cache) scheduleMatch(node, tenant string, o objectRef) ([]LabRef, bool)
 	return labs, ok
 }
 
-// pinnedDigests are the digests of the digest-pinned references on the node that name (segment, repo): what a grant is rebuilt from after a
-// restart of the gate.
-func (c *Cache) pinnedDigests(node, tenant string, o objectRef) []string {
-	var out []string
-	for _, pod := range c.Schedule.PodsOnNode(node) {
-		if pod.Ended() { // a pod that finished or is going away pulls nothing more
-			continue
-		}
-		for _, img := range pod.Images {
-			ref, isCache := c.parseImage(img)
-			if isCache && ref.Digest != "" && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() && c.podOfTenant(pod, o.Tenant, tenant) {
-				out = append(out, ref.Digest)
-			}
-		}
-	}
-	return out
-}
-
 // anyPodFor says whether some pod (or ImagePull) on the node names the repository of o for the tenant of the segment, with any tag or
 // digest: a blob request for a repository nothing on the node names is refused outright.
 func (c *Cache) anyPodFor(node, tenant string, o objectRef) bool {
@@ -201,24 +182,6 @@ func childDigests(body []byte) []string {
 		out = append(out, l.Digest)
 	}
 	return out
-}
-
-// rebuildGrant records the grant of one digest-pinned manifest that has just passed the upstream proof (the caller's job): it reads the
-// manifest the gate holds in zot, checks that its digest is the pinned one, and records its children (and the children of child indexes,
-// one level down).
-func (c *Cache) rebuildGrant(ctx context.Context, node string, o objectRef, d string, creds Creds) {
-	body, err := c.Zot.ManifestBody(ctx, o.zotRepo(), d)
-	if err != nil || body == nil || sha256Digest(body) != d {
-		return
-	}
-	digests := []string{d}
-	for _, ch := range childDigests(body) {
-		digests = append(digests, ch)
-		if cb, err := c.Zot.ManifestBody(ctx, o.zotRepo(), ch); err == nil && cb != nil && sha256Digest(cb) == ch {
-			digests = append(digests, childDigests(cb)...)
-		}
-	}
-	_ = c.Grants.Add(node, o.Tenant, o.fullRepo(), creds, digests...) // a refusal leaves no grant: the blob request is then asked to start from the manifest
 }
 
 func sha256Digest(b []byte) string {

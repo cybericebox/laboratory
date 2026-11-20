@@ -263,6 +263,7 @@ func deviceInfo(d *laboratoryv1alpha1.Device) DeviceInfo {
 	info := DeviceInfo{Namespace: d.Namespace, Lab: d.Spec.LabRef, Name: d.Spec.Name, Node: d.Status.NodeName, StateEnabled: d.Spec.StateEnabled(), Tenant: names.TenantOf(d.Labels)}
 	if d.Spec.State != nil {
 		info.TenantQuotaBytes = d.Spec.State.TenantQuotaBytes
+		info.WriteQuotaBytes = d.Spec.State.WriteQuotaBytes
 	}
 	return info
 }

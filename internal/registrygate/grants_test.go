@@ -10,72 +10,108 @@ import (
 
 func hexd(i int) string { return fmt.Sprintf("sha256:%064x", i) }
 
-// Review finding 8: the grant table is bounded in every dimension and says so when it refuses.
-func TestGrantTableIsBoundedAndRefusesLoudly(t *testing.T) {
+// Review finding 8 / 2.4.6a: the grant table is bounded in every dimension; a node's oldest grant gives way; a manifest too big is refused.
+func TestGrantTableIsBounded(t *testing.T) {
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	g := &Grants{Now: func() time.Time { return now }}
-	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, "sha256:short"); !errors.Is(err, ErrBadDigest) {
+	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, "", hexd(1), []string{"sha256:short"}); !errors.Is(err, ErrBadDigest) {
 		t.Fatalf("a malformed digest: %v", err)
 	}
-	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, strings.Repeat("a", 64)); !errors.Is(err, ErrBadDigest) {
-		t.Fatalf("a digest without the algorithm: %v", err)
+	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, "", strings.Repeat("a", 64), nil); !errors.Is(err, ErrBadDigest) {
+		t.Fatalf("a root without the algorithm: %v", err)
+	}
+	var many []string
+	for i := 0; i < DefaultGrantMaxDigests; i++ {
+		many = append(many, hexd(100+i))
+	}
+	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, "", hexd(1), many); !errors.Is(err, ErrTooManyBlobs) {
+		t.Fatalf("a manifest that lists more than a grant holds: %v", err)
 	}
 	if g.Len() != 0 {
 		t.Fatal("a refused grant leaves nothing")
 	}
-	var many []string
-	for i := 0; i <= maxDigestsPerGrant; i++ {
-		many = append(many, hexd(i))
-	}
-	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, many...); !errors.Is(err, ErrTooManyBlobs) {
-		t.Fatalf("too many digests for one grant: %v", err)
-	}
-	if g.Len() != 0 {
-		t.Fatal("a grant that was refused is not half-made")
-	}
-	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, many[:maxDigestsPerGrant]...); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.Add("n1", "acme", "docker.io/x/y", Creds{}, hexd(999999)); !errors.Is(err, ErrTooManyBlobs) {
-		t.Fatalf("growing a full grant: %v", err)
-	}
-	// one node cannot fill the table: its own cap, and another node is not affected
-	for i := 0; i < maxGrantsPerNode-1; i++ {
-		if err := g.Add("n1", "acme", fmt.Sprintf("r/%d", i), Creds{}, hexd(1)); err != nil {
-			t.Fatalf("grant %d: %v", i, err)
+	// the oldest grant of a node gives way to a new one at the cap; another node is unaffected
+	g.PerNode = 3
+	for i := 0; i < 3; i++ {
+		now = now.Add(time.Second)
+		if err := g.Add("n1", "acme", fmt.Sprintf("r/%d", i), Creds{}, "", hexd(1), nil); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if err := g.Add("n1", "acme", "r/over", Creds{}, hexd(1)); !errors.Is(err, ErrGrantsFull) {
-		t.Fatalf("the node's cap: %v", err)
+	now = now.Add(time.Second)
+	if err := g.Add("n1", "acme", "r/new", Creds{}, "", hexd(1), nil); err != nil {
+		t.Fatal(err)
 	}
-	if err := g.Add("n2", "acme", "r/over", Creds{}, hexd(1)); err != nil {
-		t.Fatalf("another node: %v", err)
+	if _, ok := g.Has("n1", "acme", "r/0", hexd(1)); ok {
+		t.Fatal("the oldest grant of the node must be dropped")
 	}
-	// lapsed grants make room, found without scanning the whole table
+	for _, r := range []string{"r/1", "r/2", "r/new"} {
+		if _, ok := g.Has("n1", "acme", r, hexd(1)); !ok {
+			t.Fatalf("%s must stay", r)
+		}
+	}
+	if err := g.Add("n2", "acme", "r/0", Creds{}, "", hexd(1), nil); err != nil {
+		t.Fatal(err)
+	}
+	// lapsed grants are swept, never scanned per request
 	now = now.Add(3 * time.Minute)
-	if err := g.Add("n1", "acme", "r/new", Creds{}, hexd(1)); err != nil {
-		t.Fatalf("the lapsed ones make room: %v", err)
-	}
 	g.Sweep()
-	if g.Len() != 1 {
+	if g.Len() != 0 {
 		t.Fatalf("a sweep drops what lapsed: %d left", g.Len())
 	}
 }
 
-// A manifest whose grant cannot be made is refused, not served with blobs nobody can then fetch.
-func TestAManifestThatCannotBeGrantedIsRefused(t *testing.T) {
-	n := newNodeRig(t)
-	n.devicePod("lg-acme", "dev-tag", "node-a", pfx+"acme/up/library/nginx:latest")
-	for i := 0; i < maxGrantsPerNode; i++ {
-		if err := n.cache.Grants.Add("node-a", "acme", fmt.Sprintf("filler/%d", i), Creds{}, hexd(1)); err != nil {
+// A grant made from a stale decision is never created, only renewed.
+func TestExtendNeverCreatesAGrant(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	g := &Grants{Now: func() time.Time { return now }}
+	if g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), nil) || g.Len() != 0 {
+		t.Fatal("no grant, none made")
+	}
+	if err := g.Add("n", "acme", "r/x", Creds{}, "", hexd(1), []string{hexd(2)}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if !g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), []string{hexd(3)}) {
+		t.Fatal("a live grant is renewed")
+	}
+	if _, ok := g.Has("n", "acme", "r/x", hexd(3)); !ok {
+		t.Fatal("and carries the new digest")
+	}
+	now = now.Add(5 * time.Minute) // lapsed
+	if g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), nil) {
+		t.Fatal("a lapsed grant is not brought back")
+	}
+}
+
+// Covers is about one reference, not about the repository: a digest granted for another image of the same repository is not covered.
+func TestCoversFollowsOneReference(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	g := &Grants{Now: func() time.Time { return now }}
+	idx, child, layer, other, otherLayer := hexd(1), hexd(2), hexd(3), hexd(4), hexd(5)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	code, body, hdr := n.get(tokA, "GET", n.mp("acme", "library/nginx", "latest"), nil)
-	if code != 429 || hdr.Get("Retry-After") == "" || !strings.Contains(string(body), "CIB_GRANTS_FULL") {
-		t.Fatalf("%d %s %v", code, body, hdr)
+	must(g.Add("n", "acme", "r/x", Creds{}, "", idx, []string{child}))
+	must(g.Add("n", "acme", "r/x", Creds{}, "", child, []string{layer}))
+	must(g.Add("n", "acme", "r/x", Creds{}, "stable", other, []string{otherLayer}))
+	for _, c := range []struct {
+		ref, d string
+		want   bool
+	}{
+		{idx, idx, true}, {idx, child, true}, {idx, layer, true},
+		{idx, other, false}, {idx, otherLayer, false},
+		{"stable", otherLayer, true}, {"stable", layer, false},
+		{"unknown-tag", layer, false},
+	} {
+		if got := g.Covers("n", "acme", "r/x", c.ref, c.d); got != c.want {
+			t.Errorf("ref %.8s digest %.12s: %v, want %v", c.ref, c.d, got, c.want)
+		}
 	}
-	if hdr.Get("Docker-Content-Digest") != "" {
-		t.Fatalf("the held manifest's headers must not leak: %v", hdr)
+	if g.Covers("other-node", "acme", "r/x", idx, layer) || g.Covers("n", "other", "r/x", idx, layer) {
+		t.Fatal("another node or segment has no such grant")
 	}
 }

@@ -42,6 +42,8 @@ type DeviceInfo struct {
 	Tenant       string
 	// TenantQuotaBytes is spec.state.tenantQuotaBytes (0: the tenant's or the platform's value applies).
 	TenantQuotaBytes int64
+	// WriteQuotaBytes is spec.state.writeQuotaBytes (0: none): the default ceiling of one exit push.
+	WriteQuotaBytes int64
 }
 
 // ImagePullInfo is what the gate needs of an ImagePull request.

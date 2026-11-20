@@ -39,9 +39,11 @@ type Cache struct {
 	Key []byte
 	// ImageHost is the host the nodes pull from (GATE_IMAGE_HOST, "localhost:5035"); empty: any host in front of /c/.
 	ImageHost string
-	Up        *Upstream
-	Zot       *Zot
-	Store     *Store
+	// ManifestMaxBytes bounds a manifest the gate holds (GATE_MANIFEST_MAX_BYTES, default 4 MiB).
+	ManifestMaxBytes int
+	Up               *Upstream
+	Zot              *Zot
+	Store            *Store
 	// DiskFull says that the volume is above its high-water mark: a miss is then streamed through and not stored.
 	DiskFull func() bool
 	// Fill is the optional login used to fill an image proved public (rate-limit relief); never for a private one.
@@ -224,36 +226,13 @@ func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, 
 	c.serveChecked(w, r, reg, o, who, &p)
 }
 
-// blobWithoutGrant: a blob request with no live grant. After a restart of the gate the grant of a digest-pinned reference is rebuilt, but
-// only after the same upstream proof a manifest request needs: the pinned manifest is proved with the credentials of that pod's tenant (and
-// lab) and the grant is made on success only; otherwise the kubelet is told to ask for the manifest again.
+// blobWithoutGrant: a blob (or child manifest) request with no live grant. There is no rebuild (2.4.2): whatever the kind of reference the
+// pod has, the answer is 404 BLOB_UNKNOWN and the kubelet starts the pull again with a manifest request, which goes through the whole proof
+// and makes the grant. A manifest that is merely present in zot authorises nothing.
 func (c *Cache) blobWithoutGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, p Principal, tenant string) {
 	if !c.anyPodFor(p.Node, tenant, o) { // nothing on the node names this repository (any more): no grant is honoured
 		c.M.refusals.WithLabelValues("no_pod").Inc()
 		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
-		return
-	}
-	for _, d := range c.pinnedDigests(p.Node, tenant, o) {
-		om := o
-		om.Kind, om.Ref = kindManifests, d
-		labs, ok := c.scheduleMatch(p.Node, tenant, om)
-		if !ok {
-			continue
-		}
-		up := Object{Repo: om.Repo, Kind: kindManifests, Ref: d}
-		for _, cr := range c.Creds.Candidates(o.Tenant, reg, labs) {
-			cl := caller{tenant: o.Tenant, creds: cr}
-			if !cr.anonymous() {
-				cl.hash = c.hash(o.Registry, cr)
-			}
-			if _, status := c.authorize(r.Context(), reg, om, up, cl); status == http.StatusOK {
-				c.rebuildGrant(r.Context(), p.Node, om, d, cr)
-				break
-			}
-		}
-	}
-	if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok {
-		c.serveGranted(w, r, reg, o, p, cr)
 		return
 	}
 	c.M.refusals.WithLabelValues("no_grant").Inc()
@@ -269,10 +248,17 @@ func (c *Cache) serveGranted(w http.ResponseWriter, r *http.Request, reg Registr
 	up := Object{Repo: o.Repo, Kind: o.Kind, Ref: o.Ref, Accept: r.Header.Get("Accept")}
 	c.M.decisions.WithLabelValues("grant").Inc()
 	if o.Kind == kindManifests {
-		c.serveManifestAndGrant(w, r, reg, o, up, who, &p)
+		c.serveManifestAndGrant(w, r, reg, o, up, who, &p, "", true)
 		return
 	}
 	c.serveBlob(w, r, reg, o, up, who)
+}
+
+func (c *Cache) manifestMax() int {
+	if c.ManifestMaxBytes > 0 {
+		return c.ManifestMaxBytes
+	}
+	return maxManifestSize
 }
 
 func (c *Cache) maxStale() time.Duration {
@@ -290,8 +276,13 @@ func (c *Cache) serveChecked(w http.ResponseWriter, r *http.Request, reg Registr
 	var digest string
 	var status int
 	var chosen caller
+	var stale bool
+	tag := ""
+	if o.isTag() {
+		tag = o.Ref
+	}
 	for _, cl := range who {
-		digest, status = c.authorize(ctx, reg, o, up, cl)
+		digest, status, stale = c.authorize(ctx, reg, o, up, cl)
 		if status == http.StatusOK {
 			chosen = cl
 			break
@@ -319,21 +310,22 @@ func (c *Cache) serveChecked(w http.ResponseWriter, r *http.Request, reg Registr
 	o.Ref = digest // a tag is resolved upstream and never answered from memory
 	up.Ref = digest
 	if o.Kind == kindManifests {
-		c.serveManifestAndGrant(w, r, reg, o, up, chosen, p)
+		c.serveManifestAndGrant(w, r, reg, o, up, chosen, p, tag, stale)
 		return
 	}
 	c.serveBlob(w, r, reg, o, up, chosen)
 }
 
-// serveManifestAndGrant serves a manifest and, for a node, records the digests it lists in the grant of (node, segment, repository). The
-// manifest is held back until the grant is made: a manifest whose grant cannot be made (too many digests, a malformed digest, the node holds
-// as many grants as it may) is refused, never served with its blobs silently unreachable.
-func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller, p *Principal) {
+// serveManifestAndGrant serves a manifest and, for a node, records it and the digests it lists in the grant of (node, segment, repository).
+// tag is the tag the pod asked for ("" for a digest). onlyExtend is true when the answer rests on a stale decision (or on an existing grant):
+// then a live grant is renewed and none is ever created. The manifest is held back until the grant is made: one that cannot be granted
+// (too many digests, a malformed digest) is refused, never served with its blobs silently unreachable.
+func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller, p *Principal, tag string, onlyExtend bool) {
 	if p == nil {
 		c.serveManifest(w, r, reg, o, up, who)
 		return
 	}
-	hw := &holdWriter{ResponseWriter: w}
+	hw := &holdWriter{ResponseWriter: w, max: c.manifestMax()}
 	c.serveManifest(hw, r, reg, o, up, who)
 	if hw.status != http.StatusOK && hw.status != 0 {
 		hw.release()
@@ -342,25 +334,24 @@ func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, re
 	if hw.over {
 		hw.drop()
 		c.M.refusals.WithLabelValues("manifest_too_large").Inc()
-		refuse(w, http.StatusBadGateway, "MANIFEST_INVALID", "the manifest is larger than the gate serves", false)
+		refuse(w, http.StatusForbidden, "CIB_MANIFEST_TOO_BIG", "the manifest is larger than the gate serves", false)
 		return
 	}
-	digests := []string{o.Ref}
-	if d := w.Header().Get("Docker-Content-Digest"); d != "" {
-		digests = append(digests, d)
-	}
-	digests = append(digests, childDigests(hw.body.Bytes())...)
-	if err := c.Grants.Add(p.Node, o.Tenant, o.fullRepo(), who.creds, digests...); err != nil {
-		hw.drop()
-		status, code := http.StatusTooManyRequests, "CIB_GRANTS_FULL"
-		w.Header().Set("Retry-After", "30")
-		if errors.Is(err, ErrTooManyBlobs) || errors.Is(err, ErrBadDigest) {
-			status, code = http.StatusBadGateway, "MANIFEST_INVALID"
-			w.Header().Del("Retry-After")
+	children := childDigests(hw.body.Bytes())
+	root := o.Ref
+	if !onlyExtend {
+		if err := c.Grants.Add(p.Node, o.Tenant, o.fullRepo(), who.creds, tag, root, children); err != nil {
+			hw.drop()
+			status, code := http.StatusBadGateway, "MANIFEST_INVALID"
+			if errors.Is(err, ErrTooManyBlobs) {
+				status, code = http.StatusForbidden, "CIB_MANIFEST_TOO_BIG"
+			}
+			c.M.refusals.WithLabelValues("grant_refused").Inc()
+			refuse(w, status, code, "the pull cannot be authorised: "+err.Error(), false)
+			return
 		}
-		c.M.refusals.WithLabelValues("grant_refused").Inc()
-		refuse(w, status, code, "the pull cannot be authorised: "+err.Error(), false)
-		return
+	} else {
+		c.Grants.Extend(p.Node, o.Tenant, o.fullRepo(), who.creds, tag, root, children)
 	}
 	hw.release()
 }
@@ -368,6 +359,7 @@ func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, re
 // holdWriter keeps a manifest response back (bounded) until the caller decides to send it.
 type holdWriter struct {
 	http.ResponseWriter
+	max    int
 	status int
 	body   bytes.Buffer
 	over   bool
@@ -383,7 +375,7 @@ func (h *holdWriter) Write(p []byte) (int, error) {
 	if h.status == 0 {
 		h.status = http.StatusOK
 	}
-	if h.body.Len()+len(p) > maxManifestSize {
+	if h.body.Len()+len(p) > h.max {
 		h.over = true
 		return len(p), nil
 	}
@@ -408,10 +400,10 @@ func (h *holdWriter) drop() {
 
 // authorize is the check of 5.2. It returns the digest of the object to serve (a tag is resolved upstream here) and an HTTP status:
 // 200 serve, 401 refused, 503 upstream unreachable and no stale answer allowed, 502 no digest.
-func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Object, who caller) (string, int) {
+func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Object, who caller) (digest string, status int, stale bool) {
 	key := DecisionKey{Hash: who.hash, Repo: o.fullRepo()}
 	if c.Store.Missing(MissKey{Hash: who.hash, Repo: key.Repo, Kind: o.Kind, Ref: o.Ref}) {
-		return "", statusOf(NotFound, who.hash == "") // found missing a moment ago: the same ref is not asked again
+		return "", statusOf(NotFound, who.hash == ""), false // found missing a moment ago: the same ref is not asked again
 	}
 	if o.isTag() {
 		// a tag moves: the one HEAD that resolves it is a fresh check too
@@ -420,7 +412,7 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 		c.M.checks.WithLabelValues(outcomeName(out)).Inc()
 		if out == NotFound {
 			c.settleMissing(ctx, reg, key, who, up)
-			return "", statusOf(NotFound, who.hash == "")
+			return "", statusOf(NotFound, who.hash == ""), false
 		}
 		var kn *knownRef
 		d := hdr.Get("Docker-Content-Digest")
@@ -432,46 +424,48 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 		}
 		serve := c.Store.Record(key, who.tenant, out, started, kn)
 		if !serve {
-			return "", statusOf(out, who.hash == "")
+			return "", statusOf(out, who.hash == ""), false
 		}
 		if out != Allowed {
-			return "", http.StatusServiceUnavailable // a tag cannot be resolved without upstream
+			return "", http.StatusServiceUnavailable, false // a tag cannot be resolved without upstream
 		}
 		if !reDigest.MatchString(d) {
-			return "", http.StatusBadGateway
+			return "", http.StatusBadGateway, false
 		}
-		return d, http.StatusOK
+		return d, http.StatusOK, false
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		switch c.Store.Lookup(key, who.tenant) {
 		case Serve:
 			c.M.decisions.WithLabelValues("serve").Inc()
-			return o.Ref, http.StatusOK
+			return o.Ref, http.StatusOK, false
 		case ServeStale:
 			c.M.decisions.WithLabelValues("stale").Inc()
 			c.revalidate(reg, key, who, up)
-			return o.Ref, http.StatusOK
+			return o.Ref, http.StatusOK, true
 		case Refuse:
 			c.M.decisions.WithLabelValues("refused").Inc()
-			return "", http.StatusForbidden
+			return "", http.StatusForbidden, false
 		}
 		c.M.decisions.WithLabelValues("check").Inc()
 		var result int
+		var resStale bool
 		// one fresh check per decision at a time: the others of a burst wait for it and then look the decision up again
 		_, leader := c.checks.Do(key.Hash+"|"+key.Repo+"|"+who.tenant, func() error {
-			result = c.freshCheck(ctx, reg, key, who, up, false)
+			result, resStale = c.freshCheck(ctx, reg, key, who, up, false)
 			return nil
 		})
 		if leader {
-			return o.Ref, result
+			return o.Ref, result, resStale
 		}
 	}
-	return o.Ref, c.freshCheck(ctx, reg, key, who, up, false)
+	st, sl := c.freshCheck(ctx, reg, key, who, up, false)
+	return o.Ref, st, sl
 }
 
 // freshCheck asks upstream and records the answer. A revalidation (the background check of a stale decision) asks about a ref that was
 // already proven for the key, not about the ref of the request: a 404 on it is a revocation or a hidden repository.
-func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object, revalidating bool) int {
+func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, who caller, up Object, revalidating bool) (int, bool) {
 	known := false
 	if kg, ok := c.Store.Known(key); ok && revalidating {
 		up, known = Object{Repo: up.Repo, Kind: kg.Kind, Ref: kg.Ref, Accept: kg.Accept}, true
@@ -482,14 +476,14 @@ func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, w
 	if out == NotFound {
 		if !known {
 			c.settleMissing(ctx, reg, key, who, up)
-			return statusOf(NotFound, who.hash == "")
+			return statusOf(NotFound, who.hash == ""), false
 		}
 		out = Denied // the ref that was proven is gone for these credentials
 	}
 	if c.Store.Record(key, who.tenant, out, started, &knownRef{up.Kind, up.Ref, up.Accept}) {
-		return http.StatusOK
+		return http.StatusOK, out != Allowed // served on an earlier proof (StaleIfError), not on this one
 	}
-	return statusOf(out, who.hash == "")
+	return statusOf(out, who.hash == ""), false
 }
 
 // settleMissing handles a 404 on the proof of a ref the caller chose: the request is not served and the ref alone is noted missing
