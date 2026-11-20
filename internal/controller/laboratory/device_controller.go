@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net"
 	"regexp"
-	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -68,8 +67,6 @@ type DeviceReconciler struct {
 	Registry SnapshotRegistry
 	// Recorder records the events of a Device (a lab pull Secret that is missing); nil records none.
 	Recorder record.EventRecorder
-	// pullWaiting holds the devices whose wait for the lab's pull Secret was already told.
-	pullWaiting sync.Map
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would start a device twice.
 	Reader client.Reader
@@ -103,14 +100,10 @@ type DeviceReconciler struct {
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var device laboratoryv1alpha1.Device
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
-		if errors.IsNotFound(err) {
-			r.pullWaiting.Delete(req.NamespacedName)
-		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
-		r.pullWaiting.Delete(req.NamespacedName)
 		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -256,7 +249,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 			if stderrors.Is(err, errProfileUnsupported) {
 				return ctrl.Result{}, nil // refused for good, with an event: nothing to retry
 			}
-			return r.pullSecretWait(ctx, device, err)
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
@@ -528,6 +521,8 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 		hostUsers := false
 		podSpec.HostUsers = &hostUsers
 	}
+	// Every container and init container with a cache reference pulls with Always; the pod has no image pull secret.
+	setPullPolicies(&podSpec, device.Spec.ImageMirror)
 	return labels, selectorLabels, annotations, podSpec
 }
 
@@ -537,7 +532,7 @@ func (r *DeviceReconciler) refuseUncached(device *laboratoryv1alpha1.Device) err
 	if device.Spec.ImageMirror == "" {
 		return nil
 	}
-	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.For(names.TenantOf(device.Labels))
 	for _, img := range []string{device.Spec.Image, r.NetConfigImage} {
 		if _, err := rw.RewriteRequired(img); err != nil {
 			return err
@@ -552,7 +547,7 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 	if device.Spec.ImageMirror == "" {
 		return image
 	}
-	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.For(names.TenantOf(device.Labels))
 	return rw.RewritePinned(image, device.Spec.ImageDigests[image])
 }
 
@@ -567,9 +562,6 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 		return err
 	}
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device)
-	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
-		return err
-	}
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

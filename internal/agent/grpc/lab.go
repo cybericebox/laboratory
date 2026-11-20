@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 
@@ -95,9 +94,6 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	for id, v := range variants {
-		if err := h.checkCacheCredentials(ctx, id, v.creds); err != nil {
-			return nil, err
-		}
 		if err := gatewayspec.Validate(&v.spec, h.maxLabGateways()); err != nil {
 			return nil, invalid("variant %q: %v", id, err)
 		}
@@ -314,8 +310,8 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	v.spec.DeepCopyInto(&lab.Spec)
-	// Only the agent names the pull Secret, from the credentials sent with the deploy.
-	lab.Spec.ImagePullSecret = labRegistrySecretName(name, v.creds)
+	// Only the agent names the credentials Secret (in the upstream namespace, read by the registry gate), from the credentials sent with the deploy.
+	lab.Spec.ImagePullSecret = labRegistrySecretName(ns, name, v.creds)
 	// Only the agent says that a bootstrap list or checks exist (their Secrets are written below).
 	stampContract(&lab.Spec, contract.bootstrap, contract.checks)
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(it.GetName()))
@@ -794,27 +790,4 @@ func (h *Handler) refusedBeforeCreate(ctx context.Context, items []*protobuf.Lab
 		return nil, err
 	}
 	return h.persistenceRefusals(ctx, items, variants, over)
-}
-
-// checkCacheCredentials refuses what the image cache cannot carry: a credential of the variant without a username, and a tenant whose
-// images.pullSecret has such an entry (the operator says so in the Tenant's condition ImageCredentials), with the stable reason
-// CREDENTIAL_NOT_SUPPORTED, so the platform sees it at creation and not as pods that fail to pull later.
-func (h *Handler) checkCacheCredentials(ctx context.Context, variant string, creds []*protobuf.RegistryCredential) error {
-	if !h.features.CacheEnabled {
-		return nil
-	}
-	if err := requireUsernames(fmt.Sprintf("variant %q: ", variant), creds); err != nil {
-		return err
-	}
-	if h.cs == nil {
-		return nil
-	}
-	ten, err := h.tenantObject(ctx, tenantOf(ctx))
-	if err != nil || ten == nil {
-		return err
-	}
-	if c := meta.FindStatusCondition(ten.Status.Conditions, laboratoryv1alpha1.TenantConditionImageCredentials); c != nil && c.Status == metav1.ConditionFalse {
-		return credentialRefusal(c.Message)
-	}
-	return nil
 }

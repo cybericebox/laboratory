@@ -5,13 +5,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/authn"
+	"crypto/tls"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
@@ -117,9 +118,10 @@ type Handler struct {
 	platformOnly   bool
 	platformPrefix string
 
-	// registryAddr is the platform registry (host:port) snapshot export reads from.
-	registryAddr string
-	registryAuth authn.Authenticator
+	// registryAddr is the registry gate (host:port) snapshot export reads from; registryTLS and registryToken are how the agent speaks to it.
+	registryAddr  string
+	registryTLS   *tls.Config
+	registryToken *imagecache.TokenFile
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain

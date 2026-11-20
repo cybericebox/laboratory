@@ -66,7 +66,7 @@ func TestRepoOf(t *testing.T) {
 		"localhost:5035/c/platform/docker.io/library/nginx":  "c/docker.io/library/nginx",
 		"localhost:5035/c/t-0123456789ab/quay.io/o/a:1":      "c/quay.io/o/a",
 		"localhost:5035/lab/ns/lab/dev:tag":                  "lab/ns/lab/dev",
-		"docker.io/library/nginx:1":                     "",
+		"docker.io/library/nginx:1":                          "",
 	} {
 		if got := r.RepoOf(in); got != want {
 			t.Errorf("RepoOf(%q) = %q, want %q", in, got, want)

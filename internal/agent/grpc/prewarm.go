@@ -27,8 +27,8 @@ import (
 type PrewarmConfig struct {
 	// Enabled: the platform image cache exists. Off: PrewarmImages fails with FailedPrecondition.
 	Enabled bool
-	// RegistryAddr is host:port of the cache as the agent reaches it: the registry gate, whose cache path /v2/c/<registry>/<repo> proves
-	// every pull against the upstream registry with the credentials it carries.
+	// RegistryAddr is host:port of the cache as the agent reaches it: the registry gate, whose cache path /v2/c/<tenant>/<registry>/<repo>
+	// proves every pull against the upstream registry with the credentials the call carries.
 	RegistryAddr string
 	// Registries are the upstream registries the cache serves; an image of any other
 	// registry is FAILED: with the cache on there is no direct pull.
@@ -50,6 +50,9 @@ type PrewarmConfig struct {
 	// CacheTLS, when set, makes the agent speak TLS to RegistryAddr (the gate's TLS port, where the cache path is served) trusting what it
 	// holds; nil means plain http (a development setup, and the tests). The credentials of a call travel there, so a real setup has it.
 	CacheTLS *tls.Config
+	// Token is the agent's own projected ServiceAccount token, which every request to the gate carries in X-Cib-Node-Token: the gate
+	// knows the caller as the agent and allows the cache path without a pod on a node. Nil: no token (the tests).
+	Token *imagecache.TokenFile
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -111,8 +114,8 @@ func (h *Handler) SetPrewarm(cfg PrewarmConfig) {
 // request) shows only the images the tenant may use and that were warmed without credentials.
 //
 // An image whose registry matches a credential of the request is warmed through the registry gate
-// with those credentials, written as the pull of a lab writes them: the username is
-// "<tenant>~<user>" with the tenant of the caller's certificate. The gate proves the access
+// with those credentials (Authorization: Basic, accepted from the agent only); the tenant is a segment of the cache path, the one a
+// pod of that tenant uses, taken from the caller's certificate. The gate proves the access
 // against the registry with them, exactly as it does for a pod, and only then fetches and stores.
 // The credentials are the call's: no platform or operator credential ever reaches the upstream
 // registry. The state of such an image is kept for the credentials that asked (a hash of the
@@ -134,9 +137,6 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 	if err := validateRegistryCredentials(in.GetRegistryCredentials()); err != nil {
 		return nil, err
 	}
-	if err := requireUsernames("", in.GetRegistryCredentials()); err != nil {
-		return nil, err
-	}
 	refuse := func(img string) (protobuf.PrewarmState, string) {
 		if err := policy.Check(img); err != nil {
 			return protobuf.PrewarmState_PREWARM_STATE_FAILED, err.Error()
@@ -146,9 +146,10 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 		}
 		return protobuf.PrewarmState_PREWARM_STATE_UNSPECIFIED, ""
 	}
-	auths := credentialedImages(in.GetImages(), in.GetRegistryCredentials(), tenantOf(ctx))
+	tenant := tenantOf(ctx)
+	auths := credentialedImages(in.GetImages(), in.GetRegistryCredentials())
 	if len(auths) == 0 {
-		return p.request(in.GetImages(), refuse, nil), nil
+		return p.request(tenant, in.GetImages(), refuse, nil), nil
 	}
 	byImage := map[string]*protobuf.PrewarmImageStatus{}
 	var plain []string
@@ -158,12 +159,12 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 		}
 	}
 	if len(plain) > 0 {
-		for _, st := range p.request(plain, refuse, nil).Images {
+		for _, st := range p.request(tenant, plain, refuse, nil).Images {
 			byImage[st.Image] = st
 		}
 	}
 	for img, a := range auths {
-		for _, st := range p.request([]string{img}, refuse, a).Images {
+		for _, st := range p.request(tenant, []string{img}, refuse, a).Images {
 			byImage[st.Image] = st
 		}
 	}
@@ -180,7 +181,7 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 
 // callAuth is the credential a call brings for the registry of one image, as the gate wants it.
 type callAuth struct {
-	// user is "<tenant>~<upstream user>", pass the secret.
+	// user and pass are the call's own login at the registry of the image.
 	user, pass string
 	// id tells the credentials apart in the table of entries: a hash of the registry, the user and the secret.
 	id string
@@ -188,7 +189,7 @@ type callAuth struct {
 
 // credentialedImages maps each distinct requested image whose registry has a credential in the request to the credential the gate
 // is given for it. The keychain it builds from the request is the same one the lab Secret is made from.
-func credentialedImages(images []string, creds []*protobuf.RegistryCredential, tenant string) map[string]*callAuth {
+func credentialedImages(images []string, creds []*protobuf.RegistryCredential) map[string]*callAuth {
 	if len(creds) == 0 {
 		return nil
 	}
@@ -220,25 +221,25 @@ func credentialedImages(images []string, creds []*protobuf.RegistryCredential, t
 		}
 		ac, err := a.Authorization()
 		if err != nil || ac.Username == "" {
-			continue // the gate needs both parts of the name
+			continue // a login without a name cannot be sent
 		}
 		sum := sha256.Sum256([]byte(reg + "\x00" + ac.Username + "\x00" + ac.Password))
-		out[img] = &callAuth{user: tenant + "~" + ac.Username, pass: ac.Password, id: hex.EncodeToString(sum[:8])}
+		out[img] = &callAuth{user: ac.Username, pass: ac.Password, id: hex.EncodeToString(sum[:8])}
 	}
 	return out
 }
 
 // request starts (or reports on) the fetch of images. refuse, when not nil, may answer a
 // state and a message for an image that must not be fetched for the caller.
-func (p *prewarmer) request(images []string, refuse func(string) (protobuf.PrewarmState, string), auth *callAuth) *protobuf.PrewarmImagesResult {
+func (p *prewarmer) request(tenant string, images []string, refuse func(string) (protobuf.PrewarmState, string), auth *callAuth) *protobuf.PrewarmImagesResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	listing := len(images) == 0
 	if listing {
-		// only what was warmed without credentials: what was warmed with someone's is theirs to ask about
+		// only what was warmed for this tenant without credentials: what was warmed with someone's is theirs to ask about
 		for _, k := range p.order {
-			if !strings.Contains(k, "\x00") {
-				images = append(images, k)
+			if img, ok := strings.CutPrefix(k, tenant+"\x01"); ok && !strings.Contains(img, "\x00") {
+				images = append(images, img)
 			}
 		}
 	}
@@ -258,9 +259,9 @@ func (p *prewarmer) request(images []string, refuse func(string) (protobuf.Prewa
 				continue
 			}
 		}
-		key := img
+		key := tenant + "\x01" + img // the cache path carries the tenant: the same image of two tenants is two entries
 		if auth != nil {
-			key = img + "\x00" + auth.id
+			key += "\x00" + auth.id
 		}
 		e := p.entries[key]
 		if e == nil && len(p.entries) >= maxPrewarmEntries && !p.evictFinishedLocked() {
@@ -272,9 +273,9 @@ func (p *prewarmer) request(images []string, refuse func(string) (protobuf.Prewa
 			e = &prewarmEntry{}
 			p.entries[key] = e
 			p.order = append(p.order, key)
-			p.startLocked(img, e, auth)
+			p.startLocked(tenant, img, e, auth)
 		} else if p.retryLocked(e) {
-			p.startLocked(img, e, auth)
+			p.startLocked(tenant, img, e, auth)
 		}
 		out.Images = append(out.Images, p.statusLocked(img, e))
 	}
@@ -319,8 +320,8 @@ func (p *prewarmer) setLocked(e *prewarmEntry, state protobuf.PrewarmState, dige
 
 // startLocked decides at once what can be decided (refused, invalid) and
 // otherwise queues the fetch behind the concurrency bound.
-func (p *prewarmer) startLocked(img string, e *prewarmEntry, auth *callAuth) {
-	repo, err := p.cachePath(img)
+func (p *prewarmer) startLocked(tenant, img string, e *prewarmEntry, auth *callAuth) {
+	repo, err := p.cachePath(tenant, img)
 	if err != nil {
 		p.setLocked(e, protobuf.PrewarmState_PREWARM_STATE_FAILED, "", err.Error())
 		return
@@ -329,15 +330,22 @@ func (p *prewarmer) startLocked(img string, e *prewarmEntry, auth *callAuth) {
 	go p.warm(img, repo, e, auth)
 }
 
-// cachePath returns the repository path ("c/REG/repo") the cache keeps the image under. An image the cache cannot serve (a registry it
+// cachePath returns the repository path ("c/<tenant segment>/REG/repo") the gate serves the image under for the tenant. An image the cache cannot serve (a registry it
 // does not know, a reference that does not parse) is refused: with the cache on there is no direct pull.
-func (p *prewarmer) cachePath(img string) (string, error) {
-	rw := imagecache.Rewriter{Prefix: "cache", Registries: p.cfg.Registries}
+func (p *prewarmer) cachePath(tenant, img string) (string, error) {
+	rw := imagecache.Rewriter{Prefix: "cache", Registries: p.cfg.Registries}.For(tenant)
 	out, err := rw.RewriteRequired(img)
 	if err != nil {
 		return "", err
 	}
-	return rw.RepoOf(out), nil
+	path, ok := strings.CutPrefix(out, "cache/")
+	if !ok {
+		return "", fmt.Errorf("%w: %q already points at a registry", imagecache.ErrNotCacheable, img)
+	}
+	if i := strings.IndexAny(path, "@:"); i >= 0 && i > strings.LastIndex(path, "/") {
+		path = path[:i]
+	}
+	return path, nil
 }
 
 func (p *prewarmer) warm(img, repo string, e *prewarmEntry, auth *callAuth) {
@@ -362,16 +370,23 @@ func (p *prewarmer) warm(img, repo string, e *prewarmEntry, auth *callAuth) {
 
 // cacheClient is how the agent talks to the cache path of the gate: TLS when configured, the call's credentials when it has any.
 func (p *prewarmer) cacheOptions(ctx context.Context, auth *callAuth) []remote.Option {
-	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuth(authn.Anonymous)}
+	authenticator := authn.Anonymous
 	if auth != nil {
-		opts[1] = remote.WithAuth(&authn.Basic{Username: auth.user, Password: auth.pass})
+		authenticator = &authn.Basic{Username: auth.user, Password: auth.pass}
 	}
+	return []remote.Option{remote.WithContext(ctx), remote.WithAuth(authenticator), remote.WithTransport(p.transport())}
+}
+
+// transport is the transport of every request to the gate: TLS when configured, and the agent's token on each request.
+func (p *prewarmer) transport() http.RoundTripper {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if p.cfg.CacheTLS != nil {
-		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.TLSClientConfig = p.cfg.CacheTLS
-		opts = append(opts, remote.WithTransport(tr))
 	}
-	return opts
+	if p.cfg.Token == nil {
+		return tr
+	}
+	return p.cfg.Token.RoundTripper(tr)
 }
 
 func (p *prewarmer) cacheName(repo, ref string) (name.Reference, error) {
@@ -505,13 +520,9 @@ func (p *prewarmer) warmManifest(ctx context.Context, repoName name.Repository, 
 // gate says so in the header HeaderCache. A blob it proved but did not store is answered without it.
 func (p *prewarmer) storedInCache(ctx context.Context, repo string, d v1.Hash, auth *callAuth) bool {
 	scheme := "https"
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: p.transport()}
 	if p.cfg.CacheTLS == nil {
 		scheme = "http"
-	} else {
-		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.TLSClientConfig = p.cfg.CacheTLS
-		client.Transport = tr
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, fmt.Sprintf("%s://%s/v2/%s/blobs/%s", scheme, p.cfg.RegistryAddr, repo, d), nil)
 	if err != nil {

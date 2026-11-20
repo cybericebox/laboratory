@@ -70,7 +70,11 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 		if pending {
 			return false, reconcileutil.Waiting(errPullSecretPending, pullSecretRetry)
 		}
-		if r.pinImages(ctx, lab, source) {
+		pending, err = r.pinImages(ctx, lab, source)
+		if err != nil {
+			return false, err
+		}
+		if pending {
 			// Nothing is decided or written until the digests are known; the Pinner wakes the lab when they are. The resolutions run
 			// in the background, so the worker goes on with other labs.
 			return false, reconcileutil.Waiting(errPinningPending, pinningRecheck)
@@ -191,7 +195,7 @@ func sourceOf(labSource, ref, netConfig string) string {
 
 // pinSource is the credential source the tags of the lab are resolved with: the operator's own pull secrets for a lab with no credentials
 // of its own or its tenant's, otherwise a source made of those credentials (the tenant's, then the lab's own over them), named by a
-// fingerprint of the documents. pending says that the lab's own Secret, which the agent writes right after the Lab, is not there yet.
+// fingerprint of the documents. pending says that the lab's own Secret, which the agent writes into the upstream namespace, is not there yet.
 func (r *LabReconciler) pinSource(ctx context.Context, lab *laboratoryv1alpha1.Lab) (source string, pending bool, err error) {
 	if r.Pinner == nil {
 		return imagecache.OperatorSource, false, nil
@@ -210,7 +214,7 @@ func (r *LabReconciler) pinSource(ctx context.Context, lab *laboratoryv1alpha1.L
 	}
 	if lab.Spec.ImagePullSecret != "" {
 		var s corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Name: lab.Spec.ImagePullSecret, Namespace: lab.Namespace}, &s); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: lab.Spec.ImagePullSecret, Namespace: names.UpstreamNamespace}, &s); err != nil {
 			if apierrors.IsNotFound(err) {
 				return "", true, nil
 			}
@@ -238,18 +242,25 @@ func (r *LabReconciler) pinSource(ctx context.Context, lab *laboratoryv1alpha1.L
 	return source, false, nil
 }
 
+// digestRequiredError is the refusal of a lab whose image tags could not be pinned to a digest while the cache requires digests.
+type digestRequiredError struct{ images []string }
+
+func (e *digestRequiredError) Error() string {
+	return "IMAGE_DIGEST_REQUIRED: the image cache requires digests, and these tags could not be resolved: " + strings.Join(e.images, "; ")
+}
+
 // pinImages resolves the image tags of the lab's container devices, and the netconfig image, to digests once, at creation, and records
 // them in the Lab status: the whole lab pulls exactly that content. An image that cannot be resolved is left to its tag and named in
 // Status.ImageWarning. The resolving is done by the Pinner in the background: while any answer is missing pinImages touches nothing
 // and reports pending (the lab asks again when the Pinner wakes it).
-func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab, source string) (pending bool) {
+func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab, source string) (pending bool, err error) {
 	if r.Pinner == nil {
-		return false
+		return false, nil
 	}
 	var refs []string
 	seen := map[string]bool{}
 	add := func(ref string) {
-		if ref != "" && !seen[ref] && r.Mirror.Rewrite(ref) != ref {
+		if ref != "" && !seen[ref] && r.Mirror.RewriteFor(names.TenantOf(lab.Labels), ref) != ref {
 			seen[ref] = true
 			refs = append(refs, ref)
 		}
@@ -271,7 +282,7 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 		}
 	}
 	if pending {
-		return true
+		return true, nil
 	}
 	digests := map[string]string{}
 	var failed []string
@@ -288,13 +299,18 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 	if len(digests) > 0 {
 		lab.Status.ImageDigests = digests
 	}
+	if len(failed) > 0 && r.RequireDigest {
+		// The gate refuses a pull by tag (GATE_REQUIRE_DIGEST): a lab whose tag cannot be pinned cannot start, and says so now and not
+		// as pods that fail to pull.
+		return false, &digestRequiredError{images: failed}
+	}
 	if len(failed) > 0 {
 		lab.Status.ImageWarning = "image tags not pinned to a digest, pulled by tag: " + strings.Join(failed, "; ")
 		if r.Recorder != nil {
 			r.Recorder.Event(lab, corev1.EventTypeWarning, "ImageNotPinned", lab.Status.ImageWarning)
 		}
 	}
-	return false
+	return false, nil
 }
 
 // deviceDigests is the pinned digests of a new Device's images: its own image

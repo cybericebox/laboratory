@@ -266,7 +266,7 @@ func classImages(labs []*laboratoryv1alpha1.Lab, mirror imagecache.Rewriter) []s
 		for _, d := range l.Spec.Devices {
 			img := d.Image
 			if cached {
-				img = mirror.RewritePinned(img, l.Status.ImageDigests[d.Image])
+				img = mirror.For(names.TenantOf(l.Labels)).RewritePinned(img, l.Status.ImageDigests[d.Image])
 			}
 			if d.Type != laboratoryv1alpha1.DeviceTypeContainer || img == "" || seen[img] {
 				continue

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -93,6 +94,9 @@ type LabReconciler struct {
 	// Pinner resolves image tags to digests, in the background, for a lab created with the image cache on; nil pins nothing. A lab
 	// whose digests are not all there yet waits (it is woken through PinEvents).
 	Pinner *imagecache.AsyncResolver
+	// RequireDigest refuses a lab whose image tags cannot be pinned to a digest (the registry gate runs with GATE_REQUIRE_DIGEST and would
+	// refuse the pull by tag anyway); off, such a lab pulls by tag and says so in Status.ImageWarning.
+	RequireDigest bool
 	// CredentialResolver builds the resolver of a lab's own credentials (a keychain made of the lab's and its tenant's pull documents
 	// only): the Pinner keeps one per credential fingerprint. Nil: a lab with credentials is not pinned (its tags stay tags).
 	CredentialResolver func(kc authn.Keychain) imagecache.Resolver
@@ -132,10 +136,7 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	var lab laboratoryv1alpha1.Lab
 	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
-		if errors.IsNotFound(err) {
-			publishLabInitiatedDropped(req.Namespace, req.Name, 0, false)
-		}
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, r.labGone(ctx, req, err)
 	}
 
 	if err := r.releaseRecordedVNIs(ctx, &lab); err != nil {
@@ -187,8 +188,8 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// references the lab will pull. The status write leaves the answer of the API server in lab; it is not read again,
 	// because the cache may still hold the object without the modes, and the devices
 	// created below would run in the wrong mode.
-	if _, err := r.ensureModes(ctx, &lab); err != nil {
-		return ctrl.Result{}, err
+	if refused, res, err := r.modesOrRefuse(ctx, &lab); refused || err != nil {
+		return res, err
 	}
 
 	// What the lab declares as gateways is checked before anything is taken from the address pool for them.
@@ -1165,6 +1166,30 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 
 	controllerutil.RemoveFinalizer(lab, names.FinalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
+}
+
+// labGone answers the failure to read a Lab: any error but "not found" is returned; for a Lab that does not exist (any more) its
+// credentials Secret of the upstream namespace, which the Lab could not own, goes.
+func (r *LabReconciler) labGone(ctx context.Context, req ctrl.Request, err error) error {
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	publishLabInitiatedDropped(req.Namespace, req.Name, 0, false)
+	return deleteUpstreamLab(ctx, r.Client, req.Namespace, req.Name)
+}
+
+// modesOrRefuse is ensureModes that turns the refusal of a lab whose tags cannot be pinned (digests are required) into the failure of the
+// lab, looked at again later: the registry may answer next time.
+func (r *LabReconciler) modesOrRefuse(ctx context.Context, lab *laboratoryv1alpha1.Lab) (refused bool, res ctrl.Result, err error) {
+	if _, err := r.ensureModes(ctx, lab); err != nil {
+		var required *digestRequiredError
+		if stderrors.As(err, &required) {
+			res, err = r.refuseLab(ctx, lab, err, true)
+			return true, res, err
+		}
+		return false, ctrl.Result{}, err
+	}
+	return false, ctrl.Result{}, nil
 }
 
 // refuseLab fails the lab with the reason of its validation, as a condition and an event. A lab refused for a server its group has

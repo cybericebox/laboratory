@@ -121,8 +121,8 @@ type LabGroupReconciler struct {
 	OperatorSA types.NamespacedName
 	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
 	VPNStatsInterval time.Duration
-	// ImagePullSecrets names registry Secrets of the operator namespace. They are
-	// copied into every group namespace and referenced by the VPN and gateway pods.
+	// ImagePullSecrets names registry Secrets of the operator namespace, the credentials of the platform's own images. The operator copies
+	// them into the Secret "platform" of the namespace laboratory-upstream, which only the registry gate reads; no pod references them.
 	ImagePullSecrets []string
 	// BandwidthEnabled gives the gateway pods made from now on the file with their bandwidth ceiling (see mountOwnAnnotations).
 	BandwidthEnabled bool
@@ -213,16 +213,12 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if err := copyPullSecrets(ctx, r.Client, r.ImagePullSecrets, ns); err != nil {
-		logger.Error(err, "copy image pull secrets")
+	if err := syncUpstreamPlatform(ctx, r.Client, r.Mirror.Enabled(), r.ImagePullSecrets); err != nil {
+		logger.Error(err, "write the platform's image credentials for the registry gate")
 		return ctrl.Result{}, err
 	}
-	if err := syncPlatformCacheSecret(ctx, r.Client, r.Mirror, r.ImagePullSecrets, ns); err != nil {
-		logger.Error(err, "write the platform pull secret of the image cache")
-		return ctrl.Result{}, err
-	}
-	if err := syncTenantPullSecret(ctx, r.Client, names.TenantOf(lg.Labels), ns); err != nil {
-		logger.Error(err, "copy the tenant's image pull secret")
+	if err := removeLegacyPullSecrets(ctx, r.Client, ns); err != nil {
+		logger.Error(err, "remove the image pull secrets of an earlier version")
 		return ctrl.Result{}, err
 	}
 
@@ -854,7 +850,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ServiceAccountName: names.ComponentVPN,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   r.groupPullSecretRefs(),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -863,7 +858,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 						Resources:       r.GroupPods.VPNFor(size),
 						Image:           vpnImage,
 						Command:         []string{"/lab", names.ComponentVPN},
-						ImagePullPolicy: pullPolicyFor(vpnImage),
+						ImagePullPolicy: pullPolicyFor(vpnImage, r.Mirror.Prefix),
 						Env: append([]corev1.EnvVar{
 							{
 								Name: "PRIVATE_KEY",
@@ -982,7 +977,6 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					ServiceAccountName: names.ComponentGateway,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   r.groupPullSecretRefs(),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -991,7 +985,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
-						ImagePullPolicy: pullPolicyFor(gatewayImage),
+						ImagePullPolicy: pullPolicyFor(gatewayImage, r.Mirror.Prefix),
 						Env:             append(append(r.gatewayEnv(ns), r.gatewayLimitsEnv()...), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
 					}},
 				},
@@ -1462,10 +1456,11 @@ func isVPNPod(pod *corev1.Pod) bool {
 // group status (and the log). With the cache on an image the cache cannot serve is
 // refused (imagecache.ErrNotCacheable), never pulled directly.
 func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) (string, error) {
-	if _, err := r.Mirror.RewriteRequired(image); err != nil {
+	platform := r.Mirror.ForPlatform()
+	if _, err := platform.RewriteRequired(image); err != nil {
 		return "", fmt.Errorf("group image: %w", err)
 	}
-	if r.Mirror.Prefix == "" || r.Mirror.Rewrite(image) == image {
+	if r.Mirror.Prefix == "" || platform.Rewrite(image) == image {
 		return image, nil // the cache is off, or the image is already the cache's own
 	}
 	digest := ""
@@ -1478,7 +1473,7 @@ func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) 
 			digest = d
 		}
 	}
-	return r.Mirror.RewritePinned(image, digest), nil
+	return platform.RewritePinned(image, digest), nil
 }
 
 func (r *LabGroupReconciler) notePinFailure(ns, what string) {

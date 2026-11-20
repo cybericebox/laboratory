@@ -18,16 +18,18 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 )
 
-func TestPullPolicyIsAlwaysIfNotPresent(t *testing.T) {
+func TestPullPolicyIsIfNotPresentOutsideTheCache(t *testing.T) {
 	for _, image := range []string{
 		"cybericebox/laboratory-lab:v1.2.3",
-		"localhost:5035/x/lab@sha256:abcdef",
 		"registry.example.com:5000/lab:1.0",
-		"localhost:5035/docker.io/x/lab:v2@sha256",
+		"localhost:5035/x/lab@sha256:abcdef", // with the cache off this is just an image
 	} {
-		if got := pullPolicyFor(image); got != corev1.PullIfNotPresent {
+		if got := pullPolicyFor(image, ""); got != corev1.PullIfNotPresent {
 			t.Errorf("%s: %s, want %s", image, got, corev1.PullIfNotPresent)
 		}
+	}
+	if got := pullPolicyFor("localhost:5035/c/platform/docker.io/x/lab:v2", "localhost:5035"); got != corev1.PullAlways {
+		t.Errorf("a cache reference pulls with Always: %s", got)
 	}
 }
 

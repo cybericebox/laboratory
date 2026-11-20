@@ -59,7 +59,9 @@ type Scoped struct {
 
 // For binds the rewriter to a tenant: the segment is names.TenantSegment(tenant) (the name itself when it is safe, a hashed form
 // otherwise).
-func (r Rewriter) For(tenant string) Scoped { return Scoped{r: r, segment: names.TenantSegment(tenant)} }
+func (r Rewriter) For(tenant string) Scoped {
+	return Scoped{r: r, segment: names.TenantSegment(tenant)}
+}
 
 // ForPlatform binds the rewriter to the platform's own components (the VPN and gateway pods of every group): the segment is
 // names.SegmentPlatform.

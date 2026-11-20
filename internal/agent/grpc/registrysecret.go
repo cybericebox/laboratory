@@ -4,20 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strings"
 
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
-	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -67,27 +62,6 @@ func validateRegistryCredentials(creds []*protobuf.RegistryCredential) error {
 	return nil
 }
 
-// requireUsernames refuses credentials without a username when the image cache is on: the cache writes the tenant into the username
-// ("<tenant>~<user>"), so a credential made of a token alone could never reach the registry through it, and the pod would fail to pull
-// later with a message that does not say why. The platform sees the refusal at creation, with the registry named.
-func requireUsernames(prefix string, creds []*protobuf.RegistryCredential) error {
-	for _, c := range creds {
-		if c.GetUsername() == "" {
-			return credentialRefusal(fmt.Sprintf("%s%s: registry %s: credentials need a username for the image cache", prefix, client.ReasonCredentialNotSupported, c.GetRegistry()))
-		}
-	}
-	return nil
-}
-
-// credentialRefusal is the InvalidArgument status with the stable reason CREDENTIAL_NOT_SUPPORTED and the given message.
-func credentialRefusal(message string) error {
-	st := status.New(codes.InvalidArgument, message)
-	if withInfo, err := st.WithDetails(&errdetails.ErrorInfo{Reason: client.ReasonCredentialNotSupported, Domain: client.ErrorDomain}); err == nil {
-		st = withInfo
-	}
-	return st.Err()
-}
-
 type dockerAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -110,14 +84,14 @@ func dockerConfigJSON(creds []*protobuf.RegistryCredential) ([]byte, error) {
 	}{auths})
 }
 
-// labRegistrySecretName is the Lab.spec.imagePullSecret of a lab created with creds: the
-// per-lab Secret when there are credentials, otherwise empty. A value the client put in
-// spec_json never survives.
-func labRegistrySecretName(labName string, creds []*protobuf.RegistryCredential) string {
+// labRegistrySecretName is the Lab.spec.imagePullSecret of a lab created with creds: the name of the Secret, in the upstream namespace
+// (names.UpstreamNamespace), that holds them, when there are credentials, otherwise empty. A value the client put in spec_json never
+// survives. No pod references the Secret: only the registry gate reads it.
+func labRegistrySecretName(namespace, labName string, creds []*protobuf.RegistryCredential) string {
 	if len(creds) == 0 {
 		return ""
 	}
-	return names.LabRegistrySecret(labName)
+	return names.UpstreamLabSecret(namespace, labName)
 }
 
 // labOwner is the controller owner reference of the agent's per-lab Secrets: they are
@@ -134,14 +108,14 @@ func labOwner(lab *laboratoryv1alpha1.Lab) metav1.OwnerReference {
 	}
 }
 
-// writeRegistrySecret materializes the lab's pull credentials as the dockerconfigjson
-// Secret names.LabRegistrySecret, owner-referenced by the Lab. Like the device variable
-// Secrets it is write-only for the agent: delete, then create when there are credentials,
-// never read back. Without credentials the Secret is removed. The credentials never reach
-// a log, an event or a status; errors carry only the API server's message.
+// writeRegistrySecret materializes the lab's pull credentials as the dockerconfigjson Secret names.UpstreamLabSecret of the namespace
+// laboratory-upstream, which only the registry gate reads. A Secret of another namespace cannot be owned by the Lab: the operator deletes it
+// when the Lab is gone. Like the device variable Secrets it is write-only for the agent: delete, then create when there are credentials,
+// never read back. Without credentials the Secret is removed. The credentials never reach a log, an event or a status; errors carry only
+// the API server's message.
 func (h *Handler) writeRegistrySecret(ctx context.Context, lab *laboratoryv1alpha1.Lab, creds []*protobuf.RegistryCredential) error {
-	secrets := h.k8s.CoreV1().Secrets(lab.Namespace)
-	name := names.LabRegistrySecret(lab.Name)
+	secrets := h.k8s.CoreV1().Secrets(names.UpstreamNamespace)
+	name := names.UpstreamLabSecret(lab.Namespace, lab.Name)
 	if err := secrets.Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -154,10 +128,9 @@ func (h *Handler) writeRegistrySecret(ctx context.Context, lab *laboratoryv1alph
 	}
 	s := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			Namespace:       lab.Namespace,
-			OwnerReferences: []metav1.OwnerReference{labOwner(lab)},
-			Labels:          map[string]string{names.LabelLab: lab.Name},
+			Name:      name,
+			Namespace: names.UpstreamNamespace,
+			Labels:    map[string]string{"app.kubernetes.io/managed-by": "laboratory-agent"},
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{corev1.DockerConfigJsonKey: raw},

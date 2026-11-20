@@ -2,37 +2,16 @@ package laboratory
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 )
-
-func labWithPullSecret(name, ns, secret string, labels map[string]string) *laboratoryv1alpha1.Lab {
-	return &laboratoryv1alpha1.Lab{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
-		Spec:       laboratoryv1alpha1.LabSpec{ImagePullSecret: secret},
-	}
-}
-
-func labRegSecret(name, ns string) *corev1.Secret {
-	s := regSecret(name, corev1.SecretTypeDockerConfigJson, `{"auths":{"ghcr.io":{}}}`)
-	s.Namespace = ns
-	return s
-}
 
 func labDevice(lab, ns, tenant string) *laboratoryv1alpha1.Device {
 	d := &laboratoryv1alpha1.Device{
@@ -43,128 +22,6 @@ func labDevice(lab, ns, tenant string) *laboratoryv1alpha1.Device {
 		d.Labels[names.LabelTenant] = tenant
 	}
 	return d
-}
-
-func pullSpec() *corev1.PodSpec {
-	return &corev1.PodSpec{
-		InitContainers: []corev1.Container{{Name: "i", ImagePullPolicy: corev1.PullIfNotPresent}},
-		Containers:     []corev1.Container{{Name: "c", ImagePullPolicy: corev1.PullIfNotPresent}},
-	}
-}
-
-func refNames(refs []corev1.LocalObjectReference) []string {
-	out := make([]string, 0, len(refs))
-	for _, r := range refs {
-		out = append(out, r.Name)
-	}
-	return out
-}
-
-// A lab with its own registry credentials gives every device pod its Secret, next to the
-// tenant's when the tenant has one, and every container asks the registry on each start.
-func TestDevicePodOfALabWithItsOwnPullSecret(t *testing.T) {
-	ctx := context.Background()
-	c := fake.NewClientBuilder().WithScheme(secretScheme(t)).WithObjects(
-		tenantWithPullSecret("acme", "acme-registry"), tenantWithPullSecret("plain", ""),
-		labWithPullSecret("l1", "team", "l1-registry", nil), labRegSecret("l1-registry", "team"),
-		labWithPullSecret("l2", "team", "", nil),
-	).Build()
-	r := &DeviceReconciler{Client: c}
-
-	for _, tc := range []struct {
-		lab, tenant string
-		want        []string
-		always      bool
-	}{
-		{"l1", "plain", []string{"l1-registry"}, true},
-		{"l1", "acme", []string{names.TenantPullSecret, "l1-registry"}, true},
-		{"l2", "plain", []string{}, false},
-		{"l2", "acme", []string{names.TenantPullSecret}, true},
-	} {
-		spec := pullSpec()
-		if err := r.applyPullSecrets(ctx, labDevice(tc.lab, "team", tc.tenant), spec); err != nil {
-			t.Fatalf("%s/%s: %v", tc.lab, tc.tenant, err)
-		}
-		if got := refNames(spec.ImagePullSecrets); fmt.Sprint(got) != fmt.Sprint(tc.want) {
-			t.Errorf("%s/%s: pull secrets %v, want %v", tc.lab, tc.tenant, got, tc.want)
-		}
-		want := corev1.PullIfNotPresent
-		if tc.always {
-			want = corev1.PullAlways
-		}
-		if spec.Containers[0].ImagePullPolicy != want || spec.InitContainers[0].ImagePullPolicy != want {
-			t.Errorf("%s/%s: pull policy %s/%s, want %s", tc.lab, tc.tenant, spec.InitContainers[0].ImagePullPolicy, spec.Containers[0].ImagePullPolicy, want)
-		}
-	}
-}
-
-// The agent creates the lab's pull Secret right after the Lab: until it is there, the
-// device waits and retries; it is never a failure and no pod starts without it.
-func TestDeviceWaitsForTheLabsPullSecret(t *testing.T) {
-	ctx := context.Background()
-	s := secretScheme(t)
-	if err := appsv1.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	dev := labDevice("l1", "team", "")
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(labWithPullSecret("l1", "team", "l1-registry", nil), dev).
-		WithStatusSubresource(&laboratoryv1alpha1.Device{}).Build()
-	r := &DeviceReconciler{Client: c, Scheme: s}
-
-	if err := r.applyPullSecrets(ctx, dev, pullSpec()); !errors.Is(err, errPullSecretPending) {
-		t.Fatalf("a missing lab pull Secret is pending: %v", err)
-	}
-	res, err := r.reconcileWorkload(ctx, dev)
-	if err != nil || res.RequeueAfter <= 0 {
-		t.Fatalf("a missing pull Secret is retried, not failed: %+v %v", res, err)
-	}
-	var deps appsv1.DeploymentList
-	if err := c.List(ctx, &deps, client.InNamespace("team")); err != nil || len(deps.Items) != 0 {
-		t.Fatalf("no workload without its pull Secret: %d %v", len(deps.Items), err)
-	}
-
-	if err := c.Create(ctx, labRegSecret("l1-registry", "team")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.reconcileWorkload(ctx, dev); err != nil {
-		t.Fatal(err)
-	}
-	var dep appsv1.Deployment
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "team", Name: workloadName(dev)}, &dep); err != nil {
-		t.Fatal(err)
-	}
-	if got := refNames(dep.Spec.Template.Spec.ImagePullSecrets); fmt.Sprint(got) != "[l1-registry]" {
-		t.Fatalf("pull secrets %v", got)
-	}
-}
-
-// The same wait for a snapshot-backed device: its incarnation does not move while it waits.
-func TestStateDeviceWaitsForTheLabsPullSecret(t *testing.T) {
-	ctx := context.Background()
-	s := secretScheme(t)
-	dev := labDevice("l1", "team", "")
-	dev.Spec.State = &laboratoryv1alpha1.DeviceStateSpec{Enabled: true}
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(labWithPullSecret("l1", "team", "l1-registry", nil), dev).
-		WithStatusSubresource(&laboratoryv1alpha1.Device{}).Build()
-	r := &DeviceReconciler{Client: c, Scheme: s}
-
-	res, err := r.reconcilePod(ctx, dev)
-	if err != nil || res.RequeueAfter <= 0 {
-		t.Fatalf("a missing pull Secret is retried, not failed: %+v %v", res, err)
-	}
-	var cur laboratoryv1alpha1.Device
-	if err := c.Get(ctx, client.ObjectKeyFromObject(dev), &cur); err != nil {
-		t.Fatal(err)
-	}
-	if cur.Status.State != nil && cur.Status.State.Incarnation != 0 {
-		t.Fatalf("the incarnation moved while waiting: %d", cur.Status.State.Incarnation)
-	}
-	var pods corev1.PodList
-	if err := c.List(ctx, &pods, client.InNamespace("team")); err != nil || len(pods.Items) != 0 {
-		t.Fatalf("no pod without its pull Secret: %d %v", len(pods.Items), err)
-	}
 }
 
 // A lab with its own pull secret goes through the cache like every other: the gate proves each pull with the pull's own credentials, so
@@ -228,96 +85,5 @@ func TestSchedulerDoesNotPrepullALabWithItsOwnPullSecret(t *testing.T) {
 	}
 	if s := f.labStatus("a"); s == nil || s.Reason != laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("lab a waits with its gang for the group's prepull: %+v", s)
-	}
-}
-
-// A device that waits for its lab's pull Secret tells it once: a Warning event with the
-// Secret's name, not one per 2 s retry. When the Secret appears and later vanishes again, the
-// next wait is a new one.
-func TestDeviceRecordsTheMissingPullSecretOncePerWait(t *testing.T) {
-	ctx := context.Background()
-	s := secretScheme(t)
-	if err := appsv1.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	dev := labDevice("l1", "team", "")
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(labWithPullSecret("l1", "team", "l1-registry", nil), dev).
-		WithStatusSubresource(&laboratoryv1alpha1.Device{}).Build()
-	rec := record.NewFakeRecorder(10)
-	r := &DeviceReconciler{Client: c, Scheme: s, Recorder: rec}
-	deviceEvents := func() []string {
-		var out []string
-		for {
-			select {
-			case e := <-rec.Events:
-				out = append(out, e)
-			default:
-				return out
-			}
-		}
-	}
-
-	for i := 0; i < 3; i++ {
-		if res, err := r.reconcileWorkload(ctx, dev); err != nil || res.RequeueAfter <= 0 {
-			t.Fatalf("wait %d: %+v %v", i, res, err)
-		}
-	}
-	ev := deviceEvents()
-	if len(ev) != 1 || !strings.Contains(ev[0], "Warning PullSecretMissing") || !strings.Contains(ev[0], "l1-registry") {
-		t.Fatalf("one warning naming the Secret, got %v", ev)
-	}
-
-	// The Secret shows up, then goes away: a new wait is told again.
-	sec := labRegSecret("l1-registry", "team")
-	if err := c.Create(ctx, sec); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.devicePullSecrets(ctx, dev); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Delete(ctx, sec); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.reconcileWorkload(ctx, dev); err != nil {
-		t.Fatal(err)
-	}
-	if ev := deviceEvents(); len(ev) != 1 {
-		t.Fatalf("a new wait is told again, got %v", ev)
-	}
-}
-
-// The told-marker goes away with the wait: when the lab no longer names a Secret and when the Device is deleted.
-func TestPullWaitMarkerIsClearedWhenTheWaitEnds(t *testing.T) {
-	ctx := context.Background()
-	s := secretScheme(t)
-	dev := labDevice("l1", "team", "")
-	lab := labWithPullSecret("l1", "team", "l1-registry", nil)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lab, dev).Build()
-	r := &DeviceReconciler{Client: c, Scheme: s}
-	key := client.ObjectKeyFromObject(dev)
-	marked := func() bool { _, ok := r.pullWaiting.Load(key); return ok }
-
-	if _, err := r.devicePullSecrets(ctx, dev); !errors.Is(err, errPullSecretPending) {
-		t.Fatal(err)
-	}
-	_, _ = r.pullSecretWait(ctx, dev, &pullSecretPendingError{secret: "l1-registry"})
-	if !marked() {
-		t.Fatal("wait not marked")
-	}
-	lab.Spec.ImagePullSecret = ""
-	if err := c.Update(ctx, lab); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.devicePullSecrets(ctx, dev); err != nil || marked() {
-		t.Fatalf("the lab names no Secret any more: %v marked=%v", err, marked())
-	}
-
-	_, _ = r.pullSecretWait(ctx, dev, &pullSecretPendingError{secret: "l1-registry"})
-	if err := c.Delete(ctx, dev); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil || marked() {
-		t.Fatalf("device gone: %v marked=%v", err, marked())
 	}
 }
