@@ -304,11 +304,13 @@ func (c CacheConfig) Rewriter() imagecache.Rewriter {
 // snapshot registry.
 type StateConfig struct {
 	Enabled bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
-	// RegistryAddr is host:port of the snapshot registry Service, used by the operator to drop snapshots (device reset, retention);
-	// empty = names.RegistryServiceAddr (the chart always installs the registry there).
-	RegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
-	RegistryUser     string `env:"STATE_REGISTRY_USER"`
-	RegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
+	// RegistryAddr is host:port of the registry gate's TLS port, used by the operator to drop snapshots (device reset, retention);
+	// empty = names.RegistryGateAddr. The operator is known to the gate by its own projected ServiceAccount token (RegistryTokenFile,
+	// audience laboratory-registry-gate) and trusts the certificate authority in RegistryCAFile (the chart mounts the ConfigMap
+	// laboratory-registry-ca); it has no registry account. Without a CA file the operator speaks plain http (a development setup).
+	RegistryAddr      string `env:"STATE_REGISTRY_ADDR"`
+	RegistryCAFile    string `env:"STATE_REGISTRY_CA_FILE"`
+	RegistryTokenFile string `env:"STATE_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
 	// Debounce is how long a device's writable layer must stay quiet before a snapshot.
 	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
 	// ExcludePaths are never snapshotted (comma-separated absolute paths).
@@ -373,7 +375,7 @@ func (cfg *Config) applyDefaults() {
 		&cfg.OperatorServiceAccount: names.OperatorServiceAccount,
 		&cfg.OperatorNamespace:      names.SystemNamespace,
 		&cfg.Cache.Prefix:           names.RegistryNodePrefix,
-		&cfg.State.RegistryAddr:     names.RegistryServiceAddr,
+		&cfg.State.RegistryAddr:     names.RegistryGateAddr,
 	} {
 		if *dst == "" {
 			*dst = def

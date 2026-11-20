@@ -1,8 +1,14 @@
 package laboratory
 
 import (
-	"github.com/google/go-containerregistry/pkg/authn"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
 
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/operator"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -36,9 +42,23 @@ func SetupState(c operator.StateConfig) (StatePolicy, *snapshot.Registry, error)
 	if !c.Enabled || c.RegistryAddr == "" {
 		return pol, nil, nil
 	}
-	reg := &snapshot.Registry{Host: c.RegistryAddr}
-	if c.RegistryUser != "" {
-		reg.Auth = &authn.Basic{Username: c.RegistryUser, Password: c.RegistryPassword}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if c.RegistryCAFile != "" {
+		pem, err := os.ReadFile(c.RegistryCAFile)
+		if err != nil {
+			return StatePolicy{}, nil, fmt.Errorf("STATE_REGISTRY_CA_FILE: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return StatePolicy{}, nil, fmt.Errorf("STATE_REGISTRY_CA_FILE: no certificate in %s", c.RegistryCAFile)
+		}
+		host, _, herr := net.SplitHostPort(c.RegistryAddr)
+		if herr != nil {
+			host = c.RegistryAddr
+		}
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}
 	}
+	// The operator is known to the gate by its own token, on every request; it has no registry account.
+	reg := &snapshot.Registry{Host: c.RegistryAddr, Transport: imagecache.NewTokenFile(c.RegistryTokenFile).RoundTripper(tr)}
 	return pol, reg, nil
 }

@@ -53,19 +53,20 @@ type Config struct {
 	// The node-agent relays it to 127.0.0.1:StateForwardPort (names.RegistryForwardPort, a constant), so snapshot and cached images are
 	// referenced as localhost:<port>/... and pulled by the node's containerd over plain HTTP without any host configuration.
 	StateRegistryAddr string `env:"STATE_REGISTRY_ADDR"`
-	// StateRegistryCAFile, when set, makes the relay speak TLS to the registry (its address is then the gate's TLS port) and trust only
-	// this certificate authority: the pull credentials of the image cache pass the relay.
+	// StateRegistryCAFile, when set, makes the relay speak TLS to the gate (its address is then the gate's TLS port) and trust only this
+	// certificate authority (the chart mounts the ConfigMap laboratory-registry-ca there).
 	StateRegistryCAFile string `env:"STATE_REGISTRY_CA_FILE"`
 	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform
 	// images): the relay is not started and there is no registry address. Default true (a registry exists, as before).
-	RegistryEnabled       bool   `env:"REGISTRY_ENABLED" envDefault:"true"`
-	StateRegistryUser     string `env:"STATE_REGISTRY_USER"`
-	StateRegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
-	StateForwardPort      int
-	// The reader account of the registry (it may read the snapshots and the base repository; the forwarder adds it to the
-	// node runtime's pulls of those). Empty: the forwarder is a plain relay.
-	StateRegistryReaderUser     string `env:"STATE_REGISTRY_READER_USER"`
-	StateRegistryReaderPassword string `env:"STATE_REGISTRY_READER_PASSWORD"`
+	RegistryEnabled  bool `env:"REGISTRY_ENABLED" envDefault:"true"`
+	StateForwardPort int
+	// RegistryTokenFile is the projected ServiceAccount token (audience laboratory-registry-gate) the relay presents to the gate in
+	// X-Cib-Node-Token on every request. A node has no registry account and no registry password.
+	RegistryTokenFile string `env:"REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// StatePushSocket is the unix socket of the relay on which node-state pushes the snapshots (mode 0600); StatePushSocketUID is the
+	// user it is given to (the user of node-state; -1: the owner stays the node-agent's).
+	StatePushSocket    string `env:"STATE_PUSH_SOCKET" envDefault:"/run/cybericebox/registry-push.sock"`
+	StatePushSocketUID int    `env:"STATE_PUSH_SOCKET_UID" envDefault:"-1"`
 	// StatePersistence turns on the snapshot engine (the forwarder alone serves
 	// the image cache).
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
@@ -83,16 +84,6 @@ type Config struct {
 	// how many bytes of temporary layer files in StateWorkDir all the running diffs may hold together.
 	StateMaxConcurrentDiffs int    `env:"STATE_MAX_CONCURRENT_DIFFS" envDefault:"2"`
 	StateTempBudget         string `env:"STATE_TEMP_BUDGET"`
-	// What one device may push (R-5): the least time between two pushes, the most state in StatePushBudgetWindow (a Kubernetes
-	// quantity; "0" = no budget), and how long the replaced manifest of a device is kept before it is deleted.
-	StateMinPushInterval  time.Duration `env:"STATE_MIN_PUSH_INTERVAL" envDefault:"60s"`
-	StatePushBudget       string        `env:"STATE_PUSH_BUDGET" envDefault:"2Gi"`
-	StatePushBudgetWindow time.Duration `env:"STATE_PUSH_BUDGET_WINDOW" envDefault:"1h"`
-	StateSupersededGrace  time.Duration `env:"STATE_SUPERSEDED_GRACE" envDefault:"2m"`
-	// StateRegistryCapacity is the size of the registry volume (a quantity; empty = unknown, no refusal) and
-	// StateRegistryReserve the fraction of it that is kept free: a push that would pass that line is refused.
-	StateRegistryCapacity string  `env:"STATE_REGISTRY_CAPACITY"`
-	StateRegistryReserve  float64 `env:"STATE_REGISTRY_RESERVE" envDefault:"0.1"`
 	// StateWorkDir holds the temporary layer files of a snapshot.
 	StateWorkDir string `env:"STATE_WORK_DIR" envDefault:"/var/cache/cybericebox/state"`
 }

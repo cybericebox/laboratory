@@ -82,21 +82,7 @@ type Engine struct {
 	// RetryBase and RetryMax bound the retry of a failed snapshot (10s doubling to 5m when zero).
 	RetryBase, RetryMax time.Duration
 
-	// The registry is shared by every tenant, so what a device may push is bounded (zero values switch the bound off):
-	// MinPushInterval is the least time between two pushes of one device (the exit snapshot is exempt: it must not be lost),
-	// PushBudget the most state it may push within PushBudgetWindow (an hour when zero). A change that comes sooner or over the
-	// budget waits; nothing is lost, the next snapshot has it.
-	MinPushInterval  time.Duration
-	PushBudget       int64
-	PushBudgetWindow time.Duration
-	// SupersededGrace is how long the manifest a new snapshot replaced is kept before it and its blobs are deleted from the
-	// registry (a pod being created from it a moment ago must still be able to pull it). Zero deletes at once.
-	SupersededGrace time.Duration
-	// Space refuses a push when the registry is nearly full; Retained adds the state the tenant still has in repositories of labs that
-	// are gone to the tenant's quota. Both are optional.
-	Space    SpaceGuard
-	Retained RetainedCounter
-	Log      logr.Logger
+	Log logr.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// SnapshotsBlocked, when set, is why no snapshot can be taken on this node (an AppArmor profile that denies mount): devices are
@@ -137,10 +123,6 @@ type tracked struct {
 	watching       bool // a normal persistence watcher exists, rather than a recovery placeholder
 	lastSnapshot   Snapshot
 	failures       int // consecutive failed live snapshots (touched by the live loop only)
-	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
-	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
-	prevRef string
-	pushes  []pushRecord
 	// holdUntil: no live snapshot before it (the layer was over the write quota, a diff that is bound to fail again).
 	holdUntil time.Time
 	// broken is why this device is not snapshotted any more in this incarnation: a goroutine of its snapshot machinery panicked (guarded by
@@ -150,11 +132,6 @@ type tracked struct {
 
 // quotaHold is how long a layer over the write quota waits before the device is diffed again.
 const quotaHold = 5 * time.Minute
-
-type pushRecord struct {
-	at    time.Time
-	bytes int64
-}
 
 // errDeferred is a snapshot that was not taken now, for a reason that is not a failure: it waits for after. A deferred snapshot is
 // retried then and does not count as a failed one.
@@ -172,34 +149,6 @@ func (t *tracked) allow() *errDeferred {
 	if now.Before(t.holdUntil) {
 		return &errDeferred{after: t.holdUntil.Sub(now), reason: "the layer is over the write quota or the entry limit"}
 	}
-	if e.MinPushInterval > 0 && len(t.pushes) > 0 {
-		last := t.pushes[len(t.pushes)-1].at
-		if wait := e.MinPushInterval - now.Sub(last); wait > 0 {
-			return &errDeferred{after: wait, reason: "the device pushed a snapshot a moment ago"}
-		}
-	}
-	if e.PushBudget > 0 {
-		window := e.PushBudgetWindow
-		if window <= 0 {
-			window = time.Hour
-		}
-		var sum int64
-		kept := t.pushes[:0]
-		for _, p := range t.pushes {
-			if now.Sub(p.at) < window {
-				kept = append(kept, p)
-				sum += p.bytes
-			}
-		}
-		t.pushes = kept
-		if sum >= e.PushBudget && len(kept) > 0 {
-			wait := window - now.Sub(kept[0].at)
-			if wait < time.Second {
-				wait = time.Second
-			}
-			return &errDeferred{after: wait, reason: fmt.Sprintf("the device has pushed %d bytes in the last %s, its budget is %d", sum, window, e.PushBudget)}
-		}
-	}
 	return nil
 }
 
@@ -209,13 +158,6 @@ func (e *Engine) snapshotRef(ref string) string {
 		return ref
 	}
 	return ""
-}
-
-// repoOfRef is "repo" of "host/repo@digest".
-func repoOfRef(ref string) string {
-	_, rest, _ := strings.Cut(ref, "/")
-	repo, _, _ := strings.Cut(rest, "@")
-	return repo
 }
 
 func (e *Engine) retryBase() time.Duration {
@@ -485,7 +427,7 @@ func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
 
 // track registers the container and starts its change watcher.
 func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
-	t := &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+	t := &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}}
 	e.mu.Lock()
 	if old, ok := e.tracked[p.ContainerID]; ok {
 		t = old
@@ -621,7 +563,7 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 			e.markExit(ctx, p)
 			return
 		}
-		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}}
 		e.mu.Lock()
 		e.tracked[p.ContainerID] = t
 		e.mu.Unlock()
@@ -744,31 +686,17 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	if err != nil {
 		return err
 	}
-	if refused, err := t.refuseTenantQuota(ctx, required, digest, chain.Bytes()); refused {
-		return err
-	}
 	if required {
 		if d := t.allow(); d != nil {
 			return d
 		}
 	}
-	// The registry volume is shared by every tenant and the platform: no push while it is nearly full.
-	if e.Space != nil {
-		if serr := e.Space.Check(ctx, chain.Bytes()); serr != nil {
-			if required {
-				return serr
-			}
-			t.warn(ctx, serr.Error())
-			if freeze {
-				return &errDeferred{after: 5 * time.Minute, reason: serr.Error()}
-			}
-			return nil // the exit snapshot is not retried: the last good one stays
-		}
-	}
-	img = snapshot.Annotated(img, t.pod.Tenant, chain.Bytes())
 	pushStart := e.now()
 	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base, imagecache.Rewriter{Prefix: e.RegistryHost}.RepoOf(t.c.ImageRef))
 	if err != nil {
+		if handled, herr := t.gateRefusal(ctx, err, required, freeze, digest); handled {
+			return herr
+		}
 		return fmt.Errorf("push snapshot: %w", err)
 	}
 	pushTook = e.now().Sub(pushStart)
@@ -780,10 +708,6 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	t.lastSnapshot = Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}
 	t.lastPublishedDiff = digest
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
-	t.pushes = append(t.pushes, pushRecord{at: e.now(), bytes: chain.Bytes()})
-	if !required {
-		t.supersede(ref, img)
-	}
 	t.warnSkipped(ctx, skipMsg)
 	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
@@ -840,29 +764,6 @@ func (t *tracked) takeLayer(ctx context.Context, freeze, required bool, pol snap
 		return lf, true, err
 	}
 	return lf, false, nil
-}
-
-// supersede deletes the manifest the new snapshot replaced (and the blobs only it used) from the registry, after the grace period.
-func (t *tracked) supersede(newRef string, keep v1.Image) {
-	old := t.prevRef
-	t.prevRef = newRef
-	e := t.e
-	s, ok := e.Pusher.(Superseder)
-	if !ok || old == "" || old == newRef || repoOfRef(old) != t.pod.Repo {
-		return
-	}
-	run := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := s.Supersede(ctx, t.pod.Repo, old, keep); err != nil {
-			e.Log.Error(err, "delete the superseded snapshot", "device", t.pod.Device, "ref", old)
-		}
-	}
-	if e.SupersededGrace <= 0 {
-		run()
-		return
-	}
-	time.AfterFunc(e.SupersededGrace, run)
 }
 
 func (t *tracked) loadImage(ctx context.Context) (v1.Image, error) {
@@ -978,38 +879,6 @@ func (t *tracked) snapshotEmptyLayer(ctx context.Context, required bool, skipMsg
 	}
 	t.warnSkipped(ctx, skipMsg)
 	return nil // nothing (else) changed since the device started
-}
-
-// refuseTenantQuota keeps tenant and retained accounting before push admission.
-func (t *tracked) refuseTenantQuota(ctx context.Context, required bool, digest string, chainBytes int64) (bool, error) {
-	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
-	if t.pod.TenantQuota > 0 {
-		others, qerr := t.e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
-		if qerr != nil {
-			return true, fmt.Errorf("tenant registry usage: %w", qerr)
-		}
-		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
-		if t.e.Retained != nil {
-			if live, lerr := t.e.Cluster.LiveRepos(ctx); lerr == nil {
-				if ret, rerr := t.e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
-					others += ret
-				} else if required {
-					return true, rerr
-				}
-			} else if required {
-				return true, lerr
-			}
-		}
-		if others+chainBytes > t.pod.TenantQuota {
-			if required {
-				return true, fmt.Errorf("%w: tenant quota exceeded", snapshot.ErrQuota)
-			}
-			t.lastDiff = digest
-			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chainBytes, t.pod.TenantQuota))
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // filterSnapshotLayer closes both streams before applying the unchanged filter

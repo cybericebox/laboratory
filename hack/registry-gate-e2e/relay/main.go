@@ -24,7 +24,11 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	opts := []devicestate.ForwardOption{devicestate.WithHost("localhost:5035")}
+	token := os.Getenv("REGISTRY_TOKEN_FILE")
+	if token == "" {
+		token = "/var/run/secrets/registry-gate/token"
+	}
+	opts := []devicestate.ForwardOption{devicestate.WithNodeToken(token)}
 	if ca != "" {
 		opts = append(opts, devicestate.WithTLS(ca))
 	}

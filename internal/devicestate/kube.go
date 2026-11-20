@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/labels"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,7 +80,6 @@ func podInfo(p *corev1.Pod, dev *laboratoryv1alpha1.Device) PodInfo {
 		Ended:       p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed,
 		Policy:      snapshot.NewPolicy(spec.Debounce.Duration, spec.ExcludePaths, spec.WriteQuotaBytes, int(spec.MaxLayers)).WithMaxFileSize(spec.MaxFileBytes).WithMaxEntries(int(spec.MaxEntries)),
 		Tenant:      names.TenantOf(dev.Labels),
-		TenantQuota: spec.TenantQuotaBytes,
 		Repo:        snapshot.Repo(dev.Namespace, dev.Spec.LabRef, dev.Spec.Name),
 	}
 	for _, cs := range p.Status.ContainerStatuses {
@@ -159,47 +156,4 @@ func (k *KubeCluster) update(ctx context.Context, p PodInfo, needCurrent bool, m
 		}
 	}
 	return err
-}
-
-// TenantBytes implements Cluster: the sum of the snapshot sizes of the tenant's devices. The default tenant also owns the
-// devices that carry no tenant label (created before tenancy).
-func (k *KubeCluster) TenantBytes(ctx context.Context, tenant string, except types.NamespacedName) (int64, error) {
-	var devices laboratoryv1alpha1.DeviceList
-	if err := k.Client.List(ctx, &devices, client.MatchingLabels{names.LabelTenant: tenant}); err != nil {
-		return 0, err
-	}
-	items := devices.Items
-	if tenant == names.DefaultTenant {
-		var legacy laboratoryv1alpha1.DeviceList
-		sel, _ := labels.Parse("!" + names.LabelTenant)
-		if err := k.Client.List(ctx, &legacy, client.MatchingLabelsSelector{Selector: sel}); err != nil {
-			return 0, err
-		}
-		items = append(items, legacy.Items...)
-	}
-	var total int64
-	for i := range items {
-		d := &items[i]
-		if d.Namespace == except.Namespace && d.Name == except.Name {
-			continue
-		}
-		if d.Status.State != nil {
-			total += d.Status.State.SizeBytes
-		}
-	}
-	return total, nil
-}
-
-// LiveRepos implements Cluster: the snapshot repositories of every existing device.
-func (k *KubeCluster) LiveRepos(ctx context.Context) (map[string]bool, error) {
-	var devices laboratoryv1alpha1.DeviceList
-	if err := k.Client.List(ctx, &devices); err != nil {
-		return nil, err
-	}
-	live := make(map[string]bool, len(devices.Items))
-	for i := range devices.Items {
-		d := &devices.Items[i]
-		live[snapshot.Repo(d.Namespace, d.Spec.LabRef, d.Spec.Name)] = true
-	}
-	return live, nil
 }

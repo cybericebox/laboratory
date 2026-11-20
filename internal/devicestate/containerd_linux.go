@@ -47,8 +47,6 @@ type ContainerdRuntime struct {
 	log        logr.Logger
 	seq        atomic.Uint64
 	noFreezer  atomic.Bool
-	// SourceKeychain binds fallback reads to the current pod's pull credentials.
-	SourceKeychain func(context.Context, Container, PodInfo) (authn.Keychain, error)
 }
 
 // NewContainerdRuntime connects to containerd at sock; namespace is the one the
@@ -299,15 +297,11 @@ func (r *ContainerdRuntime) LoadImage(ctx context.Context, ref string) (v1.Image
 	return r.loadImage(ctx, ref, nil)
 }
 
-func (r *ContainerdRuntime) LoadImageForPod(ctx context.Context, c Container, p PodInfo) (v1.Image, error) {
-	if r.SourceKeychain == nil {
-		return nil, fmt.Errorf("pod-owned source image credentials are unavailable")
-	}
-	keychain, err := r.SourceKeychain(ctx, c, p)
-	if err != nil {
-		return nil, err
-	}
-	return r.loadImage(ctx, c.ImageRef, keychain)
+// LoadImageForPod is LoadImage for the source image of a device pod. A layer that the content store does not have is read through the
+// relay of the node-agent (the reference points at it) with no credentials: the gate decides by the node and the reference, and this
+// pod is on this node and names this reference.
+func (r *ContainerdRuntime) LoadImageForPod(ctx context.Context, c Container, _ PodInfo) (v1.Image, error) {
+	return r.loadImage(ctx, c.ImageRef, nil)
 }
 
 func (r *ContainerdRuntime) loadImage(ctx context.Context, ref string, keychain authn.Keychain) (v1.Image, error) {
