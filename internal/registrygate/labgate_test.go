@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -77,6 +78,8 @@ func (z *fakeZot) total() int {
 // memStore is the snapshot repositories as the gate reads and deletes them.
 type memStore struct {
 	mu        sync.Mutex
+	missing   map[string]bool   // digests the registry does not hold
+	blobs     map[string]int64  // repo|digest -> size as the registry holds it
 	manifests map[string][]byte // repo|ref -> body
 	deleted   []string
 }
@@ -84,6 +87,18 @@ type memStore struct {
 func (m *memStore) Head(_ context.Context, repo, kind, ref string) (http.Header, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if kind == kindBlobs {
+		n, ok := m.blobs[repo+"|"+ref]
+		if !ok && !m.missing[ref] {
+			n, ok = 2, true // the config blob every manifest of the tests lists
+		}
+		if !ok {
+			return nil, false, nil
+		}
+		h := http.Header{}
+		h.Set("Content-Length", strconv.FormatInt(n, 10))
+		return h, true, nil
+	}
 	b, ok := m.manifests[repo+"|"+ref]
 	if !ok {
 		return nil, false, nil
@@ -153,7 +168,7 @@ const repoD1 = "lab/lg-acme/lab1/dev1"
 
 func newLabRig(t *testing.T) *labRig {
 	t.Helper()
-	r := &labRig{t: t, zot: &fakeZot{}, store: &memStore{manifests: map[string][]byte{}}, meter: &fakeMeter{blobs: map[string]int64{}}, free: 0.5}
+	r := &labRig{t: t, zot: &fakeZot{}, store: &memStore{manifests: map[string][]byte{}, blobs: map[string]int64{}, missing: map[string]bool{}}, meter: &fakeMeter{blobs: map[string]int64{}}, free: 0.5}
 	r.zotSrv = httptest.NewServer(r.zot)
 	t.Cleanup(r.zotSrv.Close)
 	clk := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
@@ -468,7 +483,7 @@ func TestPushBudgetSlidingWindow(t *testing.T) {
 			t.Fatalf("the body was not cut at the budget: %+v", z)
 		}
 	}
-	if used, _ := r.lab.used(repoD1, *r.clk); used > 1000 {
+	if used, _ := r.lab.used(repoD1, false, *r.clk); used > 1000 {
 		t.Fatalf("charged %d of a budget of 1000", used)
 	}
 	// the window moves on: an hour later the whole budget is available again
@@ -485,7 +500,7 @@ func TestPushBudgetSlidingWindow(t *testing.T) {
 }
 
 // The budget is per device repository, and an exit snapshot is not held back by it.
-func TestPushBudgetIsPerDeviceAndNotForTheExitSnapshot(t *testing.T) {
+func TestPushBudgetIsPerDeviceAndTheExitSnapshotHasAPoolOfItsOwn(t *testing.T) {
 	r := newLabRig(t)
 	sess := func(token, repo string) string {
 		w := r.do(token, "POST", upPath(repo), nil, nil)
@@ -503,8 +518,104 @@ func TestPushBudgetIsPerDeviceAndNotForTheExitSnapshot(t *testing.T) {
 		t.Fatalf("over the budget: %d", w.Code)
 	}
 	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "dev1-0", UID: "pod-1", Node: "node-a", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
-	if w := r.do(tokA, "PATCH", a, bytes.NewReader(make([]byte, 5000)), nil); w.Code != 202 {
-		t.Fatalf("the exit snapshot is not held back by the budget: %d", w.Code)
+	if w := r.do(tokA, "PATCH", a, bytes.NewReader(make([]byte, 900)), nil); w.Code != 202 {
+		t.Fatalf("the exit snapshot is not held back by the budget the running pod used: %d", w.Code)
+	}
+	if w := r.do(tokA, "PATCH", a, bytes.NewReader(make([]byte, 900)), nil); w.Code != 429 {
+		t.Fatalf("but the exit snapshot is bounded too: %d", w.Code)
+	}
+}
+
+// Review finding 5: a pod that keeps crashing gets a limited number of exit slots per window, and an exit push has a ceiling.
+func TestExitSlotsAreLimitedOverTime(t *testing.T) {
+	r := newLabRig(t)
+	r.zot.putDigest = dg("1")
+	crash := func(i int) {
+		r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: fmt.Sprintf("dev1-%d", i), UID: fmt.Sprintf("pod-%d", i), Node: "node-a", Phase: "Failed",
+			Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	}
+	put := func() int {
+		return r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(nil)), nil).Code
+	}
+	for i := 1; i <= 3; i++ {
+		crash(i)
+		if c := put(); c != 201 {
+			t.Fatalf("exit %d: %d", i, c)
+		}
+	}
+	crash(4)
+	if c := put(); c != 429 {
+		t.Fatalf("the fourth crash within the window has no free slot: %d", c)
+	}
+	*r.clk = r.clk.Add(time.Hour + time.Minute)
+	r.sch.Confirm()
+	crash(5)
+	if c := put(); c != 201 {
+		t.Fatalf("a new window: %d", c)
+	}
+}
+
+// Review finding 6: concurrent uploads share what is left of the budget; they never each get all of it.
+func TestConcurrentUploadsShareTheBudget(t *testing.T) {
+	r := newLabRig(t) // budget 1000
+	sess := func() string {
+		w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+		loc := w.Header().Get("Location")
+		return "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	}
+	s1, s2 := sess(), sess()
+	var wg sync.WaitGroup
+	for _, sp := range []string{s1, s2} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("PATCH", "http://x"+sp, io.NopCloser(bytes.NewReader(make([]byte, 800))))
+			req.ContentLength = -1
+			req.Header.Set(HeaderNodeToken, tokA)
+			r.gate.ServeHTTP(httptest.NewRecorder(), req)
+		}()
+	}
+	wg.Wait()
+	var total int64
+	for _, z := range r.zot.reqs {
+		if z.method == "PATCH" {
+			total += z.body
+		}
+	}
+	if total > 1000 {
+		t.Fatalf("zot received %d bytes of a budget of 1000", total)
+	}
+}
+
+// Review finding 6: a monolithic upload (POST with the body) is budgeted like a PATCH.
+func TestMonolithicUploadIsBudgeted(t *testing.T) {
+	r := newLabRig(t)
+	w := r.do(tokA, "POST", upPath(repoD1)+"?digest="+dg("a"), bytes.NewReader(make([]byte, 2000)), nil)
+	if w.Code != 429 || !strings.Contains(w.Body.String(), CodePushBudget) {
+		t.Fatalf("2000 of 1000: %d %s", w.Code, w.Body.String())
+	}
+	if w := r.do(tokA, "POST", upPath(repoD1)+"?digest="+dg("a"), bytes.NewReader(make([]byte, 600)), nil); w.Code != 202 {
+		t.Fatalf("600 of 1000: %d", w.Code)
+	}
+	if w := r.do(tokA, "POST", upPath(repoD1)+"?digest="+dg("a"), bytes.NewReader(make([]byte, 600)), nil); w.Code != 429 {
+		t.Fatalf("the second 600: %d", w.Code)
+	}
+}
+
+// Review finding 6: the quota counts the sizes the registry holds, not the ones a node wrote in its manifest.
+func TestQuotaUsesTheRealBlobSizes(t *testing.T) {
+	r := newLabRig(t)
+	r.zot.putDigest = dg("1")
+	r.meter.blobs = map[string]int64{dg("1"): 6000}
+	r.store.blobs[repoD1+"|"+dg("3")] = 5000 // really 5000 bytes
+	w := r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(map[string]int64{dg("3"): 1})), nil)
+	if w.Code != 403 || !strings.Contains(w.Body.String(), CodeTenantQuota) {
+		t.Fatalf("a manifest that says 1 byte for a 5000-byte blob: %d %s", w.Code, w.Body.String())
+	}
+	r.store.missing[dg("4")] = true
+	w = r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(map[string]int64{dg("4"): 1})), nil)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "MANIFEST_BLOB_UNKNOWN") {
+		t.Fatalf("a blob the registry does not hold: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -516,6 +627,9 @@ func TestTenantQuota(t *testing.T) {
 	r.zot.putDigest = dg("1")
 	r.meter.blobs = map[string]int64{dg("1"): 4000, dg("2"): 5000} // 9000 of 10000 used by the other repositories
 	put := func(layers map[string]int64) *httptest.ResponseRecorder {
+		for d, n := range layers {
+			r.store.blobs[repoD1+"|"+d] = n // the registry holds what the manifest says, here
+		}
 		return r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(layers)), nil)
 	}
 	if w := put(map[string]int64{dg("3"): 900}); w.Code != 201 {

@@ -30,6 +30,9 @@ type PushLimits struct {
 	// Budget is the most blob bytes accepted into one device repository within BudgetWindow (pushBudget 2Gi, pushBudgetWindow 1h). 0: none.
 	Budget       int64
 	BudgetWindow time.Duration
+	// ExitSlots is how many exit snapshots (a pod that ended pushes once, outside the interval) a device gets per BudgetWindow (default 3);
+	// past it a snapshot is judged like any other. Exit bytes are budgeted in a pool of their own, of the size of Budget.
+	ExitSlots int
 	// Reserve is the fraction of the registry volume that must stay free (registryReserve, 0.1). 0: none.
 	Reserve float64
 	// TenantQuota is the platform's quota of the registry bytes of one tenant's snapshots (tenantQuota, 10Gi), used when neither the
@@ -73,11 +76,12 @@ type LabGate struct {
 type charge struct {
 	at    time.Time
 	bytes int64
+	exit  bool // charged to the pool of exit snapshots
 }
 
 type pushState struct {
 	lastManifest time.Time
-	charges      []charge
+	charges      []*charge
 	exitUsed     map[string]time.Time // pod UID -> when its exit snapshot was accepted
 	// prev is the digest "latest" had when the snapshot being pushed was admitted; the plan to delete it starts when zot accepts the push.
 	prev string
@@ -88,7 +92,10 @@ type uploadSession struct {
 	started    time.Time
 }
 
-const maxSessions = 20000
+const (
+	maxSessions      = 20000
+	maxManifestBlobs = 512
+)
 
 // NewLabGate makes the gate for snapshot repositories forwarding to zot with the account user:pass.
 func NewLabGate(zot *url.URL, user, pass string) *LabGate {
@@ -282,58 +289,93 @@ func (g *LabGate) window() time.Duration {
 	return time.Hour
 }
 
-// used is the bytes charged in the budget window (older charges are forgotten); retry is when the oldest charge leaves it.
-func (g *LabGate) used(repo string, now time.Time) (used int64, retry time.Duration) {
+// used is the bytes charged in the budget window of one pool (older charges are forgotten); retry is when the oldest charge leaves it.
+// g.mu is not held.
+func (g *LabGate) used(repo string, exit bool, now time.Time) (used int64, retry time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.usedLocked(repo, exit, now)
+}
+
+func (g *LabGate) usedLocked(repo string, exit bool, now time.Time) (used int64, retry time.Duration) {
 	s := g.stateLocked(repo)
 	kept := s.charges[:0]
+	var oldest time.Time
 	for _, c := range s.charges {
-		if now.Sub(c.at) < g.window() {
-			kept = append(kept, c)
+		if now.Sub(c.at) >= g.window() {
+			continue
+		}
+		kept = append(kept, c)
+		if c.exit == exit {
 			used += c.bytes
+			if oldest.IsZero() || c.at.Before(oldest) {
+				oldest = c.at
+			}
 		}
 	}
 	s.charges = kept
 	retry = time.Minute
-	if len(kept) > 0 {
-		retry = kept[0].at.Add(g.window()).Sub(now)
+	if !oldest.IsZero() {
+		retry = oldest.Add(g.window()).Sub(now)
 	}
 	return used, retry
 }
 
-func (g *LabGate) addCharge(repo string, n int64) {
+// take reserves up to want bytes of the pool atomically (the check and the charge are one step under the lock, so concurrent uploads
+// share what is left and never each get all of it) and returns how many it granted (0: the pool is used up). The caller gives back what it
+// did not use with refund.
+func (g *LabGate) take(repo string, exit bool, want int64) (*charge, int64) {
 	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	used, _ := g.usedLocked(repo, exit, now)
+	left := g.Limits.Budget - used
+	if left <= 0 {
+		return nil, 0
+	}
+	if want > left {
+		want = left
+	}
 	s := g.stateLocked(repo)
-	s.charges = append(s.charges, charge{at: g.now(), bytes: n})
+	if n := len(s.charges); n > 0 && s.charges[n-1].exit == exit && now.Sub(s.charges[n-1].at) < time.Second {
+		c := s.charges[n-1]
+		c.bytes += want
+		return c, want
+	}
+	c := &charge{at: now, bytes: want, exit: exit}
+	s.charges = append(s.charges, c)
+	return c, want
+}
+
+func (g *LabGate) refund(c *charge, n int64) {
+	if c == nil || n <= 0 {
+		return
+	}
+	g.mu.Lock()
+	c.bytes -= n
 	g.mu.Unlock()
 }
 
-// budgetBody counts the bytes of an upload body against the budget and cuts the upload when it passes the line.
+// budgetBody takes every read of an upload body from the budget as it happens and cuts the upload when the pool is used up.
 type budgetBody struct {
 	rc   io.ReadCloser
 	g    *LabGate
 	repo string
-	left int64 // bytes still allowed; -1: no limit (an exit snapshot)
-	read int64
+	exit bool
 }
 
 var errBudget = errors.New("the push budget of the device is used up")
 
 func (b *budgetBody) Read(p []byte) (int, error) {
-	if b.left >= 0 {
-		if b.read >= b.left {
-			return 0, errBudget
-		}
-		if int64(len(p)) > b.left-b.read {
-			p = p[:b.left-b.read]
-		}
+	if len(p) == 0 {
+		return 0, nil
 	}
-	n, err := b.rc.Read(p)
-	if n > 0 {
-		b.read += int64(n)
-		b.g.addCharge(b.repo, int64(n))
+	c, got := b.g.take(b.repo, b.exit, int64(len(p)))
+	if got == 0 {
+		return 0, errBudget
 	}
+	n, err := b.rc.Read(p[:got])
+	b.g.refund(c, got-int64(n))
 	return n, err
 }
 
@@ -342,6 +384,7 @@ func (b *budgetBody) Close() error { return b.rc.Close() }
 // authorizeUpload: POST starts an upload (or mounts a blob), PATCH and PUT go on with it. A session belongs to the node and repository
 // that started it; every later request re-checks that the device is still on the node (done by Serve before this).
 func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev DeviceInfo) (refusal, bool) {
+	_, exit := g.exitPod(lp, p)
 	if r.Method == http.MethodPost {
 		q := r.URL.Query()
 		if (q.Get("mount") != "" || q.Get("from") != "") && !g.mountAllowed(lp, p, q.Get("from"), q.Get("mount")) {
@@ -350,7 +393,11 @@ func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev 
 		if g.registryFull() {
 			return fullRefusal, false
 		}
-		return g.quotaStillOpen(r.Context(), dev, lp)
+		if f, ok := g.quotaStillOpen(r.Context(), dev, lp); !ok {
+			return f, false
+		}
+		// a monolithic upload carries its bytes in this request: they are budgeted like a PATCH
+		return g.budgetBodyOf(r, lp, exit)
 	}
 	if f, ok := g.checkSession(lp, p); !ok {
 		return f, false
@@ -358,21 +405,20 @@ func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev 
 	if g.registryFull() {
 		return fullRefusal, false
 	}
-	if g.Limits.Budget <= 0 || r.ContentLength == 0 {
+	return g.budgetBodyOf(r, lp, exit)
+}
+
+// budgetBodyOf puts the body of r under the budget: refused at once when it declares more than is left, otherwise taken from the pool read
+// by read.
+func (g *LabGate) budgetBodyOf(r *http.Request, lp labPath, exit bool) (refusal, bool) {
+	if g.Limits.Budget <= 0 || r.ContentLength == 0 || r.Body == nil || r.Body == http.NoBody {
 		return refusal{}, true
 	}
-	left := int64(-1)
-	if _, exit := g.exitPod(lp, p); !exit {
-		used, retry := g.used(lp.Repo, g.now())
-		if r.ContentLength > 0 && used+r.ContentLength > g.Limits.Budget {
-			return refusal{http.StatusTooManyRequests, CodePushBudget, "the push budget of the device is used up", retry}, false
-		}
-		left = g.Limits.Budget - used
-		if left < 0 {
-			left = 0
-		}
+	used, retry := g.used(lp.Repo, exit, g.now())
+	if r.ContentLength > 0 && used+r.ContentLength > g.Limits.Budget {
+		return refusal{http.StatusTooManyRequests, CodePushBudget, "the push budget of the device is used up", retry}, false
 	}
-	r.Body = &budgetBody{rc: r.Body, g: g, repo: lp.Repo, left: left}
+	r.Body = &budgetBody{rc: r.Body, g: g, repo: lp.Repo, exit: exit}
 	return refusal{}, true
 }
 
@@ -420,10 +466,22 @@ func (g *LabGate) quotaStillOpen(ctx context.Context, dev DeviceInfo, lp labPath
 func (g *LabGate) exitPod(lp labPath, p Principal) (PodInfo, bool) {
 	g.mu.Lock()
 	used := map[string]bool{}
-	for uid := range g.stateLocked(lp.Repo).exitUsed {
+	recent := 0
+	now := g.now()
+	for uid, at := range g.stateLocked(lp.Repo).exitUsed {
 		used[uid] = true
+		if now.Sub(at) < g.window() {
+			recent++
+		}
 	}
 	g.mu.Unlock()
+	slots := g.Limits.ExitSlots
+	if slots <= 0 {
+		slots = 3
+	}
+	if recent >= slots {
+		return PodInfo{}, false // a pod that keeps crashing does not get a free slot each time
+	}
 	for _, pod := range g.Schedule.PodsOnNode(p.Node) {
 		if pod.Namespace != lp.NS || pod.Labels[names.LabelLab] != lp.Lab || pod.Labels[names.LabelDevice] != lp.Dev || !pod.Ended() {
 			continue
@@ -465,10 +523,22 @@ func (g *LabGate) authorizeManifestPut(r *http.Request, lp labPath, p Principal,
 		if err != nil {
 			return unavailable, false
 		}
-		for d, n := range layers {
-			if _, counted := have[d]; !counted {
-				sum += n
+		if len(layers) > maxManifestBlobs {
+			return refusal{http.StatusBadRequest, "MANIFEST_INVALID", "the manifest lists too many blobs", 0}, false
+		}
+		for d := range layers {
+			if _, counted := have[d]; counted {
+				continue
 			}
+			// the size the registry holds, never the one the node wrote into the manifest
+			n, ok, err := g.blobSize(r.Context(), lp.Repo, d)
+			if err != nil {
+				return unavailable, false
+			}
+			if !ok {
+				return refusal{http.StatusBadRequest, "MANIFEST_BLOB_UNKNOWN", "a blob of the manifest is not in the registry", 0}, false
+			}
+			sum += n
 		}
 		if sum > q {
 			return refusal{http.StatusForbidden, CodeTenantQuota, "the registry quota of the tenant would be passed", 0}, false
@@ -567,7 +637,7 @@ func (g *LabGate) snapshotAccepted(req *http.Request, lp labPath, digest string)
 	if isExit {
 		s.exitUsed[exit.UID] = now
 		for uid, at := range s.exitUsed {
-			if now.Sub(at) > 24*time.Hour {
+			if now.Sub(at) > max(24*time.Hour, g.window()) {
 				delete(s.exitUsed, uid)
 			}
 		}
@@ -618,4 +688,20 @@ func (g *LabGate) mountAllowed(lp labPath, p Principal, from, digest string) boo
 		}
 	}
 	return false
+}
+
+// blobSize is the size of a blob as the registry holds it.
+func (g *LabGate) blobSize(ctx context.Context, repo, digest string) (int64, bool, error) {
+	if g.Store == nil {
+		return 0, false, errors.New("no registry client")
+	}
+	h, ok, err := g.Store.Head(ctx, repo, kindBlobs, digest)
+	if err != nil || !ok {
+		return 0, ok, err
+	}
+	n, err := strconv.ParseInt(h.Get("Content-Length"), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false, errors.New("the registry gave no blob size")
+	}
+	return n, true, nil
 }
