@@ -175,6 +175,7 @@ func Run() {
 	}
 	if cfg.SnapshotsEnabled {
 		gate.Lab = buildLab(ctx, cfg, metrics, log, zot, disk, schedule)
+		gate.Lab.Cache = gate.Cache // a mount is allowed from the image the device runs (its grant), which the cache holds
 	}
 
 	servers := []*http.Server{

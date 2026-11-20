@@ -339,22 +339,53 @@ func TestUploadSessionsAreBoundToTheNodeAndTheRepository(t *testing.T) {
 	}
 }
 
-func TestBlobMountsOnlyFromBaseOrTheCache(t *testing.T) {
+// Review finding 2: a mount source is the image that very device runs on the calling node, and the digest must be in that image's grant.
+func TestBlobMountsOnlyFromBaseOrTheImageOfTheSameDevice(t *testing.T) {
 	r := newLabRig(t)
-	for from, want := range map[string]int{
-		"base":                      201,
-		"c/docker.io/library/nginx": 201,
-		"lab/lg-acme/lab1/dev2":     403, // another device's snapshots
-		"lab/lg-acme/lab1/dev1":     403,
-		"":                          403, // a mount with no source
-		"c%2F..":                    403,
-		"platform/x":                403,
-		"cx/docker.io":              403,
+	now := func() time.Time { return *r.clk }
+	r.lab.Cache = &Cache{Grants: &Grants{Now: now}}
+	devPod := func(name, dev, node, image string) {
+		r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: name, UID: "u-" + name, Node: node, Phase: "Running", Images: []string{image},
+			Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: dev}})
+	}
+	devPod("p1", "dev1", "node-a", "localhost:5035/c/acme/docker.io/library/nginx:1")
+	devPod("p2", "plain", "node-a", "localhost:5035/c/acme/docker.io/library/redis:7")
+	devPod("p3", "dev2", "node-b", "localhost:5035/c/acme/docker.io/library/nginx:1")
+	g := r.lab.Cache.Grants
+	g.Add("node-a", "acme", "docker.io/library/nginx", Creds{}, dg("a"))
+	g.Add("node-a", "acme", "docker.io/library/redis", Creds{}, dg("a"))
+	g.Add("node-a", "other", "up/org/private", Creds{}, dg("a")) // another tenant's image, cached and granted to someone else
+	mount := func(token, repo, from, digest string) int {
+		return r.do(token, "POST", upPath(repo)+"?mount="+digest+"&from="+from, nil, nil).Code
+	}
+	for _, c := range []struct {
+		name, token, repo, from, digest string
+		want                            int
+	}{
+		{"base", tokA, repoD1, "base", dg("a"), 201},
+		{"the image the device runs, a granted digest", tokA, repoD1, "c/docker.io/library/nginx", dg("a"), 201},
+		{"the same image, a digest no grant holds", tokA, repoD1, "c/docker.io/library/nginx", dg("b"), 403},
+		{"an image of another device of the lab", tokA, repoD1, "c/docker.io/library/redis", dg("a"), 403},
+		{"another tenant's cached image", tokA, repoD1, "c/up/org/private", dg("a"), 403},
+		{"an image nothing on the node runs", tokA, repoD1, "c/docker.io/library/mysql", dg("a"), 403},
+		{"the image of the device on another node", tokB, "lab/lg-acme/lab1/dev2", "c/docker.io/library/nginx", dg("a"), 403},
+		{"another device's snapshots", tokA, repoD1, "lab/lg-acme/lab1/dev2", dg("a"), 403},
+		{"no source", tokA, repoD1, "", dg("a"), 403},
+		{"no digest", tokA, repoD1, "c/docker.io/library/nginx", "", 403},
+		{"traversal", tokA, repoD1, "c/../base", dg("a"), 403},
+		{"platform", tokA, repoD1, "platform/x", dg("a"), 403},
+		{"cx prefix", tokA, repoD1, "cx/docker.io", dg("a"), 403},
 	} {
-		w := r.do(tokA, "POST", upPath(repoD1)+"?mount="+dg("a")+"&from="+from, nil, nil)
-		if w.Code != want {
-			t.Errorf("from=%q: %d, want %d", from, w.Code, want)
+		if got := mount(c.token, c.repo, c.from, c.digest); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
 		}
+	}
+	// the pod ends: its image no longer opens a mount
+	devPod("p1", "dev1", "node-a", "localhost:5035/c/acme/docker.io/library/nginx:1")
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p1", UID: "u-p1", Node: "node-a", Phase: "Failed", Images: []string{"localhost:5035/c/acme/docker.io/library/nginx:1"},
+		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	if got := mount(tokA, repoD1, "c/docker.io/library/nginx", dg("a")); got != 403 {
+		t.Errorf("a finished pod: %d", got)
 	}
 }
 

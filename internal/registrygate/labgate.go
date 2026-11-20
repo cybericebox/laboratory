@@ -54,6 +54,9 @@ type LabGate struct {
 	// gate's account.
 	Store SnapshotStore
 	Super *Superseder
+	// Cache holds the grants and reads the image references of pods: a blob may be mounted into a snapshot only from the image the device
+	// itself runs on the node (nil: only from base).
+	Cache *Cache
 	// Free returns the free fraction of the registry volume (nil: not measured, never refuses).
 	Free func() float64
 	// MaxStale: past this age of the cluster view nothing that needs it is answered (503).
@@ -341,7 +344,7 @@ func (b *budgetBody) Close() error { return b.rc.Close() }
 func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev DeviceInfo) (refusal, bool) {
 	if r.Method == http.MethodPost {
 		q := r.URL.Query()
-		if (q.Get("mount") != "" || q.Get("from") != "") && !mountFromAllowed(q.Get("from")) {
+		if (q.Get("mount") != "" || q.Get("from") != "") && !g.mountAllowed(lp, p, q.Get("from"), q.Get("mount")) {
 			return denied, false
 		}
 		if g.registryFull() {
@@ -588,4 +591,31 @@ func (g *LabGate) ForgetDevice(repo string) {
 			delete(g.sess, id)
 		}
 	}
+}
+
+// mountAllowed: a blob is linked into the snapshot repository of a device only from "base", or from the cache repository of an image that a
+// pod of that very device on the calling node runs, and then only a digest that image's live grant (proven upstream) holds.
+func (g *LabGate) mountAllowed(lp labPath, p Principal, from, digest string) bool {
+	if from == "base" {
+		return true
+	}
+	if g.Cache == nil || g.Cache.Grants == nil || !mountFromAllowed(from) || digest == "" {
+		return false
+	}
+	rest := strings.TrimPrefix(from, "c/") // <registry>/<repo>
+	for _, pod := range g.Schedule.PodsOnNode(p.Node) {
+		if pod.Ended() || pod.Namespace != lp.NS || pod.Labels[names.LabelLab] != lp.Lab || pod.Labels[names.LabelDevice] != lp.Dev {
+			continue
+		}
+		for _, img := range pod.Images {
+			ref, ok := g.Cache.parseImage(img)
+			if !ok || ref.fullRepo() != rest {
+				continue
+			}
+			if _, ok := g.Cache.Grants.Has(p.Node, ref.Seg, ref.fullRepo(), digest); ok {
+				return true
+			}
+		}
+	}
+	return false
 }

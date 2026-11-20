@@ -1,6 +1,7 @@
 package registrygate
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -47,5 +48,33 @@ func TestNodeInfoKeepsAddressesOnly(t *testing.T) {
 	info := nodeInfo(tn.(*corev1.Node))
 	if info.Name != "n1" || len(info.Addrs) != 1 || info.Addrs[0].String() != "10.0.0.5" {
 		t.Fatalf("%+v", info)
+	}
+}
+
+// Review finding 3: one dead watch makes the view stale, however alive the API server and the other kinds are.
+func TestOneFailingKindMakesTheViewUnhealthy(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	h := &informerHealth{Now: func() time.Time { return now }, Window: time.Minute}
+	for _, k := range []string{"Pod", "Device", "Tenant"} {
+		h.ListResult(k, nil)
+	}
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("all kinds list fine")
+	}
+	h.WatchError("*v1.Pod")
+	if ok, k := h.Healthy(); ok || k != "*v1.Pod" {
+		t.Fatalf("a watch error: %v %q", ok, k)
+	}
+	now = now.Add(2 * time.Minute)
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("the watch has been quiet for longer than the window")
+	}
+	h.ListResult("Device", errors.New("forbidden"))
+	if ok, k := h.Healthy(); ok || k != "Device" {
+		t.Fatalf("a failing list: %v %q", ok, k)
+	}
+	h.ListResult("Device", nil)
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("the list recovered")
 	}
 }

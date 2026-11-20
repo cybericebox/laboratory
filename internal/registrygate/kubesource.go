@@ -52,6 +52,8 @@ type KubeSources struct {
 	HeartbeatEvery time.Duration
 	// OnError is told about a heartbeat that failed.
 	OnError func(error)
+
+	health informerHealth
 }
 
 // Clientset is the typed client the token reviews and the heartbeat use.
@@ -78,6 +80,10 @@ func (k *KubeSources) Run(ctx context.Context) error {
 	}
 	c, err := cache.New(k.Config, cache.Options{
 		Scheme: scheme,
+		DefaultWatchErrorHandler: func(ctx context.Context, r *toolscache.Reflector, err error) {
+			k.health.WatchError(r.TypeDescription())
+			toolscache.DefaultWatchErrorHandler(ctx, r, err)
+		},
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Secret{}: {Namespaces: map[string]cache.Config{ns: {}}},
 			&corev1.Pod{}:    {Transform: trimPod},
@@ -94,6 +100,10 @@ func (k *KubeSources) Run(ctx context.Context) error {
 	if !c.WaitForCacheSync(ctx) {
 		return fmt.Errorf("the caches did not sync")
 	}
+	lister, err := client.New(k.Config, client.Options{Scheme: scheme})
+	if err != nil {
+		return err
+	}
 	k.Schedule.Confirm()
 	every := k.HeartbeatEvery
 	if every <= 0 {
@@ -106,7 +116,7 @@ func (k *KubeSources) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			if _, err := cs.Discovery().ServerVersion(); err != nil {
+			if err := k.beat(ctx, cs, lister, ns); err != nil {
 				if k.OnError != nil {
 					k.OnError(err)
 				}
@@ -117,6 +127,30 @@ func (k *KubeSources) Run(ctx context.Context) error {
 	}
 }
 
+// beat is the proof of life: the API server answers, a cheap list of every kind the view is made of succeeds, and no watch of those kinds
+// has failed lately. Only then is the view "in contact". An event of one kind proves nothing about the others, so events do not confirm.
+func (k *KubeSources) beat(ctx context.Context, cs kubernetes.Interface, c client.Client, secretNS string) error {
+	if _, err := cs.Discovery().ServerVersion(); err != nil {
+		return err
+	}
+	lists := map[string]client.ObjectList{
+		"Pod": &corev1.PodList{}, "Node": &corev1.NodeList{}, "Device": &laboratoryv1alpha1.DeviceList{},
+		"LabGroup": &laboratoryv1alpha1.LabGroupList{}, "ImagePull": &laboratoryv1alpha1.ImagePullList{},
+		"Tenant": &laboratoryv1alpha1.TenantList{}, "Secret": &corev1.SecretList{},
+	}
+	for kind, l := range lists {
+		opts := []client.ListOption{client.Limit(1)}
+		if kind == "Secret" {
+			opts = append(opts, client.InNamespace(secretNS))
+		}
+		k.health.ListResult(kind, c.List(ctx, l, opts...))
+	}
+	if ok, kind := k.health.Healthy(); !ok {
+		return fmt.Errorf("the view of %s is not healthy", kind)
+	}
+	return nil
+}
+
 func (k *KubeSources) addHandlers(ctx context.Context, c cache.Cache) error {
 	add := func(obj client.Object, set func(any), del func(any)) error {
 		inf, err := c.GetInformer(ctx, obj)
@@ -124,14 +158,13 @@ func (k *KubeSources) addHandlers(ctx context.Context, c cache.Cache) error {
 			return err
 		}
 		_, err = inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
-			AddFunc:    func(o any) { set(o); k.Schedule.Confirm() },
-			UpdateFunc: func(_, o any) { set(o); k.Schedule.Confirm() },
+			AddFunc:    func(o any) { set(o) },
+			UpdateFunc: func(_, o any) { set(o) },
 			DeleteFunc: func(o any) {
 				if d, ok := o.(toolscache.DeletedFinalStateUnknown); ok {
 					o = d.Obj
 				}
 				del(o)
-				k.Schedule.Confirm()
 			},
 		})
 		return err
