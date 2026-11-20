@@ -216,4 +216,4 @@ func skipUntilWP3(t *testing.T) {
 }
 
 // prewarmClientSpeaksNewForm turns to true in WP-3, when the agent's prewarm client sends the tenant segment and the node token.
-var prewarmClientSpeaksNewForm = false
+var prewarmClientSpeaksNewForm = true
