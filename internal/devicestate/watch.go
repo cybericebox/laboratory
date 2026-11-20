@@ -49,6 +49,8 @@ type WatchOptions struct {
 	ScanTime    time.Duration
 	// OnOverCap is called at most once, when the layer is past a cap and is watched by events alone.
 	OnOverCap func()
+	// OnPanic is told when the watcher goroutine panicked (it has stopped: the channel is closed); nil: ignored.
+	OnPanic func(error)
 }
 
 func (o WatchOptions) limits() scanLimits {
@@ -117,7 +119,7 @@ func WatchWith(ctx context.Context, root string, pol snapshot.Policy, o WatchOpt
 		}
 	}
 
-	go safeGo("layer watcher", func(error) {}, func() {
+	go safeGo("layer watcher", o.OnPanic, func() {
 		defer close(out)
 		defer func() { _ = rt.Close() }()
 		defer share.release()
