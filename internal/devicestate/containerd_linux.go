@@ -217,7 +217,12 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool, 
 					return err
 				}
 				defer func() { _ = lo.Close() }()
-				return writeUserXattrLayer(cctx, content.NewReader(ra), out, up, live, lo, pol)
+				var rep xattrReport
+				err = writeUserXattrLayerReport(cctx, content.NewReader(ra), out, up, live, lo, pol, &rep)
+				if rep.BadNames > 0 || rep.DroppedLinks > 0 {
+					r.log.Info("left out of the snapshot layer", "container", c.ID, "xattrNamesNotExportable", rep.BadNames, "hardLinksWithoutTarget", rep.DroppedLinks)
+				}
+				return err
 			})
 		})
 	}, cleanup), nil // no shared content deletion; containerd owns garbage collection

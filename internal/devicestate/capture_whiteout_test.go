@@ -90,7 +90,6 @@ func TestRequiredCaptureRejectsUnmappedOwnersAndWhiteoutLookalikes(t *testing.T)
 		h    tar.Header
 	}{
 		{"regular", tar.Header{Name: "data", Typeflag: tar.TypeReg}},
-		{"hardlink", tar.Header{Name: "link", Typeflag: tar.TypeLink, Linkname: "data"}},
 		{"symlink", tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "data"}},
 		{"payload", tar.Header{Name: ".wh.data", Typeflag: tar.TypeReg, Size: 1}},
 		{"owner", tar.Header{Name: ".wh.data", Typeflag: tar.TypeReg, Uid: 42}},

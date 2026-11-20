@@ -111,14 +111,31 @@ func TestFilterLayerMappedWhiteoutsPreserveDeletionAndMetadata(t *testing.T) {
 	}
 }
 
-func TestFilterLayerMappedWhiteoutLookalikesRetainUnmappedOwners(t *testing.T) {
+// Names that only resemble a whiteout and are not containerd's own synthetic marker: ordinary entries are kept with the owner checks
+// of ordinary entries; anything named like a deletion marker is refused, because every unpacker reads the name as a deletion.
+func TestFilterLayerMappedWhiteoutLookalikes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		h    tar.Header
 	}{
 		{"regular", tar.Header{Name: "work", Typeflag: tar.TypeReg}},
-		{"hardlink", tar.Header{Name: "link", Typeflag: tar.TypeLink, Linkname: "work"}},
 		{"symlink", tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "work"}},
+	} {
+		t.Run("kept "+tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			st, err := FilterLayerMapped(bytes.NewReader(headerTar(t, &tc.h)), &out, NewPolicy(0, nil, 0, 0), whiteoutIDs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Unmapped != 2 || st.Entries != 1 || st.RefusedEntries != 0 {
+				t.Fatalf("unmapped entry bypassed owner checks: %+v", st)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		h    tar.Header
+	}{
 		{"whiteout_payload", tar.Header{Name: ".wh.work", Typeflag: tar.TypeReg, Size: 1}},
 		{"whiteout_hardlink", tar.Header{Name: ".wh.work", Typeflag: tar.TypeLink, Linkname: "work"}},
 		{"whiteout_symlink", tar.Header{Name: ".wh.work", Typeflag: tar.TypeSymlink, Linkname: "work"}},
@@ -134,15 +151,19 @@ func TestFilterLayerMappedWhiteoutLookalikesRetainUnmappedOwners(t *testing.T) {
 		{"dot_basename", tar.Header{Name: ".wh..", Typeflag: tar.TypeReg}},
 		{"parent_basename", tar.Header{Name: ".wh...", Typeflag: tar.TypeReg}},
 		{"reserved_basename", tar.Header{Name: ".wh..wh.other", Typeflag: tar.TypeReg}},
+		{"real file named like an opaque marker", tar.Header{Name: "d/.wh..wh..opq", Typeflag: tar.TypeReg, Size: 1}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run("refused "+tc.name, func(t *testing.T) {
 			var out bytes.Buffer
 			st, err := FilterLayerMapped(bytes.NewReader(headerTar(t, &tc.h)), &out, NewPolicy(0, nil, 0, 0), whiteoutIDs())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if st.Unmapped != 2 || st.Entries != 1 {
-				t.Fatalf("unmapped lookalike bypassed owner checks: %+v", st)
+			if st.RefusedEntries != 1 || st.Dropped != 1 || st.Entries != 0 {
+				t.Fatalf("a deletion-marker name that is not containerd's was kept: %+v", st)
+			}
+			if _, err := tar.NewReader(&out).Next(); err != io.EOF {
+				t.Fatalf("the refused entry reached the output: %v", err)
 			}
 		})
 	}
