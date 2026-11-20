@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -30,8 +29,7 @@ type TableEntry struct {
 	UID       string
 	PublicKey string
 	Mac1Key   Mac1Key
-	// Backend is the in-cluster Service address (host:port) for the VPN server of this group; Resolved is it resolved, kept up to
-	// date by Table.RunResolver (the read loop never does a DNS lookup).
+	// Backend is the VPN pod address (ip:port) of this group, from LabGroup.status.vpn.backend; Resolved is it parsed.
 	Backend  string
 	Resolved *net.UDPAddr
 }
@@ -67,8 +65,9 @@ func computeMac1Key(pubKeyBase64 string) (Mac1Key, error) {
 	return key, nil
 }
 
-// Update inserts or replaces the entry for uid.
-func resolveBackend(ctx context.Context, backend string) (*net.UDPAddr, error) {
+// resolveBackend parses the backend of a group: the IPv4 address and UDP port of its VPN pod, as the operator published them in
+// LabGroup.status.vpn.backend. There is no name to look up: the demux does not use cluster DNS.
+func resolveBackend(_ context.Context, backend string) (*net.UDPAddr, error) {
 	host, port, err := net.SplitHostPort(backend)
 	if err != nil {
 		return nil, err
@@ -77,18 +76,15 @@ func resolveBackend(ctx context.Context, backend string) (*net.UDPAddr, error) {
 	if err != nil || p < 1 || p > 65535 {
 		return nil, fmt.Errorf("invalid backend port")
 	}
-	if addr, err := netip.ParseAddr(host); err == nil && addr.Is4() {
-		return &net.UDPAddr{IP: net.IP(addr.AsSlice()), Port: p}, nil
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !addr.Is4() {
+		return nil, fmt.Errorf("the backend must be an IPv4 address")
 	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", strings.TrimSuffix(host, ".")+".")
-	if err != nil {
-		return nil, fmt.Errorf("resolve backend: %w", err)
-	}
-	if len(addresses) == 0 {
-		return nil, fmt.Errorf("resolve backend: no IPv4 address")
-	}
-	return &net.UDPAddr{IP: net.IP(addresses[0].AsSlice()), Port: p}, nil
+	return &net.UDPAddr{IP: net.IP(addr.AsSlice()), Port: p}, nil
 }
+
+// Update inserts or replaces the entry for uid. A backend that is not an address leaves the entry without one (a handshake of the group is
+// dropped until a good address comes), and an entry that changes in any way retires the sessions of the old one.
 func (t *Table) Update(uid, pubKey, backend string) error {
 	t.updates.Lock()
 	defer t.updates.Unlock()
@@ -149,7 +145,7 @@ func (t *Table) Delete(uid string) {
 // FindByMac1 brute-forces mac1 verification.
 // packet is the raw WireGuard type-1 packet (UDP payload).
 // mac1 occupies bytes [len-32 : len-16]; the message body for MAC is packet[:len-32].
-// Returns the matched group UID and its VPN Service backend (host:port).
+// Returns the matched group UID and its VPN pod address.
 func (t *Table) FindByMac1(packet []byte) (uid string, backend *net.UDPAddr, found bool) {
 	if len(packet) < 32 {
 		return "", nil, false
@@ -168,64 +164,6 @@ func (t *Table) FindByMac1(packet []byte) (uid string, backend *net.UDPAddr, fou
 		}
 	}
 	return "", nil, false
-}
-
-// RunResolver keeps the resolved address of every backend fresh, off the read loop, until stop is closed. A backend that cannot be
-// resolved keeps its last good address.
-func (t *Table) RunResolver(stop <-chan struct{}, every time.Duration) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-stop:
-			cancel()
-		case <-done:
-		}
-	}()
-	defer close(done)
-	defer cancel()
-	t.RunResolverContext(ctx, every)
-}
-func (t *Table) RunResolverContext(ctx context.Context, every time.Duration) {
-	if every <= 0 {
-		every = 30 * time.Second
-	}
-	tick := time.NewTicker(every)
-	defer tick.Stop()
-	for {
-		t.mu.RLock()
-		backends := map[string]string{}
-		for _, e := range t.entries {
-			backends[e.UID] = e.Backend
-		}
-		t.mu.RUnlock()
-		for uid, backend := range backends {
-			if ctx.Err() != nil {
-				return
-			}
-			lookup, cancel := context.WithTimeout(ctx, 3*time.Second)
-			resolved, err := t.resolve(lookup, backend)
-			cancel()
-			if err != nil {
-				continue
-			}
-			t.mu.Lock()
-			for i, e := range t.entries {
-				if e.UID == uid && e.Backend == backend {
-					if e.Resolved != nil && !sameSocket(socketOf(e.Resolved), socketOf(resolved)) && t.OnChange != nil {
-						t.OnChange(uid)
-					}
-					t.entries[i].Resolved = resolved
-				}
-			}
-			t.mu.Unlock()
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-	}
 }
 
 // Reserve the matched group and conntrack identity under the same table read
@@ -354,14 +292,38 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
-	backend := fmt.Sprintf("vpn.%s.svc.cluster.local:%d", ns, w.VPNServicePort)
+	// The VPN pod address is the one the operator published; nothing is looked up. No address, or one that is not a unicast IPv4 address on the
+	// WireGuard port, drops the group's entry: its handshakes are dropped until the status is fresh. The operator rewrites it on every change of
+	// the VPN pod, and the change reaches this reconcile as a status event.
+	backend := lg.Status.VPN.Backend
+	if !w.validBackend(backend) {
+		if backend != "" {
+			log.Info("the group's VPN address is not usable, dropping its entry", "group", lg.Name)
+		}
+		w.Table.Delete(string(lg.UID))
+		w.forget(lg.Name)
+		return ctrl.Result{}, nil
+	}
 	log.Info("updating demux table", "group", lg.Name, "backend", backend)
 	if err := w.Table.Update(string(lg.UID), pubKey, backend); err != nil {
 		return ctrl.Result{}, err
 	}
 	w.remember(lg.Name, string(lg.UID))
 	return ctrl.Result{}, nil
+}
+
+// validBackend says the status address is a pod address the demux may send to: an IPv4 unicast address that is not the node's own loopback or a
+// link-local one, and the WireGuard port of the group's VPN (nothing else is ever a backend, whatever the status holds).
+func (w *LabGroupWatcher) validBackend(backend string) bool {
+	host, port, err := net.SplitHostPort(backend)
+	if err != nil {
+		return false
+	}
+	if p, err := strconv.Atoi(port); err != nil || p != w.VPNServicePort {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() != nil && ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
 func (w *LabGroupWatcher) SetupWithManager(mgr ctrl.Manager) error {

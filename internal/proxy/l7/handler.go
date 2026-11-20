@@ -3,6 +3,7 @@ package l7
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -188,27 +189,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		namespace = ns(claims.GroupID)
 	}
 	h.renewSession(w, claims)
-	var backendURL, lab string
-	if h.access != nil {
-		if h.serveAccessKind(w, r, task) {
-			return
-		}
-		route, routeErr := h.access.Route(r.Context(), task, namespace)
-		if routeErr != nil {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-		backendURL, lab = route.URL, route.Lab
-		if !h.access.Allowed(r.Context(), namespace, client, lab) {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-	} else {
-		var ok bool
-		if backendURL, lab, ok = h.legacyRoute(task, claims.GroupID, client); !ok {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
+	backendURL, lab, ok := h.route(w, r, task, namespace, claims.GroupID, client)
+	if !ok {
+		return
 	}
 	target, err := url.Parse(backendURL)
 	if err != nil {
@@ -494,6 +477,32 @@ func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task s
 	// the console is served before the cookie is looked at; nothing else is served
 	fail(w, r, http.StatusNotFound, pageGone, "not found")
 	return true
+}
+
+// route finds the backend and the lab of the task and checks that the client may use it. When it cannot it has answered the client itself:
+// the starting page for a device without an address yet, "not found" for everything else (the same answer for an unknown host, a removed
+// lab and a refused client).
+func (h *Handler) route(w http.ResponseWriter, r *http.Request, task, namespace, groupID, client string) (backendURL, lab string, ok bool) {
+	if h.access == nil {
+		if backendURL, lab, ok = h.legacyRoute(task, groupID, client); !ok {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+		}
+		return backendURL, lab, ok
+	}
+	if h.serveAccessKind(w, r, task) {
+		return "", "", false
+	}
+	route, err := h.access.Route(r.Context(), task, namespace)
+	if errors.Is(err, ErrRouteNotReady) {
+		// the device has no usable address yet: the lab is starting, nothing is connected to
+		fail(w, r, http.StatusServiceUnavailable, pageStarting, "lab is starting")
+		return "", "", false
+	}
+	if err != nil || !h.access.Allowed(r.Context(), namespace, client, route.Lab) {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return "", "", false
+	}
+	return route.URL, route.Lab, true
 }
 
 // legacyRoute is the route of a task without the access reader: the backend the resolver names, the lab the attribution gives and the

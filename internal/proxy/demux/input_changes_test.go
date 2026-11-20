@@ -40,6 +40,11 @@ func TestDemuxRoutingInputsIgnoreOtherStatus(t *testing.T) {
 	if !routingInputsChanged(old, next) {
 		t.Fatal("registration lost")
 	}
+	moved := next.DeepCopy()
+	moved.Status.VPN.Backend = "10.244.2.6:51820"
+	if !routingInputsChanged(next, moved) {
+		t.Fatal("a new VPN pod address is a routing input: it must reach the table without a restart")
+	}
 }
 
 func TestGroupKeyChangeRetiresItsSessions(t *testing.T) {
@@ -89,27 +94,5 @@ func TestDeleteWaitsForPendingUpdate(t *testing.T) {
 	defer table.mu.RUnlock()
 	if len(table.entries) != 0 {
 		t.Fatal("entry survived deletion")
-	}
-}
-
-func TestResolverCancellationJoins(t *testing.T) {
-	table := NewTable()
-	pub := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	_ = table.Update("g", pub, "127.0.0.1:51820")
-	entered := make(chan struct{})
-	table.resolve = func(ctx context.Context, _ string) (*net.UDPAddr, error) {
-		close(entered)
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { table.RunResolverContext(ctx, time.Hour); close(done) }()
-	<-entered
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("resolver did not stop")
 	}
 }

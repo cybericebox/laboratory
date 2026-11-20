@@ -2,7 +2,10 @@ package l7
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -15,6 +18,10 @@ import (
 
 // schemeHTTPS is the name of the https scheme and of the https protocol of a web port.
 const schemeHTTPS = "https"
+
+// ErrRouteNotReady says the device exists but has no usable address yet (its pod is starting, was replaced, or the operator has not
+// published the new address): the caller shows the starting page and the client retries. It is never answered by a connection to a guess.
+var ErrRouteNotReady = errors.New("device is not ready")
 
 type AccessGroup struct{ Namespace, Tenant string }
 type AccessRoute struct{ URL, Lab string }
@@ -49,7 +56,45 @@ func (a *AccessReader) Route(ctx context.Context, task, namespace string) (Acces
 	if protocol != "http" && protocol != schemeHTTPS || declared.Port < 1 || declared.Port > 65535 || declared.Protocol != "" && declared.Protocol != corev1.ProtocolTCP {
 		return AccessRoute{}, fmt.Errorf("service has an invalid web port")
 	}
-	return AccessRoute{fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, declared.Port), svc.Labels[names.LabelLab]}, nil
+	// The Service gives the port and says which lab and device the host is; it is headless (no ClusterIP to read), and a lab node does not
+	// depend on cluster DNS, so the address is the pod address the operator publishes in the status of that very device. The request keeps
+	// the Host the client sent; the address is only where the connection goes.
+	addr, err := a.deviceAddress(ctx, namespace, svc.Labels[names.LabelLab], svc.Labels[names.LabelDevice])
+	if err != nil {
+		return AccessRoute{}, err
+	}
+	return AccessRoute{fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(addr, strconv.Itoa(int(declared.Port)))), svc.Labels[names.LabelLab]}, nil
+}
+
+// deviceAddress is the pod address of the device `device` of lab `labName` in the namespace, from the Device the operator keeps. Only a
+// Device of the Service's own lab and name in the group's own namespace counts, so a status elsewhere can never steer the route. A device
+// that is gone is "not found"; one without a Ready pod and a usable address is ErrRouteNotReady.
+func (a *AccessReader) deviceAddress(ctx context.Context, namespace, labName, device string) (string, error) {
+	var list lab.DeviceList
+	if err := a.Reader.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return "", err
+	}
+	for i := range list.Items {
+		d := &list.Items[i]
+		if d.Spec.LabRef != labName || d.Spec.Name != device {
+			continue
+		}
+		if !d.DeletionTimestamp.IsZero() {
+			break
+		}
+		if !d.Status.Ready || !usablePodAddress(d.Status.PodIP) {
+			return "", ErrRouteNotReady
+		}
+		return d.Status.PodIP, nil
+	}
+	return "", fmt.Errorf("device is not found")
+}
+
+// usablePodAddress is a unicast address a pod can have. The status is written by the operator only (the node-agent's policy pins it);
+// this refuses what no pod has anyway, so a damaged value cannot point the proxy at the node itself or at a multicast group.
+func usablePodAddress(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName string) bool {
 	var target lab.Lab
@@ -139,10 +184,10 @@ func CompactCacheObject(in any) (any, error) {
 		s.Status = corev1.ServiceStatus{}
 		out = s
 	case *lab.Device:
-		// Only what the console needs: which device it is, its terminal settings and the node it runs on.
+		// Only what the console and the web route need: which device it is, its terminal settings, the node it runs on and its pod address.
 		d := &lab.Device{ObjectMeta: x.ObjectMeta}
 		d.Spec = lab.DeviceSpec{Name: x.Spec.Name, LabRef: x.Spec.LabRef, Code: x.Spec.Code, Access: x.Spec.Access}
-		d.Status = lab.DeviceStatus{NodeName: x.Status.NodeName}
+		d.Status = lab.DeviceStatus{NodeName: x.Status.NodeName, PodIP: x.Status.PodIP, Ready: x.Status.Ready}
 		out = d
 	case *discoveryv1.EndpointSlice:
 		// The addresses and node names of the device access service, and nothing else.
