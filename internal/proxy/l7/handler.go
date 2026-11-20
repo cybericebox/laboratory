@@ -208,6 +208,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
+		// The grant is for one device (lab and dev). The host binding already says so; a second check against the route the host resolves
+		// to protects against a mistake in parsing a host.
+		if route.Lab != claims.Lab || route.Device != claims.Dev {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+			return
+		}
 		backendURL, lab = route.URL, route.Lab
 		if !h.access.Allowed(r.Context(), namespace, client, lab) {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")

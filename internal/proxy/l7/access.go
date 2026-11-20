@@ -17,7 +17,9 @@ import (
 const schemeHTTPS = "https"
 
 type AccessGroup struct{ Namespace, Tenant string }
-type AccessRoute struct{ URL, Lab string }
+
+// AccessRoute is where a web host goes: the upstream, and the lab and device (the Service labels) the host stands for.
+type AccessRoute struct{ URL, Lab, Device string }
 
 // AccessReader uses the proxy's compact informer cache, without a permission
 // TTL. A request reads its group once and its route Service once.
@@ -49,7 +51,7 @@ func (a *AccessReader) Route(ctx context.Context, task, namespace string) (Acces
 	if protocol != "http" && protocol != schemeHTTPS || declared.Port < 1 || declared.Port > 65535 || declared.Protocol != "" && declared.Protocol != corev1.ProtocolTCP {
 		return AccessRoute{}, fmt.Errorf("service has an invalid web port")
 	}
-	return AccessRoute{fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, declared.Port), svc.Labels[names.LabelLab]}, nil
+	return AccessRoute{URL: fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, declared.Port), Lab: svc.Labels[names.LabelLab], Device: svc.Labels[names.LabelDevice]}, nil
 }
 func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName string) bool {
 	var target lab.Lab

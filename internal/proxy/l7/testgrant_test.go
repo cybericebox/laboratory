@@ -42,7 +42,7 @@ func claimsOf(c jwtClaims, now time.Time) grant.Claims {
 		c.Tenant = "acme"
 	}
 	if c.Lab == "" {
-		c.Lab = "lab1"
+		c.Lab = "lab"
 	}
 	if c.Dev == "" {
 		c.Dev = "web"
