@@ -104,6 +104,8 @@ var (
 	ErrForbidden = errors.New("the caller is not accepted")
 	// ErrUnavailable: the answer would need the API server (or a view of it) and it is not reachable or is too old.
 	ErrUnavailable = errors.New("the cluster view is not available")
+	// ErrRateLimited: this source address has caused too many token reviews.
+	ErrRateLimited = errors.New("too many token reviews from this address")
 )
 
 type reviewed struct {
@@ -123,10 +125,32 @@ type Authenticator struct {
 	// BindSource requires the peer address of a node to be one of the node's addresses (GATE_BIND_SOURCE).
 	BindSource bool
 	Now        func() time.Time
+	// Precheck decides from the token alone, before any API call, whether it can possibly be one of ours; nil: the structural check
+	// (a JWT whose exp has not passed and whose audience is the gate's). Tests that use opaque tokens replace it.
+	Precheck func(token string, now time.Time) bool
+	// MaxReviews is how many TokenReview calls may be in flight at once (default 16); more are answered 503.
+	MaxReviews int
+	// ReviewRate and ReviewBurst bound the API calls one source address may cause (default 5 per second, burst 20); more are refused.
+	ReviewRate  float64
+	ReviewBurst int
 
-	mu    sync.Mutex
-	cache map[[32]byte]reviewed
-	bad   map[[32]byte]time.Time
+	mu     sync.Mutex
+	cache  map[[32]byte]reviewed
+	bad    map[[32]byte]time.Time
+	flight map[[32]byte]*reviewCall
+	inUse  int
+	rate   map[string]*bucket
+}
+
+type reviewCall struct {
+	done chan struct{}
+	rv   Review
+	err  error
+}
+
+type bucket struct {
+	tokens float64
+	at     time.Time
 }
 
 func (a *Authenticator) now() time.Time {
@@ -145,7 +169,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, r *http.Request) (Prin
 	if token == "" {
 		return Principal{}, ErrUnauthenticated
 	}
-	rv, err := a.review(ctx, token)
+	rv, err := a.review(ctx, token, r.RemoteAddr)
 	if err != nil {
 		return Principal{}, err
 	}
@@ -160,7 +184,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, r *http.Request) (Prin
 	return a.placeNode(p, rv, r)
 }
 
-func (a *Authenticator) review(ctx context.Context, token string) (Review, error) {
+func (a *Authenticator) review(ctx context.Context, token, remote string) (Review, error) {
 	h := sha256.Sum256([]byte(token))
 	now := a.now()
 	a.mu.Lock()
@@ -173,16 +197,83 @@ func (a *Authenticator) review(ctx context.Context, token string) (Review, error
 		return Review{}, ErrUnauthenticated
 	}
 	a.mu.Unlock()
+	// nothing below costs an API call until the token has the shape of one of ours
+	pre := a.Precheck
+	if pre == nil {
+		pre = structurallyOurs
+	}
+	if !pre(token, now) {
+		return Review{}, ErrUnauthenticated
+	}
+	if !a.allowSource(remote, now) {
+		return Review{}, ErrRateLimited
+	}
+	call, leader, ok := a.join(h)
+	if !ok {
+		return Review{}, ErrUnavailable // too many reviews in flight
+	}
+	if !leader { // the same token is already being reviewed: share the answer
+		select {
+		case <-call.done:
+			return call.rv, call.err
+		case <-ctx.Done():
+			return Review{}, ErrUnavailable
+		}
+	}
+	rv, err := a.doReview(ctx, h, token, now)
+	a.mu.Lock()
+	delete(a.flight, h)
+	a.inUse--
+	a.mu.Unlock()
+	call.rv, call.err = rv, err
+	close(call.done)
+	return rv, err
+}
+
+// join registers a review of the token h: the first caller leads (and must call the API), later callers share. ok is false when the
+// leader cannot start because too many reviews are in flight.
+func (a *Authenticator) join(h [32]byte) (call *reviewCall, leader, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if c, running := a.flight[h]; running {
+		return c, false, true
+	}
+	limit := a.MaxReviews
+	if limit <= 0 {
+		limit = 16
+	}
+	if a.inUse >= limit {
+		return nil, false, false
+	}
+	if a.flight == nil {
+		a.flight = map[[32]byte]*reviewCall{}
+	}
+	a.inUse++
+	c := &reviewCall{done: make(chan struct{})}
+	a.flight[h] = c
+	return c, true, true
+}
+
+func (a *Authenticator) doReview(ctx context.Context, h [32]byte, token string, now time.Time) (Review, error) {
 	rv, err := a.Reviewer.Review(ctx, token, []string{TokenAudience})
 	if err != nil {
 		return Review{}, ErrUnavailable // a token that is not cached needs the API server
 	}
 	if !rv.Authenticated || !hasAudience(rv.Audiences, TokenAudience) {
 		a.mu.Lock()
-		if a.bad == nil || len(a.bad) > maxCachedTokens {
+		if a.bad == nil {
 			a.bad = map[[32]byte]time.Time{}
 		}
-		a.bad[h] = now
+		if len(a.bad) >= maxCachedTokens {
+			for k, at := range a.bad { // drop what has lapsed; a full table of live entries is left as it is (a refusal is cheap)
+				if now.Sub(at) >= 5*time.Second {
+					delete(a.bad, k)
+				}
+			}
+		}
+		if len(a.bad) < maxCachedTokens {
+			a.bad[h] = now
+		}
 		a.mu.Unlock()
 		return Review{}, ErrUnauthenticated
 	}
@@ -201,6 +292,71 @@ func (a *Authenticator) review(ctx context.Context, token string) (Review, error
 	a.cache[h] = reviewed{r: rv, expires: expires}
 	a.mu.Unlock()
 	return rv, nil
+}
+
+// allowSource is a token bucket per source address on the calls that reach the API server.
+func (a *Authenticator) allowSource(remote string, now time.Time) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	rate, burst := a.ReviewRate, float64(a.ReviewBurst)
+	if rate <= 0 {
+		rate = 5
+	}
+	if burst <= 0 {
+		burst = 20
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.rate == nil || len(a.rate) > maxCachedTokens {
+		a.rate = map[string]*bucket{}
+	}
+	b := a.rate[host]
+	if b == nil {
+		b = &bucket{tokens: burst, at: now}
+		a.rate[host] = b
+	}
+	b.tokens += now.Sub(b.at).Seconds() * rate
+	if b.tokens > burst {
+		b.tokens = burst
+	}
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+// structurallyOurs is what can be told of a token without the API server: a JWT with a payload that names an expiry still ahead and the
+// gate's audience, and an issuer. A token that fails this is refused without a TokenReview.
+func structurallyOurs(token string, now time.Time) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[2] == "" || len(token) > 16<<10 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var c struct {
+		Exp int64           `json:"exp"`
+		Iss string          `json:"iss"`
+		Aud json.RawMessage `json:"aud"`
+	}
+	if json.Unmarshal(raw, &c) != nil || c.Exp <= now.Unix() || c.Iss == "" {
+		return false
+	}
+	var one string
+	var many []string
+	if json.Unmarshal(c.Aud, &one) == nil {
+		return one == TokenAudience
+	}
+	if json.Unmarshal(c.Aud, &many) == nil {
+		return hasAudience(many, TokenAudience)
+	}
+	return false
 }
 
 func hasAudience(have []string, want string) bool {

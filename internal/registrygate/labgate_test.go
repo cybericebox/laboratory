@@ -171,7 +171,7 @@ func newLabRig(t *testing.T) *labRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.Auth = &Authenticator{Reviewer: testReviewer{}, Accounts: testAccounts, Schedule: r.sch, Now: now}
+	g.Auth = &Authenticator{Reviewer: testReviewer{}, Accounts: testAccounts, Schedule: r.sch, Now: now, Precheck: anyShape}
 	g.Lab = r.lab
 	r.gate = g
 	// the cluster: two nodes, the devices of one lab

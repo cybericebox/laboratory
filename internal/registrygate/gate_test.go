@@ -42,7 +42,7 @@ func authedGate(t *testing.T) (*Gate, *Schedule, *countingReviewer) {
 	sch := NewSchedule()
 	sch.Confirm()
 	rev := &countingReviewer{}
-	g.Auth = &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: sch}
+	g.Auth = &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: sch, Precheck: anyShape}
 	return g, sch, rev
 }
 

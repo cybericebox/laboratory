@@ -3,10 +3,14 @@ package registrygate
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,7 +33,7 @@ func newNodeFixture(t *testing.T) *nodeFixture {
 	f.sch.SetNode(NodeInfo{Name: "node-b", Addrs: []netip.Addr{netip.MustParseAddr("10.0.0.6")}})
 	f.sch.SetPod(PodInfo{Namespace: "laboratory-system", Name: "agent-a", UID: "uid-a", Node: "node-a", Phase: "Running"})
 	f.sch.SetPod(PodInfo{Namespace: "laboratory-system", Name: "agent-b", UID: "uid-b", Node: "node-b", Phase: "Running"})
-	f.auth = &Authenticator{Reviewer: f.rev, Accounts: testAccounts, Schedule: f.sch, BindSource: true, Now: func() time.Time { return *f.clock }}
+	f.auth = &Authenticator{Reviewer: f.rev, Accounts: testAccounts, Schedule: f.sch, BindSource: true, Precheck: anyShape, Now: func() time.Time { return *f.clock }}
 	return f
 }
 
@@ -161,7 +165,7 @@ func TestAViewThatNeverSyncedIsNotFresh(t *testing.T) {
 	if !s.Fresh(time.Hour) {
 		t.Fatal("confirmed")
 	}
-	a := &Authenticator{Reviewer: &countingReviewer{}, Accounts: testAccounts, Schedule: NewSchedule()}
+	a := &Authenticator{Reviewer: &countingReviewer{}, Accounts: testAccounts, Schedule: NewSchedule(), Precheck: anyShape}
 	req := httptest.NewRequest(http.MethodGet, "http://x/v2/", nil)
 	req.Header.Set(HeaderNodeToken, "node-token-p/u")
 	if _, err := a.Authenticate(context.Background(), req); err != ErrUnavailable {
@@ -231,5 +235,111 @@ func TestStripPlatformHeaders(t *testing.T) {
 	StripPlatformHeaders(h)
 	if h.Get("X-Cib-Node-Token") != "" || h.Get("X-Cib-Anything") != "" || h.Get("X-Cibx") == "" || h.Get("Accept") == "" {
 		t.Fatalf("%v", h)
+	}
+}
+
+// anyShape is the precheck of the tests that use opaque token names; the real one is tested below.
+func anyShape(string, time.Time) bool { return true }
+
+func jwt(exp time.Time, iss string, aud any) string {
+	enc := func(v any) string { b, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(b) }
+	return enc(map[string]string{"alg": "RS256"}) + "." + enc(map[string]any{"exp": exp.Unix(), "iss": iss, "aud": aud}) + ".c2ln"
+}
+
+// Review finding 4: what cannot be one of ours never reaches the API server; what can is bounded per address and in flight, and one token
+// is reviewed once however many requests carry it.
+func TestTokenReviewFloodIsBoundedBeforeTheAPIServer(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	rev := &countingReviewer{}
+	a := &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: NewSchedule(), Now: func() time.Time { return now }}
+	ask := func(tok, remote string) error {
+		r := httptest.NewRequest("GET", "http://x/v2/", nil)
+		r.RemoteAddr = remote
+		r.Header.Set(HeaderNodeToken, tok)
+		_, err := a.Authenticate(context.Background(), r)
+		return err
+	}
+	for name, tok := range map[string]string{
+		"not a jwt":          "garbage",
+		"two parts":          "a.b",
+		"payload not base64": "a.!!.c",
+		"expired":            jwt(now.Add(-time.Minute), "https://k", []string{TokenAudience}),
+		"no issuer":          jwt(now.Add(time.Hour), "", []string{TokenAudience}),
+		"another audience":   jwt(now.Add(time.Hour), "https://k", []string{"other"}),
+		"no audience":        jwt(now.Add(time.Hour), "https://k", nil),
+		"huge":               strings.Repeat("a", 20<<10) + ".b.c",
+	} {
+		if err := ask(tok, "192.0.2.1:1"); err != ErrUnauthenticated {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if rev.calls != 0 {
+		t.Fatalf("the API server was called %d times for tokens that cannot be ours", rev.calls)
+	}
+	// a token of the right shape is reviewed; the same address is limited after its burst
+	a.ReviewBurst, a.ReviewRate = 3, 1
+	rev.calls = 0
+	var limited bool
+	for i := 0; i < 10; i++ {
+		tok := jwt(now.Add(time.Hour+time.Duration(i)*time.Second), "https://k", []string{TokenAudience})
+		if ask(tok, "192.0.2.3:1") == ErrRateLimited {
+			limited = true
+		}
+	}
+	if !limited || rev.calls > 3 {
+		t.Fatalf("limited=%v calls=%d: one address may cost the API server only its burst", limited, rev.calls)
+	}
+	// another address has a bucket of its own; and the bucket refills with time
+	if err := ask(jwt(now.Add(5*time.Hour), "https://k", []string{TokenAudience}), "192.0.2.4:1"); errors.Is(err, ErrRateLimited) {
+		t.Fatal("another address is not limited")
+	}
+	now = now.Add(5 * time.Second)
+	if err := ask(jwt(now.Add(6*time.Hour), "https://k", []string{TokenAudience}), "192.0.2.3:1"); errors.Is(err, ErrRateLimited) {
+		t.Fatal("the bucket refills")
+	}
+}
+
+type slowReviewer struct {
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (s *slowReviewer) Review(ctx context.Context, token string, aud []string) (Review, error) {
+	s.calls.Add(1)
+	<-s.release
+	return testReviewer{}.Review(ctx, "agent-token", aud)
+}
+
+func TestOneTokenIsReviewedOnceAndInFlightReviewsAreCapped(t *testing.T) {
+	rev := &slowReviewer{release: make(chan struct{})}
+	a := &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: NewSchedule(), Precheck: anyShape, MaxReviews: 2, ReviewBurst: 1000}
+	run := func(tok string, errs chan<- error) {
+		r := httptest.NewRequest("GET", "http://x/v2/", nil)
+		r.Header.Set(HeaderNodeToken, tok)
+		_, err := a.Authenticate(context.Background(), r)
+		errs <- err
+	}
+	errs := make(chan error, 10)
+	for i := 0; i < 5; i++ {
+		go run("same", errs)
+	}
+	waitFor(t, func() bool { return rev.calls.Load() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if rev.calls.Load() != 1 {
+		t.Fatalf("five requests with one token made %d reviews", rev.calls.Load())
+	}
+	go run("second", errs)
+	waitFor(t, func() bool { return rev.calls.Load() == 2 })
+	// the third distinct token finds both slots busy: 503, no API call
+	r := httptest.NewRequest("GET", "http://x/v2/", nil)
+	r.Header.Set(HeaderNodeToken, "third")
+	if _, err := a.Authenticate(context.Background(), r); err != ErrUnavailable || rev.calls.Load() != 2 {
+		t.Fatalf("over the cap: %v (%d calls)", err, rev.calls.Load())
+	}
+	close(rev.release)
+	for i := 0; i < 6; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
 	}
 }

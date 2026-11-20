@@ -117,7 +117,7 @@ func newRig(t *testing.T) *rig {
 	sch.Confirm()
 	cache.Schedule, cache.Creds, cache.Grants, cache.AgentMaxFills = sch, NewSecretView(), &Grants{}, 128
 	g.Cache = cache
-	g.Auth = &Authenticator{Reviewer: testReviewer{}, Accounts: testAccounts, Schedule: sch}
+	g.Auth = &Authenticator{Reviewer: testReviewer{}, Accounts: testAccounts, Schedule: sch, Precheck: anyShape}
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
 	return &rig{t: t, up: f, zot: z, cache: cache, gate: srv, clock: clk, sch: sch}

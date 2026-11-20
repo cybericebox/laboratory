@@ -67,6 +67,11 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.authMetric("unauthenticated")
 		refuse(w, http.StatusUnauthorized, "UNAUTHORIZED", "a valid node token is required", false)
 		return
+	case errors.Is(err, ErrRateLimited):
+		g.authMetric("rate_limited")
+		w.Header().Set("Retry-After", "5")
+		refuse(w, http.StatusTooManyRequests, "TOOMANYREQUESTS", "too many token checks from this address", false)
+		return
 	case errors.Is(err, ErrForbidden):
 		g.authMetric("forbidden")
 		refuse(w, http.StatusForbidden, "DENIED", "the caller is not accepted", false)
