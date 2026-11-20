@@ -3,8 +3,10 @@ package devicestate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,6 +18,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
 func kubeRig(t *testing.T, dev *laboratoryv1alpha1.Device, pods ...*corev1.Pod) (*KubeCluster, client.Client) {
@@ -145,5 +148,32 @@ func TestKubeClusterDropsWritesOfStalePods(t *testing.T) {
 	}
 	if d.Status.State.Image != "" {
 		t.Fatal("stale write leaked into the status")
+	}
+}
+
+// A warning may carry a participant's file names: the status gets it bounded, whoever sent it.
+func TestKubeClusterWarnBoundsTheMessage(t *testing.T) {
+	k, c := kubeRig(t, stateDevice(), statePod("lab-web-3", "node-a", corev1.PodRunning))
+	pods, err := k.Pods(context.Background())
+	if err != nil || len(pods) != 1 {
+		t.Fatal(pods, err)
+	}
+	long := strings.Repeat("é", 2000)
+	if err := k.Warn(context.Background(), pods[0], long); err != nil {
+		t.Fatal(err)
+	}
+	var dev laboratoryv1alpha1.Device
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: "lab-web"}, &dev); err != nil {
+		t.Fatal(err)
+	}
+	w := dev.Status.State.Warning
+	if len(w) == 0 || len(w) > snapshot.MaxWarningBytes || !utf8.ValidString(w) || !strings.HasSuffix(w, "…") {
+		t.Fatalf("the stored warning is %d bytes: %q", len(w), w)
+	}
+	if err := k.Warn(context.Background(), pods[0], "short"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: "lab-web"}, &dev); err != nil || dev.Status.State.Warning != "short" {
+		t.Fatalf("a short warning is stored as it is: %v %q", err, dev.Status.State.Warning)
 	}
 }

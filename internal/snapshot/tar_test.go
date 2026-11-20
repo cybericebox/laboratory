@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type ent struct {
@@ -318,7 +319,7 @@ func TestSkippedWarningNamesAtMostTenFiles(t *testing.T) {
 	}
 	w := st.SkippedWarning(64)
 	if len(st.Skipped) != MaxSkippedListed || st.SkippedTotal != 13 ||
-		!strings.Contains(w, "files over 64 bytes") || !strings.Contains(w, "/fa (100 bytes)") || strings.Contains(w, "/fk") || !strings.HasSuffix(w, "and 3 more") {
+		!strings.Contains(w, "files over 64 bytes") || !strings.Contains(w, `"/fa" (100 bytes)`) || strings.Contains(w, "/fk") || !strings.HasSuffix(w, "and 3 more") {
 		t.Fatalf("warning %q", w)
 	}
 }
@@ -414,5 +415,67 @@ func TestMergeLayersStopsAtTheEntryCap(t *testing.T) {
 	out.Reset()
 	if _, err := MergeLayers([]Opener{open(mkTar(t, ents...))}, &out); err != nil {
 		t.Fatalf("no cap given: %v", err)
+	}
+}
+
+// A hard link is kept only when its target was written: a target dropped for ANY reason (an excluded path, a device node, a header over the
+// budget, a file over the size limit, a name that never was an entry, a refused deletion-marker name) must not leave the link dangling.
+func TestFilterLayerDropsHardLinksWhoseTargetWasNotWritten(t *testing.T) {
+	hugeName := "huge/" + strings.Repeat("n", MaxEntryHeaderBytes+1)
+	in := headerTar(t,
+		&tar.Header{Name: "tmp/ex", Typeflag: tar.TypeReg, Size: 1, Mode: 0o644},        // excluded path (/tmp)
+		&tar.Header{Name: "dev/null2", Typeflag: tar.TypeChar, Mode: 0o644},             // refused type
+		&tar.Header{Name: hugeName, Typeflag: tar.TypeReg, Mode: 0o644},                 // header over the budget
+		&tar.Header{Name: "data/big", Typeflag: tar.TypeReg, Size: 100, Mode: 0o644},    // over the size limit
+		&tar.Header{Name: "data/.wh.real", Typeflag: tar.TypeReg, Size: 1, Mode: 0o644}, // a refused deletion-marker name
+		&tar.Header{Name: "data/ok", Typeflag: tar.TypeReg, Size: 2, Mode: 0o644},
+		&tar.Header{Name: "l/excluded", Typeflag: tar.TypeLink, Linkname: "tmp/ex", Mode: 0o644},
+		&tar.Header{Name: "l/char", Typeflag: tar.TypeLink, Linkname: "dev/null2", Mode: 0o644},
+		&tar.Header{Name: "l/huge", Typeflag: tar.TypeLink, Linkname: hugeName, Mode: 0o644},
+		&tar.Header{Name: "l/big", Typeflag: tar.TypeLink, Linkname: "data/big", Mode: 0o644},
+		&tar.Header{Name: "l/marker", Typeflag: tar.TypeLink, Linkname: "data/.wh.real", Mode: 0o644},
+		&tar.Header{Name: "l/never", Typeflag: tar.TypeLink, Linkname: "nowhere", Mode: 0o644},
+		&tar.Header{Name: "l/ok", Typeflag: tar.TypeLink, Linkname: "data/ok", Mode: 0o644},
+	)
+	var out bytes.Buffer
+	st, err := FilterLayer(bytes.NewReader(in), &out, NewPolicy(0, nil, 0, 0).WithMaxFileSize(50))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := names(t, out.Bytes())
+	want := []string{"data/ok", "l/ok"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("kept %v, want %v: only the link whose target was written stays", got, want)
+	}
+	if st.Entries != 2 {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// The warning quotes and cuts the participant's file names and is bounded as a whole.
+func TestSkippedWarningQuotesAndBoundsTheNames(t *testing.T) {
+	var st Stats
+	st.skip("/a\nb \"quoted\" and "+strings.Repeat("é", 200), 100)
+	for i := 0; i < 9; i++ {
+		st.skip("/"+strings.Repeat("p", 300), int64(i))
+	}
+	w := st.SkippedWarning(64)
+	if strings.Contains(w, "\n") {
+		t.Fatalf("a newline in a name forged a line: %q", w)
+	}
+	if !strings.Contains(w, `"/a\nb \"quoted\" and `) {
+		t.Fatalf("the name is not quoted: %q", w)
+	}
+	if len(w) > MaxWarningBytes || !utf8.ValidString(w) {
+		t.Fatalf("the warning is %d bytes, valid=%v", len(w), utf8.ValidString(w))
+	}
+	if q := QuotePath(strings.Repeat("é", 200)); len(q) > MaxWarningPath+len(`""…`)+8 || !strings.HasSuffix(q, `"…`) || !utf8.ValidString(q) {
+		t.Fatalf("a long name is cut on a character boundary: %q", q)
+	}
+	if QuotePath("/short") != `"/short"` {
+		t.Fatal("a short name is only quoted")
+	}
+	if TruncateWarning("x") != "x" || len(TruncateWarning(strings.Repeat("y", 5000))) > MaxWarningBytes {
+		t.Fatal("TruncateWarning")
 	}
 }

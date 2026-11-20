@@ -119,7 +119,10 @@ func (k *KubeCluster) Record(ctx context.Context, p PodInfo, s Snapshot) error {
 }
 
 // Warn implements Cluster.
+//
+// The message may carry a participant's file names, so it is bounded here for every caller (snapshot.TruncateWarning).
 func (k *KubeCluster) Warn(ctx context.Context, p PodInfo, msg string) error {
+	msg = snapshot.TruncateWarning(msg)
 	return k.update(ctx, p, true, func(st *laboratoryv1alpha1.DeviceStateStatus) { st.Warning = msg })
 }
 

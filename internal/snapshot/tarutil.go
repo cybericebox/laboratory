@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -54,20 +56,57 @@ type SkippedFile struct {
 // MaxSkippedListed caps the skipped files named in a warning.
 const MaxSkippedListed = 10
 
-// SkippedWarning is the status warning for the files skipped for size; empty when none.
+// Bounds of what a participant's file names may put into a status warning: one path is quoted and cut at MaxWarningPath bytes, a whole
+// warning at MaxWarningBytes (see TruncateWarning).
+const (
+	MaxWarningPath  = 128
+	MaxWarningBytes = 1024
+)
+
+// QuotePath is a path as a participant's file names may appear in a message: quoted (a newline or a quote in the name cannot forge a
+// second line or end the quotation) and cut at MaxWarningPath bytes on a character boundary, with an ellipsis after the quote when cut.
+func QuotePath(p string) string {
+	cut := false
+	if len(p) > MaxWarningPath {
+		p, cut = p[:MaxWarningPath], true
+		for len(p) > 0 && !utf8.ValidString(p) {
+			p = p[:len(p)-1]
+		}
+	}
+	q := strconv.Quote(p)
+	if cut {
+		q += "…"
+	}
+	return q
+}
+
+// TruncateWarning cuts a warning at MaxWarningBytes on a character boundary, with an ellipsis when cut.
+func TruncateWarning(msg string) string {
+	if len(msg) <= MaxWarningBytes {
+		return msg
+	}
+	msg = msg[:MaxWarningBytes-len("…")]
+	for len(msg) > 0 && !utf8.ValidString(msg) {
+		msg = msg[:len(msg)-1]
+	}
+	return msg + "…"
+}
+
+// SkippedWarning is the status warning for the files skipped for size; empty when none. Paths are the participant's, so they are quoted and
+// cut, and the whole message is bounded.
 func (s Stats) SkippedWarning(maxFileSize int64) string {
 	if s.SkippedTotal == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(s.Skipped))
 	for _, f := range s.Skipped {
-		parts = append(parts, fmt.Sprintf("%s (%d bytes)", f.Path, f.Size))
+		parts = append(parts, fmt.Sprintf("%s (%d bytes)", QuotePath(f.Path), f.Size))
 	}
 	msg := fmt.Sprintf("files over %d bytes are not kept: %s", maxFileSize, strings.Join(parts, ", "))
 	if more := s.SkippedTotal - len(s.Skipped); more > 0 {
 		msg += fmt.Sprintf(" and %d more", more)
 	}
-	return msg
+	return TruncateWarning(msg)
 }
 
 // FilterLayer copies an uncompressed layer tar from in to out, leaving out the
@@ -84,7 +123,10 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 // container-relative zero ids and are not translated. Empty maps change nothing.
 func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Stats, error) {
 	var st Stats
-	skipped := map[string]bool{}
+	// emitted are the paths written to the output (at most MaxEntries of them). A hard link is kept only when its target is among them: a
+	// target dropped for any reason (an excluded path, a refused type or header, a file over the size limit, a name that is not a layer
+	// entry) would leave the link dangling, and a layer with a dangling link fails to unpack on restore.
+	emitted := map[string]struct{}{}
 	tr := tar.NewReader(in)
 	tw := tar.NewWriter(out)
 	for {
@@ -97,6 +139,13 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 		}
 		logical, _, _ := entryPath(hdr.Name)
 		if pol.Excluded(logical) {
+			st.Dropped++
+			continue
+		}
+		// A name that looks like a whiteout is a deletion marker to every unpacker. Only containerd's own synthetic markers are kept: a
+		// real file, directory or link a participant named ".wh.x" would delete a lower file or break the layer on restore.
+		if _, whiteout, opaque := entryPath(hdr.Name); (whiteout || opaque) && !syntheticWhiteout(hdr) {
+			st.RefusedEntries++
 			st.Dropped++
 			continue
 		}
@@ -114,16 +163,17 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 		}
 		if pol.MaxFileSize > 0 && hdr.Typeflag == tar.TypeReg && hdr.Size > pol.MaxFileSize {
 			st.skip(logical, hdr.Size)
-			skipped[logical] = true
 			continue
 		}
 		// The apparent size of a file is in its header, and a sparse file streams all its zeros: stop at the quota without reading them.
 		if pol.WriteQuota > 0 && hdr.Typeflag == tar.TypeReg && st.Bytes+hdr.Size > pol.WriteQuota {
 			return st, fmt.Errorf("%w: the layer passes the quota of %d bytes", ErrQuota, pol.WriteQuota)
 		}
-		if hdr.Typeflag == tar.TypeLink && skipped[CleanPath(hdr.Linkname)] {
-			st.Dropped++ // a hard link to a skipped file would dangle
-			continue
+		if hdr.Typeflag == tar.TypeLink {
+			if _, ok := emitted[CleanPath(hdr.Linkname)]; !ok {
+				st.Dropped++ // its target was not written: the link would dangle
+				continue
+			}
 		}
 		if pol.MaxEntries > 0 && st.Entries >= pol.MaxEntries {
 			return st, fmt.Errorf("%w: more than %d entries", ErrEntries, pol.MaxEntries)
@@ -147,6 +197,7 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 			}
 			st.Bytes += n
 		}
+		emitted[CleanPath(hdr.Name)] = struct{}{}
 		st.Entries++
 	}
 	return st, tw.Close()
