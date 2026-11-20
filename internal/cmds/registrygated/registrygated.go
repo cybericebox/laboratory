@@ -50,6 +50,11 @@ type Config struct {
 	PullGrace     time.Duration `env:"GATE_PULL_GRACE" envDefault:"2m"`
 	GrantMaxAge   time.Duration `env:"GATE_GRANT_MAX_AGE" envDefault:"1h"`
 	RequireDigest bool          `env:"GATE_REQUIRE_DIGEST" envDefault:"false"`
+	// Limits of 2.4.6a.
+	GrantsPerNode     int `env:"GATE_GRANTS_PER_NODE" envDefault:"2000"`
+	GrantMaxDigests   int `env:"GATE_GRANT_MAX_DIGESTS" envDefault:"512"`
+	ManifestMaxBytes  int `env:"GATE_MANIFEST_MAX_BYTES" envDefault:"4194304"`
+	TokenReviewConcur int `env:"GATE_TOKENREVIEW_CONCURRENCY" envDefault:"8"`
 	// ImageHost is the host the nodes pull cache images from (<host>/c/...); empty: any host in front of /c/.
 	ImageHost string `env:"GATE_IMAGE_HOST"`
 	// AgentMaxFills is how many prewarm requests of the agent are served at once.
@@ -86,8 +91,13 @@ type Config struct {
 	PushBudget       int64         `env:"GATE_PUSH_BUDGET_BYTES" envDefault:"2147483648"`
 	PushBudgetWindow time.Duration `env:"GATE_PUSH_BUDGET_WINDOW" envDefault:"1h"`
 	SupersededGrace  time.Duration `env:"GATE_SUPERSEDED_GRACE" envDefault:"2m"`
-	RegistryReserve  float64       `env:"GATE_REGISTRY_RESERVE" envDefault:"0.1"`
-	TenantQuota      int64         `env:"GATE_TENANT_QUOTA_BYTES" envDefault:"10737418240"`
+	// ExitMaxBytes is the most one exit push may carry (0: the device's write quota); ExitPushesPerHour the exit pushes a device gets per hour.
+	ExitMaxBytes      int64   `env:"GATE_EXIT_MAX_BYTES" envDefault:"0"`
+	ExitPushesPerHour int     `env:"GATE_EXIT_PUSHES_PER_HOUR" envDefault:"6"`
+	UploadsPerDevice  int     `env:"GATE_UPLOADS_PER_DEVICE" envDefault:"4"`
+	UploadsPerNode    int     `env:"GATE_UPLOADS_PER_NODE" envDefault:"64"`
+	RegistryReserve   float64 `env:"GATE_REGISTRY_RESERVE" envDefault:"0.1"`
+	TenantQuota       int64   `env:"GATE_TENANT_QUOTA_BYTES" envDefault:"10737418240"`
 }
 
 func fatal(log interface{ Error(error, string, ...any) }, err error, msg string) {
@@ -160,7 +170,7 @@ func Run() {
 	}()
 	gate.Auth = &registrygate.Authenticator{
 		Reviewer: registrygate.KubeReviewer{Client: cs}, Accounts: registrygate.Accounts{Node: nodeAcc, Operator: opAcc, Agent: agAcc},
-		Schedule: schedule, CacheTTL: cfg.TokenCacheTTL, MaxStale: cfg.APIStaleMax, BindSource: cfg.BindSource,
+		Schedule: schedule, CacheTTL: cfg.TokenCacheTTL, MaxStale: cfg.APIStaleMax, BindSource: cfg.BindSource, MaxReviews: cfg.TokenReviewConcur,
 	}
 
 	pass, err := readSecret(cfg.ZotPassFile)
@@ -224,6 +234,7 @@ func buildLab(ctx context.Context, cfg Config, m *registrygate.Metrics, log logg
 	lab.Free = disk.FreeFraction
 	lab.Limits = registrygate.PushLimits{
 		MinInterval: cfg.MinPushInterval, Budget: cfg.PushBudget, BudgetWindow: cfg.PushBudgetWindow, Reserve: cfg.RegistryReserve, TenantQuota: cfg.TenantQuota,
+		ExitMaxBytes: cfg.ExitMaxBytes, ExitPushesPerHour: cfg.ExitPushesPerHour, UploadsPerDevice: cfg.UploadsPerDevice, UploadsPerNode: cfg.UploadsPerNode,
 	}
 	lab.Meter = &registrygate.ZotMeter{Store: zot, Schedule: sch}
 	lab.Super = &registrygate.Superseder{Store: zot, Grace: cfg.SupersededGrace, OnError: func(repo string, err error) { log.Error(err, "delete a superseded snapshot", "repository", repo) }}
@@ -259,7 +270,8 @@ func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log lo
 	c.Allowed = cfg.AllowedRegistries
 	c.DiskFull = disk.Full
 	c.Schedule, c.Creds, c.MaxStale = sch, secrets, cfg.APIStaleMax
-	c.Grants = &registrygate.Grants{Grace: cfg.PullGrace, MaxAge: cfg.GrantMaxAge}
+	c.Grants = &registrygate.Grants{Grace: cfg.PullGrace, MaxAge: cfg.GrantMaxAge, PerNode: cfg.GrantsPerNode, MaxDigests: cfg.GrantMaxDigests}
+	c.ManifestMaxBytes = cfg.ManifestMaxBytes
 	go c.Grants.Run(ctx, time.Minute)
 	c.RequireDigest, c.AgentMaxFills, c.ImageHost = cfg.RequireDigest, cfg.AgentMaxFills, cfg.ImageHost
 	if cfg.AnonymousFillFile != "" {

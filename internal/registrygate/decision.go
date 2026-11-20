@@ -33,6 +33,9 @@ const (
 	// NotFound: a 404. For an object the caller chose it says nothing about the repository (it is not recorded as a decision, only as a
 	// short negative for that ref); it counts against the repository only when a ref that was already proven answers it too.
 	NotFound
+	// BadRealm: the registry's challenge named a token endpoint the entry does not allow (2.4.6a). Not a denial of the credentials, and
+	// nothing is recorded about them: they were never sent anywhere.
+	BadRealm
 )
 
 // Timing is the set of intervals of the decision table.

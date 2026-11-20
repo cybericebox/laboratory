@@ -128,9 +128,11 @@ type Authenticator struct {
 	// Precheck decides from the token alone, before any API call, whether it can possibly be one of ours; nil: the structural check
 	// (a JWT whose exp has not passed and whose audience is the gate's). Tests that use opaque tokens replace it.
 	Precheck func(token string, now time.Time) bool
-	// MaxReviews is how many TokenReview calls may be in flight at once (default 16); more are answered 503.
+	// MaxReviews is how many TokenReview calls may be in flight at once (GATE_TOKENREVIEW_CONCURRENCY, default 8); a request that finds
+	// them all busy waits up to ReviewWait (default 2 seconds) and is then answered 503.
 	MaxReviews int
-	// ReviewRate and ReviewBurst bound the API calls one source address may cause (default 5 per second, burst 20); more are refused.
+	ReviewWait time.Duration
+	// ReviewRate and ReviewBurst bound the API calls one source address may cause (default 20 per second, burst 100); more are refused.
 	ReviewRate  float64
 	ReviewBurst int
 
@@ -138,7 +140,7 @@ type Authenticator struct {
 	cache  map[[32]byte]reviewed
 	bad    map[[32]byte]time.Time
 	flight map[[32]byte]*reviewCall
-	inUse  int
+	sem    chan struct{}
 	rate   map[string]*bucket
 }
 
@@ -160,7 +162,13 @@ func (a *Authenticator) now() time.Time {
 	return time.Now()
 }
 
-const maxCachedTokens = 20000
+const (
+	maxCachedTokens = 20000
+	// a token the API server refused is remembered by its hash for this long, so a flood of one bad token costs one API call
+	negativeTTL = 30 * time.Second
+	// the longest token the gate looks at (three base64url parts)
+	maxTokenBytes = 8 << 10
+)
 
 // Authenticate reads the token header and decides who the caller is. The review is cached by the hash of the token; the pod and the node
 // of a node token are looked up in the view on every request, because a pod can end and a node can change under a token that is still valid.
@@ -192,7 +200,7 @@ func (a *Authenticator) review(ctx context.Context, token, remote string) (Revie
 		a.mu.Unlock()
 		return c.r, nil
 	}
-	if at, ok := a.bad[h]; ok && now.Sub(at) < 5*time.Second {
+	if at, ok := a.bad[h]; ok && now.Sub(at) < negativeTTL {
 		a.mu.Unlock()
 		return Review{}, ErrUnauthenticated
 	}
@@ -200,7 +208,7 @@ func (a *Authenticator) review(ctx context.Context, token, remote string) (Revie
 	// nothing below costs an API call until the token has the shape of one of ours
 	pre := a.Precheck
 	if pre == nil {
-		pre = structurallyOurs
+		pre = a.structurallyOurs
 	}
 	if !pre(token, now) {
 		return Review{}, ErrUnauthenticated
@@ -208,10 +216,7 @@ func (a *Authenticator) review(ctx context.Context, token, remote string) (Revie
 	if !a.allowSource(remote, now) {
 		return Review{}, ErrRateLimited
 	}
-	call, leader, ok := a.join(h)
-	if !ok {
-		return Review{}, ErrUnavailable // too many reviews in flight
-	}
+	call, leader := a.join(h)
 	if !leader { // the same token is already being reviewed: share the answer
 		select {
 		case <-call.done:
@@ -220,39 +225,65 @@ func (a *Authenticator) review(ctx context.Context, token, remote string) (Revie
 			return Review{}, ErrUnavailable
 		}
 	}
-	rv, err := a.doReview(ctx, h, token, now)
-	a.mu.Lock()
-	delete(a.flight, h)
-	a.inUse--
-	a.mu.Unlock()
-	call.rv, call.err = rv, err
-	close(call.done)
-	return rv, err
+	defer func() {
+		a.mu.Lock()
+		delete(a.flight, h)
+		a.mu.Unlock()
+		close(call.done)
+	}()
+	if !a.acquire(ctx) {
+		call.err = ErrUnavailable // every review slot stayed busy: 503, no API call
+		return Review{}, call.err
+	}
+	defer a.release()
+	call.rv, call.err = a.doReview(ctx, h, token, now)
+	return call.rv, call.err
 }
 
-// join registers a review of the token h: the first caller leads (and must call the API), later callers share. ok is false when the
-// leader cannot start because too many reviews are in flight.
-func (a *Authenticator) join(h [32]byte) (call *reviewCall, leader, ok bool) {
+// join registers a review of the token h: the first caller leads (and must do it), later callers share its answer.
+func (a *Authenticator) join(h [32]byte) (call *reviewCall, leader bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if c, running := a.flight[h]; running {
-		return c, false, true
-	}
-	limit := a.MaxReviews
-	if limit <= 0 {
-		limit = 16
-	}
-	if a.inUse >= limit {
-		return nil, false, false
+		return c, false
 	}
 	if a.flight == nil {
 		a.flight = map[[32]byte]*reviewCall{}
 	}
-	a.inUse++
 	c := &reviewCall{done: make(chan struct{})}
 	a.flight[h] = c
-	return c, true, true
+	return c, true
 }
+
+// acquire takes one of the review slots, waiting up to ReviewWait.
+func (a *Authenticator) acquire(ctx context.Context) bool {
+	a.mu.Lock()
+	if a.sem == nil {
+		n := a.MaxReviews
+		if n <= 0 {
+			n = 8
+		}
+		a.sem = make(chan struct{}, n)
+	}
+	sem := a.sem
+	a.mu.Unlock()
+	wait := a.ReviewWait
+	if wait <= 0 {
+		wait = 2 * time.Second
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case sem <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (a *Authenticator) release() { <-a.sem }
 
 func (a *Authenticator) doReview(ctx context.Context, h [32]byte, token string, now time.Time) (Review, error) {
 	rv, err := a.Reviewer.Review(ctx, token, []string{TokenAudience})
@@ -266,7 +297,7 @@ func (a *Authenticator) doReview(ctx context.Context, h [32]byte, token string, 
 		}
 		if len(a.bad) >= maxCachedTokens {
 			for k, at := range a.bad { // drop what has lapsed; a full table of live entries is left as it is (a refusal is cheap)
-				if now.Sub(at) >= 5*time.Second {
+				if now.Sub(at) >= negativeTTL {
 					delete(a.bad, k)
 				}
 			}
@@ -302,10 +333,10 @@ func (a *Authenticator) allowSource(remote string, now time.Time) bool {
 	}
 	rate, burst := a.ReviewRate, float64(a.ReviewBurst)
 	if rate <= 0 {
-		rate = 5
+		rate = 20
 	}
 	if burst <= 0 {
-		burst = 20
+		burst = 100
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -329,23 +360,29 @@ func (a *Authenticator) allowSource(remote string, now time.Time) bool {
 	return true
 }
 
-// structurallyOurs is what can be told of a token without the API server: a JWT with a payload that names an expiry still ahead and the
-// gate's audience, and an issuer. A token that fails this is refused without a TokenReview.
-func structurallyOurs(token string, now time.Time) bool {
+// structurallyOurs is what can be told of a token without the API server (2.4.6a): three base64url parts of at most 8 KiB in all, whose
+// payload (read without trusting it) carries the gate's audience, an exp still ahead and a sub that names one of the three accepted
+// ServiceAccounts. A token that fails this is refused without a TokenReview.
+func (a *Authenticator) structurallyOurs(token string, now time.Time) bool {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] == "" || parts[2] == "" || len(token) > 16<<10 {
+	if len(parts) != 3 || parts[0] == "" || parts[2] == "" || len(token) > maxTokenBytes {
 		return false
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return false
+	for _, p := range parts {
+		if _, err := base64.RawURLEncoding.DecodeString(p); err != nil {
+			return false
+		}
 	}
+	raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
 	var c struct {
 		Exp int64           `json:"exp"`
-		Iss string          `json:"iss"`
+		Sub string          `json:"sub"`
 		Aud json.RawMessage `json:"aud"`
 	}
-	if json.Unmarshal(raw, &c) != nil || c.Exp <= now.Unix() || c.Iss == "" {
+	if json.Unmarshal(raw, &c) != nil || c.Exp <= now.Unix() {
+		return false
+	}
+	if _, _, ok := a.Accounts.kindOf(c.Sub); !ok {
 		return false
 	}
 	var one string

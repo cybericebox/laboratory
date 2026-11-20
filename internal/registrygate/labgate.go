@@ -276,7 +276,7 @@ func (g *LabGate) authorizeStaff(r *http.Request, p Principal, escaped string) (
 func (g *LabGate) authorizeWrite(r *http.Request, lp labPath, p Principal, dev DeviceInfo) (refusal, bool) {
 	switch lp.Kind {
 	case kindManifests:
-		if r.Method != http.MethodPut || lp.Ref != "latest" {
+		if r.Method != http.MethodPut || lp.Ref != tagLatest {
 			return denied, false // only the tag "latest" is written
 		}
 		return g.authorizeManifestPut(r, lp, p, dev)
@@ -443,7 +443,7 @@ const bodyKey ctxKey = 2
 // authorizeUpload: POST starts an upload (or mounts a blob), PATCH and PUT go on with it. A session belongs to the node and repository
 // that started it; every later request re-checks that the device is still on the node (done by Serve before this).
 func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev DeviceInfo) (refusal, bool) {
-	_, exit := g.exitPod(lp, p)
+	exit := g.exitPod(lp, p)
 	if exit {
 		if f, ok := g.exitAllowed(lp); !ok {
 			return f, false
@@ -621,13 +621,13 @@ func (g *LabGate) quotaStillOpen(ctx context.Context, dev DeviceInfo, lp labPath
 // exitPod finds the device pod on the calling node that has ended (terminating, Succeeded or Failed), judged from the pod the gate sees and
 // never from what the node says. A push while one exists is an exit push: held to its own limits (exitAllowed, poolLimit), not to the
 // interval and the window budget. A participant can crash the pod for a new UID, so the limits are per device, never per pod.
-func (g *LabGate) exitPod(lp labPath, p Principal) (PodInfo, bool) {
+func (g *LabGate) exitPod(lp labPath, p Principal) bool {
 	for _, pod := range g.Schedule.PodsOnNode(p.Node) {
 		if pod.Namespace == lp.NS && pod.Labels[names.LabelLab] == lp.Lab && pod.Labels[names.LabelDevice] == lp.Dev && pod.Ended() {
-			return pod, true
+			return true
 		}
 	}
-	return PodInfo{}, false
+	return false
 }
 
 // authorizeManifestPut is the snapshot itself: the min interval (not for an exit snapshot), the registry reserve, and the tenant quota with
@@ -637,7 +637,7 @@ func (g *LabGate) authorizeManifestPut(r *http.Request, lp labPath, p Principal,
 		return fullRefusal, false
 	}
 	now := g.now()
-	_, exitPush := g.exitPod(lp, p)
+	exitPush := g.exitPod(lp, p)
 	if exitPush {
 		if f, ok := g.exitAllowed(lp); !ok {
 			return f, false
@@ -689,7 +689,7 @@ func (g *LabGate) authorizeManifestPut(r *http.Request, lp labPath, p Principal,
 	}
 	// what "latest" is now: when zot accepts the new manifest this one is superseded
 	if g.Store != nil {
-		if h, ok, err := g.Store.Head(r.Context(), lp.Repo, kindManifests, "latest"); err == nil && ok {
+		if h, ok, err := g.Store.Head(r.Context(), lp.Repo, kindManifests, tagLatest); err == nil && ok {
 			g.mu.Lock()
 			g.stateLocked(lp.Repo).prev = h.Get("Docker-Content-Digest")
 			g.mu.Unlock()
@@ -719,7 +719,7 @@ func (g *LabGate) afterZot(resp *http.Response) {
 		g.mu.Lock()
 		delete(g.sess, lp.Ref) // the session is over
 		g.mu.Unlock()
-	case lp.Kind == kindManifests && req.Method == http.MethodPut && lp.Ref == "latest" && resp.StatusCode == http.StatusCreated:
+	case lp.Kind == kindManifests && req.Method == http.MethodPut && lp.Ref == tagLatest && resp.StatusCode == http.StatusCreated:
 		g.snapshotAccepted(req, lp, resp.Header.Get("Docker-Content-Digest"))
 	}
 }
@@ -795,7 +795,7 @@ func uploadID(location string) string {
 // what it replaced.
 func (g *LabGate) snapshotAccepted(req *http.Request, lp labPath, digest string) {
 	now := g.now()
-	_, isExit := g.exitPod(lp, Principal{Node: principalNode(req)})
+	isExit := g.exitPod(lp, Principal{Node: principalNode(req)})
 	g.mu.Lock()
 	s := g.stateLocked(lp.Repo)
 	s.lastManifest = now
@@ -861,7 +861,7 @@ func (r imageRef) pinned() string {
 	if r.Tag != "" {
 		return r.Tag
 	}
-	return "latest"
+	return tagLatest
 }
 
 // mountSource finds the cache repository (c/<registry>/<repo>) a blob may be mounted from into the snapshot repository of this device:

@@ -199,7 +199,7 @@ func TestTokenCacheLifetime(t *testing.T) {
 	if _, err := f.authenticate(short, "x:1"); err != nil || rev.calls != 2 {
 		t.Fatalf("the token's expiry shortens the cache: %d reviews, %v", rev.calls, err)
 	}
-	// a token the API server refuses: remembered for 5 seconds
+	// a token the API server refuses: remembered for 30 seconds
 	f.auth.Reviewer = reviewerFunc(func(string, []string) Review { rev.calls++; return Review{} })
 	before := rev.calls
 	for i := 0; i < 3; i++ {
@@ -208,10 +208,10 @@ func TestTokenCacheLifetime(t *testing.T) {
 	if rev.calls != before+1 {
 		t.Fatalf("a refused token is asked about once: %d", rev.calls-before)
 	}
-	*f.clock = f.clock.Add(6 * time.Second)
+	*f.clock = f.clock.Add(31 * time.Second)
 	_, _ = f.authenticate("bad", "x:1")
 	if rev.calls != before+2 {
-		t.Fatalf("after 5 seconds it is asked again: %d", rev.calls-before)
+		t.Fatalf("after 30 seconds it is asked again: %d", rev.calls-before)
 	}
 }
 
@@ -241,13 +241,15 @@ func TestStripPlatformHeaders(t *testing.T) {
 // anyShape is the precheck of the tests that use opaque token names; the real one is tested below.
 func anyShape(string, time.Time) bool { return true }
 
-func jwt(exp time.Time, iss string, aud any) string {
+const nodeSub = "system:serviceaccount:laboratory-system:laboratory-node-agent"
+
+func jwt(exp time.Time, sub string, aud any) string {
 	enc := func(v any) string { b, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(b) }
-	return enc(map[string]string{"alg": "RS256"}) + "." + enc(map[string]any{"exp": exp.Unix(), "iss": iss, "aud": aud}) + ".c2ln"
+	return enc(map[string]string{"alg": "RS256"}) + "." + enc(map[string]any{"exp": exp.Unix(), "sub": sub, "aud": aud}) + ".c2ln"
 }
 
-// Review finding 4: what cannot be one of ours never reaches the API server; what can is bounded per address and in flight, and one token
-// is reviewed once however many requests carry it.
+// Review finding 4 / 2.4.6a: what cannot be one of ours never reaches the API server; what can is bounded per address and in flight, and one
+// token is reviewed once however many requests carry it.
 func TestTokenReviewFloodIsBoundedBeforeTheAPIServer(t *testing.T) {
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	rev := &countingReviewer{}
@@ -259,15 +261,17 @@ func TestTokenReviewFloodIsBoundedBeforeTheAPIServer(t *testing.T) {
 		_, err := a.Authenticate(context.Background(), r)
 		return err
 	}
+	aud := []string{TokenAudience}
 	for name, tok := range map[string]string{
 		"not a jwt":          "garbage",
 		"two parts":          "a.b",
 		"payload not base64": "a.!!.c",
-		"expired":            jwt(now.Add(-time.Minute), "https://k", []string{TokenAudience}),
-		"no issuer":          jwt(now.Add(time.Hour), "", []string{TokenAudience}),
-		"another audience":   jwt(now.Add(time.Hour), "https://k", []string{"other"}),
-		"no audience":        jwt(now.Add(time.Hour), "https://k", nil),
-		"huge":               strings.Repeat("a", 20<<10) + ".b.c",
+		"expired":            jwt(now.Add(-time.Minute), nodeSub, aud),
+		"another subject":    jwt(now.Add(time.Hour), "system:serviceaccount:default:somebody", aud),
+		"no subject":         jwt(now.Add(time.Hour), "", aud),
+		"another audience":   jwt(now.Add(time.Hour), nodeSub, []string{"other"}),
+		"no audience":        jwt(now.Add(time.Hour), nodeSub, nil),
+		"huge":               strings.Repeat("a", 9<<10) + ".b.c",
 	} {
 		if err := ask(tok, "192.0.2.1:1"); err != ErrUnauthenticated {
 			t.Errorf("%s: %v", name, err)
@@ -276,12 +280,27 @@ func TestTokenReviewFloodIsBoundedBeforeTheAPIServer(t *testing.T) {
 	if rev.calls != 0 {
 		t.Fatalf("the API server was called %d times for tokens that cannot be ours", rev.calls)
 	}
-	// a token of the right shape is reviewed; the same address is limited after its burst
+	// a token of the right shape is reviewed; a refused one is remembered for 30 seconds, so one bad token costs one API call
+	bad := jwt(now.Add(time.Hour), nodeSub, aud)
+	for i := 0; i < 5; i++ {
+		if err := ask(bad, "192.0.2.7:1"); err != ErrUnauthenticated {
+			t.Fatal(err)
+		}
+	}
+	if rev.calls != 1 {
+		t.Fatalf("one bad token, %d API calls", rev.calls)
+	}
+	now = now.Add(31 * time.Second)
+	_ = ask(bad, "192.0.2.7:1")
+	if rev.calls != 2 {
+		t.Fatalf("after the negative cache lapsed: %d", rev.calls)
+	}
+	// per address: the burst, then refused; another address and the passing of time each have room
 	a.ReviewBurst, a.ReviewRate = 3, 1
 	rev.calls = 0
 	var limited bool
 	for i := 0; i < 10; i++ {
-		tok := jwt(now.Add(time.Hour+time.Duration(i)*time.Second), "https://k", []string{TokenAudience})
+		tok := jwt(now.Add(time.Hour+time.Duration(i)*time.Second), nodeSub, aud)
 		if ask(tok, "192.0.2.3:1") == ErrRateLimited {
 			limited = true
 		}
@@ -289,12 +308,11 @@ func TestTokenReviewFloodIsBoundedBeforeTheAPIServer(t *testing.T) {
 	if !limited || rev.calls > 3 {
 		t.Fatalf("limited=%v calls=%d: one address may cost the API server only its burst", limited, rev.calls)
 	}
-	// another address has a bucket of its own; and the bucket refills with time
-	if err := ask(jwt(now.Add(5*time.Hour), "https://k", []string{TokenAudience}), "192.0.2.4:1"); errors.Is(err, ErrRateLimited) {
+	if err := ask(jwt(now.Add(5*time.Hour), nodeSub, aud), "192.0.2.4:1"); errors.Is(err, ErrRateLimited) {
 		t.Fatal("another address is not limited")
 	}
 	now = now.Add(5 * time.Second)
-	if err := ask(jwt(now.Add(6*time.Hour), "https://k", []string{TokenAudience}), "192.0.2.3:1"); errors.Is(err, ErrRateLimited) {
+	if err := ask(jwt(now.Add(6*time.Hour), nodeSub, aud), "192.0.2.3:1"); errors.Is(err, ErrRateLimited) {
 		t.Fatal("the bucket refills")
 	}
 }
@@ -312,7 +330,7 @@ func (s *slowReviewer) Review(ctx context.Context, token string, aud []string) (
 
 func TestOneTokenIsReviewedOnceAndInFlightReviewsAreCapped(t *testing.T) {
 	rev := &slowReviewer{release: make(chan struct{})}
-	a := &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: NewSchedule(), Precheck: anyShape, MaxReviews: 2, ReviewBurst: 1000}
+	a := &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: NewSchedule(), Precheck: anyShape, MaxReviews: 2, ReviewWait: 80 * time.Millisecond, ReviewBurst: 1000}
 	run := func(tok string, errs chan<- error) {
 		r := httptest.NewRequest("GET", "http://x/v2/", nil)
 		r.Header.Set(HeaderNodeToken, tok)
@@ -330,11 +348,15 @@ func TestOneTokenIsReviewedOnceAndInFlightReviewsAreCapped(t *testing.T) {
 	}
 	go run("second", errs)
 	waitFor(t, func() bool { return rev.calls.Load() == 2 })
-	// the third distinct token finds both slots busy: 503, no API call
+	// the third distinct token waits for a slot, then gives up: 503, no API call
 	r := httptest.NewRequest("GET", "http://x/v2/", nil)
 	r.Header.Set(HeaderNodeToken, "third")
+	start := time.Now()
 	if _, err := a.Authenticate(context.Background(), r); err != ErrUnavailable || rev.calls.Load() != 2 {
 		t.Fatalf("over the cap: %v (%d calls)", err, rev.calls.Load())
+	}
+	if time.Since(start) < 60*time.Millisecond {
+		t.Fatal("it should have waited for a slot first")
 	}
 	close(rev.release)
 	for i := 0; i < 6; i++ {

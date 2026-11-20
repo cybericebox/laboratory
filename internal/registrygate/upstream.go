@@ -114,6 +114,9 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 	if errors.Is(err, errTokenRefused) {
 		return Denied, nil, nil
 	}
+	if errors.Is(err, errBadRealm) {
+		return BadRealm, nil, err
+	}
 	if err != nil {
 		return Unreachable, nil, err
 	}
@@ -135,6 +138,9 @@ func (u *Upstream) Head(ctx context.Context, reg Registry, o Object, c Creds, cr
 	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
 		return Denied, nil, nil
+	}
+	if errors.Is(err, errBadRealm) {
+		return BadRealm, nil, err
 	}
 	if err != nil {
 		return Unreachable, nil, err
@@ -195,6 +201,9 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 	resp, err := u.do(ctx, http.MethodGet, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
 		return nil, Denied, nil
+	}
+	if errors.Is(err, errBadRealm) {
+		return nil, BadRealm, err
 	}
 	if err != nil {
 		return nil, Unreachable, err
@@ -287,7 +296,7 @@ func (u *Upstream) answer(ctx context.Context, reg Registry, challenge, repo str
 		realm := params["realm"]
 		ru, err := url.Parse(realm)
 		if err != nil || realm == "" || !reg.realmAllowed(ru) {
-			return "", errors.New("the token realm of the challenge is not one this registry may use") // not echoed: it is the upstream's word
+			return "", errBadRealm // the realm is not echoed: it is the upstream's word
 		}
 		q := ru.Query()
 		if s := params["service"]; s != "" {
@@ -342,6 +351,9 @@ func (u *Upstream) answer(ctx context.Context, reg Registry, challenge, repo str
 
 // errTokenRefused: the token endpoint refused the credentials, which is a denial of the pull, not an outage.
 var errTokenRefused = errors.New("the token endpoint refused the credentials")
+
+// errBadRealm: the challenge names a token endpoint this registry may not use; no credential was sent to it.
+var errBadRealm = errors.New("the token realm of the challenge is not one this registry may use")
 
 func basic(c Creds) string {
 	r := &http.Request{Header: http.Header{}}

@@ -15,6 +15,7 @@ const (
 	kindManifests = "manifests"
 	kindBlobs     = "blobs"
 	kindUploads   = "uploads"
+	tagLatest     = "latest"
 	schemeHTTP    = "http"
 )
 

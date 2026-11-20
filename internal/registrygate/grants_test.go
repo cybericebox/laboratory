@@ -42,11 +42,11 @@ func TestGrantTableIsBounded(t *testing.T) {
 	if err := g.Add("n1", "acme", "r/new", Creds{}, "", hexd(1), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := g.Has("n1", "acme", "r/0", hexd(1)); ok {
+	if _, ok := g.Has("n1", "acme", "r/0", hexd(1), true); ok {
 		t.Fatal("the oldest grant of the node must be dropped")
 	}
 	for _, r := range []string{"r/1", "r/2", "r/new"} {
-		if _, ok := g.Has("n1", "acme", r, hexd(1)); !ok {
+		if _, ok := g.Has("n1", "acme", r, hexd(1), true); !ok {
 			t.Fatalf("%s must stay", r)
 		}
 	}
@@ -75,7 +75,7 @@ func TestExtendNeverCreatesAGrant(t *testing.T) {
 	if !g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), []string{hexd(3)}) {
 		t.Fatal("a live grant is renewed")
 	}
-	if _, ok := g.Has("n", "acme", "r/x", hexd(3)); !ok {
+	if _, ok := g.Has("n", "acme", "r/x", hexd(3), true); !ok {
 		t.Fatal("and carries the new digest")
 	}
 	now = now.Add(5 * time.Minute) // lapsed
@@ -113,5 +113,24 @@ func TestCoversFollowsOneReference(t *testing.T) {
 	}
 	if g.Covers("other-node", "acme", "r/x", idx, layer) || g.Covers("n", "other", "r/x", idx, layer) {
 		t.Fatal("another node or segment has no such grant")
+	}
+}
+
+// 2.4.6a: a manifest that is too big, or lists more digests than a grant holds, is 403 CIB_MANIFEST_TOO_BIG, never served half-granted.
+func TestAManifestTooBigIsRefused(t *testing.T) {
+	for name, set := range map[string]func(n *nodeRig){
+		"bytes":   func(n *nodeRig) { n.cache.ManifestMaxBytes = 10 },
+		"digests": func(n *nodeRig) { n.cache.Grants.MaxDigests = 1 },
+	} {
+		n := newNodeRig(t)
+		n.devicePod("lg-acme", "dev-tag", "node-a", pfx+"acme/up/library/nginx:latest")
+		set(n)
+		code, body, hdr := n.get(tokA, "GET", n.mp("acme", "library/nginx", "latest"), nil)
+		if code != 403 || !strings.Contains(string(body), "CIB_MANIFEST_TOO_BIG") {
+			t.Fatalf("%s: %d %s", name, code, body)
+		}
+		if hdr.Get("Docker-Content-Digest") != "" {
+			t.Fatalf("%s: the held manifest's headers leaked: %v", name, hdr)
+		}
 	}
 }

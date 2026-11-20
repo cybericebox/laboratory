@@ -112,7 +112,7 @@ func (s *Superseder) Sweep(ctx context.Context) int {
 
 func (s *Superseder) apply(ctx context.Context, t supersession) error {
 	// the same content pushed again within the grace makes the old snapshot "latest" again: the current latest is never deleted
-	if h, ok, err := s.Store.Head(ctx, t.repo, kindManifests, "latest"); err != nil {
+	if h, ok, err := s.Store.Head(ctx, t.repo, kindManifests, tagLatest); err != nil {
 		return err
 	} else if ok && h.Get("Docker-Content-Digest") == t.old {
 		return nil
@@ -127,7 +127,7 @@ func (s *Superseder) apply(ctx context.Context, t supersession) error {
 	}
 	// what must stay: the blobs of the snapshot that replaced it and of whatever is current now
 	keep := map[string]bool{}
-	for _, ref := range []string{t.keep, "latest"} {
+	for _, ref := range []string{t.keep, tagLatest} {
 		body, err := s.Store.ManifestBody(ctx, t.repo, ref)
 		if err != nil {
 			return err

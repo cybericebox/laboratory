@@ -200,7 +200,7 @@ func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, 
 	// a digest of a manifest that was served on this node's claim (a child manifest, a config, a layer) is allowed by the grant
 	if !o.isTag() {
 		// a grant lives while something on the node still names the repository: it dies with its pod
-		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok && c.anyPodFor(p.Node, tenant, o) {
+		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref, c.anyPodFor(p.Node, tenant, o)); ok {
 			c.serveGranted(w, r, reg, o, p, cr)
 			return
 		}
@@ -208,7 +208,7 @@ func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, 
 	labs, ok := c.scheduleMatch(p.Node, tenant, o)
 	if !ok {
 		if o.Kind == kindBlobs {
-			c.blobWithoutGrant(w, r, reg, o, p, tenant)
+			c.blobWithoutGrant(w, o, p, tenant)
 			return
 		}
 		c.M.refusals.WithLabelValues("no_pod").Inc()
@@ -229,7 +229,7 @@ func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, 
 // blobWithoutGrant: a blob (or child manifest) request with no live grant. There is no rebuild (2.4.2): whatever the kind of reference the
 // pod has, the answer is 404 BLOB_UNKNOWN and the kubelet starts the pull again with a manifest request, which goes through the whole proof
 // and makes the grant. A manifest that is merely present in zot authorises nothing.
-func (c *Cache) blobWithoutGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, p Principal, tenant string) {
+func (c *Cache) blobWithoutGrant(w http.ResponseWriter, o objectRef, p Principal, tenant string) {
 	if !c.anyPodFor(p.Node, tenant, o) { // nothing on the node names this repository (any more): no grant is honoured
 		c.M.refusals.WithLabelValues("no_pod").Inc()
 		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
@@ -297,6 +297,10 @@ func (c *Cache) serveChecked(w http.ResponseWriter, r *http.Request, reg Registr
 	case http.StatusNotFound:
 		c.M.refusals.WithLabelValues("not_found").Inc()
 		refuse(w, status, "NAME_UNKNOWN", "the object is not in the upstream repository", false)
+		return
+	case statusUpstreamAuth:
+		c.M.refusals.WithLabelValues("upstream_auth").Inc()
+		refuse(w, http.StatusBadGateway, "CIB_UPSTREAM_AUTH", "the upstream registry asked for authentication at a place this registry may not use", false)
 		return
 	case http.StatusBadGateway:
 		c.M.refusals.WithLabelValues("bad_gateway").Inc()
@@ -410,6 +414,9 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 		started := c.Store.Now()
 		out, hdr, _ := c.Up.Proof(ctx, reg, up, who.creds, who.hash)
 		c.M.checks.WithLabelValues(outcomeName(out)).Inc()
+		if out == BadRealm {
+			return "", statusUpstreamAuth, false
+		}
 		if out == NotFound {
 			c.settleMissing(ctx, reg, key, who, up)
 			return "", statusOf(NotFound, who.hash == ""), false
@@ -473,6 +480,9 @@ func (c *Cache) freshCheck(ctx context.Context, reg Registry, key DecisionKey, w
 	started := c.Store.Now()
 	out, _ := c.Up.Check(ctx, reg, up, who.creds, who.hash)
 	c.M.checks.WithLabelValues(outcomeName(out)).Inc()
+	if out == BadRealm {
+		return statusUpstreamAuth, false // nothing is recorded: the credentials went nowhere
+	}
 	if out == NotFound {
 		if !known {
 			c.settleMissing(ctx, reg, key, who, up)
@@ -511,8 +521,13 @@ func (c *Cache) settleMissing(ctx context.Context, reg Registry, key DecisionKey
 
 // statusOf is the answer to a request that may not be served: an outage is a 503 with a stable body (a pod shows ImagePullBackOff), a
 // missing object a 404, and a refusal a 403. There is no challenge: a caller has no other credentials to come back with.
+// statusUpstreamAuth is the internal status of an outcome BadRealm: it leaves the gate as 502 CIB_UPSTREAM_AUTH.
+const statusUpstreamAuth = 599
+
 func statusOf(o Outcome, _ bool) int {
 	switch o {
+	case BadRealm:
+		return statusUpstreamAuth
 	case Unreachable:
 		return http.StatusServiceUnavailable
 	case NotFound:
@@ -529,6 +544,8 @@ func outcomeName(o Outcome) string {
 		return "denied"
 	case NotFound:
 		return "not_found"
+	case BadRealm:
+		return "bad_realm"
 	}
 	return "unreachable"
 }
@@ -737,6 +754,8 @@ func (c *Cache) refuseUpstream(w http.ResponseWriter, out Outcome, anonymous boo
 		refuse(w, http.StatusForbidden, "DENIED", "the upstream registry refused the credentials of this image", false)
 	case http.StatusNotFound:
 		refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "the object is not in the upstream repository", false)
+	case statusUpstreamAuth:
+		refuse(w, http.StatusBadGateway, "CIB_UPSTREAM_AUTH", "the upstream registry asked for authentication at a place this registry may not use", false)
 	default:
 		refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", reasonUnavailable, false)
 	}

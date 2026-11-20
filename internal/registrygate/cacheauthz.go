@@ -67,7 +67,7 @@ func (i imageRef) matches(o objectRef) bool {
 	}
 	tag := i.Tag
 	if tag == "" {
-		tag = "latest"
+		tag = tagLatest
 	}
 	return o.Ref == tag
 }

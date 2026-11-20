@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -501,8 +503,15 @@ func TestAGrantDiesWithItsPodAndAFinishedPodPullsNothing(t *testing.T) {
 		t.Fatal(code)
 	}
 	n.sch.DeletePod("lg-acme", "dev-tag")
+	// the pull grace (2.4.3): a layer download that is in progress when the pod goes is not cut ...
+	*n.clk = n.clk.Add(time.Minute)
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "library/nginx", n.nginxLd), nil); code != 200 {
+		t.Fatalf("inside the pull grace: %d", code)
+	}
+	// ... but the grant dies with its pod: used on, it does not live to its maximum age
+	*n.clk = n.clk.Add(3 * time.Minute)
 	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "library/nginx", n.nginxLd), nil); code == 200 {
-		t.Fatalf("the pod is gone, the grant must not outlive it: %d", code)
+		t.Fatalf("the pod has been gone past the grace, the grant must not outlive it: %d", code)
 	}
 	// a pod that has finished does not pull again
 	n.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "done", UID: "u-done", Node: "node-a", Phase: "Succeeded", Images: []string{pfx + "acme/up/library/nginx:latest"},
@@ -540,5 +549,47 @@ func TestNoAnswerCarriesACredentialOrAToken(t *testing.T) {
 				t.Errorf("%s (%d) carries %q", path, code, secret)
 			}
 		}
+	}
+}
+
+// 2.4.2: an answer on a stale decision (StaleIfError) may renew a grant that exists but never creates one.
+func TestAStaleDecisionNeverCreatesAGrant(t *testing.T) {
+	n := newNodeRig(t)
+	n.devicePod("lg-acme", "dev", "node-a", pfx+"acme/up/org/private@"+n.md)
+	base := time.Now()
+	n.cache.Store.Now = func() time.Time { return base }
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", n.md), nil); code != 200 {
+		t.Fatalf("first: %d", code)
+	}
+	n.cache.Grants = &Grants{Now: func() time.Time { return *n.clk }} // a restart of the grants only; the decision stays
+	n.cache.Store.Now = func() time.Time { return base.Add(5 * time.Minute) }
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "org/private", n.md), nil); code != 200 {
+		t.Fatalf("served on the stale decision: %d", code)
+	}
+	if code, _, _ := n.get(tokA, "GET", n.bp("acme", "org/private", n.ld), nil); code != 404 {
+		t.Fatalf("a stale answer must not have made a grant: %d", code)
+	}
+}
+
+// 2.4.6a: a challenge that names a token endpoint the registry may not use is 502 CIB_UPSTREAM_AUTH and no credential is sent to it.
+func TestAForeignTokenRealmIs502AndSendsNothing(t *testing.T) {
+	n := newNodeRig(t)
+	var evilHits atomic.Int32
+	evil := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { evilHits.Add(1) }))
+	defer evil.Close()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate", `Bearer realm="`+evil.URL+`/token",service="x"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer up.Close()
+	n.cache.Registries.Set([]Registry{n.up.registry("up"), {Name: "bad", URL: mustURL(t, up.URL)}})
+	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("acme"), dockerConfig("bad", "alice", "pw"))
+	n.devicePod("lg-acme", "dev", "node-a", pfx+"acme/bad/org/x:1")
+	code, body, _ := n.get(tokA, "GET", "/v2/c/acme/bad/org/x/manifests/1", nil)
+	if code != 502 || !strings.Contains(string(body), "CIB_UPSTREAM_AUTH") {
+		t.Fatalf("%d %s", code, body)
+	}
+	if evilHits.Load() != 0 {
+		t.Fatalf("the foreign token endpoint got %d requests", evilHits.Load())
 	}
 }

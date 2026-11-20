@@ -23,6 +23,9 @@ type grant struct {
 	creds   Creds
 	created time.Time
 	expires time.Time
+	// podSeen is the last time a pod (or ImagePull) of the node named this repository when a request came: the grant outlives its pod by
+	// the pull grace only (2.4.3), so a layer download of a device being reset on the same node does not fail in the middle.
+	podSeen time.Time
 }
 
 // The bounds of the table (2.4.6a): what one grant may hold and what one node may hold. A node's oldest grant gives way to a new one.
@@ -146,7 +149,7 @@ func (g *Grants) add(node, seg, repo string, creds Creds, tag, root string, chil
 		if len(mine) >= g.perNode() {
 			g.dropOldestLocked(mine, now)
 		}
-		gr = &grant{digests: map[string]struct{}{}, roots: map[string]map[string]struct{}{}, tags: map[string]string{}, created: now}
+		gr = &grant{digests: map[string]struct{}{}, roots: map[string]map[string]struct{}{}, tags: map[string]string{}, created: now, podSeen: now}
 		mine[k] = gr
 	}
 	fresh := 0
@@ -200,7 +203,9 @@ func (g *Grants) dropOldestLocked(mine map[grantKey]*grant, now time.Time) {
 }
 
 // Has says whether digest is in a live grant of (node, segment, repo), and returns the credentials of the grant. Use extends the grant.
-func (g *Grants) Has(node, seg, repo, digest string) (Creds, bool) {
+// podPresent says whether a pod (or ImagePull) on the node still names the repository; without one the grant is honoured for the pull grace
+// after the last time one was seen, then it is not.
+func (g *Grants) Has(node, seg, repo, digest string, podPresent bool) (Creds, bool) {
 	now := g.now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -209,6 +214,11 @@ func (g *Grants) Has(node, seg, repo, digest string) (Creds, bool) {
 		return Creds{}, false
 	}
 	if _, ok := gr.digests[digest]; !ok {
+		return Creds{}, false
+	}
+	if podPresent {
+		gr.podSeen = now
+	} else if now.Sub(gr.podSeen) > g.grace() {
 		return Creds{}, false
 	}
 	gr.expires = minTime(now.Add(g.grace()), gr.created.Add(g.maxAge()))
