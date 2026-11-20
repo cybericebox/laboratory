@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// CachePrefix is the first path segment of the cache: /v2/c/<registry>/<repo>/(manifests|blobs)/<ref>.
+// CachePrefix is the first path segment of the cache: /v2/c/<tenant segment>/<registry>/<repo>/(manifests|blobs)/<ref>.
 const CachePrefix = "/v2/c/"
 
 const (
@@ -20,11 +22,11 @@ var (
 	reRegistry  = regexp.MustCompile(`^[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?$`)
 	reDigest    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	reTag       = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
-	reTenant    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 )
 
 // objectRef is a parsed request of the cache path.
 type objectRef struct {
+	Tenant   string // the tenant segment of the path (names.TenantSegment, or "platform"): who the image is pulled for
 	Registry string // docker.io
 	Repo     string // library/nginx
 	Kind     string // manifests or blobs
@@ -46,14 +48,14 @@ func parseCachePath(path string) (objectRef, bool) {
 		return objectRef{}, false
 	}
 	segs := strings.Split(rest, "/")
-	if len(segs) < 4 { // registry, at least one repository component, kind, ref
+	if len(segs) < 5 { // tenant segment, registry, at least one repository component, kind, ref
 		return objectRef{}, false
 	}
-	o := objectRef{Registry: segs[0], Kind: segs[len(segs)-2], Ref: segs[len(segs)-1], Repo: strings.Join(segs[1:len(segs)-2], "/")}
-	if !reRegistry.MatchString(o.Registry) || len(o.Repo) > 255 {
+	o := objectRef{Tenant: segs[0], Registry: segs[1], Kind: segs[len(segs)-2], Ref: segs[len(segs)-1], Repo: strings.Join(segs[2:len(segs)-2], "/")}
+	if !names.ValidSegment(o.Tenant) || !reRegistry.MatchString(o.Registry) || len(o.Repo) > 255 {
 		return objectRef{}, false
 	}
-	for _, c := range segs[1 : len(segs)-2] {
+	for _, c := range segs[2 : len(segs)-2] {
 		if !reComponent.MatchString(c) {
 			return objectRef{}, false
 		}
@@ -73,13 +75,15 @@ func parseCachePath(path string) (objectRef, bool) {
 	return o, true
 }
 
-// splitUser separates the tenant the operator wrote into the username: "<tenant>~<upstream username>".
-func splitUser(u string) (tenant, user string, ok bool) {
-	tenant, user, found := strings.Cut(u, "~")
-	if !found || user == "" || !reTenant.MatchString(tenant) {
-		return "", "", false
+// oldForm says whether a cache path has no tenant segment: the old form c/<registry>/<repo>/..., whose first component is a registry host
+// (a dot or a port) and never a valid segment. It is answered 403, not 404.
+func oldForm(path string) bool {
+	rest, ok := strings.CutPrefix(path, CachePrefix)
+	if !ok {
+		return false
 	}
-	return tenant, user, true
+	first, _, _ := strings.Cut(rest, "/")
+	return !names.ValidSegment(first)
 }
 
 // isCache says whether a request belongs to the cache path.

@@ -16,6 +16,8 @@ type Metrics struct {
 	cache       *prometheus.CounterVec
 	fills       *prometheus.CounterVec
 	filledBytes prometheus.Counter
+	lab         *prometheus.CounterVec
+	auth        *prometheus.CounterVec
 }
 
 // NewMetrics makes the counters on a registry of their own.
@@ -31,6 +33,8 @@ func NewMetrics() *Metrics {
 	m.checks = vec("upstream_checks_total", "Fresh checks against an upstream registry by outcome.", "outcome")
 	m.cache = vec("cache_total", "Objects served by the cache (hit, miss, mounted).", "kind", "result")
 	m.fills = vec("fills_total", "Fills of the cache from upstream by result.", "kind", "result")
+	m.lab = vec("lab_requests_total", "Requests on the snapshot repositories by what the gate did (allowed, refused by code).", "result")
+	m.auth = vec("authentications_total", "Authentications of callers by result (ok, unauthenticated, forbidden, unavailable) and kind.", "result")
 	m.filledBytes = prometheus.NewCounter(prometheus.CounterOpts{Name: "registry_gate_filled_bytes_total", Help: "Bytes of blobs stored from upstream."})
 	m.reg.MustRegister(m.filledBytes)
 	return m

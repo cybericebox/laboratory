@@ -1,13 +1,15 @@
 //go:build linux
 
-// Package registrygated is the registry gate: a container of the registry pod, in front of zot. Every request to the registry
-// (the relay of the nodes, the operator, the agent) reaches this process, and only this process reaches zot, which listens on the
-// loopback of the pod. docs/research/2026-11-16-zot-tenant-cache.md.
+// Package registrygated is the registry gate: a container of the registry pod, in front of zot. Every request to the registry (the relay
+// of the nodes, the operator, the agent) reaches this process, and only this process reaches zot, which listens on the loopback of the
+// pod. Every caller is authenticated by the projected ServiceAccount token it sends (verified with the API server) and decided by who it is
+// and by what the cluster says it may have. docs/laboratory/specs/pools-release.md, section 2.4.
 package registrygated
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,25 +20,40 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/registrygate"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
 // Config comes from the environment the chart sets.
 type Config struct {
-	// Listen is the registry port of the pod (the Service's target); HealthListen the port of the probes and the metrics.
-	Listen       string `env:"GATE_LISTEN" envDefault:":5000"`
+	// TLSListen is the registry port of the pod (the Service's target): the only port the callers use, with the certificate and its key. The
+	// token travels in every request, so there is no plain port. HealthListen is the port of the probes and the metrics.
+	TLSListen    string `env:"GATE_TLS_LISTEN" envDefault:":5443"`
 	HealthListen string `env:"GATE_HEALTH_LISTEN" envDefault:":5002"`
+	TLSCertFile  string `env:"GATE_TLS_CERT_FILE" envDefault:"/etc/gate-tls/tls.crt"`
+	TLSKeyFile   string `env:"GATE_TLS_KEY_FILE" envDefault:"/etc/gate-tls/tls.key"`
 	// Zot is where zot listens: the loopback of the pod.
 	Zot string `env:"GATE_ZOT_ADDR" envDefault:"127.0.0.1:5001"`
 
-	// TLSListen, with the certificate and its private key, is the TLS port of the gate: the cache path is served there only, because the
-	// pull's credentials travel in it from the relay of a node.
-	TLSListen   string `env:"GATE_TLS_LISTEN"`
-	TLSCertFile string `env:"GATE_TLS_CERT_FILE" envDefault:"/etc/gate-tls/tls.crt"`
-	TLSKeyFile  string `env:"GATE_TLS_KEY_FILE" envDefault:"/etc/gate-tls/tls.key"`
+	// The ServiceAccounts the gate accepts, as <namespace>/<name>: the node-agent (the relay of a node), the operator and the agent.
+	NodeAccount     string `env:"GATE_NODE_ACCOUNT" envDefault:"laboratory-system/laboratory-node-agent"`
+	OperatorAccount string `env:"GATE_OPERATOR_ACCOUNT"`
+	AgentAccount    string `env:"GATE_AGENT_ACCOUNT"`
+	// TokenCacheTTL is the longest a verified token is remembered; BindSource requires the peer address of a node to be an address of the
+	// node its pod is bound to (the internal load balancer must keep the client address).
+	TokenCacheTTL time.Duration `env:"GATE_TOKEN_CACHE_TTL" envDefault:"5m"`
+	BindSource    bool          `env:"GATE_BIND_SOURCE" envDefault:"true"`
+	// APIStaleMax is the age of the view of the cluster past which a decision that needs it is answered 503.
+	APIStaleMax time.Duration `env:"GATE_API_STALE_MAX" envDefault:"15m"`
+	// PullGrace and GrantMaxAge bound how long a node may keep fetching what a manifest it was served lists.
+	PullGrace     time.Duration `env:"GATE_PULL_GRACE" envDefault:"2m"`
+	GrantMaxAge   time.Duration `env:"GATE_GRANT_MAX_AGE" envDefault:"1h"`
+	RequireDigest bool          `env:"GATE_REQUIRE_DIGEST" envDefault:"false"`
+	// AgentMaxFills is how many prewarm requests of the agent are served at once.
+	AgentMaxFills int `env:"GATE_AGENT_MAX_FILLS" envDefault:"8"`
 
-	// CacheEnabled turns the cache path (/v2/c/...) on. Off, that path answers 404 and the rest is the pass-through.
+	// CacheEnabled turns the cache path (/v2/c/...) on. Off, that path answers 404.
 	CacheEnabled bool `env:"GATE_CACHE_ENABLED" envDefault:"false"`
 	// RegistriesFile is the list of upstream registries the cache may call (JSON), reloaded when it changes.
 	RegistriesFile string `env:"GATE_REGISTRIES_FILE" envDefault:"/etc/gate/registries.json"`
@@ -60,6 +77,15 @@ type Config struct {
 	DiskHighWater int    `env:"GATE_DISK_HIGH_WATER" envDefault:"90"`
 	// UpstreamTimeout bounds the wait for an upstream answer (a blob body has no deadline of its own).
 	UpstreamTimeout time.Duration `env:"GATE_UPSTREAM_TIMEOUT" envDefault:"30s"`
+
+	// Snapshot pushes (devices.statePersistence.*): the limits the gate enforces for the nodes.
+	SnapshotsEnabled bool          `env:"GATE_SNAPSHOTS_ENABLED" envDefault:"false"`
+	MinPushInterval  time.Duration `env:"GATE_MIN_PUSH_INTERVAL" envDefault:"60s"`
+	PushBudget       int64         `env:"GATE_PUSH_BUDGET_BYTES" envDefault:"2147483648"`
+	PushBudgetWindow time.Duration `env:"GATE_PUSH_BUDGET_WINDOW" envDefault:"1h"`
+	SupersededGrace  time.Duration `env:"GATE_SUPERSEDED_GRACE" envDefault:"2m"`
+	RegistryReserve  float64       `env:"GATE_REGISTRY_RESERVE" envDefault:"0.1"`
+	TenantQuota      int64         `env:"GATE_TENANT_QUOTA_BYTES" envDefault:"10737418240"`
 }
 
 func fatal(log interface{ Error(error, string, ...any) }, err error, msg string) {
@@ -70,6 +96,18 @@ func fatal(log interface{ Error(error, string, ...any) }, err error, msg string)
 func readSecret(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	return strings.TrimSpace(string(b)), err
+}
+
+// account reads "<namespace>/<name>"; an empty value is "no such caller".
+func account(v, defNS, defName string) (registrygate.Account, error) {
+	if v == "" {
+		return registrygate.Account{Namespace: defNS, Name: defName}, nil
+	}
+	ns, name, ok := strings.Cut(v, "/")
+	if !ok || ns == "" || name == "" {
+		return registrygate.Account{}, fmt.Errorf("%q is not <namespace>/<name>", v)
+	}
+	return registrygate.Account{Namespace: ns, Name: name}, nil
 }
 
 // Run is the command "/node registry-gate".
@@ -88,22 +126,62 @@ func Run() {
 	defer stop()
 
 	metrics := registrygate.NewMetrics()
-	gate.Metrics = metrics.Handler()
+	gate.Metrics, gate.M = metrics.Handler(), metrics
+	gate.TLSOnly = true
+
+	nodeAcc, err := account(cfg.NodeAccount, names.SystemNamespace, "laboratory-node-agent")
+	if err != nil {
+		fatal(log, err, "GATE_NODE_ACCOUNT")
+	}
+	opAcc, err := account(cfg.OperatorAccount, names.SystemNamespace, names.OperatorServiceAccount)
+	if err != nil {
+		fatal(log, err, "GATE_OPERATOR_ACCOUNT")
+	}
+	agAcc, err := account(cfg.AgentAccount, names.AgentNamespace, names.AgentServiceAccount)
+	if err != nil {
+		fatal(log, err, "GATE_AGENT_ACCOUNT")
+	}
+
+	// the cluster view: watches, a heartbeat, and the TokenReview client
+	schedule := registrygate.NewSchedule()
+	secrets := registrygate.NewSecretView()
+	restCfg := ctrl.GetConfigOrDie()
+	src := &registrygate.KubeSources{Config: restCfg, Schedule: schedule, Secrets: secrets, OnError: func(err error) { log.Error(err, "the API server did not answer the heartbeat") }}
+	cs, err := src.Clientset()
+	if err != nil {
+		fatal(log, err, "the Kubernetes client")
+	}
+	go func() {
+		if err := src.Run(ctx); err != nil {
+			fatal(log, err, "the cluster view stopped")
+		}
+	}()
+	gate.Auth = &registrygate.Authenticator{
+		Reviewer: registrygate.KubeReviewer{Client: cs}, Accounts: registrygate.Accounts{Node: nodeAcc, Operator: opAcc, Agent: agAcc},
+		Schedule: schedule, CacheTTL: cfg.TokenCacheTTL, MaxStale: cfg.APIStaleMax, BindSource: cfg.BindSource,
+	}
+
+	pass, err := readSecret(cfg.ZotPassFile)
+	if err != nil || pass == "" {
+		fatal(log, err, "read the zot password")
+	}
+	zot := registrygate.NewZot(cfg.Zot, cfg.ZotUser, pass)
+	disk := &registrygate.DiskWatch{Path: cfg.DataDir, HighWater: cfg.DiskHighWater}
+
 	if cfg.CacheEnabled {
-		gate.Cache = buildCache(ctx, cfg, metrics, log)
-		gate.CacheTLSOnly = cfg.TLSListen != ""
+		gate.Cache = buildCache(ctx, cfg, metrics, log, zot, disk, schedule, secrets)
+	}
+	if cfg.SnapshotsEnabled {
+		gate.Lab = buildLab(ctx, cfg, metrics, log, zot, disk, schedule)
 	}
 
 	servers := []*http.Server{
-		registrygate.NewServer(cfg.Listen, gate),
+		registrygate.NewServer(cfg.TLSListen, gate),
 		registrygate.NewServer(cfg.HealthListen, gate.HealthHandler()),
-	}
-	if cfg.TLSListen != "" {
-		servers = append(servers, registrygate.NewServer(cfg.TLSListen, gate))
 	}
 	errs := make(chan error, len(servers))
 	for i, s := range servers {
-		tlsPort := i == 2
+		tlsPort := i == 0
 		go func() {
 			if tlsPort {
 				errs <- s.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
@@ -112,7 +190,7 @@ func Run() {
 			errs <- s.ListenAndServe()
 		}()
 	}
-	log.Info("registry gate", "listen", cfg.Listen, "health", cfg.HealthListen, "zot", cfg.Zot, "cache", cfg.CacheEnabled)
+	log.Info("registry gate", "tls", cfg.TLSListen, "health", cfg.HealthListen, "zot", cfg.Zot, "cache", cfg.CacheEnabled, "snapshots", cfg.SnapshotsEnabled)
 	select {
 	case err := <-errs:
 		if !errors.Is(err, http.ErrServerClosed) {
@@ -127,17 +205,28 @@ func Run() {
 	}
 }
 
-func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log interface {
+type logger interface {
 	Error(error, string, ...any)
 	Info(string, ...any)
-}) http.Handler {
+}
+
+func buildLab(ctx context.Context, cfg Config, m *registrygate.Metrics, log logger, zot *registrygate.Zot, disk *registrygate.DiskWatch, sch *registrygate.Schedule) *registrygate.LabGate {
+	lab := registrygate.NewLabGate(zot.Base, cfg.ZotUser, zot.Pass)
+	lab.Schedule, lab.Store, lab.M, lab.MaxStale = sch, zot, m, cfg.APIStaleMax
+	lab.Free = disk.FreeFraction
+	lab.Limits = registrygate.PushLimits{
+		MinInterval: cfg.MinPushInterval, Budget: cfg.PushBudget, BudgetWindow: cfg.PushBudgetWindow, Reserve: cfg.RegistryReserve, TenantQuota: cfg.TenantQuota,
+	}
+	lab.Meter = &registrygate.ZotMeter{Store: zot, Schedule: sch}
+	lab.Super = &registrygate.Superseder{Store: zot, Grace: cfg.SupersededGrace, OnError: func(repo string, err error) { log.Error(err, "delete a superseded snapshot", "repository", repo) }}
+	go lab.Super.Run(ctx, 10*time.Second)
+	return lab
+}
+
+func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log logger, zot *registrygate.Zot, disk *registrygate.DiskWatch, sch *registrygate.Schedule, secrets *registrygate.SecretView) *registrygate.Cache {
 	key, err := readSecret(cfg.KeyFile)
 	if err != nil || key == "" {
 		fatal(log, err, "read the credential hash key")
-	}
-	pass, err := readSecret(cfg.ZotPassFile)
-	if err != nil || pass == "" {
-		fatal(log, err, "read the zot password")
 	}
 	regs := &registrygate.RegistrySet{}
 	if err := regs.Watch(ctx, cfg.RegistriesFile, 10*time.Second, func(err error) {
@@ -158,11 +247,12 @@ func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log in
 			}
 		}
 	}()
-	c := registrygate.NewCache(regs, []byte(key), registrygate.NewUpstream(cfg.UpstreamTimeout),
-		registrygate.NewZot(cfg.Zot, cfg.ZotUser, pass), store, m)
+	c := registrygate.NewCache(regs, []byte(key), registrygate.NewUpstream(cfg.UpstreamTimeout), zot, store, m)
 	c.Allowed = cfg.AllowedRegistries
-	disk := &registrygate.DiskWatch{Path: cfg.DataDir, HighWater: cfg.DiskHighWater}
 	c.DiskFull = disk.Full
+	c.Schedule, c.Creds, c.MaxStale = sch, secrets, cfg.APIStaleMax
+	c.Grants = &registrygate.Grants{Grace: cfg.PullGrace, MaxAge: cfg.GrantMaxAge}
+	c.RequireDigest, c.AgentMaxFills = cfg.RequireDigest, cfg.AgentMaxFills
 	if cfg.AnonymousFillFile != "" {
 		data, err := os.ReadFile(cfg.AnonymousFillFile)
 		if err != nil {

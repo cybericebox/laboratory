@@ -16,13 +16,12 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 const (
 	// maxManifestSize bounds a manifest the gate reads into memory (the OCI recommendation is 4 MiB).
 	maxManifestSize = 4 << 20
-	// authRealm is the challenge of a request without credentials: containerd answers it with the credentials of the pod.
-	authRealm = `Basic realm="registry-gate"`
 	// the stable bodies of a refusal (the contract's reasons).
 	reasonNotAllowed  = "IMAGE_REGISTRY_NOT_ALLOWED"
 	reasonUnavailable = "IMAGE_REGISTRY_UNAVAILABLE"
@@ -46,11 +45,25 @@ type Cache struct {
 	Fill AnonymousFill
 	M    *Metrics
 
+	// Schedule is the gate's view of the cluster (who runs what where); Creds gives the upstream credentials of a tenant segment, which
+	// only the gate reads; Grants remember which digests a served manifest allows a node to fetch.
+	Schedule *Schedule
+	Creds    CredentialSource
+	Grants   *Grants
+	// RequireDigest refuses a manifest request by tag from a node (GATE_REQUIRE_DIGEST, off by default).
+	RequireDigest bool
+	// AgentMaxFills is how many requests of the agent the gate serves at once (GATE_AGENT_MAX_FILLS, default 8).
+	AgentMaxFills int
+	// MaxStale: past this age of the cluster view a node request is answered 503 (GATE_API_STALE_MAX, default 15 minutes).
+	MaxStale time.Duration
+
 	checks, reval, fills flight
 	pending              pendingSet
 
-	mu    sync.Mutex
-	where map[string]map[string]struct{} // digest -> cache repositories that hold it in zot
+	mu       sync.Mutex
+	where    map[string]map[string]struct{} // digest -> cache repositories that hold it in zot
+	agentSem chan struct{}
+	semOnce  sync.Once
 }
 
 // NewCache assembles the cache path.
@@ -77,24 +90,32 @@ func (c *Cache) hash(registry string, cr Creds) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-func refuse(w http.ResponseWriter, status int, code, msg string, challenge bool) {
-	if challenge {
-		w.Header().Set("Www-Authenticate", authRealm)
-	}
+func refuse(w http.ResponseWriter, status int, code, msg string, _ bool) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"code": code, "message": msg}}})
 }
 
-// ServeHTTP is one request of the cache path.
-func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// Serve is one request of the cache path from an authenticated principal (2.4.2, 2.4.3):
+//
+//   - a node needs a pod (or an ImagePull) on it that names exactly this reference for the tenant of the segment; the digests such a
+//     manifest lists are granted to the node afterwards, and a blob or child manifest needs a grant;
+//   - the agent (the prewarm) is allowed any registry of the list with the credentials of its call;
+//   - anything else is refused. No Authorization header of a node is ever read.
+func (c *Cache) Serve(w http.ResponseWriter, r *http.Request, p Principal) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		refuse(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "the cache is read-only", false)
 		return
 	}
-	o, ok := parseCachePath(r.URL.EscapedPath())
+	escaped := r.URL.EscapedPath()
+	o, ok := parseCachePath(escaped)
 	if !ok {
+		if oldForm(escaped) {
+			c.M.refusals.WithLabelValues("old_form").Inc()
+			refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
+			return
+		}
 		refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "not an object of the cache", false)
 		return
 	}
@@ -104,15 +125,153 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
 		return
 	}
-	who, ok := c.caller(o, r)
-	if !ok {
-		c.M.refusals.WithLabelValues("bad_credentials").Inc()
-		refuse(w, http.StatusUnauthorized, "UNAUTHORIZED", "the credentials are not in the form the platform writes", true)
+	switch p.Kind {
+	case KindAgent:
+		c.serveAgent(w, r, reg, o)
+	case KindNode:
+		c.serveNode(w, r, reg, o, p)
+	default:
+		c.M.refusals.WithLabelValues("principal").Inc()
+		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
+	}
+}
+
+// serveAgent is the prewarm: no schedule, the credentials of the call (Authorization: Basic <user>:<secret>, none: anonymous), a bound on
+// how many run at once.
+func (c *Cache) serveAgent(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef) {
+	c.semOnce.Do(func() {
+		n := c.AgentMaxFills
+		if n <= 0 {
+			n = 8
+		}
+		c.agentSem = make(chan struct{}, n)
+	})
+	select {
+	case c.agentSem <- struct{}{}:
+		defer func() { <-c.agentSem }()
+	default:
+		c.M.refusals.WithLabelValues("agent_busy").Inc()
+		w.Header().Set("Retry-After", "5")
+		refuse(w, http.StatusTooManyRequests, "TOOMANYREQUESTS", "the gate is serving the most prewarm requests it allows", false)
 		return
 	}
+	var cr Creds
+	if user, pass, ok := r.BasicAuth(); ok {
+		cr = Creds{User: user, Pass: pass}
+	}
+	who := caller{tenant: o.Tenant, creds: cr}
+	if !cr.anonymous() {
+		who.hash = c.hash(o.Registry, cr)
+	}
+	r.Header.Del("Authorization")
+	c.serveChecked(w, r, reg, o, []caller{who}, nil)
+}
+
+// serveNode is a request of a lab node.
+func (c *Cache) serveNode(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, p Principal) {
+	// nothing a node sends is credentials or identity
+	r.Header.Del("Authorization")
+	if c.Schedule == nil || !c.Schedule.Fresh(c.maxStale()) {
+		c.M.refusals.WithLabelValues("stale_view").Inc()
+		w.Header().Set("Retry-After", "30")
+		refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", reasonUnavailable, false)
+		return
+	}
+	tenant := names.SegmentPlatform
+	if o.Tenant != names.SegmentPlatform {
+		t, ok := c.Schedule.TenantOfSegment(o.Tenant)
+		if !ok {
+			c.M.refusals.WithLabelValues("unknown_segment").Inc()
+			refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
+			return
+		}
+		tenant = t
+	}
+	if c.RequireDigest && o.Kind == kindManifests && o.isTag() {
+		c.M.refusals.WithLabelValues("unpinned").Inc()
+		refuse(w, http.StatusForbidden, "DENIED", "CIB_UNPINNED: the reference must be pinned by digest", false)
+		return
+	}
+	// a digest of a manifest that was served on this node's claim (a child manifest, a config, a layer) is allowed by the grant
+	if !o.isTag() {
+		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok {
+			c.serveGranted(w, r, reg, o, p, cr)
+			return
+		}
+	}
+	labs, ok := c.scheduleMatch(p.Node, tenant, o)
+	if !ok {
+		if o.Kind == kindBlobs {
+			c.blobWithoutGrant(w, r, reg, o, p, tenant)
+			return
+		}
+		c.M.refusals.WithLabelValues("no_pod").Inc()
+		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
+		return
+	}
+	var who []caller
+	for _, cr := range c.Creds.Candidates(o.Tenant, reg, labs) {
+		cl := caller{tenant: o.Tenant, creds: cr}
+		if !cr.anonymous() {
+			cl.hash = c.hash(o.Registry, cr)
+		}
+		who = append(who, cl)
+	}
+	c.serveChecked(w, r, reg, o, who, &p)
+}
+
+// blobWithoutGrant: a blob request with no live grant. After a restart of the gate the grant of a digest-pinned reference is rebuilt from
+// what zot holds; otherwise the kubelet is told to ask for the manifest again.
+func (c *Cache) blobWithoutGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, p Principal, tenant string) {
+	if pins := c.pinnedDigests(p.Node, tenant, o); len(pins) > 0 {
+		cands := c.Creds.Candidates(o.Tenant, reg, nil)
+		c.rebuildGrant(r.Context(), p.Node, tenant, o, cands[0])
+		if cr, ok := c.Grants.Has(p.Node, o.Tenant, o.fullRepo(), o.Ref); ok {
+			c.serveGranted(w, r, reg, o, p, cr)
+			return
+		}
+	}
+	c.M.refusals.WithLabelValues("no_grant").Inc()
+	refuse(w, http.StatusNotFound, "BLOB_UNKNOWN", "ask for the manifest of the image first", false)
+}
+
+// serveGranted serves a digest that a grant allows: no upstream proof, the credentials of the grant for a fill.
+func (c *Cache) serveGranted(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, p Principal, cr Creds) {
+	who := caller{tenant: o.Tenant, creds: cr}
+	if !cr.anonymous() {
+		who.hash = c.hash(o.Registry, cr)
+	}
+	up := Object{Repo: o.Repo, Kind: o.Kind, Ref: o.Ref, Accept: r.Header.Get("Accept")}
+	c.M.decisions.WithLabelValues("grant").Inc()
+	if o.Kind == kindManifests {
+		c.serveManifestAndGrant(w, r, reg, o, up, who, &p)
+		return
+	}
+	c.serveBlob(w, r, reg, o, up, who)
+}
+
+func (c *Cache) maxStale() time.Duration {
+	if c.MaxStale > 0 {
+		return c.MaxStale
+	}
+	return 15 * time.Minute
+}
+
+// serveChecked runs the upstream proof of 5.2 for each candidate credential in turn (the first that is allowed wins) and serves. who is
+// never empty. p is the node, when the caller is one: a manifest served then makes a grant.
+func (c *Cache) serveChecked(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, who []caller, p *Principal) {
 	ctx := r.Context()
 	up := Object{Repo: o.Repo, Kind: o.Kind, Ref: o.Ref, Accept: r.Header.Get("Accept")}
-	digest, status := c.authorize(ctx, reg, o, up, who)
+	var digest string
+	var status int
+	var chosen caller
+	for _, cl := range who {
+		digest, status = c.authorize(ctx, reg, o, up, cl)
+		if status == http.StatusOK {
+			chosen = cl
+			break
+		}
+	}
 	switch status {
 	case http.StatusOK:
 	case http.StatusServiceUnavailable:
@@ -129,34 +288,35 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		c.M.refusals.WithLabelValues("denied").Inc()
-		refuse(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", true)
+		refuse(w, http.StatusForbidden, "DENIED", "the upstream registry refused the credentials of this image", false)
 		return
 	}
-	o.Ref = digest // a tag is resolved upstream with the pull's credentials and never answered from memory
+	o.Ref = digest // a tag is resolved upstream and never answered from memory
 	up.Ref = digest
 	if o.Kind == kindManifests {
+		c.serveManifestAndGrant(w, r, reg, o, up, chosen, p)
+		return
+	}
+	c.serveBlob(w, r, reg, o, up, chosen)
+}
+
+// serveManifestAndGrant serves a manifest and, for a node, records the digests it lists in the grant of (node, segment, repository).
+func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller, p *Principal) {
+	if p == nil {
 		c.serveManifest(w, r, reg, o, up, who)
 		return
 	}
-	c.serveBlob(w, r, reg, o, up, who)
-}
-
-// caller reads the Authorization header: none is anonymous, Basic is "<tenant>~<user>:<secret>".
-func (c *Cache) caller(o objectRef, r *http.Request) (caller, bool) {
-	h := r.Header.Get("Authorization")
-	if h == "" {
-		return caller{}, true
+	rec := &recorder{ResponseWriter: w}
+	c.serveManifest(rec, r, reg, o, up, who)
+	if rec.status != http.StatusOK && rec.status != 0 {
+		return
 	}
-	user, pass, ok := r.BasicAuth()
-	if !ok {
-		return caller{}, false
+	digests := []string{o.Ref}
+	if d := rec.Header().Get("Docker-Content-Digest"); d != "" {
+		digests = append(digests, d)
 	}
-	tenant, up, ok := splitUser(user)
-	if !ok {
-		return caller{}, false
-	}
-	cr := Creds{User: up, Pass: pass}
-	return caller{tenant: tenant, creds: cr, hash: c.hash(o.Registry, cr)}, true
+	digests = append(digests, childDigests(rec.body)...)
+	c.Grants.Add(p.Node, o.Tenant, o.fullRepo(), who.creds, digests...)
 }
 
 // authorize is the check of 5.2. It returns the digest of the object to serve (a tag is resolved upstream here) and an HTTP status:
@@ -206,7 +366,7 @@ func (c *Cache) authorize(ctx context.Context, reg Registry, o objectRef, up Obj
 			return o.Ref, http.StatusOK
 		case Refuse:
 			c.M.decisions.WithLabelValues("refused").Inc()
-			return "", http.StatusUnauthorized
+			return "", http.StatusForbidden
 		}
 		c.M.decisions.WithLabelValues("check").Inc()
 		var result int
@@ -268,17 +428,16 @@ func (c *Cache) settleMissing(ctx context.Context, reg Registry, key DecisionKey
 	c.Store.SettleMissing(key, started, out)
 }
 
-// statusOf is the answer to a request that may not be served. An outage is a 503 with a stable body, so a pod shows ImagePullBackOff and
-// not a misleading 401, except for a request without credentials: its 401 makes containerd come back with the pod's credentials, which
-// may still be served from a verified decision.
-func statusOf(o Outcome, anonymous bool) int {
-	switch {
-	case o == Unreachable && !anonymous:
+// statusOf is the answer to a request that may not be served: an outage is a 503 with a stable body (a pod shows ImagePullBackOff), a
+// missing object a 404, and a refusal a 403. There is no challenge: a caller has no other credentials to come back with.
+func statusOf(o Outcome, _ bool) int {
+	switch o {
+	case Unreachable:
 		return http.StatusServiceUnavailable
-	case o == NotFound && !anonymous:
+	case NotFound:
 		return http.StatusNotFound
 	}
-	return http.StatusUnauthorized
+	return http.StatusForbidden
 }
 
 func outcomeName(o Outcome) string {
@@ -493,8 +652,8 @@ func (c *Cache) serveBlob(w http.ResponseWriter, r *http.Request, reg Registry, 
 
 func (c *Cache) refuseUpstream(w http.ResponseWriter, out Outcome, anonymous bool) {
 	switch statusOf(out, anonymous) {
-	case http.StatusUnauthorized:
-		refuse(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", true)
+	case http.StatusForbidden:
+		refuse(w, http.StatusForbidden, "DENIED", "the upstream registry refused the credentials of this image", false)
 	case http.StatusNotFound:
 		refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "the object is not in the upstream repository", false)
 	default:

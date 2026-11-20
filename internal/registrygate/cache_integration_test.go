@@ -69,7 +69,7 @@ func TestPrivateImageIsProvedPerPull(t *testing.T) {
 	ld := r.up.put("org/private", "blobs", layer)
 	md := r.up.put("org/private", "manifests", manifestBody(r.up.put("org/private", "blobs", []byte("{}")), ld))
 
-	if code, _, _ := r.pull("GET", mpath("org/private", md), "", "", nil); code != 401 {
+	if code, _, _ := r.pull("GET", mpath("org/private", md), "", "", nil); code != 403 {
 		t.Fatalf("a private image without credentials: %d", code)
 	}
 	if code, _, _ := r.pull("GET", mpath("org/private", md), alice, "pw", nil); code != 200 {
@@ -84,11 +84,11 @@ func TestPrivateImageIsProvedPerPull(t *testing.T) {
 
 	// g3: mallory has an account upstream, no right to this repository: nothing of the cached copy reaches her
 	for _, p := range []string{mpath("org/private", md), bpath("org/private", ld)} {
-		if code, body, _ := r.pull("GET", p, mal, "pw", nil); code != 401 || bytes.Contains(body, layer) {
+		if code, body, _ := r.pull("GET", p, mal, "pw", nil); code != 403 || bytes.Contains(body, layer) {
 			t.Fatalf("mallory %s: %d", p, code)
 		}
 	}
-	if code, _, _ := r.pull("GET", bpath("org/private", ld), "t9~alice", "wrong", nil); code != 401 {
+	if code, _, _ := r.pull("GET", bpath("org/private", ld), "t9~alice", "wrong", nil); code != 403 {
 		t.Fatalf("a wrong password: %d", code)
 	}
 
@@ -129,7 +129,7 @@ func TestRevokedCredentialsAreRefusedForEveryTenantOfTheHash(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	for _, tenant := range []string{alice, aliceT} {
-		if code, _, _ := r.pull("GET", bpath("org/private", ld), tenant, "pw", nil); code != 401 {
+		if code, _, _ := r.pull("GET", bpath("org/private", ld), tenant, "pw", nil); code != 403 {
 			t.Fatalf("after the revalidation every tenant of the hash is refused at once, %s: %d", tenant, code)
 		}
 	}
@@ -169,7 +169,7 @@ func TestEmptyScopeTokenIsRefused(t *testing.T) {
 	r := newRig(t)
 	r.up.emptyScope = true
 	ld := r.up.put("org/private", "blobs", []byte("secret"))
-	if code, _, _ := r.pull("GET", bpath("org/private", ld), mal, "pw", nil); code != 401 {
+	if code, _, _ := r.pull("GET", bpath("org/private", ld), mal, "pw", nil); code != 403 {
 		t.Fatalf("%d", code)
 	}
 }
@@ -275,19 +275,22 @@ func TestCachePathRefusals(t *testing.T) {
 		want         int
 	}
 	for _, c := range []tc{
-		{"POST", "/v2/c/up/org/private/blobs/uploads/", 405},
-		{"PUT", mpath("org/private", ld), 405},
-		{"DELETE", mpath("org/private", ld), 405},
-		{"GET", "/v2/c/up/org/private/tags/list", 404},
-		{"GET", "/v2/c/up/_catalog", 404},
-		{"GET", "/v2/c/up/org/private/referrers/" + ld, 404},
-		{"GET", "/v2/c/nowhere/org/private/blobs/" + ld, 403},
-		{"GET", "/v2/c/up/org/%2e%2e/private/blobs/" + ld, 400},
-		{"GET", "/v2/c/up/org/private/blobs/" + ld + "/../x", 400},
-		{"GET", "/v2/c//up/org/private/blobs/" + ld, 400},
-		{"GET", "/v2/c/up/org%2Fprivate/blobs/" + ld, 400},
+		{"POST", "/v2/c/t0/up/org/private/blobs/uploads/", 405},
+		{"PUT", "/v2/c/t0/up/org/private/manifests/" + ld, 405},
+		{"DELETE", "/v2/c/t0/up/org/private/manifests/" + ld, 405},
+		{"GET", "/v2/c/t0/up/org/private/tags/list", 404},
+		{"GET", "/v2/c/t0/up/_catalog", 404},
+		{"GET", "/v2/c/t0/up/org/private/referrers/" + ld, 404},
+		{"GET", "/v2/c/docker.io/library/nginx/manifests/" + ld, 403}, // the old form: a registry host where the tenant segment is
+		{"GET", "/v2/c/localhost:5000/team/img/blobs/" + ld, 403},
+		{"GET", "/v2/c/t0/nowhere/org/private/blobs/" + ld, 403},
+		{"GET", "/v2/c/t0/up/org/%2e%2e/private/blobs/" + ld, 400},
+		{"GET", "/v2/c/t0/up/org/private/blobs/" + ld + "/../x", 400},
+		{"GET", "/v2/c/t0//up/org/private/blobs/" + ld, 400},
+		{"GET", "/v2/c/t0/up/org%2Fprivate/blobs/" + ld, 400},
 	} {
 		req, _ := http.NewRequest(c.method, r.gate.URL+c.path, nil)
+		req.Header.Set(HeaderNodeToken, "agent-token")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -297,15 +300,16 @@ func TestCachePathRefusals(t *testing.T) {
 			t.Errorf("%s %s: %d, want %d", c.method, c.path, resp.StatusCode, c.want)
 		}
 	}
-	// zot itself is not reachable through the pass-through for the cache tree: the cache path never goes there
-	resp, err := http.Get(r.gate.URL + "/v2/_catalog")
-	if err == nil {
-		defer resp.Body.Close()
-		b := new(bytes.Buffer)
-		_, _ = b.ReadFrom(resp.Body)
-		if strings.Contains(b.String(), "c/up") {
-			t.Fatalf("the catalog must not list the cache tree to a client: %s", b)
-		}
+	// zot itself is not reachable: the catalog is the operator's, and the agent has no right to it
+	req, _ := http.NewRequest("GET", r.gate.URL+"/v2/_catalog", nil)
+	req.Header.Set(HeaderNodeToken, "agent-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("the catalog must not be served to the agent: %d", resp.StatusCode)
 	}
 }
 
@@ -349,7 +353,7 @@ func TestTagIsResolvedUpstreamEveryTime(t *testing.T) {
 	if r.up.n("HEAD org/private")-heads < 2 {
 		t.Fatal("a tag is never answered from the gate's memory")
 	}
-	if code, _, _ := r.pull("GET", mpath("org/private", "v1"), mal, "pw", nil); code != 401 {
+	if code, _, _ := r.pull("GET", mpath("org/private", "v1"), mal, "pw", nil); code != 403 {
 		t.Fatalf("a tag of a private image for a credential without a right: %d", code)
 	}
 }
@@ -390,7 +394,7 @@ func TestIndexIsServedFromMemoryAndChildIsStored(t *testing.T) {
 		t.Fatal("an index with children that were never pulled cannot be stored")
 	}
 	// still answered, for the credential that has the right, and only for it
-	if code, _, _ := r.pull("GET", mpath("org/private", id), mal, "pw", accept); code != 401 {
+	if code, _, _ := r.pull("GET", mpath("org/private", id), mal, "pw", accept); code != 403 {
 		t.Fatalf("the memory copy is behind the proof like the stored ones: %d", code)
 	}
 }
@@ -467,8 +471,8 @@ func TestAMissingObjectDoesNotPoisonTheDecision(t *testing.T) {
 	if got := r.cache.Store.Lookup(DecisionKey{Hash: r.cache.hash("up", Creds{"alice", "pw"}), Repo: "up/org/private"}, "t1"); got != Serve {
 		t.Fatalf("a 404 after the proof must not change the decision: %v", got)
 	}
-	// ... and a repository the credentials have no right to is refused (401)
-	if code, _, _ := r.pull("GET", bpath("org/private", ld), mal, "pw", nil); code != 401 {
+	// ... and a repository the credentials have no right to is refused (403)
+	if code, _, _ := r.pull("GET", bpath("org/private", ld), mal, "pw", nil); code != 403 {
 		t.Fatalf("a refusal stays a refusal: %d", code)
 	}
 }
@@ -527,8 +531,8 @@ func TestA404OnABogusTagDoesNotBlockAValidTag(t *testing.T) {
 func TestAnAnonymous404DoesNotBlockOthers(t *testing.T) {
 	r := newRig(t)
 	r.putTag("library/nginx", "latest", []byte("public manifest"))
-	if code, _, _ := r.pull("GET", mpath("library/nginx", "bogus"), "", "", nil); code != 401 {
-		t.Fatalf("an anonymous 404 is a 401 (the client comes back with credentials): %d", code)
+	if code, _, _ := r.pull("GET", mpath("library/nginx", "bogus"), "", "", nil); code != 404 {
+		t.Fatalf("an anonymous 404 is a 404: %d", code)
 	}
 	if got := r.cache.Store.Lookup(DecisionKey{Repo: "up/library/nginx"}, ""); got == Refuse {
 		t.Fatalf("no repository-wide refusal for the anonymous key: %v", got)
