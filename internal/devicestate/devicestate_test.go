@@ -86,9 +86,16 @@ func TestWatchFallsBackToPollingPastTheDirectoryCap(t *testing.T) {
 }
 
 func TestWatchBudget(t *testing.T) {
-	b := &watchBudget{max: 2}
+	b := NewWatchBudget(2)
 	if !b.take() || !b.take() || b.take() {
 		t.Fatal("the budget allows exactly max watches")
+	}
+	if b.Used() != 2 {
+		t.Fatalf("used %d", b.Used())
+	}
+	b.give(1)
+	if !b.take() {
+		t.Fatal("a share given back can be taken again")
 	}
 }
 

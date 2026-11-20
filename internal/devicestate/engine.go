@@ -62,8 +62,9 @@ type Engine struct {
 	RegistryHost string
 	// WorkDir holds the temporary layer files of a snapshot.
 	WorkDir string
-	// MaxWatchDirs is how many directories of one writable layer are watched with inotify (the kernel's watch limit is shared
-	// by everything on the node); past it the layer is only polled. Zero means DefaultMaxWatchDirs.
+	// MaxWatchDirs is how many directories of ALL the writable layers of the node are watched with inotify together (the kernel's watch
+	// limit is shared by everything on the node, and one budget is shared by every device); past it a layer is only polled. Zero means
+	// DefaultMaxWatchDirs.
 	MaxWatchDirs int
 	// Poll is the writable-layer scan interval (DefaultPollInterval when zero).
 	Poll time.Duration
@@ -95,6 +96,9 @@ type Engine struct {
 	// SnapshotsBlocked, when set, is why no snapshot can be taken on this node (an AppArmor profile that denies mount): devices are
 	// still followed, but each gets it as its warning and no snapshot is attempted.
 	SnapshotsBlocked string
+
+	watchOnce   sync.Once
+	watchBudget *WatchBudget
 
 	captureWorkers sync.WaitGroup
 	holdWorkers    sync.WaitGroup
@@ -215,6 +219,12 @@ func (e *Engine) retryMax() time.Duration {
 		return e.RetryMax
 	}
 	return defaultRetryMax
+}
+
+// watchDirs is the node-wide budget of watched directories, made on first use from MaxWatchDirs.
+func (e *Engine) watchDirs() *WatchBudget {
+	e.watchOnce.Do(func() { e.watchBudget = NewWatchBudget(e.MaxWatchDirs) })
+	return e.watchBudget
 }
 
 func (e *Engine) now() time.Time {
@@ -436,7 +446,9 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 	}
 	e, p, c := t.e, t.pod, t.c
 	wctx, cancel := context.WithCancel(ctx)
-	changes, err := Watch(wctx, c.UpperDir, p.Policy, e.Poll, e.MaxWatchDirs)
+	changes, err := WatchWith(wctx, c.UpperDir, p.Policy, WatchOptions{Poll: e.Poll, Budget: e.watchDirs(), OnOverCap: func() {
+		e.Log.Info("the writable layer is over the scan limits: it is followed by filesystem events only", "device", p.Device, "pod", p.Pod)
+	}})
 	if err != nil {
 		e.Log.Error(err, "watch writable layer", "upper", c.UpperDir)
 		cancel()
