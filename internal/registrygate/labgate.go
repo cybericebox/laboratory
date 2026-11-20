@@ -192,7 +192,7 @@ func (g *LabGate) Serve(w http.ResponseWriter, r *http.Request, p Principal) {
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		if lp.Kind == "uploads" {
+		if lp.Kind == kindUploads {
 			if f, ok := g.checkSession(lp, p); !ok {
 				g.deny(w, f)
 				return
@@ -234,7 +234,7 @@ func (g *LabGate) authorizeStaff(r *http.Request, p Principal, escaped string) (
 	case strings.HasPrefix(escaped, "/v2/lab/") && read:
 		return refusal{}, true
 	case p.Kind == KindOperator && strings.HasPrefix(escaped, "/v2/lab/") && r.Method == http.MethodDelete:
-		if lp, ok := parseLabPath(escaped); ok && (lp.Kind == "manifests" || lp.Kind == "blobs") {
+		if lp, ok := parseLabPath(escaped); ok && (lp.Kind == kindManifests || lp.Kind == kindBlobs) {
 			return refusal{}, true
 		}
 	case p.Kind == KindOperator && read && (escaped == "/v2/_catalog" || strings.HasSuffix(escaped, "/tags/list") || isBasePath(escaped)):
@@ -246,12 +246,12 @@ func (g *LabGate) authorizeStaff(r *http.Request, p Principal, escaped string) (
 // authorizeWrite is the push rule of a node for the repository of its own device.
 func (g *LabGate) authorizeWrite(r *http.Request, lp labPath, p Principal, dev DeviceInfo) (refusal, bool) {
 	switch lp.Kind {
-	case "manifests":
+	case kindManifests:
 		if r.Method != http.MethodPut || lp.Ref != "latest" {
 			return denied, false // only the tag "latest" is written
 		}
 		return g.authorizeManifestPut(r, lp, p, dev)
-	case "uploads":
+	case kindUploads:
 		return g.authorizeUpload(r, lp, p, dev)
 	}
 	return denied, false
@@ -490,7 +490,7 @@ func (g *LabGate) afterZot(resp *http.Response) {
 		return
 	}
 	switch {
-	case lp.Kind == "uploads" && req.Method == http.MethodPost && resp.StatusCode == http.StatusAccepted:
+	case lp.Kind == kindUploads && req.Method == http.MethodPost && resp.StatusCode == http.StatusAccepted:
 		if id := uploadID(resp.Header.Get("Location")); id != "" {
 			g.mu.Lock()
 			if len(g.sess) >= maxSessions {
@@ -499,11 +499,11 @@ func (g *LabGate) afterZot(resp *http.Response) {
 			g.sess[id] = uploadSession{node: principalNode(req), repo: lp.Repo, started: g.now()}
 			g.mu.Unlock()
 		}
-	case lp.Kind == "uploads" && lp.Ref != "" && (resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusNotFound):
+	case lp.Kind == kindUploads && lp.Ref != "" && (resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusNotFound):
 		g.mu.Lock()
 		delete(g.sess, lp.Ref) // the session is over
 		g.mu.Unlock()
-	case lp.Kind == "manifests" && req.Method == http.MethodPut && lp.Ref == "latest" && resp.StatusCode == http.StatusCreated:
+	case lp.Kind == kindManifests && req.Method == http.MethodPut && lp.Ref == "latest" && resp.StatusCode == http.StatusCreated:
 		g.snapshotAccepted(req, lp, resp.Header.Get("Docker-Content-Digest"))
 	}
 }

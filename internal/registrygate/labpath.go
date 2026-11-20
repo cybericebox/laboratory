@@ -1,7 +1,6 @@
 package registrygate
 
 import (
-	"net/url"
 	"strings"
 )
 
@@ -29,16 +28,16 @@ func parseLabPath(escaped string) (labPath, bool) {
 	p := labPath{NS: seg[0], Lab: seg[1], Dev: seg[2]}
 	p.Repo = "lab/" + p.NS + "/" + p.Lab + "/" + p.Dev
 	switch {
-	case len(seg) == 5 && seg[3] == "manifests":
-		p.Kind, p.Ref = "manifests", seg[4]
-	case len(seg) == 5 && seg[3] == "blobs" && seg[4] != "uploads":
-		p.Kind, p.Ref = "blobs", seg[4]
-	case len(seg) == 6 && seg[3] == "blobs" && seg[4] == "uploads" && seg[5] == "":
-		p.Kind = "uploads" // the path ended in a slash: the start of an upload
-	case len(seg) == 5 && seg[3] == "blobs" && seg[4] == "uploads":
-		p.Kind = "uploads"
-	case len(seg) == 6 && seg[3] == "blobs" && seg[4] == "uploads" && seg[5] != "":
-		p.Kind, p.Ref = "uploads", seg[5]
+	case len(seg) == 5 && seg[3] == kindManifests:
+		p.Kind, p.Ref = kindManifests, seg[4]
+	case len(seg) == 5 && seg[3] == kindBlobs && seg[4] != kindUploads:
+		p.Kind, p.Ref = kindBlobs, seg[4]
+	case len(seg) == 6 && seg[3] == kindBlobs && seg[4] == kindUploads && seg[5] == "":
+		p.Kind = kindUploads // the path ended in a slash: the start of an upload
+	case len(seg) == 5 && seg[3] == kindBlobs && seg[4] == kindUploads:
+		p.Kind = kindUploads
+	case len(seg) == 6 && seg[3] == kindBlobs && seg[4] == kindUploads && seg[5] != "":
+		p.Kind, p.Ref = kindUploads, seg[5]
 	default:
 		return labPath{}, false // tags/list, referrers and the rest are the operator's
 	}
@@ -53,8 +52,19 @@ func parseLabPath(escaped string) (labPath, bool) {
 // mountFromAllowed says whether a blob mount may take its blob from repository from: the shared base image, or a cache repository
 // (the way a first snapshot reuses the layers of its base image). Another device's snapshot repository is never a source.
 func mountFromAllowed(from string) bool {
-	from, _ = url.PathUnescape(from)
-	return from == "base" || strings.HasPrefix(from, "c/")
+	// from comes out of the decoded query already; it is never decoded a second time
+	if from == "base" {
+		return true
+	}
+	if !strings.HasPrefix(from, "c/") {
+		return false
+	}
+	for _, seg := range strings.Split(from, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // isSharedRead says whether the path is a read of the shared "base" repository (the operator's).

@@ -14,6 +14,7 @@ const CachePrefix = "/v2/c/"
 const (
 	kindManifests = "manifests"
 	kindBlobs     = "blobs"
+	kindUploads   = "uploads"
 	schemeHTTP    = "http"
 )
 

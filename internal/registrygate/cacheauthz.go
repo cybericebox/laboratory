@@ -138,6 +138,33 @@ func (c *Cache) pinnedDigests(node, tenant string, o objectRef) []string {
 	return out
 }
 
+// anyPodFor says whether some pod (or ImagePull) on the node names the repository of o for the tenant of the segment, with any tag or
+// digest: a blob request for a repository nothing on the node names is refused outright.
+func (c *Cache) anyPodFor(node, tenant string, o objectRef) bool {
+	for _, pod := range c.Schedule.PodsOnNode(node) {
+		if pod.Terminating {
+			continue
+		}
+		for _, img := range pod.Images {
+			ref, isCache := parseCacheImage(img)
+			if isCache && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() && c.podOfTenant(pod, o.Tenant, tenant) {
+				return true
+			}
+		}
+	}
+	for _, ip := range c.Schedule.ImagePullsForNode(node) {
+		if (o.Tenant == names.SegmentPlatform && ip.Tenant != names.SegmentPlatform) || (o.Tenant != names.SegmentPlatform && names.TenantSegment(ip.Tenant) != o.Tenant) {
+			continue
+		}
+		for _, img := range ip.Images {
+			if ref, isCache := parseCacheImage(img); isCache && ref.Seg == o.Tenant && ref.fullRepo() == o.fullRepo() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // childDigests are the digests a manifest lists: the child manifests of an index, the config and layers of an image manifest.
 func childDigests(body []byte) []string {
 	var m struct {

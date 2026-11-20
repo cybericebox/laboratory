@@ -231,6 +231,12 @@ func (c *Cache) blobWithoutGrant(w http.ResponseWriter, r *http.Request, reg Reg
 			return
 		}
 	}
+	if !c.anyPodFor(p.Node, tenant, o) {
+		// no pod of this node names the repository at all: the same refusal as for any request nothing on the node asks for
+		c.M.refusals.WithLabelValues("no_pod").Inc()
+		refuse(w, http.StatusForbidden, "DENIED", reasonNotAllowed, false)
+		return
+	}
 	c.M.refusals.WithLabelValues("no_grant").Inc()
 	refuse(w, http.StatusNotFound, "BLOB_UNKNOWN", "ask for the manifest of the image first", false)
 }

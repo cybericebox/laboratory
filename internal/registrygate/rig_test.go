@@ -192,8 +192,8 @@ func (testReviewer) Review(_ context.Context, token string, aud []string) (Revie
 		return Review{Authenticated: true, Username: "system:serviceaccount:laboratory-system:laboratory-controller-manager", Audiences: aud}, nil
 	case token == "other-token": // a valid token of an account the gate does not serve
 		return Review{Authenticated: true, Username: "system:serviceaccount:default:somebody", Audiences: aud}, nil
-	case strings.HasPrefix(token, "node-token-"): // node-token-<pod name>-<pod uid>
-		name, uid, _ := strings.Cut(strings.TrimPrefix(token, "node-token-"), "-")
+	case strings.HasPrefix(token, "node-token-"): // node-token-<pod name>/<pod uid>
+		name, uid, _ := strings.Cut(strings.TrimPrefix(token, "node-token-"), "/")
 		return Review{Authenticated: true, Username: "system:serviceaccount:laboratory-system:laboratory-node-agent", Audiences: aud,
 			Extra: map[string][]string{extraPodName: {name}, extraPodUID: {uid}}}, nil
 	}
