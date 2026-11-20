@@ -201,7 +201,7 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		NodeTimeoutSeconds: int32(cfg.Scheduler.NodeTimeout / time.Second),
 		LabsDomain:         cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
-		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionIdleTTL: cfg.ProxySessionIdleTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
+		ProxyGrantMaxTTL: cfg.ProxyGrantMaxTTL, TerminalGrantMaxTTL: cfg.TerminalGrantMaxTTL,
 	}
 	if f.DeviceProfiles, err = profiles.Enabled(cfg.DeviceProfiles); err != nil {
 		return f, fmt.Errorf("AGENT_DEVICE_PROFILES: %w", err)

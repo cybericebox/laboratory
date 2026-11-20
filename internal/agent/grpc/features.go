@@ -27,6 +27,18 @@ import (
 )
 
 // Features are the platform's choices the backend needs to know, set once from the chart.
+// grantMaxTTL is the longest grant lifetime the whole entry accepts: the smaller of the configured limits of the L7 proxy
+// and of device-access (a grant for a console is checked by both). Zero when neither is configured.
+func (f Features) grantMaxTTL() time.Duration {
+	var out time.Duration
+	for _, d := range []time.Duration{f.ProxyGrantMaxTTL, f.TerminalGrantMaxTTL} {
+		if d > 0 && (out == 0 || d < out) {
+			out = d
+		}
+	}
+	return out
+}
+
 type Features struct {
 	Lifecycle *protobuf.LifecycleFeature
 	// StatePersistence is the cluster switch; Debounce, ExcludePaths, WriteQuota and MaxFileSize are its cluster values
@@ -49,10 +61,10 @@ type Features struct {
 	// LabsDomain and VPNEndpoint are the public hosts of lab endpoints and of WireGuard.
 	LabsDomain  string
 	VPNEndpoint string
-	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits.
-	ProxyAccessTokenMaxTTL time.Duration
-	ProxySessionIdleTTL    time.Duration
-	ProxySessionMaxTTL     time.Duration
+	// ProxyGrantMaxTTL and TerminalGrantMaxTTL are the longest exp - iat of an access grant the L7 proxy and device-access
+	// accept. GetFeatures reports the smaller one (grantMaxTTL); zero means "not configured" and is skipped.
+	ProxyGrantMaxTTL    time.Duration
+	TerminalGrantMaxTTL time.Duration
 	// DeviceProfiles are the enabled catalog profile IDs (internal/profiles).
 	DeviceProfiles []string
 	// Limits are the caps CreateLabs enforces.
@@ -202,7 +214,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				// Every LabGroup and Lab runs under a reservation: there is no way around it on this agent (decision 17).
 				Reservations: &protobuf.ReservationsFeature{Required: true, EndingNoticeSeconds: int32(h.reservationNotice() / time.Second)},
 				Proxy: &protobuf.ProxyFeature{
-					AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
+					GrantMaxTtlSeconds: int64(f.grantMaxTTL().Seconds()),
 				},
 			}
 			// the chart says what is configured; the nodes say what they can do

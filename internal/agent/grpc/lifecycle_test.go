@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -20,7 +21,10 @@ import (
 )
 
 // removedIn2 are the fields of the pre-lifecycle contract that contract 2.0 removed on purpose.
-var removedIn2 = map[string]map[int32]bool{"LabStatus": {2: true, 3: true, 6: true, 7: true}}
+var removedIn2 = map[string]map[int32]bool{"LabStatus": {2: true, 3: true, 6: true, 7: true}, "ProxyFeature": {2: true, 3: true}}
+
+// renamedIn3 are the fields contract 3.0 renamed on purpose (same number, same type, a new meaning): the new name.
+var renamedIn3 = map[string]string{"ProxyFeature.1": "grant_max_ttl_seconds"}
 
 // The fixture is protoc output from the pre-lifecycle contract. Every old field,
 // reserved tag, enum value and method must keep its existing wire meaning.
@@ -54,7 +58,11 @@ func TestLifecycleWireCompatibility(t *testing.T) {
 				continue
 			}
 			n := after.Fields().ByNumber(f.Number())
-			if n == nil || n.Name() != f.Name() || n.Kind() != f.Kind() || n.Cardinality() != f.Cardinality() || n.IsMap() != f.IsMap() {
+			name := f.Name()
+			if renamed, ok := renamedIn3[fmt.Sprintf("%s.%d", before.Name(), f.Number())]; ok {
+				name = protoreflect.Name(renamed)
+			}
+			if n == nil || n.Name() != name || n.Kind() != f.Kind() || n.Cardinality() != f.Cardinality() || n.IsMap() != f.IsMap() {
 				t.Fatalf("changed wire field %s.%s (%d)", before.Name(), f.Name(), f.Number())
 			}
 			if f.Message() != nil && n.Message().FullName() != f.Message().FullName() {

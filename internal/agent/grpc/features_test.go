@@ -24,7 +24,7 @@ var testFeatures = Features{
 	CacheEnabled: true, CacheRegistries: []string{"docker.io", "ghcr.io"},
 	SchedulerEnabled: true, SchedulerMaxPods: 20, NodeTimeoutSeconds: 900,
 	LabsDomain: "labs.example.com", VPNEndpoint: "vpn.example.com:51820",
-	ProxyAccessTokenMaxTTL: 60 * time.Second, ProxySessionMaxTTL: 24 * time.Hour,
+	ProxyGrantMaxTTL: 8 * time.Hour, TerminalGrantMaxTTL: 4 * time.Hour,
 	GroupPods: GroupPodsFeature{
 		Sizing: grouppods.Sizings{
 			VPN:     grouppods.PodSizing{BaseCPU: 20, BaseMemory: 64 << 20, PerUnitCPU: 6, PerUnitMemory: 20 << 20, MaxUnits: 20},
@@ -62,7 +62,7 @@ func TestFeaturesReportThePlatformChoices(t *testing.T) {
 	if e := got.GetEndpoints(); e.GetLabsDomain() != "labs.example.com" || e.GetVpnEndpoint() != "vpn.example.com:51820" {
 		t.Fatalf("endpoints: %+v", e)
 	}
-	if px := got.GetProxy(); px.GetAccessTokenMaxTtlSeconds() != 60 || px.GetSessionMaxTtlSeconds() != 86400 {
+	if px := got.GetProxy(); px.GetGrantMaxTtlSeconds() != 4*3600 {
 		t.Fatalf("proxy: %+v", px)
 	}
 	if got.GetCertificate().GetIssuedTtlSeconds() != int64(DefaultClientCertTTL.Seconds()) {
@@ -197,5 +197,21 @@ func TestFeaturesReportTheGroupLimits(t *testing.T) {
 	}
 	if l := got.GetGroupLimits(); l.GetMaxUsers() != 7 || l.GetMaxLabs() != 33 || l.GetDefaultUsers() != 2 || l.GetDefaultLabs() != 4 {
 		t.Fatalf("group_limits = %+v", l)
+	}
+}
+
+func TestGrantMaxTTLIsTheSmallerConfiguredLimit(t *testing.T) {
+	for _, c := range []struct {
+		proxy, terminal, want time.Duration
+	}{
+		{8 * time.Hour, 4 * time.Hour, 4 * time.Hour},
+		{2 * time.Hour, 4 * time.Hour, 2 * time.Hour},
+		{8 * time.Hour, 0, 8 * time.Hour},
+		{0, 3 * time.Hour, 3 * time.Hour},
+		{0, 0, 0},
+	} {
+		if got := (Features{ProxyGrantMaxTTL: c.proxy, TerminalGrantMaxTTL: c.terminal}).grantMaxTTL(); got != c.want {
+			t.Errorf("proxy %v terminal %v: %v, want %v", c.proxy, c.terminal, got, c.want)
+		}
 	}
 }

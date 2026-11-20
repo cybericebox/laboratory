@@ -1389,13 +1389,14 @@ message TenantLimits {
 
 // Limits the L7 proxy enforces on lab access.
 message ProxyFeature {
-  // The longest exp - iat of an access token (handoff link) the proxy accepts; a longer one is refused.
-  int64 access_token_max_ttl_seconds = 1;
-  // The proxy's session is sliding: it expires after this much inactivity (the cookie is renewed while the
-  // user is active) ...
-  int64 session_idle_ttl_seconds = 3;
-  // ... and never lives longer than this from the handoff, nor past the link's own session end.
-  int64 session_max_ttl_seconds = 2;
+  // The longest exp - iat of an access grant (the JWS the platform signs for one device host) that the L7 proxy and the
+  // device-access service accept; a longer one is refused. The backend caps the exp of a grant with it. There is no
+  // session on the proxy side: the grant itself is the session, so no idle or sliding limit exists.
+  int64 grant_max_ttl_seconds = 1;
+  // Fields 2 and 3 were the proxy's own session limits (session_max_ttl_seconds, session_idle_ttl_seconds); the proxy
+  // has no session of its own any more.
+  reserved 2, 3;
+  reserved "session_max_ttl_seconds", "session_idle_ttl_seconds", "access_token_max_ttl_seconds";
 }
 
 // Device state persistence for this tenant.
