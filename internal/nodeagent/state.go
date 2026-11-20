@@ -77,6 +77,14 @@ func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
 		}
 		budget = q.Value()
 	}
+	var tempBudget int64
+	if cfg.StateTempBudget != "" {
+		q, err := resource.ParseQuantity(cfg.StateTempBudget)
+		if err != nil || q.Sign() < 0 {
+			return fmt.Errorf("STATE_TEMP_BUDGET %q: not a quantity", cfg.StateTempBudget)
+		}
+		tempBudget = q.Value()
+	}
 	engine := &devicestate.Engine{
 		NodeAgentEpoch:   uuid.NewString(),
 		MinPushInterval:  cfg.StateMinPushInterval,
@@ -96,6 +104,9 @@ func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
 		WorkDir:      cfg.StateWorkDir,
 		MaxWatchDirs: cfg.StateMaxWatchDirs,
 		Log:          log,
+
+		MaxConcurrentDiffs: cfg.StateMaxConcurrentDiffs,
+		TempBudgetBytes:    tempBudget,
 	}
 	if label := devicestate.AppArmorLabel(); devicestate.AppArmorBlocksSnapshots(label) {
 		// The runtime's default profile has `deny mount` and the snapshot filter mounts read-only overlays: every snapshot would

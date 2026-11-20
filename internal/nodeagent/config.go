@@ -76,9 +76,13 @@ type Config struct {
 	ContainerdNamespace string `env:"CONTAINERD_NAMESPACE" envDefault:"k8s.io"`
 	// CgroupRoot is where the host's cgroup v2 tree is mounted in the pod.
 	CgroupRoot string `env:"CGROUP_ROOT" envDefault:"/host/sys/fs/cgroup"`
-	// StateMaxWatchDirs is how many directories of one device's writable layer are watched with inotify; past it the layer is
-	// only polled.
+	// StateMaxWatchDirs is how many directories of ALL the writable layers of this node are watched with inotify together (one budget
+	// shared by every device); past it a layer is only polled.
 	StateMaxWatchDirs int `env:"STATE_MAX_WATCH_DIRS" envDefault:"2000"`
+	// StateMaxConcurrentDiffs is how many writable layers the node diffs at once; StateTempBudget (a Kubernetes quantity; empty = none) is
+	// how many bytes of temporary layer files in StateWorkDir all the running diffs may hold together.
+	StateMaxConcurrentDiffs int    `env:"STATE_MAX_CONCURRENT_DIFFS" envDefault:"2"`
+	StateTempBudget         string `env:"STATE_TEMP_BUDGET"`
 	// What one device may push (R-5): the least time between two pushes, the most state in StatePushBudgetWindow (a Kubernetes
 	// quantity; "0" = no budget), and how long the replaced manifest of a device is kept before it is deleted.
 	StateMinPushInterval  time.Duration `env:"STATE_MIN_PUSH_INTERVAL" envDefault:"60s"`
