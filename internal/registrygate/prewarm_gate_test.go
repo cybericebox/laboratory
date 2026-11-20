@@ -3,6 +3,8 @@ package registrygate
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -48,6 +51,7 @@ func (r *rig) prewarmer(t *testing.T) *grpcserver.Handler {
 	r.cache.Registries.Set([]Registry{r.up.registry("up"), r.up.registry("reg.test")})
 	h := grpcserver.NewHandler(nil, nil, nil)
 	h.SetPrewarm(grpcserver.PrewarmConfig{
+		Token:   agentToken(t),
 		Enabled: true, RegistryAddr: strings.TrimPrefix(r.gate.URL, "http://"), Registries: []string{"reg.test"},
 		Timeout: 30 * time.Second, RetryAfter: time.Hour,
 	})
@@ -136,6 +140,7 @@ func TestPrewarmWarmsAPublicImageThroughTheGate(t *testing.T) {
 	h := grpcserver.NewHandler(nil, nil, nil)
 	r.cache.Registries.Set([]Registry{r.up.registry("up"), r.up.registry("reg.test")})
 	h.SetPrewarm(grpcserver.PrewarmConfig{
+		Token:   agentToken(t),
 		Enabled: true, RegistryAddr: strings.TrimPrefix(r.gate.URL, "http://"), Registries: []string{"reg.test"},
 		Resolver: staticResolver(d), Timeout: 30 * time.Second,
 	})
@@ -148,6 +153,16 @@ func TestPrewarmWarmsAPublicImageThroughTheGate(t *testing.T) {
 	if !r.inZot("c/reg.test/library/nginx", "blobs", ld.String()) {
 		t.Fatal("the layer is stored")
 	}
+}
+
+// agentToken is the agent's projected token as the rig's reviewer knows it.
+func agentToken(t *testing.T) *imagecache.TokenFile {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(f, []byte("agent-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return imagecache.NewTokenFile(f)
 }
 
 type staticResolver string
@@ -164,6 +179,7 @@ func TestPrewarmNeverReportsADigestOfAnImageTheCallerCannotRead(t *testing.T) {
 	r.cache.Registries.Set([]Registry{r.up.registry("up"), r.up.registry("reg.test")})
 	h := grpcserver.NewHandler(nil, nil, nil)
 	h.SetPrewarm(grpcserver.PrewarmConfig{
+		Token:   agentToken(t),
 		Enabled: true, RegistryAddr: strings.TrimPrefix(r.gate.URL, "http://"), Registries: []string{"reg.test"},
 		Resolver: staticResolver(d), // the platform's keychain can read it, and says so
 		Timeout:  30 * time.Second, RetryAfter: time.Hour,
