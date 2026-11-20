@@ -5,19 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +23,6 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/egressproxy"
-	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // ConditionEgressAttention is on a Lab that the egress monitor flagged: many labs of the cluster hit one host name, or the lab sits at its
@@ -69,19 +63,18 @@ type EgressLogRow struct {
 	Denied    int64     `json:"denied,omitempty"`
 }
 
-// EgressMonitor pulls the per-minute summaries of every gateway pod, keeps the connection log, and flags the labs that need an
-// administrator's eyes: a host name that many labs hit, a lab that sits at its caps. It only reads the gateways (plain HTTP on the pod
-// network, a port the network policy opens to the operator) and writes Events and one condition on a Lab.
+// EgressMonitor reads the per-minute summaries that the gateway of every group writes to its LabEgressReport, keeps the connection log,
+// acknowledges what it has logged (spec.ackedThrough, so the gateway forgets it), and flags the labs that need an administrator's eyes: a
+// host name that many labs hit, a lab that sits at its caps. It never talks to a gateway pod: it reads custom resources and writes Events,
+// one condition on a Lab and the acknowledgement.
 type EgressMonitor struct {
 	Client   client.Client
 	Reader   client.Reader
 	Recorder record.EventRecorder
 	Log      logr.Logger
 
-	// Interval is the time between pulls (default 1 minute); Port the port of the summaries page of a gateway (default 9188).
+	// Interval is the time between pulls (default 1 minute); the acknowledgement is written once per pull.
 	Interval time.Duration
-	Port     int
-	HTTP     *http.Client
 	// LogDir, when set, gets one file per day (egress-YYYY-MM-DD.jsonl); files older than LogRetention (default 30 days) are removed. The log
 	// is always written to the operator's own log as well (logger "egress-log").
 	LogDir       string
@@ -96,12 +89,12 @@ type EgressMonitor struct {
 	Activity *activity.Hub
 
 	mu      sync.Mutex
-	last    map[string]time.Time // gateway pod UID -> start of the last minute taken
+	last    map[string]time.Time // group namespace -> start of the newest minute logged
 	minutes []monitorMinute
 	flagged map[labKey]string // labs that carry the condition, with its message
 	primed  bool
 	cursors map[string]time.Time // namespace -> newest minute already in the log when this run started
-	seen    string               // what the last pull saw (gateways, skipped pods); logged when it changes
+	seen    string               // what the last pull saw (reports, skipped ones); logged when it changes
 }
 
 type labKey struct{ ns, lab string }
@@ -141,35 +134,25 @@ func (m *EgressMonitor) Start(ctx context.Context) error {
 	}
 }
 
-// Limits on what a gateway may tell the operator: the operator believes only what a pod of its own says, and only so much of it.
+// Limits on what a gateway may tell the operator: the operator believes only what a report of its own groups says, and only so much of it.
 const (
-	maxSummaryBody    = 4 << 20
 	maxMinutesPerPull = 60
 	maxRowsPerMinute  = 5000
 	maxNameLen        = 253
 	maxKeptMinutes    = 200
 	summaryMaxAge     = time.Hour
 	summaryMaxFuture  = time.Minute
-	gatewayDeployment = names.ComponentGateway
 )
 
-// gatewayPods are the running pods of the gateway Deployments that the operator itself made, in the namespaces of its LabGroups: a pod that
-// carries the label but is not owned (through its ReplicaSet) by the Deployment "gateway" in a namespace labelled as a group's is not asked.
-func (m *EgressMonitor) gatewayPods(ctx context.Context) ([]corev1.Pod, error) {
-	pods, skipped, err := m.selectGatewayPods(ctx)
-	m.noteSeen(len(pods), skipped)
-	return pods, err
-}
-
-// noteSeen logs, once per change, how many gateways the monitor found and why the other pods with the gateway label were passed over, so
-// a monitor that sees nothing says so.
+// noteSeen logs, once per change, how many reports the monitor reads and why the other ones were passed over, so a monitor that sees
+// nothing says so.
 func (m *EgressMonitor) noteSeen(found int, skipped map[string]int) {
 	keys := make([]string, 0, len(skipped))
 	for k := range skipped {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	state := fmt.Sprintf("gateways=%d", found)
+	state := fmt.Sprintf("reports=%d", found)
 	for _, k := range keys {
 		state += fmt.Sprintf(" %s=%d", k, skipped[k])
 	}
@@ -178,68 +161,8 @@ func (m *EgressMonitor) noteSeen(found int, skipped map[string]int) {
 	m.seen = state
 	m.mu.Unlock()
 	if changed {
-		m.Log.Info("egress monitor sees", "gateways", found, "skipped", skipped)
+		m.Log.Info("egress monitor sees", "reports", found, "skipped", skipped)
 	}
-}
-
-func (m *EgressMonitor) selectGatewayPods(ctx context.Context) ([]corev1.Pod, map[string]int, error) {
-	skipped := map[string]int{}
-	var nss corev1.NamespaceList
-	if err := m.Reader.List(ctx, &nss, client.HasLabels{names.LabelGroup}); err != nil {
-		return nil, skipped, err
-	}
-	groups := map[string]bool{}
-	for i := range nss.Items {
-		groups[nss.Items[i].Name] = true
-	}
-	var pods corev1.PodList
-	if err := m.Reader.List(ctx, &pods, client.MatchingLabels{labelApp: names.ComponentGateway}); err != nil {
-		return nil, skipped, err
-	}
-	var out []corev1.Pod
-	owned := map[string]bool{} // ReplicaSet (namespace/name) -> owned by the gateway Deployment
-	for _, p := range pods.Items {
-		switch {
-		case !groups[p.Namespace]:
-			skipped["not-a-group-namespace"]++
-			continue
-		case p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" || !p.DeletionTimestamp.IsZero():
-			skipped["not-running"]++
-			continue
-		}
-		rs := controllerRef(p.OwnerReferences, "ReplicaSet")
-		if rs == nil {
-			skipped["no-replicaset-owner"]++
-			continue
-		}
-		key := p.Namespace + "/" + rs.Name + "/" + string(rs.UID)
-		ok, seen := owned[key]
-		if !seen {
-			var r appsv1.ReplicaSet
-			if err := m.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: rs.Name}, &r); err != nil {
-				skipped["replicaset-unreadable"]++
-				continue
-			}
-			d := controllerRef(r.OwnerReferences, "Deployment")
-			ok = r.UID == rs.UID && d != nil && d.Name == gatewayDeployment
-			owned[key] = ok
-		}
-		if !ok {
-			skipped["not-the-gateway-deployment"]++
-			continue
-		}
-		out = append(out, p)
-	}
-	return out, skipped, nil
-}
-
-func controllerRef(refs []metav1.OwnerReference, kind string) *metav1.OwnerReference {
-	for i := range refs {
-		if refs[i].Controller != nil && *refs[i].Controller && refs[i].Kind == kind {
-			return &refs[i]
-		}
-	}
-	return nil
 }
 
 // accept keeps the minutes of a pull that can be true: after what was asked for, not from the future, not older than an hour, at most
@@ -293,38 +216,10 @@ func accept(s *egressproxy.Summaries, since, now time.Time) []egressproxy.Minute
 	return out
 }
 
-func (m *EgressMonitor) fetch(ctx context.Context, p *corev1.Pod, since time.Time) (*egressproxy.Summaries, error) {
-	port := m.Port
-	if port == 0 {
-		port = 9188
-	}
-	c := m.HTTP
-	if c == nil {
-		c = &http.Client{Timeout: 10 * time.Second}
-	}
-	u := "http://" + net.JoinHostPort(p.Status.PodIP, strconv.Itoa(port)) + "/summaries?since=" + since.UTC().Format(time.RFC3339)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the gateway answered %d", resp.StatusCode)
-	}
-	var s egressproxy.Summaries
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSummaryBody)).Decode(&s); err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
-// firstSince is where pulling a gateway starts when it has not been seen by this run: after the newest minute of its group that the log
-// already holds (a restarted operator takes up the minutes it missed; the gateways keep an hour), else the last hour.
-func (m *EgressMonitor) firstSince(ns string) time.Time {
+// firstSince is where reading a group starts when this run has not logged any minute of it: after the newest minute of its group that the
+// log already holds (a restarted operator takes up the minutes it missed; the second result says the log was the source), else the last
+// hour. The acknowledgement in the report moves it further when it is newer.
+func (m *EgressMonitor) firstSince(ns string) (time.Time, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cursors == nil {
@@ -340,58 +235,69 @@ func (m *EgressMonitor) firstSince(ns string) time.Time {
 		}
 	}
 	if t, ok := m.cursors[ns]; ok {
-		return t
+		return t, true
 	}
-	return m.now().Add(-time.Hour)
+	return m.now().Add(-time.Hour), false
 }
 
-// Pull takes the new minutes of every gateway, writes the log, and re-evaluates the signals.
+// Pull reads the new minutes of every group's report, writes the log, acknowledges what is logged, and re-evaluates the signals.
 func (m *EgressMonitor) Pull(ctx context.Context) error {
-	pods, err := m.gatewayPods(ctx)
+	reports, skipped, err := m.groupReports(ctx)
 	if err != nil {
 		return err
 	}
+	m.noteSeen(len(reports), skipped)
 	m.mu.Lock()
 	if m.last == nil {
 		m.last = map[string]time.Time{}
 	}
 	m.mu.Unlock()
 	var rows []EgressLogRow
-	for i := range pods {
-		p := &pods[i]
-		key := string(p.UID)
+	var pending []ackTarget
+	before := map[string]*time.Time{} // where each group stood before this pull, to go back when the log cannot be written
+	for i := range reports {
+		r := &reports[i]
+		ns := r.Namespace
 		m.mu.Lock()
-		since, ok := m.last[key]
+		since, ok := m.last[ns]
 		m.mu.Unlock()
-		if !ok {
-			since = m.firstSince(p.Namespace)
+		if ok {
+			prev := since
+			before[ns] = &prev
+		} else {
+			before[ns] = nil
+			var fromLog bool
+			since, fromLog = m.firstSince(ns)
+			if r.Spec.AckedThrough != nil && r.Spec.AckedThrough.After(since) {
+				since, fromLog = r.Spec.AckedThrough.Time, true
+			}
+			if fromLog {
+				// what the log or the acknowledgement already holds is logged: it may be acknowledged (a crash between the two)
+				m.mu.Lock()
+				m.last[ns] = since
+				m.mu.Unlock()
+			}
 		}
-		s, err := m.fetch(ctx, p, since)
-		if err != nil {
-			egressPullFailures.Inc()
-			m.Log.Info("cannot pull the egress summaries of a gateway", "pod", client.ObjectKeyFromObject(p), "error", err.Error())
-			continue
-		}
-		for _, min := range accept(s, since, m.now()) {
+		for _, min := range accept(egressproxy.SummariesOfReport(r), since, m.now()) {
 			egressMinutesPulled.Inc()
 			mm := monitorMinute{start: min.Start, hosts: map[string]map[labKey]bool{}, caps: map[labKey]bool{}}
-			for _, r := range min.Rows {
-				rows = append(rows, EgressLogRow{Minute: min.Start, Namespace: p.Namespace, Lab: r.Lab, Host: r.Host, Conns: r.Conns, Up: r.Up, Down: r.Down, Denied: r.Denied})
-				if r.Conns > 0 {
-					if mm.hosts[r.Host] == nil {
-						mm.hosts[r.Host] = map[labKey]bool{}
+			for _, row := range min.Rows {
+				rows = append(rows, EgressLogRow{Minute: min.Start, Namespace: ns, Lab: row.Lab, Host: row.Host, Conns: row.Conns, Up: row.Up, Down: row.Down, Denied: row.Denied})
+				if row.Conns > 0 {
+					if mm.hosts[row.Host] == nil {
+						mm.hosts[row.Host] = map[labKey]bool{}
 					}
-					mm.hosts[r.Host][labKey{p.Namespace, r.Lab}] = true
+					mm.hosts[row.Host][labKey{ns, row.Lab}] = true
 				}
 			}
 			for _, c := range min.Caps {
-				mm.caps[labKey{p.Namespace, c.Lab}] = true
+				mm.caps[labKey{ns, c.Lab}] = true
 			}
 			for _, f := range min.Flows {
 				if m.Activity == nil {
 					break
 				}
-				m.Activity.Add(p.Namespace, laboratoryv1alpha1.ActivityEvent{
+				m.Activity.Add(ns, laboratoryv1alpha1.ActivityEvent{
 					AtMs: min.Start.Add(time.Minute).UnixMilli(), Kind: laboratoryv1alpha1.ActivityEgress, LabName: f.Lab, SourceAddr: f.Source, DstAddr: f.Dest,
 					DstPort: int32(f.Port), Protocol: "tcp", BytesUp: f.Up, BytesDown: f.Down, Connections: f.Conns, FirstSeenMs: f.FirstMs, LastSeenMs: f.LastMs,
 				})
@@ -401,17 +307,20 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 			if len(m.minutes) > maxKeptMinutes {
 				m.minutes = m.minutes[len(m.minutes)-maxKeptMinutes:]
 			}
-			if min.Start.After(m.last[key]) {
-				m.last[key] = min.Start
+			if min.Start.After(m.last[ns]) {
+				m.last[ns] = min.Start
 			}
 			m.mu.Unlock()
 		}
+		m.mu.Lock()
+		pending = append(pending, ackTarget{report: r, through: m.last[ns]})
+		m.mu.Unlock()
 	}
-	// forget the gateways that are gone
+	// forget the groups that are gone
 	m.mu.Lock()
 	alive := map[string]bool{}
-	for i := range pods {
-		alive[string(pods[i].UID)] = true
+	for i := range reports {
+		alive[reports[i].Namespace] = true
 	}
 	for k := range m.last {
 		if !alive[k] {
@@ -419,8 +328,27 @@ func (m *EgressMonitor) Pull(ctx context.Context) error {
 		}
 	}
 	m.mu.Unlock()
+	// The log first, the acknowledgement after it: the gateway forgets a minute only once the operator has written it down. When the log
+	// cannot be written nothing is acknowledged, and the gateway keeps the minutes for the next pull.
 	if err := m.writeLog(rows); err != nil {
 		m.Log.Error(err, "write the egress connection log")
+		// nothing of this pull is logged: read it again next time (the report still holds it) and acknowledge nothing
+		m.mu.Lock()
+		for ns, prev := range before {
+			if prev == nil {
+				delete(m.last, ns)
+			} else {
+				m.last[ns] = *prev
+			}
+		}
+		m.mu.Unlock()
+	} else {
+		for _, a := range pending {
+			if err := m.acknowledge(ctx, a.report, a.through); err != nil {
+				egressPullFailures.Inc()
+				m.Log.Info("cannot acknowledge the egress report", "namespace", a.report.Namespace, "error", err.Error())
+			}
+		}
 	}
 	return m.evaluate(ctx)
 }

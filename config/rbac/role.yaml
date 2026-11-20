@@ -183,6 +183,17 @@ rules:
 - apiGroups:
   - laboratory.cybericebox.com
   resources:
+  - labegressreports
+  - tenants
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
   - labgroupaccesspolicies
   - labtrafficreports
   verbs:
@@ -197,16 +208,6 @@ rules:
   - delete
   - get
   - list
-  - watch
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - tenants
-  verbs:
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - networking.k8s.io

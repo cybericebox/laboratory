@@ -519,7 +519,7 @@ func Run() {
 	if cfg.EgressMonitorEnabled {
 		monitor := &laboratorycontroller.EgressMonitor{
 			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorderFor("egress"), Log: ctrl.Log.WithName("egress-monitor"),
-			Port: cfg.EgressStatsPort, LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
+			LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
 			HostLabsThreshold: cfg.EgressSignalHostLabs, CapMinutes: cfg.EgressSignalCapMinutes,
 		}
 		if activity.Enabled() {
@@ -570,7 +570,6 @@ func gatewayEgressEnv(cfg *operator.Config) []corev1.EnvVar {
 		{"EGRESS_DNS_UPSTREAMS", cfg.EgressDNSUpstreams}, {"EGRESS_DNS_QUERIES_PER_SECOND", cfg.EgressDNSQueriesPerSecond},
 		{"EGRESS_HOST_NEW_PER_SECOND", cfg.EgressHostNewPerSecond}, {"EGRESS_HOST_GATEWAY_NEW_PER_SECOND", cfg.EgressHostGatewayNewPerSecond}, {"EGRESS_MAX_CONN_SECONDS", cfg.EgressMaxConnSeconds},
 		{"EGRESS_TUNNEL_SUFFIXES", cfg.EgressTunnelSuffixes}, {"EGRESS_ICMP_PER_SECOND", cfg.EgressICMPPerSecond},
-		{"EGRESS_STATS_PORT", fmt.Sprint(cfg.EgressStatsPort)},
 	} {
 		if e.value != "" {
 			env = append(env, corev1.EnvVar{Name: e.name, Value: e.value})

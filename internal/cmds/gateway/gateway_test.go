@@ -28,13 +28,17 @@ func freePort(t *testing.T) int {
 // egress services must stand, so that a connection redirected into them never meets a closed port.
 func TestStartEgressListensBeforeItReturns(t *testing.T) {
 	cfg := &gateway.Config{
-		EgressHTTPPort: freePort(t), EgressTLSPort: freePort(t), EgressDNSPort: freePort(t), EgressStatsPort: freePort(t),
+		EgressHTTPPort: freePort(t), EgressTLSPort: freePort(t), EgressDNSPort: freePort(t),
 		EgressDNSUpstreams: "192.0.2.1",
 	}
-	if err := startEgress(cfg, egressproxy.NewLabMap(), logr.Discard()); err != nil {
+	stats, err := startEgress(cfg, egressproxy.NewLabMap(), logr.Discard())
+	if err != nil {
 		t.Fatal(err)
 	}
-	for name, port := range map[string]int{"http": cfg.EgressHTTPPort, "tls": cfg.EgressTLSPort, "dns tcp": cfg.EgressDNSPort, "summaries": cfg.EgressStatsPort} {
+	if stats == nil {
+		t.Fatal("startEgress must hand back the collector the report writer reads")
+	}
+	for name, port := range map[string]int{"http": cfg.EgressHTTPPort, "tls": cfg.EgressTLSPort, "dns tcp": cfg.EgressDNSPort} {
 		c, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
 		if err != nil {
 			t.Fatalf("%s is not listening when startEgress returns: %v", name, err)

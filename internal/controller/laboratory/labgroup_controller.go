@@ -1262,7 +1262,7 @@ func apiServerEgress() map[string]interface{} {
 // the private ranges, CGNAT, the cluster and node networks). Never in-cluster pods, no DNS. The kube-apiserver entity is
 // not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they send to those
 // ranges. No ingress rule is needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *unstructured.Unstructured {
+func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
 	toAny := func(list []string) []interface{} {
 		out := make([]interface{}, len(list))
 		for i, c := range list {
@@ -1290,31 +1290,12 @@ func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *
 					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": egressRules,
-				// The operator pulls the per-minute egress summaries of the gateway on one port, and nothing else reaches the pod.
-				"ingress": []interface{}{map[string]interface{}{
-					"fromEndpoints": []interface{}{map[string]interface{}{"matchLabels": map[string]interface{}{
-						"k8s:io.kubernetes.pod.namespace": names.SystemNamespace,
-						"control-plane":                   "controller-manager",
-					}}},
-					"toPorts": []interface{}{map[string]interface{}{"ports": []interface{}{
-						map[string]interface{}{"port": strconv.Itoa(statsPort), "protocol": "TCP"},
-					}}},
-				}},
+				// Nothing reaches the gateway pod: the egress summaries go out as a LabEgressReport, written by the pod itself. The empty rule
+				// keeps the pod in default deny for ingress (a policy with no ingress section would leave it open).
+				"ingress": []interface{}{map[string]interface{}{}},
 			},
 		},
 	}
-}
-
-// egressStatsPort is the port of the summaries page of the gateways (default 9188).
-func (r *LabGroupReconciler) egressStatsPort() int {
-	for _, e := range r.GatewayEgressEnv {
-		if e.Name == "EGRESS_STATS_PORT" {
-			if p, err := strconv.Atoi(e.Value); err == nil && p > 0 {
-				return p
-			}
-		}
-	}
-	return 9188
 }
 
 // ensureVPNGatewayPolicies applies the vpn-egress and gateway-egress
@@ -1338,7 +1319,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if err != nil {
 		return err
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel, r.egressStatsPort())} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
