@@ -1,6 +1,7 @@
 package registrygate
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -324,23 +325,85 @@ func (c *Cache) serveChecked(w http.ResponseWriter, r *http.Request, reg Registr
 	c.serveBlob(w, r, reg, o, up, chosen)
 }
 
-// serveManifestAndGrant serves a manifest and, for a node, records the digests it lists in the grant of (node, segment, repository).
+// serveManifestAndGrant serves a manifest and, for a node, records the digests it lists in the grant of (node, segment, repository). The
+// manifest is held back until the grant is made: a manifest whose grant cannot be made (too many digests, a malformed digest, the node holds
+// as many grants as it may) is refused, never served with its blobs silently unreachable.
 func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller, p *Principal) {
 	if p == nil {
 		c.serveManifest(w, r, reg, o, up, who)
 		return
 	}
-	rec := &recorder{ResponseWriter: w}
-	c.serveManifest(rec, r, reg, o, up, who)
-	if rec.status != http.StatusOK && rec.status != 0 {
+	hw := &holdWriter{ResponseWriter: w}
+	c.serveManifest(hw, r, reg, o, up, who)
+	if hw.status != http.StatusOK && hw.status != 0 {
+		hw.release()
+		return
+	}
+	if hw.over {
+		hw.drop()
+		c.M.refusals.WithLabelValues("manifest_too_large").Inc()
+		refuse(w, http.StatusBadGateway, "MANIFEST_INVALID", "the manifest is larger than the gate serves", false)
 		return
 	}
 	digests := []string{o.Ref}
-	if d := rec.Header().Get("Docker-Content-Digest"); d != "" {
+	if d := w.Header().Get("Docker-Content-Digest"); d != "" {
 		digests = append(digests, d)
 	}
-	digests = append(digests, childDigests(rec.body)...)
-	c.Grants.Add(p.Node, o.Tenant, o.fullRepo(), who.creds, digests...)
+	digests = append(digests, childDigests(hw.body.Bytes())...)
+	if err := c.Grants.Add(p.Node, o.Tenant, o.fullRepo(), who.creds, digests...); err != nil {
+		hw.drop()
+		status, code := http.StatusTooManyRequests, "CIB_GRANTS_FULL"
+		w.Header().Set("Retry-After", "30")
+		if errors.Is(err, ErrTooManyBlobs) || errors.Is(err, ErrBadDigest) {
+			status, code = http.StatusBadGateway, "MANIFEST_INVALID"
+			w.Header().Del("Retry-After")
+		}
+		c.M.refusals.WithLabelValues("grant_refused").Inc()
+		refuse(w, status, code, "the pull cannot be authorised: "+err.Error(), false)
+		return
+	}
+	hw.release()
+}
+
+// holdWriter keeps a manifest response back (bounded) until the caller decides to send it.
+type holdWriter struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+	over   bool
+}
+
+func (h *holdWriter) WriteHeader(code int) {
+	if h.status == 0 {
+		h.status = code
+	}
+}
+
+func (h *holdWriter) Write(p []byte) (int, error) {
+	if h.status == 0 {
+		h.status = http.StatusOK
+	}
+	if h.body.Len()+len(p) > maxManifestSize {
+		h.over = true
+		return len(p), nil
+	}
+	return h.body.Write(p)
+}
+
+// release sends what was held.
+func (h *holdWriter) release() {
+	if h.status == 0 {
+		h.status = http.StatusOK
+	}
+	h.ResponseWriter.WriteHeader(h.status)
+	_, _ = h.ResponseWriter.Write(h.body.Bytes())
+}
+
+// drop forgets what was held and removes the headers that described it.
+func (h *holdWriter) drop() {
+	for _, k := range []string{"Content-Length", "Content-Type", "Docker-Content-Digest", "Etag", "Accept-Ranges", "Content-Range"} {
+		h.ResponseWriter.Header().Del(k)
+	}
 }
 
 // authorize is the check of 5.2. It returns the digest of the object to serve (a tag is resolved upstream here) and an HTTP status:

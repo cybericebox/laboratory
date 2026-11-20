@@ -260,6 +260,7 @@ func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log lo
 	c.DiskFull = disk.Full
 	c.Schedule, c.Creds, c.MaxStale = sch, secrets, cfg.APIStaleMax
 	c.Grants = &registrygate.Grants{Grace: cfg.PullGrace, MaxAge: cfg.GrantMaxAge}
+	go c.Grants.Run(ctx, time.Minute)
 	c.RequireDigest, c.AgentMaxFills, c.ImageHost = cfg.RequireDigest, cfg.AgentMaxFills, cfg.ImageHost
 	if cfg.AnonymousFillFile != "" {
 		data, err := os.ReadFile(cfg.AnonymousFillFile)

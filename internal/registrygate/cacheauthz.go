@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net/http"
 	"strings"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -219,41 +218,10 @@ func (c *Cache) rebuildGrant(ctx context.Context, node string, o objectRef, d st
 			digests = append(digests, childDigests(cb)...)
 		}
 	}
-	c.Grants.Add(node, o.Tenant, o.fullRepo(), creds, digests...)
+	_ = c.Grants.Add(node, o.Tenant, o.fullRepo(), creds, digests...) // a refusal leaves no grant: the blob request is then asked to start from the manifest
 }
 
 func sha256Digest(b []byte) string {
 	s := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(s[:])
 }
-
-// recorder keeps what a response says so that the grant can be made from it after the response is sent: the status and, for a manifest,
-// the body (bounded).
-type recorder struct {
-	http.ResponseWriter
-	status int
-	body   []byte
-	over   bool
-}
-
-func (r *recorder) WriteHeader(code int) {
-	r.status = code
-	r.ResponseWriter.WriteHeader(code)
-}
-
-func (r *recorder) Write(p []byte) (int, error) {
-	if r.status == 0 {
-		r.status = http.StatusOK
-	}
-	if !r.over {
-		if len(r.body)+len(p) > maxManifestSize {
-			r.over = true
-			r.body = nil
-		} else {
-			r.body = append(r.body, p...)
-		}
-	}
-	return r.ResponseWriter.Write(p)
-}
-
-func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
