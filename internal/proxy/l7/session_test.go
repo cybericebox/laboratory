@@ -4,11 +4,13 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -883,5 +885,92 @@ func TestSession_InFlightRequestEndsAtTheGrantExp(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the request outlived its grant")
+	}
+}
+
+// The grant never reaches the device: the upstream is a participant's server, and HttpOnly does not hide a cookie from the server it is sent to.
+// Only the device's own cookies pass; nothing in a forwarded header, query or Referer carries the grant; the post to /_auth is never proxied.
+func TestGrantNeverReachesTheDevice(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	var mu sync.Mutex
+	var seen []http.Header
+	var paths []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen, paths = append(seen, r.Header.Clone()), append(paths, r.URL.RequestURI())
+		mu.Unlock()
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"))
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte("lab"))
+	}))
+	defer backend.Close()
+	f.handler.resolver = func(task, groupID string) (string, error) { return backend.URL, nil }
+	c := f.open(raw).Result().Cookies()[0]
+	srv := httptest.NewServer(f.handler)
+	defer srv.Close()
+
+	// a plain request: the grant cookie among the device's own, two Cookie headers, a Referer from the platform
+	req, _ := http.NewRequest("GET", srv.URL+"/page?x=1", nil)
+	req.Host = labHost
+	req.Header.Add("Cookie", "app=1; "+c.Name+"="+c.Value)
+	req.Header.Add("Cookie", "other=2; "+c.Name+"="+c.Value)
+	req.Header.Set("Referer", "https://app.example.com/tasks/1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("%v %v", resp, err)
+	}
+	_ = resp.Body.Close()
+
+	// a WebSocket upgrade
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: app=1; %s=%s\r\n\r\n", labHost, c.Name, c.Value)
+	buf := make([]byte, 512)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _ := conn.Read(buf)
+	_ = conn.Close()
+	if !strings.Contains(string(buf[:n]), "101") {
+		t.Fatalf("the upgrade did not reach the device: %q", buf[:n])
+	}
+
+	// the post that delivers a grant is answered by the proxy, never forwarded
+	post := f.postTo(labHost, raw, "/after", nil)
+	if post.Code != http.StatusSeeOther {
+		t.Fatalf("post: %d", post.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("the device saw %d requests (paths %v), want the page and the upgrade only", len(seen), paths)
+	}
+	for i, h := range seen {
+		for k, vs := range h {
+			for _, v := range vs {
+				if strings.Contains(v, raw) || (k == "Cookie" && strings.Contains(v, c.Name+"=")) {
+					t.Errorf("request %d: header %s carries the grant: %q", i, k, v)
+				}
+			}
+		}
+		if !strings.Contains(h.Get("Cookie"), "app=1") {
+			t.Errorf("request %d: the device's own cookie was lost: %q", i, h.Get("Cookie"))
+		}
+	}
+	for _, p := range paths {
+		if strings.Contains(p, raw) || strings.Contains(p, AuthPath) {
+			t.Errorf("a forwarded path names the grant or the auth path: %q", p)
+		}
+	}
+	if !strings.Contains(seen[0].Get("Cookie"), "other=2") {
+		t.Errorf("the second Cookie header's own cookie was lost: %q", seen[0].Get("Cookie"))
 	}
 }
