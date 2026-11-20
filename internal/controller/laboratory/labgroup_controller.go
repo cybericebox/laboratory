@@ -1290,8 +1290,9 @@ func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Un
 					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": egressRules,
-				// Nothing reaches the gateway pod: the egress summaries go out as a LabEgressReport, written by the pod itself. The empty rule
-				// keeps the pod in default deny for ingress (a policy with no ingress section would leave it open).
+				// Nothing reaches the gateway pod: the egress summaries go out as a LabEgressReport, written by the pod itself. In a
+				// CiliumNetworkPolicy (not a Kubernetes one) an empty rule allows nothing and puts the pod in default deny for ingress
+				// (docs.cilium.io, "Ingress/Egress Default Deny"); the group's default-deny NetworkPolicy does the same, this keeps it so alone.
 				"ingress": []interface{}{map[string]interface{}{}},
 			},
 		},
