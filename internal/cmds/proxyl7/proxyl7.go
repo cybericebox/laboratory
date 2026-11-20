@@ -34,7 +34,6 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/activity"
-	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/proxy"
@@ -81,8 +80,13 @@ func Run() {
 	meter := l7.NewMeter(fmt.Sprintf("%s-%d", instance, started.UnixNano()), started)
 
 	access := &l7.AccessReader{Reader: mgr.GetClient()}
-	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName, nil).
-		WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).
+	origins, err := l7.NewEmbedMatcher(cfg.PlatformOrigins, nil)
+	if err != nil {
+		log.Error(err, "PLATFORM_ORIGINS")
+		os.Exit(1)
+	}
+	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), cfg.BaseDomain, cfg.CookieName, nil).
+		WithGrantMaxTTL(cfg.GrantMaxTTL).WithPlatformOrigins(origins).
 		WithAccounting(meter, nil).WithAccessReader(access).WithLiveMaxLifetime(cfg.LiveMaxLifetime).
 		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst).
 		WithAccessLog(log.WithName("access"), cfg.SlowRequest)
@@ -90,16 +94,10 @@ func Run() {
 		tc := l7.DefaultTerminalConfig()
 		tc.Log = log.WithName("console")
 		tc.PerClient, tc.Idle, tc.Lifetime = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime
-		keys, err := wire.NewKeyFiles(10*time.Second, cfg.TerminalKeyFile)
-		if err != nil {
-			log.Error(err, "the key shared with the device access service")
-			os.Exit(1)
-		}
 		if tc.Embed, err = l7.NewEmbedMatcher(cfg.TerminalEmbedAllow, cfg.TerminalEmbedDeny); err != nil {
 			log.Error(err, "the embedding lists of the console")
 			os.Exit(1)
 		}
-		tc.Signer = func(r *wire.OpenRequest) error { return wire.Sign(keys.Signing(), r, time.Now()) }
 		tc.Devices = access.Device
 		tc.Services = l7.EndpointDirectory(mgr.GetClient(), cfg.TerminalNamespace, names.DeviceAccessApp, cfg.TerminalPort)
 		handler.WithTerminal(tc)

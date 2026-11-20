@@ -168,6 +168,25 @@ func LabCacheRegistrySecret(lab string) string {
 // operator's pull secrets re-keyed for the cache path with the tenant name imagecache.PlatformTenant.
 const PlatformCacheSecret = "platform-cache-registry"
 
+// AccessKeysConfigMap is the ConfigMap, in the namespace of the device access service, that mirrors the access public keys of every tenant
+// (public data): one entry per key, named <tenant>.<key id>, the PEM public key as its value. The operator writes it from the Secrets of
+// AccessKeysNamespace; the service reads it as files and verifies console grants with it, so it holds no key of its own and needs no API
+// access.
+const AccessKeysConfigMap = "laboratory-access-keys"
+
+// AccessKeysConfigMapKey is the entry of AccessKeysConfigMap for a tenant's key. A tenant name has no dot, so the first dot splits it.
+func AccessKeysConfigMapKey(tenant, keyID string) string { return tenant + "." + keyID }
+
+// AccessKeysSecretTenant is the inverse of AccessKeysSecret: the tenant of a Secret name of AccessKeysNamespace, and false for a name that
+// is not one.
+func AccessKeysSecretTenant(secret string) (string, bool) {
+	const prefix, suffix = "tenant-", "-access-keys"
+	if len(secret) <= len(prefix)+len(suffix) || secret[:len(prefix)] != prefix || secret[len(secret)-len(suffix):] != suffix {
+		return "", false
+	}
+	return secret[len(prefix) : len(secret)-len(suffix)], true
+}
+
 // AccessKeysSecret is the Secret (in AccessKeysNamespace) that holds the access public keys of a
 // tenant, one entry per key id with the PEM public key. The proxy looks keys up by this name.
 func AccessKeysSecret(tenant string) string { return "tenant-" + tenant + "-access-keys" }

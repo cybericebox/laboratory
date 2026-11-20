@@ -56,14 +56,14 @@ func (h *Handler) terminalSocket(w http.ResponseWriter, r *http.Request, tg term
 	// Registered as a live request: when the policy denies the client or the lab stops, CheckLive closes it within seconds.
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	entry := &liveEntry{group: tg.claims.GroupID, client: tg.client, lab: tg.lab, tenant: tg.claims.Tenant, deadline: h.liveDeadline(tg.claims.Abs), cancel: cancel}
+	entry := &liveEntry{group: tg.claims.Group, client: tg.client, lab: tg.lab, tenant: tg.claims.Tenant(), deadline: h.liveDeadline(tg.claims.End()), cancel: cancel}
 	if !h.live.tryAdd(entry, LiveCaps{}) {
 		fail(w, r, http.StatusServiceUnavailable, pageBusy, "service unavailable")
 		return
 	}
 	defer h.live.remove(entry)
 
-	sess := &consoleSession{group: tg.claims.GroupID, client: tg.client, tenant: tg.claims.Tenant, namespace: tg.namespace, lab: tg.lab, dev: tg.device,
+	sess := &consoleSession{group: tg.claims.Group, client: tg.client, tenant: tg.claims.Tenant(), grant: tg.claims.raw, namespace: tg.namespace, lab: tg.lab, dev: tg.device,
 		base: tg.base, command: tg.info.Command, user: tg.info.User, entry: entry, ackCh: make(chan struct{}, 1), started: time.Now()}
 	if !t.add(sess) {
 		fail(w, r, http.StatusTooManyRequests, pageBusy, "too many consoles")
@@ -120,7 +120,7 @@ func (h *Handler) relayConsole(ctx context.Context, browser *websocket.Conn, ses
 	}
 	defer func() { _ = svc.CloseNow() }()
 	open, err := t.openMessage(wire.OpenRequest{Kind: wire.KindConsole, Namespace: sess.namespace, Lab: sess.lab, Device: sess.dev,
-		Command: sess.command, User: sess.user, Cols: hi.Cols, Rows: hi.Rows, Client: sess.client, Group: sess.group})
+		Command: sess.command, User: sess.user, Cols: hi.Cols, Rows: hi.Rows, Client: sess.client, Group: sess.group, Grant: sess.grant})
 	if err != nil {
 		_ = browserText(ctx, browser, browserMsg{Type: wire.ReasonError, Code: wire.CodeUnavailable})
 		return wire.ReasonError

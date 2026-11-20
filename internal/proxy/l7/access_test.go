@@ -81,7 +81,7 @@ func TestCompactProxyCacheKeepsRoutingAndDeletion(t *testing.T) {
 	}
 }
 func TestGroupedLiveChecksReuseAuthorization(t *testing.T) {
-	h := NewHandler(nil, nil, "", "", nil)
+	h := NewHandler(nil, "", "", nil)
 	calls := 0
 	h.WithAuthorizer(func(string, string, string) bool { calls++; return true })
 	for i := 0; i < 20; i++ {
@@ -134,7 +134,7 @@ func TestStoppedLabRevokesCachedSessionAndLiveConnection(t *testing.T) {
 	if !a.Allowed(ctx, "ns", "p", "lab") {
 		t.Fatal("legacy running lab denied")
 	}
-	h := NewHandler(nil, nil, "", "", nil).WithAccessReader(a)
+	h := NewHandler(nil, "", "", nil).WithAccessReader(a)
 	closed := false
 	h.live.tryAdd(&liveEntry{group: "g", tenant: "tenant", client: "p", lab: "lab", deadline: time.Now().Add(time.Hour), cancel: func() { closed = true }}, LiveCaps{})
 	target.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}

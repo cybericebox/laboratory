@@ -28,7 +28,7 @@ import (
 //   - one check per lab at a time and a few per node, and the time limit has a ceiling.
 //
 // The protection of the socket is its file permissions (a group the checker pod runs as) and the peer credentials of the connection, not
-// the HMAC key of the proxy.
+// a grant.
 
 // CheckerLimits are the values of the checker socket.
 type CheckerLimits struct {

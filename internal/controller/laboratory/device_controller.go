@@ -567,6 +567,9 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 		return err
 	}
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device)
+	if err := r.stampGroupName(ctx, device, labels); err != nil {
+		return err
+	}
 	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
 		return err
 	}
@@ -787,6 +790,21 @@ func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace stri
 		return false, err
 	}
 	return group.Spec.Suspended, nil
+}
+
+// stampGroupName puts the name of the device's LabGroup on the labels of its pod (names.LabelGroupName). The device access service requires
+// it to equal the group of a console grant: lab and device names repeat across groups, so it is what binds a grant to the namespace it is for.
+// The label is operator-made (names.LabelPrefix labels are never copied from a user), so a participant cannot set it. A namespace with no
+// LabGroup gets no label, and then no console opens in it.
+func (r *DeviceReconciler) stampGroupName(ctx context.Context, device *laboratoryv1alpha1.Device, labels map[string]string) error {
+	group, err := r.labGroupOfNamespace(ctx, device.Namespace)
+	if err != nil {
+		return err
+	}
+	if group != nil {
+		labels[names.LabelGroupName] = group.Name
+	}
+	return nil
 }
 
 // labGroupOfNamespace returns the LabGroup named by the namespace label, or the

@@ -21,7 +21,7 @@ func TestLateHijackAfterCloseIsImmediatelyClosed(t *testing.T) {
 	}
 }
 func TestShutdownClosesAndWaitsForCounters(t *testing.T) {
-	h := NewHandler(nil, nil, "", "", nil)
+	h := NewHandler(nil, "", "", nil)
 	m := NewMeter("b", time.Now())
 	r := m.Begin("ns", "p", "lab", time.Now())
 	a, b := net.Pipe()

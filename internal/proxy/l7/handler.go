@@ -15,6 +15,7 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/bandwidth"
+	"github.com/cybericebox/laboratory/internal/grant"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,15 +35,19 @@ type Attribution func(task, groupID string) (lab string, ok bool)
 type Authorizer func(groupID, client, lab string) bool
 
 type Handler struct {
-	// keys verifies the tenants' handoff tokens; secret signs and verifies the
-	// proxy's own session cookie.
+	// keys verifies the access grants the tenants' platforms sign; the proxy signs nothing.
 	keys        KeyLookup
 	groupTenant GroupTenant
-	secret      []byte
 	baseDomain  string
-	cookieName  string
-	resolver    BackendResolver
-	transport   http.RoundTripper
+	// cookieName is the cookie a web host keeps its grant in (chart proxy.l7.grantCookieName).
+	cookieName string
+	// grantMax bounds exp - iat of a grant (chart proxy.l7.grantMaxTTL); origins are the platform pages that may post a grant (see
+	// session.go); grants remembers verified cookies for a short time (see auth.go).
+	grantMax  time.Duration
+	origins   *EmbedMatcher
+	grants    *grantCache
+	resolver  BackendResolver
+	transport http.RoundTripper
 
 	access    *AccessReader
 	prepare   func(context.Context, string) error
@@ -50,9 +55,6 @@ type Handler struct {
 	attribute Attribution
 	authorize Authorizer
 	now       func() time.Time
-	// handoffMax bounds exp - iat of a handoff token. The session is sliding: it expires sessionIdle after the last
-	// request, is renewed when less than sessionRenew of it remains, and ends at sessionMax at the latest.
-	handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration
 	// live holds the requests in flight so a lost access can cut them (see live.go); liveMax caps their lifetime.
 	live    *liveSet
 	liveMax time.Duration
@@ -85,10 +87,9 @@ var upstreamTransport = &http.Transport{
 	IdleConnTimeout:     90 * time.Second,
 }
 
-func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(keys KeyLookup, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
 		keys:       keys,
-		secret:     secret,
 		baseDomain: baseDomain,
 		cookieName: cookieName,
 		resolver:   resolver,
@@ -97,14 +98,21 @@ func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, re
 		verifySem:  make(chan struct{}, 2*runtime.GOMAXPROCS(0)),
 		live:       newLiveSet(),
 		throttle:   bandwidth.NewThrottle[string](5 * time.Second),
-		handoffMax: DefaultHandoffLifetime, sessionIdle: DefaultSessionIdleTTL, sessionRenew: DefaultSessionRenewBefore, sessionMax: DefaultSessionMaxTTL,
+		grantMax:   grant.DefaultMaxTTL,
+		grants:     newGrantCache(),
 	}
 }
 
-// WithLimits sets the longest accepted handoff token (exp - iat) and the sliding session: its idle lifetime, the
-// remaining time under which the cookie is renewed, and the absolute maximum.
-func (h *Handler) WithLimits(handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration) *Handler {
-	h.handoffMax, h.sessionIdle, h.sessionRenew, h.sessionMax = handoffMax, sessionIdle, sessionRenew, sessionMax
+// WithGrantMaxTTL sets the longest accepted grant lifetime (exp - iat).
+func (h *Handler) WithGrantMaxTTL(d time.Duration) *Handler {
+	h.grantMax = d
+	return h
+}
+
+// WithPlatformOrigins sets the pages that may post a grant: a post whose Origin is not matched is refused. Without it (or with an empty
+// list) every post is refused.
+func (h *Handler) WithPlatformOrigins(m *EmbedMatcher) *Handler {
+	h.origins = m
 	return h
 }
 
@@ -115,9 +123,9 @@ func (h *Handler) WithAccounting(meter *Meter, attribute Attribution) *Handler {
 	return h
 }
 
-// WithGroupTenant tells the owner of a group. A handoff whose issuer is not the tenant of its group
-// is refused, and so is a session cookie whose tenant no longer owns the group. Without it no
-// handoff is accepted.
+// WithGroupTenant tells the owner of a group. A grant whose issuer is not the tenant of its group
+// is refused, and so is a session whose tenant no longer owns the group. Without it no
+// grant is accepted.
 func (h *Handler) WithGroupTenant(g GroupTenant) *Handler {
 	h.groupTenant = g
 	return h
@@ -148,21 +156,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.serveOwnAuthKind(w, r, task) {
 		return
 	}
+	// Only a web host is served from here on (a console host has been served above, when the console is on): a host of another kind (vnc, rdp,
+	// a reserved letter), and a console host while the console is off, answer like a host that does not exist, whatever a request carries.
+	if kind, _ := kindOfHost(task); kind != grant.KindWeb {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return
+	}
 	if r.URL.Path == AuthPath {
 		if !h.throttlePreAuth(w, r) {
 			return
 		}
-		h.handoff(w, r, task)
+		h.authenticate(w, r, task)
 		return
 	}
-	claims, err := validateCookie(r, h.secret, h.cookieName, h.now)
+	// The grant is verified for this very host (a cookie of another device host, or one that names none, fails here).
+	claims, err := h.cookieGrant(r, task)
 	if err != nil {
 		h.expired(w, r)
-		return
-	}
-
-	if claims.Host == "" || claims.Host != requestHost(r) {
-		h.expired(w, r) // a session of another device host, or one that names none
 		return
 	}
 	client := claims.client()
@@ -173,22 +183,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	namespace := ""
 	var group AccessGroup
 	if h.access != nil {
-		group, err = h.access.Group(r.Context(), claims.GroupID)
-		if err != nil || group.Tenant != claims.Tenant {
+		group, err = h.access.Group(r.Context(), claims.Group)
+		if err != nil || group.Tenant != claims.Tenant() {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
 		namespace = group.Namespace
 	} else {
 		if h.groupTenant != nil {
-			if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
+			if owner, ok := h.groupTenant(claims.Group); !ok || owner != claims.Tenant() {
 				fail(w, r, http.StatusNotFound, pageGone, "not found")
 				return
 			}
 		}
-		namespace = ns(claims.GroupID)
+		namespace = ns(claims.Group)
 	}
-	h.renewSession(w, claims)
 	var backendURL, lab string
 	if h.access != nil {
 		if h.serveAccessKind(w, r, task) {
@@ -206,7 +215,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		var ok bool
-		if backendURL, lab, ok = h.legacyRoute(task, claims.GroupID, client); !ok {
+		if backendURL, lab, ok = h.legacyRoute(task, claims.Group, client); !ok {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
@@ -243,7 +252,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(clientCtx)
 	defer cancel()
 	r = r.WithContext(ctx)
-	entry := &liveEntry{group: claims.GroupID, client: client, lab: lab, tenant: claims.Tenant, deadline: h.liveDeadline(claims.Abs), cancel: cancel}
+	entry := &liveEntry{group: claims.Group, client: client, lab: lab, tenant: claims.Tenant(), deadline: h.liveDeadline(claims.End()), cancel: cancel}
 	if !h.live.tryAdd(entry, h.caps) {
 		w.Header().Set("Retry-After", "5")
 		fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")

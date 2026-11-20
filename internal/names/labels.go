@@ -26,6 +26,10 @@ const (
 	// sees the environment, never the labels).
 	LabelLabUID    = LabelPrefix + "lab-uid"
 	LabelDeviceUID = LabelPrefix + "device-uid"
+	// LabelGroupName is the name of the LabGroup (the CR name, names.EncodeName of the platform's group id) on the pod of a device. The
+	// device access service requires it to equal the group of a console grant: lab and device names repeat across groups, so this binds a
+	// grant to the namespace it is for. It is operator-internal (LabelPrefix): a participant cannot set it on a pod.
+	LabelGroupName = LabelPrefix + "group-name"
 	// LabelTerminal is "true" on the pod of a device whose lab asks for a console. The device access service reads it from the sandbox
 	// of the pod in the container runtime and refuses every device without it, so the proxy is not the only place that knows which
 	// devices have a console.

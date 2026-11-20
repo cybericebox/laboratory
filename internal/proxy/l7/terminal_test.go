@@ -3,8 +3,6 @@ package l7
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,10 +26,9 @@ import (
 	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/internal/devices"
+	"github.com/cybericebox/laboratory/internal/grant"
 	"github.com/cybericebox/laboratory/internal/names"
 )
-
-var termKey = bytes.Repeat([]byte("t"), 32)
 
 const (
 	termNS      = "legacy"
@@ -84,7 +81,8 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.opens = append(f.opens, req)
 	f.mu.Unlock()
-	if !wire.VerifySignature([][]byte{termKey}, req) {
+	// the service verifies the grant the proxy forwards, with the tenant's key; it signs and holds nothing else
+	if _, err := grant.Verify(req.Grant, grant.Options{Keys: testKeys(), Audience: grant.AudienceDeviceAccess, Kind: grant.KindConsole}); err != nil {
 		b, _ := json.Marshal(wire.OpenReply{Error: wire.CodeUnauthorized})
 		_ = c.Write(ctx, websocket.MessageText, b)
 		return
@@ -127,8 +125,7 @@ type termFixture struct {
 	h       *Handler
 	srv     *httptest.Server
 	svc     *fakeService
-	cookie  string // the session the fixture's browser holds: its group and client; the token and the link are made from it per host
-	priv    ed25519.PrivateKey
+	cookie  string // the session the fixture's browser holds: its group and client; the grants are made from it per host
 	cluster client.Client
 }
 
@@ -164,15 +161,13 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 		termDevice("lab3", "kali", true, "n1"),
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	access := &AccessReader{Reader: c}
 	svc := newFakeService(t)
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", nil).WithAccessReader(access)
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge", nil).WithAccessReader(access).WithPlatformOrigins(matcher(t, []string{platformOrigin}, nil))
 	cfg := DefaultTerminalConfig()
 	cfg.OriginScheme = "http"
 	cfg.Log = logr.Discard()
 	cfg.Devices = access.Device
-	cfg.Signer = func(r *wire.OpenRequest) error { return wire.Sign(termKey, r, time.Now()) }
 	cfg.Services = func(node string) (string, bool) {
 		if node == "n1" {
 			return svc.srv.URL, true
@@ -185,18 +180,40 @@ func newTermFixture(t *testing.T, mutate func(cfg *TerminalConfig)) *termFixture
 	h.WithTerminal(cfg)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &termFixture{t: t, h: h, srv: srv, svc: svc, cluster: c, priv: priv, cookie: cookieFor(t, "p-u1")}
+	return &termFixture{t: t, h: h, srv: srv, svc: svc, cluster: c, cookie: cookieFor(t, "p-u1")}
 }
 
-// rehost is the console session token the page of host would hold: the same session, opened on that host (a token names the one host it is for).
+// sessionOf reads the group and the client of a grant the fixture minted (the signature is not checked: the fixture made it).
+func sessionOf(t *testing.T, token string) jwtClaims {
+	t.Helper()
+	var c grant.Claims
+	if _, _, err := jwt.NewParser().ParseUnverified(token, &c); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	return jwtClaims{GroupID: c.Group, Client: c.Subject, Tenant: c.Issuer}
+}
+
+// rehost is the console grant the platform would give the fixture's session for host: the same group and client, for that host (a grant names
+// the one host it is for), valid for both the proxy and the device access service.
 func rehost(t *testing.T, token, host string) string {
 	t.Helper()
-	var claims jwtClaims
-	if _, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
-		t.Fatalf("rehost: %v", err)
+	sc := sessionOf(t, token)
+	sc.Host, sc.Kind = host, grant.KindConsole
+	sc.Lab, sc.Dev = termLabDevice(host)
+	sc.Audience = []string{grant.AudienceProxy, grant.AudienceDeviceAccess}
+	return signCookie(t, sc)
+}
+
+// termLabDevice is the lab and the device a console host of the test cluster names (what the platform puts in the lab and dev claims). A host
+// that is no device of the cluster gets names that match nothing.
+func termLabDevice(host string) (labName, device string) {
+	d, code, _ := names.ParseAccessHost(strings.SplitN(host, ".", 2)[0])
+	for key, c := range termCodes {
+		if l, dev, ok := strings.Cut(key, "/"); ok && dev == d && c == code {
+			return l, dev
+		}
 	}
-	claims.Host, claims.Use = host, "console"
-	return signCookie(t, claims)
+	return "nolab", "nodev"
 }
 
 func cookieFor(t *testing.T, clientName string) string {
@@ -208,35 +225,28 @@ func (f *termFixture) get(path string, hdr map[string]string) *httptest.Response
 	return f.getHost(termHost, path, hdr)
 }
 
-// link is the handoff link the platform would give the fixture's session for the console host.
-func (f *termFixture) link(host string) string {
-	var sc jwtClaims
-	if _, err := jwt.ParseWithClaims(f.cookie, &sc, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
-		f.t.Fatalf("link: %v", err)
-	}
-	now := time.Now()
-	hc := handoffClaims{GroupID: sc.GroupID, Host: host, Session: now.Add(24 * time.Hour).Unix(), RegisteredClaims: jwt.RegisteredClaims{
-		Issuer: "acme", Subject: sc.Client, Audience: jwt.ClaimStrings{HandoffAudience},
-		IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute))}}
-	return signHandoff(f.t, f.priv, "k1", hc)
-}
-
-// getHost asks for a path of a console host; the page ("/") is what the handoff link of the host opens, and it is the only request that
-// carries the link: the console has no cookie.
+// getHost asks for a path of a console host; the page ("/") is what the form post of the platform opens, and it is the only request that
+// carries the grant: the console has no cookie.
 func (f *termFixture) getHost(host, path string, hdr map[string]string) *httptest.ResponseRecorder {
 	_, _, kind := names.ParseAccessHost(strings.SplitN(host, ".", 2)[0])
 	cookieHost := kind != names.AccessKindTerminal || f.h.terminal == nil // not a console host here: the cookie of a web session is what is looked at
+	var req *http.Request
 	if (path == "/" || strings.HasPrefix(path, "/?")) && f.cookie != "" && !cookieHost {
-		path = AuthPath + "?" + strings.TrimPrefix(strings.TrimPrefix(path, "/"), "?") + "&t=" + url.QueryEscape(f.link(host))
+		query := strings.TrimPrefix(strings.TrimPrefix(path, "/"), "?")
+		target := AuthPath
+		if query != "" {
+			target += "?" + query
+		}
+		req = httptest.NewRequest("POST", "http://"+host+target, strings.NewReader(url.Values{"grant": {rehost(f.t, f.cookie, host)}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", platformOrigin)
+	} else {
+		req = httptest.NewRequest("GET", "http://"+host+path, nil)
 	}
-	req := httptest.NewRequest("GET", "http://"+host+path, nil)
 	req.Host = host
 	if f.cookie != "" && cookieHost {
-		var sc jwtClaims
-		if _, err := jwt.ParseWithClaims(f.cookie, &sc, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
-			f.t.Fatal(err)
-		}
-		sc.Host, sc.Use = host, ""
+		sc := sessionOf(f.t, f.cookie)
+		sc.Host = host
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(f.t, sc)})
 	}
 	for k, v := range hdr {
@@ -751,8 +761,9 @@ func TestTerminalIdleClosesTheConsole(t *testing.T) {
 	}
 }
 
-// Every open request the proxy sends carries a signature the service accepts; without a key the console does not open.
-func TestTerminalSignsEveryOpenRequest(t *testing.T) {
+// Every open request the proxy sends carries the grant the browser presented, unchanged, and nothing signed by the proxy: the service
+// verifies the grant with the tenant's key and finds every field of the request in agreement with it.
+func TestTerminalForwardsTheBrowsersGrantInEveryOpenRequest(t *testing.T) {
 	f := newTermFixture(t, nil)
 	f.openConsole("kali")
 	f.openConsole("kali")
@@ -762,30 +773,36 @@ func TestTerminalSignsEveryOpenRequest(t *testing.T) {
 		t.Fatalf("%d opens", len(f.svc.opens))
 	}
 	for _, o := range f.svc.opens {
-		if !wire.VerifySignature([][]byte{termKey}, o) || o.Nonce == "" || o.Time == 0 {
-			t.Errorf("an open request is not signed: %+v", o)
+		c, err := grant.Verify(o.Grant, grant.Options{Keys: testKeys(), Audience: grant.AudienceDeviceAccess, Kind: grant.KindConsole})
+		if err != nil {
+			t.Fatalf("the open request carries no grant the service accepts: %v", err)
 		}
-	}
-	if f.svc.opens[0].Nonce == f.svc.opens[1].Nonce {
-		t.Error("a nonce was reused")
+		if c.Client() != o.Client || c.Group != o.Group || c.Lab != o.Lab || c.Dev != o.Device || c.Host != termHost {
+			t.Errorf("the grant %+v does not agree with the request %+v", c, o)
+		}
 	}
 }
 
-func TestTerminalWithoutAKeyDoesNotOpen(t *testing.T) {
-	f := newTermFixture(t, func(c *TerminalConfig) { c.Signer = nil })
-	c, _, err := f.dialSocket("kali", "http://"+termHost)
+// The wire format of the open request has no signature, timestamp or nonce: the proxy signs nothing.
+func TestOpenRequestCarriesNoProxySignature(t *testing.T) {
+	b, err := json.Marshal(wire.OpenRequest{Kind: wire.KindConsole, Grant: "g"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.SetReadLimit(wire.MaxFrame)
-	_ = c.Write(context.Background(), websocket.MessageText, []byte(`{"cols":80,"rows":24}`))
-	if m := readText(t, c); m.Type != "error" {
-		t.Fatalf("%+v", m)
+	for _, key := range []string{`"sig"`, `"ts"`, `"nonce"`} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("the open request has %s: %s", key, b)
+		}
 	}
-	f.svc.mu.Lock()
-	defer f.svc.mu.Unlock()
-	if len(f.svc.opens) != 0 {
-		t.Fatal("an unsigned request was sent")
+	if !strings.Contains(string(b), `"grant":"g"`) {
+		t.Errorf("no grant field: %s", b)
+	}
+}
+
+func TestOpenMessageRefusesToGoWithoutAGrant(t *testing.T) {
+	f := newTermFixture(t, nil)
+	if _, err := f.h.terminal.openMessage(wire.OpenRequest{Kind: wire.KindConsole}); err == nil {
+		t.Fatal("an open request without a grant must not be sent")
 	}
 }
 

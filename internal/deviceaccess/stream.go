@@ -11,6 +11,7 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/grant"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/probe"
 )
@@ -50,6 +51,9 @@ type stream struct {
 	in, out atomic.Int64
 	// cmdHash is a fingerprint of the console command, for the log (see CommandHash).
 	cmdHash string
+
+	// until is the exp of the grant the stream was opened with: the stream ends then (access-lost), whatever the lifetime limit says.
+	until time.Time
 
 	// idle is reset by every byte that crosses the stream (see pass).
 	idleMu  sync.Mutex
@@ -184,7 +188,7 @@ func (p *pipeWriter) Abort() {
 
 // serveConsole runs a console: a TTY exec of the terminal command of the device, with resize, until the participant leaves, the
 // shell exits, the stream is idle or too old, or the proxy goes away.
-func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequest) {
+func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequest, claims grant.Claims) {
 	command, err := CheckSettings(req.Command, req.User)
 	if err != nil {
 		s.refuse(ctx, conn, req, wire.CodeBadRequest, err)
@@ -204,7 +208,7 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 	}
 	defer s.counter.releaseConsole(clientKey(req), labKey(req))
 
-	dev, code, err := s.resolve(ctx, req)
+	dev, code, err := s.resolve(ctx, req, claims.Group)
 	if err != nil {
 		s.refuse(ctx, conn, req, code, err)
 		return
@@ -226,6 +230,7 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 	}
 
 	st := s.newStream(req, s.lim.Idle)
+	st.until = claims.End()
 	st.cmdHash = CommandHash(command)
 	if !s.track(st) {
 		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.New("shutting down"))
@@ -277,8 +282,16 @@ func (st *stream) runConsole(ctx context.Context, conn Conn, ex Exec, stdin *pip
 	}
 
 	var reason string
+	var expiry <-chan time.Time
+	if !st.until.IsZero() {
+		timer := time.NewTimer(time.Until(st.until))
+		defer timer.Stop()
+		expiry = timer.C
+	}
 	select {
 	case reason = <-st.stopped:
+	case <-expiry:
+		reason = wire.ReasonAccess
 	case reason = <-readerDone:
 	case <-ex.Wait():
 		reason = wire.ReasonExit
