@@ -135,6 +135,22 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabChecksSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabCreationReceipt"):
 		return &applyconfigurationlaboratoryv1alpha1.LabCreationReceiptApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressCap"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressCapApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressDenial"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressDenialApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressFlow"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressFlowApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressMinute"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressMinuteApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressReport"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressReportApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressReportSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressReportSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressReportStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressReportStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabEgressRow"):
+		return &applyconfigurationlaboratoryv1alpha1.LabEgressRowApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGateway"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGatewayApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGatewaySpec"):

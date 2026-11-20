@@ -43,6 +43,10 @@ func (c *FakeLaboratoryV1alpha1) LabActivityReports(namespace string) v1alpha1.L
 	return newFakeLabActivityReports(c, namespace)
 }
 
+func (c *FakeLaboratoryV1alpha1) LabEgressReports(namespace string) v1alpha1.LabEgressReportInterface {
+	return newFakeLabEgressReports(c, namespace)
+}
+
 func (c *FakeLaboratoryV1alpha1) LabGateways(namespace string) v1alpha1.LabGatewayInterface {
 	return newFakeLabGateways(c, namespace)
 }
