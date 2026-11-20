@@ -73,6 +73,12 @@ type Engine struct {
 	// ExitTimeout bounds the exit snapshot so it ends before the controller
 	// stops waiting for it (25s when zero).
 	ExitTimeout time.Duration
+	// MaxConcurrentDiffs is how many layers the node diffs at once (DefaultMaxConcurrentDiffs when zero); TempBudgetBytes is how many bytes
+	// of temporary files in WorkDir all the running diffs may hold together (each reserves the write quota of its device; zero: no budget
+	// beyond the number of diffs). PrescanTime caps the look at a layer before its diff (DefaultPrescanTime when zero).
+	MaxConcurrentDiffs int
+	TempBudgetBytes    int64
+	PrescanTime        time.Duration
 	// RetryBase and RetryMax bound the retry of a failed snapshot (10s doubling to 5m when zero).
 	RetryBase, RetryMax time.Duration
 
@@ -99,6 +105,8 @@ type Engine struct {
 
 	watchOnce   sync.Once
 	watchBudget *WatchBudget
+	diffOnce    sync.Once
+	diffs       *diffLimiter
 
 	captureWorkers sync.WaitGroup
 	holdWorkers    sync.WaitGroup
@@ -159,7 +167,7 @@ func (t *tracked) allow() *errDeferred {
 	e := t.e
 	now := e.now()
 	if now.Before(t.holdUntil) {
-		return &errDeferred{after: t.holdUntil.Sub(now), reason: "the layer is over the write quota"}
+		return &errDeferred{after: t.holdUntil.Sub(now), reason: "the layer is over the write quota or the entry limit"}
 	}
 	if e.MinPushInterval > 0 && len(t.pushes) > 0 {
 		last := t.pushes[len(t.pushes)-1].at
@@ -219,6 +227,12 @@ func (e *Engine) retryMax() time.Duration {
 		return e.RetryMax
 	}
 	return defaultRetryMax
+}
+
+// diffGate is the node-wide limit on diffs, made on first use.
+func (e *Engine) diffGate() *diffLimiter {
+	e.diffOnce.Do(func() { e.diffs = newDiffLimiter(e.MaxConcurrentDiffs, e.TempBudgetBytes) })
+	return e.diffs
 }
 
 // watchDirs is the node-wide budget of watched directories, made on first use from MaxWatchDirs.
@@ -625,7 +639,7 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	}
 	e, pol := t.e, t.pod.Policy
 	started := e.now()
-	var diffTook, pushTook time.Duration
+	var pushTook time.Duration
 	if freeze {
 		if d := t.allow(); d != nil {
 			return d
@@ -639,23 +653,14 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		}
 	}()
 
-	rc, err := e.Runtime.Diff(ctx, t.c, freeze, pol)
-	diffTook = e.now().Sub(started)
-	if err != nil {
-		return fmt.Errorf("diff writable layer: %w", err)
+	lf, stop, err := t.takeLayer(ctx, freeze, required, pol, started)
+	if lf != nil {
+		defer lf.cleanup()
 	}
-	dir, err := os.MkdirTemp(e.WorkDir, "snap-")
-	if err != nil {
-		_ = rc.Close()
+	if stop {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-
-	layerPath := filepath.Join(dir, "layer.tar")
-	stats, digest, refused, err := t.filterSnapshotLayer(ctx, rc, layerPath, pol, required)
-	if refused {
-		return err
-	}
+	stats, digest, layerPath, dir, diffTook := lf.stats, lf.digest, lf.path, lf.dir, lf.diffTook
 
 	// Files over the size limit are left out of the layer; the status names them.
 	skipMsg := stats.SkippedWarning(pol.MaxFileSize)
@@ -727,6 +732,57 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
 		"layers", chain.Layers(), "bytes", chain.Bytes(), "image", ref)
 	return nil
+}
+
+// layerFile is a snapshot layer taken from a device: the filtered tar in a temporary directory, and what the node reserved for it.
+type layerFile struct {
+	stats     snapshot.Stats
+	digest    string
+	path, dir string
+	diffTook  time.Duration
+	ticket    *diffTicket
+}
+
+// cleanup removes the temporary files and gives the node's reservation back.
+func (l *layerFile) cleanup() {
+	_ = os.RemoveAll(l.dir)
+	l.ticket.release()
+}
+
+// takeLayer looks at the writable layer, diffs it and filters the diff into a temporary file. The layer is looked at before containerd is
+// asked to diff it: a layer over the limits is refused here, with the same errors and the same hold as when the filter refuses it after the
+// diff, and costs the node a bounded scan instead of a diff of all of it. The diff and its temporary files are the node's shared resource,
+// a few at a time (diffGate). stop says the caller returns err as it is (a refusal, a deferral or a failure), and then the returned layer,
+// when not nil, is still to be cleaned up.
+func (t *tracked) takeLayer(ctx context.Context, freeze, required bool, pol snapshot.Policy, started time.Time) (lf *layerFile, stop bool, err error) {
+	e := t.e
+	if refused, rerr := t.refuseFilteredLayer(ctx, required, prescanLayer(t.c.UpperDir, pol, e.PrescanTime)); refused {
+		return nil, true, rerr
+	}
+	ticket, err := e.diffGate().acquire(ctx, reserveFor(pol), !freeze || required)
+	if err != nil {
+		return nil, true, err
+	}
+	rc, err := e.Runtime.Diff(ctx, t.c, freeze, pol)
+	diffTook := e.now().Sub(started)
+	if err != nil {
+		ticket.release()
+		return nil, true, fmt.Errorf("diff writable layer: %w", err)
+	}
+	dir, err := os.MkdirTemp(e.WorkDir, "snap-")
+	if err != nil {
+		_ = rc.Close()
+		ticket.release()
+		return nil, true, err
+	}
+	lf = &layerFile{dir: dir, path: filepath.Join(dir, "layer.tar"), diffTook: diffTook, ticket: ticket}
+	var refused bool
+	lf.stats, lf.digest, refused, err = t.filterSnapshotLayer(ctx, rc, lf.path, pol, required)
+	ticket.done() // the layer is read and filtered; what follows (the push) does not hold a diff slot
+	if refused {
+		return lf, true, err
+	}
+	return lf, false, nil
 }
 
 // supersede deletes the manifest the new snapshot replaced (and the blobs only it used) from the registry, after the grace period.
@@ -824,8 +880,9 @@ func (t *tracked) refuseFilteredLayer(ctx context.Context, required bool, ferr e
 		return true, nil
 	}
 	if errors.Is(ferr, snapshot.ErrEntries) {
-		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
-		// most likely be refused again, but the warning is cleared by a snapshot that fits).
+		// Too many files: the last good snapshot stays, and the same layer is not diffed again for a while (a layer that big is made
+		// again at once by the next change; the warning is cleared by a snapshot that fits).
+		t.holdUntil = t.e.now().Add(quotaHold)
 		t.warn(ctx, ferr.Error())
 		if required {
 			return true, ferr
