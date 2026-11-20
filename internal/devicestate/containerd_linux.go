@@ -250,7 +250,8 @@ func managedDiffReader(ctx context.Context, cancel context.CancelFunc, produce f
 	stopCancellation := context.AfterFunc(ctx, func() { _ = pw.CloseWithError(ctx.Err()) })
 	go func() {
 		defer close(done)
-		producerErr = produce(pw)
+		// a panic in the producer is the stream's error (the node-state pod goes on), and the cleanup below still runs
+		safeGo("diff producer", func(err error) { producerErr = err }, func() { producerErr = produce(pw) })
 		stopCancellation()
 		cleanup()
 		_ = pw.CloseWithError(producerErr)
@@ -384,7 +385,9 @@ func (s contentSource) ReadBlob(ctx context.Context, h v1.Hash) (io.ReadCloser, 
 func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 	out := make(chan string, 64)
 	filter := fmt.Sprintf(`topic=="/tasks/exit",namespace==%q`, r.namespace)
-	go func() {
+	go safeGo("container exit events", func(err error) {
+		r.log.Error(err, "the container exit subscription stopped; exit snapshots rely on the pod resync")
+	}, func() {
 		defer close(out)
 		for ctx.Err() == nil {
 			envs, errs := r.client.EventService().Subscribe(ctx, filter)
@@ -425,7 +428,7 @@ func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 			case <-time.After(2 * time.Second):
 			}
 		}
-	}()
+	})
 	return out, nil
 }
 

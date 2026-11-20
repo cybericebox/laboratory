@@ -192,7 +192,7 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 				if thawErr := h.thaw(); thawErr != nil {
 					t.required = h
 					e.holdWorkers.Add(1)
-					go e.watchHold(ctx, t, h, rt, cl, time.Now())
+					e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, time.Now()) })
 					return result, errors.Join(err, thawErr)
 				}
 			}
@@ -201,12 +201,12 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		}
 		t.required = h
 		e.holdWorkers.Add(1)
-		go e.watchHold(ctx, t, h, rt, cl, time.Now())
+		e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, time.Now()) })
 		return result, errors.Join(err, invErr)
 	}
 	t.required = h
 	e.holdWorkers.Add(1)
-	go e.watchHold(ctx, t, h, rt, cl, deadline)
+	e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, deadline) })
 	return result, nil
 }
 
@@ -436,7 +436,7 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			e.tracked[h.Container.ID] = t
 			e.mu.Unlock()
 			e.holdWorkers.Add(1)
-			go e.watchHold(ctx, t, h, rt, cl, time.Now())
+			e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, time.Now()) })
 		}
 		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, h.Result)
 		if checkErr != nil && !errors.Is(checkErr, ErrStale) || deleting || h.Result.Committed && checkErr == nil {

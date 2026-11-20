@@ -143,6 +143,9 @@ type tracked struct {
 	pushes  []pushRecord
 	// holdUntil: no live snapshot before it (the layer was over the write quota, a diff that is bound to fail again).
 	holdUntil time.Time
+	// broken is why this device is not snapshotted any more in this incarnation: a goroutine of its snapshot machinery panicked (guarded by
+	// e.mu). Another pod of the device, or a restart of the node-state pod, starts clean.
+	broken string
 }
 
 // quotaHold is how long a layer over the write quota waits before the device is diffed again.
@@ -229,6 +232,55 @@ func (e *Engine) retryMax() time.Duration {
 	return defaultRetryMax
 }
 
+// errDeviceFailed is the answer of a device that stopped being snapshotted after a panic in its machinery (see Engine.panicked).
+var errDeviceFailed = errors.New("snapshots of this device stopped after an internal error")
+
+// goSafe runs fn in a goroutine of the engine for the container. A panic in it does not take the node-state pod down with the snapshots
+// of every other device: it is logged with its stack and marks the device failed (panicked).
+func (e *Engine) goSafe(name, containerID string, fn func()) {
+	go safeGo(name, e.panicked(containerID), fn)
+}
+
+// panicked is the handler of a recovered panic of a goroutine that works for the container: the error and the stack are logged, and the
+// device stops being snapshotted in this incarnation (its status says so); the engine goes on with every other device.
+func (e *Engine) panicked(containerID string) func(error) {
+	return func(err error) {
+		var stack []byte
+		var pe *PanicError
+		if errors.As(err, &pe) {
+			stack = pe.Stack
+		}
+		e.Log.Error(err, "recovered from a panic: the snapshots of this device stop for this incarnation", "container", containerID, "stack", string(stack))
+		e.failDevice(containerID, err)
+	}
+}
+
+// failDevice marks the tracked container broken and says so in the device status. A container the engine does not follow has nothing to mark.
+func (e *Engine) failDevice(containerID string, cause error) {
+	e.mu.Lock()
+	t := e.tracked[containerID]
+	if t != nil {
+		t.broken = cause.Error()
+	}
+	e.mu.Unlock()
+	if t == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	msg := snapshot.TruncateWarning("snapshots of this device are stopped after an internal error of the node: " + cause.Error())
+	if err := e.Cluster.Warn(ctx, t.pod, msg); err != nil && !errors.Is(err, ErrStale) {
+		e.Log.Error(err, "report the stopped device", "pod", t.pod.Pod)
+	}
+}
+
+// failedWith is why the device is stopped, "" when it is not.
+func (t *tracked) failedWith() string {
+	t.e.mu.Lock()
+	defer t.e.mu.Unlock()
+	return t.broken
+}
+
 // diffGate is the node-wide limit on diffs, made on first use.
 func (e *Engine) diffGate() *diffLimiter {
 	e.diffOnce.Do(func() { e.diffs = newDiffLimiter(e.MaxConcurrentDiffs, e.TempBudgetBytes) })
@@ -279,7 +331,7 @@ func (e *Engine) Run(ctx context.Context) error {
 				exits = nil
 				continue
 			}
-			go e.onExit(ctx, id)
+			e.goSafe("exit snapshot", id, func() { e.onExit(ctx, id) })
 		case <-tick.C:
 			e.Sync(ctx)
 		}
@@ -318,12 +370,12 @@ func (e *Engine) Sync(ctx context.Context) {
 		if p.CaptureRequest != nil {
 			req := *p.CaptureRequest
 			e.captureWorkers.Add(1)
-			go func() {
+			e.goSafe("required capture", p.ContainerID, func() {
 				defer e.captureWorkers.Done()
 				if _, err := e.captureRequired(ctx, p, req, false); err != nil {
 					e.Log.Error(err, "required capture", "pod", p.Pod)
 				}
-			}()
+			})
 			continue
 		}
 		if p.ContainerID == "" {
@@ -460,7 +512,7 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 	}
 	e, p, c := t.e, t.pod, t.c
 	wctx, cancel := context.WithCancel(ctx)
-	changes, err := WatchWith(wctx, c.UpperDir, p.Policy, WatchOptions{Poll: e.Poll, Budget: e.watchDirs(), OnOverCap: func() {
+	changes, err := WatchWith(wctx, c.UpperDir, p.Policy, WatchOptions{Poll: e.Poll, Budget: e.watchDirs(), OnPanic: e.panicked(c.ID), OnOverCap: func() {
 		e.Log.Info("the writable layer is over the scan limits: it is followed by filesystem events only", "device", p.Device, "pod", p.Pod)
 	}})
 	if err != nil {
@@ -481,7 +533,7 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 	e.mu.Lock()
 	t.retry = retry
 	e.mu.Unlock()
-	go func() {
+	e.goSafe("change forwarder", c.ID, func() {
 		defer close(in)
 		for {
 			select {
@@ -502,43 +554,45 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 				}
 			}
 		}
-	}()
+	})
 	maxWait := time.Duration(maxWaitFactor) * p.Policy.Debounce
 	if maxWait < minMaxWait {
 		maxWait = minMaxWait
 	}
-	go Debounce(wctx, in, p.Policy.Debounce, maxWait, func() {
-		lctx, lcancel := context.WithTimeout(wctx, defaultLiveTimeout)
-		defer lcancel()
-		err := t.snapshot(lctx, true)
-		later := func(d time.Duration) {
-			go func() {
-				select {
-				case <-time.After(d):
+	e.goSafe("debounce", c.ID, func() {
+		Debounce(wctx, in, p.Policy.Debounce, maxWait, func() {
+			lctx, lcancel := context.WithTimeout(wctx, defaultLiveTimeout)
+			defer lcancel()
+			err := t.snapshot(lctx, true)
+			later := func(d time.Duration) {
+				e.goSafe("retry timer", c.ID, func() {
 					select {
-					case retry <- struct{}{}:
-					default:
+					case <-time.After(d):
+						select {
+						case retry <- struct{}{}:
+						default:
+						}
+					case <-wctx.Done():
 					}
-				case <-wctx.Done():
-				}
-			}()
-		}
-		var def *errDeferred
-		switch {
-		case err == nil:
-			t.failures = 0
-		case errors.As(err, &def):
-			// Not a failure: the registry is shared and this device has had its share for now.
-			e.Log.Info("snapshot deferred", "device", p.Device, "pod", p.Pod, "reason", def.reason, "after", def.after.String())
-			later(def.after)
-		case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
-		case errors.Is(err, ErrSnapshotsBlocked):
-			// Logged once at startup and shown on the device; a retry would fail the same way.
-		default:
-			e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
-			t.failures++
-			later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
-		}
+				})
+			}
+			var def *errDeferred
+			switch {
+			case err == nil:
+				t.failures = 0
+			case errors.As(err, &def):
+				// Not a failure: the registry is shared and this device has had its share for now.
+				e.Log.Info("snapshot deferred", "device", p.Device, "pod", p.Pod, "reason", def.reason, "after", def.after.String())
+				later(def.after)
+			case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
+			case errors.Is(err, ErrSnapshotsBlocked), errors.Is(err, errDeviceFailed):
+				// Logged once at startup and shown on the device; a retry would fail the same way.
+			default:
+				e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
+				t.failures++
+				later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
+			}
+		})
 	})
 	return true
 }
@@ -638,6 +692,9 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		return nil
 	}
 	e, pol := t.e, t.pod.Policy
+	if t.failedWith() != "" {
+		return errDeviceFailed
+	}
 	started := e.now()
 	var pushTook time.Duration
 	if freeze {
