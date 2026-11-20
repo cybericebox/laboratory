@@ -10,21 +10,17 @@ import (
 // code runs: only the runtime's image service is called.
 type ImagePullSpec struct {
 	// Images are the references to pull, as the nodes pull them (through the image cache
-	// when the lab uses it).
+	// when the lab uses it, with the tenant segment: <prefix>/c/<tenant>/<registry>/<repo>).
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:validation:items:MaxLength=512
 	Images []string `json:"images"`
 	// Nodes are the nodes asked to pull: the ones lab pods can run on.
 	// +kubebuilder:validation:MaxItems=1000
 	Nodes []string `json:"nodes"`
-	// Tenant is the tenant the images belong to (informational).
+	// Tenant is the tenant the images belong to. The registry gate reads the tenant's credentials for the pull from it
+	// (Tenant.spec.images.pullSecret, kept only at the gate), and allows the pull when it lists the node and the exact references.
 	// +optional
 	Tenant string `json:"tenant,omitempty"`
-	// PullSecret names a kubernetes.io/dockerconfigjson Secret in the images namespace
-	// (laboratory-images) with the tenant's registry credentials, created by the operator
-	// for this ImagePull and owned by it. Absent: anonymous pulls.
-	// +optional
-	PullSecret string `json:"pullSecret,omitempty"`
 }
 
 // NodeImagePull is how far one node is.

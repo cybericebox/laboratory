@@ -173,7 +173,7 @@ func TestLoadConfigSafeDefaults(t *testing.T) {
 	if !cfg.RequireAdmissionPolicy || !cfg.AgentEnabled || !cfg.ProxyEnabled {
 		t.Errorf("RequireAdmissionPolicy %v AgentEnabled %v ProxyEnabled %v: all must default to true", cfg.RequireAdmissionPolicy, cfg.AgentEnabled, cfg.ProxyEnabled)
 	}
-	if cfg.State.RegistryAddr != "laboratory-registry.laboratory-system.svc:5000" || cfg.Cache.Prefix != "localhost:5035" {
+	if cfg.State.RegistryAddr != "laboratory-registry.laboratory-system.svc:5443" || cfg.Cache.Prefix != "localhost:5035" {
 		t.Errorf("registry addresses: %q %q", cfg.State.RegistryAddr, cfg.Cache.Prefix)
 	}
 }

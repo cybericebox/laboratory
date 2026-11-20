@@ -109,8 +109,6 @@ type Scheduler struct {
 	// Mirror rewrites image references of labs that use the image cache, so the
 	// prepull warms the cache through the path the lab pods will use.
 	Mirror imagecache.Rewriter
-	// ImagesNamespace holds the credentials of a prepull request; empty means names.ImagesNamespace.
-	ImagesNamespace string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// ReservationCRD asks the API server, past any cache, whether it serves the Reservation kind and the UID of the CRD that
@@ -198,14 +196,6 @@ func (s *Scheduler) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
-}
-
-// imagesNamespace holds the credentials of the ImagePull requests.
-func (s *Scheduler) imagesNamespace() string {
-	if s.ImagesNamespace != "" {
-		return s.ImagesNamespace
-	}
-	return names.ImagesNamespace
 }
 
 func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" + device }
@@ -1463,9 +1453,7 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key, tenantName string, 
 			return false, err
 		}
 		want := buildImagePull(key, tenantName, images, nodes)
-		want.Spec.PullSecret = s.writePullSecret(ctx, want, tenantName)
 		if err := s.Create(ctx, want); err != nil && !errors.IsAlreadyExists(err) {
-			s.deletePullSecret(ctx, want.Spec.PullSecret)
 			return false, err
 		}
 		s.preparing[prepullKey(key)] = true
@@ -1514,54 +1502,7 @@ func (s *Scheduler) prepullNodes(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// writePullSecret copies the tenant's registry credentials (the Secret its spec names, in
-// the tenants namespace) into the images namespace, where the node-agents read them, and
-// returns the copy's name; "" when the tenant has none. A tenant whose Secret cannot be read
-// is pulled for anonymously: the pods that need the credentials fail on their own.
-// The platform's own pull secrets are never used here.
-func (s *Scheduler) writePullSecret(ctx context.Context, ip *laboratoryv1alpha1.ImagePull, tenantName string) string {
-	logger := log.FromContext(ctx).WithName("scheduler")
-	secret, err := tenantPullSecret(ctx, s, tenantName)
-	if err != nil || secret == "" {
-		if err != nil {
-			logger.Error(err, "read the tenant", "tenant", tenantName)
-		}
-		return ""
-	}
-	var src corev1.Secret
-	if err := s.Get(ctx, types.NamespacedName{Namespace: names.TenantsNamespace, Name: secret}, &src); err != nil || src.Type != corev1.SecretTypeDockerConfigJson {
-		logger.Error(err, "the tenant's image pull secret is missing or not a registry secret; pulling anonymously", "tenant", tenantName, "secret", secret)
-		return ""
-	}
-	dst := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ip.Name, Namespace: s.imagesNamespace(),
-			Labels: map[string]string{managedByLabel: managedByValue, prepullLabel: ip.Labels[prepullLabel]},
-		},
-		Type: src.Type,
-		Data: map[string][]byte{corev1.DockerConfigJsonKey: src.Data[corev1.DockerConfigJsonKey]},
-	}
-	if err := s.Create(ctx, dst); err != nil {
-		if !errors.IsAlreadyExists(err) {
-			logger.Error(err, "write the image pull credentials for the prepull", "tenant", tenantName)
-			return ""
-		}
-		if err := s.Update(ctx, dst); err != nil {
-			logger.Error(err, "refresh the image pull credentials for the prepull", "tenant", tenantName)
-			return ""
-		}
-	}
-	return dst.Name
-}
-
-func (s *Scheduler) deletePullSecret(ctx context.Context, name string) {
-	if name == "" {
-		return
-	}
-	_ = s.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.imagesNamespace()}})
-}
-
-// gcPrepull deletes every ImagePull, and its credentials, except the ones still in progress.
+// gcPrepull deletes every ImagePull except the ones still in progress.
 func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 	var list laboratoryv1alpha1.ImagePullList
 	if err := s.List(ctx, &list, client.HasLabels{prepullLabel}); err != nil {
@@ -1573,19 +1514,6 @@ func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 			continue
 		}
 		if err := s.Delete(ctx, ip); client.IgnoreNotFound(err) != nil {
-			return err
-		}
-	}
-	var secrets corev1.SecretList
-	if err := s.List(ctx, &secrets, client.InNamespace(s.imagesNamespace()), client.HasLabels{prepullLabel}); err != nil {
-		return err
-	}
-	for i := range secrets.Items {
-		sec := &secrets.Items[i]
-		if keep[sec.Labels[prepullLabel]] || !sec.DeletionTimestamp.IsZero() {
-			continue
-		}
-		if err := s.Delete(ctx, sec); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}

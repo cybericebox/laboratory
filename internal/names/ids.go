@@ -127,10 +127,6 @@ const TenantsNamespace = "laboratory-tenants"
 // able to read.
 const AccessKeysNamespace = "laboratory-access-keys"
 
-// ImagesNamespace holds what the node-agents read to pull images for the scheduler: the
-// credentials of an ImagePull request. The node-agent's role covers this namespace only.
-const ImagesNamespace = "laboratory-images"
-
 // AnnotationRegenerateEnrollment on a Tenant asks the operator for a new enrollment token; the
 // operator removes it once done.
 const AnnotationRegenerateEnrollment = LabelPrefix + "regenerate-enrollment-token"
