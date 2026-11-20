@@ -2,6 +2,9 @@ package registrygate
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,4 +70,55 @@ func waitFor(t *testing.T, ok func() bool) {
 		}
 	}
 	t.Fatal("timed out")
+}
+
+// Review finding 9: the credentials of a pull go only to https token endpoints on the registry's own host or one its entry names.
+func TestTokenRealmMustBelongToTheRegistry(t *testing.T) {
+	hub, _ := ParseRegistries([]byte(`[{"name":"docker.io","url":"https://registry-1.docker.io"},{"name":"ghcr.io","url":"https://ghcr.io"},{"name":"in","url":"http://reg.svc:5000"},{"name":"x","url":"https://x.example","authHosts":["auth.x.example"]}]`))
+	by := map[string]Registry{}
+	for _, r := range hub {
+		by[r.Name] = r
+	}
+	for _, c := range []struct {
+		reg, realm string
+		want       bool
+	}{
+		{"docker.io", "https://auth.docker.io/token", true},
+		{"docker.io", "https://evil.example/token", false},
+		{"docker.io", "http://auth.docker.io/token", false},
+		{"ghcr.io", "https://ghcr.io/token", true},
+		{"ghcr.io", "https://auth.docker.io/token", false},
+		{"ghcr.io", "http://ghcr.io/token", false},
+		{"in", "http://reg.svc:5000/token", true},
+		{"in", "http://other.svc:5000/token", false},
+		{"in", "https://evil.example/token", false},
+		{"x", "https://auth.x.example/t", true},
+		{"x", "https://AUTH.X.EXAMPLE/t", true},
+		{"x", "ftp://x.example/t", false},
+		{"x", "https:///t", false},
+	} {
+		u, _ := url.Parse(c.realm)
+		if got := by[c.reg].realmAllowed(u); got != c.want {
+			t.Errorf("%s %s: %v, want %v", c.reg, c.realm, got, c.want)
+		}
+	}
+}
+
+func TestACredentialIsNeverSentToAForeignRealm(t *testing.T) {
+	var evilHits int
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { evilHits++ }))
+	defer evil.Close()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate", `Bearer realm="`+evil.URL+`/token",service="x"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer up.Close()
+	u := mustURL(t, up.URL)
+	_, out, _ := NewUpstream(5*time.Second).Fetch(context.Background(), Registry{Name: "up", URL: u}, Object{Repo: "org/x", Kind: kindManifests, Ref: "latest"}, Creds{"alice", "pw"}, "k")
+	if evilHits != 0 {
+		t.Fatalf("the foreign token endpoint got %d requests", evilHits)
+	}
+	if out == Allowed {
+		t.Fatal("nothing was proved")
+	}
 }

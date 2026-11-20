@@ -512,3 +512,19 @@ func TestParseCacheImageNeedsTheHostForm(t *testing.T) {
 		t.Fatal("another host than the gate's")
 	}
 }
+
+// No answer of the gate, refusals included, carries a credential of a pull or the token of a node.
+func TestNoAnswerCarriesACredentialOrAToken(t *testing.T) {
+	n := newNodeRig(t)
+	n.cache.Creds.(*SecretView).Set(names.UpstreamTenantSecret("acme"), dockerConfig("up", "bob-user", "bob-secret-pw"))
+	n.devicePod("lg-acme", "dev-thief", "node-a", pfx+"acme/up/org/private@"+n.md)
+	for _, path := range []string{n.mp("acme", "org/private", n.md), n.bp("acme", "org/private", n.ld), n.mp("nobody", "org/private", n.md), n.mp("acme", "org/private", "latest")} {
+		code, body, hdr := n.get(tokA, "GET", path, map[string]string{"Authorization": "Basic Ym9iLXVzZXI6Ym9iLXNlY3JldC1wdw=="})
+		all := string(body) + fmt.Sprint(hdr)
+		for _, secret := range []string{"bob-user", "bob-secret-pw", "Ym9iLXVzZXI", tokA} {
+			if strings.Contains(all, secret) {
+				t.Errorf("%s (%d) carries %q", path, code, secret)
+			}
+		}
+	}
+}

@@ -50,9 +50,12 @@ func (s *RegistrySet) Names() []string {
 	return out
 }
 
-// ParseRegistries reads [{"name": "ghcr.io", "url": "https://ghcr.io"}, ...]. A URL is https, or http for a registry inside the cluster.
+// ParseRegistries reads [{"name": "ghcr.io", "url": "https://ghcr.io", "authHosts": ["auth.example"]}, ...] (authHosts optional). A URL is https, or http for a registry inside the cluster.
 func ParseRegistries(data []byte) ([]Registry, error) {
-	var raw []struct{ Name, URL string }
+	var raw []struct {
+		Name, URL string
+		AuthHosts []string
+	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("registries: %w", err)
 	}
@@ -62,7 +65,11 @@ func ParseRegistries(data []byte) ([]Registry, error) {
 		if err != nil || e.Name == "" || u.Host == "" || u.Scheme != "https" && u.Scheme != schemeHTTP {
 			return nil, fmt.Errorf("registries: bad entry %q %q", e.Name, e.URL)
 		}
-		out = append(out, Registry{Name: e.Name, URL: u})
+		hosts := e.AuthHosts
+		if e.Name == "docker.io" && len(hosts) == 0 {
+			hosts = []string{"auth.docker.io"} // Hub's challenge names its token service
+		}
+		out = append(out, Registry{Name: e.Name, URL: u, AuthHosts: hosts})
 	}
 	return out, nil
 }

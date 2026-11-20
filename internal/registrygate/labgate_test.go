@@ -891,3 +891,22 @@ func TestSessionTableEvictsOnlyTheOwnersSessions(t *testing.T) {
 		t.Fatalf("%d sessions for one device", n)
 	}
 }
+
+// Review finding 10: when the old content is pushed again within the grace it is "latest" again and must not be deleted.
+func TestSupersedeNeverDeletesTheCurrentLatest(t *testing.T) {
+	st := &memStore{manifests: map[string][]byte{}, blobs: map[string]int64{}, missing: map[string]bool{}}
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	s := &Superseder{Store: st, Grace: time.Minute, Now: func() time.Time { return now }}
+	a := snapshotManifest(map[string]int64{dg("a"): 1})
+	b := snapshotManifest(map[string]int64{dg("b"): 1})
+	st.manifests["r|"+sha256Digest(a)] = a
+	st.manifests["r|"+sha256Digest(b)] = b
+	st.manifests["r|latest"] = b
+	s.Plan("r", sha256Digest(a), sha256Digest(b)) // a was replaced by b ...
+	st.manifests["r|latest"] = a                  // ... and then a was pushed again
+	now = now.Add(2 * time.Minute)
+	s.Sweep(context.Background())
+	if len(st.deleted) != 0 {
+		t.Fatalf("the current latest was deleted: %v", st.deleted)
+	}
+}

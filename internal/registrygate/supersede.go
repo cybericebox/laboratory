@@ -111,6 +111,12 @@ func (s *Superseder) Sweep(ctx context.Context) int {
 }
 
 func (s *Superseder) apply(ctx context.Context, t supersession) error {
+	// the same content pushed again within the grace makes the old snapshot "latest" again: the current latest is never deleted
+	if h, ok, err := s.Store.Head(ctx, t.repo, kindManifests, "latest"); err != nil {
+		return err
+	} else if ok && h.Get("Docker-Content-Digest") == t.old {
+		return nil
+	}
 	oldBody, err := s.Store.ManifestBody(ctx, t.repo, t.old)
 	if err != nil || oldBody == nil {
 		return err // gone already (or unreadable: nothing is deleted that cannot be accounted for)
