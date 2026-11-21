@@ -34,6 +34,7 @@ func prewarmConfig(cfg *config.Config, k8s kubernetes.Interface) (grpcserver.Pre
 			// No keychain: the digest of a tag is asked anonymously, and only for an image the gate has already served for the call's own
 			// credentials; a private image is warmed by digest, with the credentials that arrive with the call. The agent reads no Secret for it.
 			TTL:       cfg.Cache.PinTTL,
+			PlainHTTP: cfg.Cache.PlainHTTPRegistries,
 			Platforms: grpcserver.NodePlatforms(k8s, selector),
 		},
 		Concurrency: cfg.Cache.Concurrency,

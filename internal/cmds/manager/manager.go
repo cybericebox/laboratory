@@ -220,8 +220,9 @@ func Run() {
 		// Tags are pinned to digests asked of the upstream registries directly, with
 		// the operator's pull secrets.
 		resolver = &imagecache.RegistryResolver{
-			Keychain: &laboratorycontroller.PullKeychain{Reader: mgr.GetAPIReader(), Namespace: names.SystemNamespace, Names: cfg.ImagePullSecrets},
-			TTL:      cfg.Cache.PinTTL,
+			Keychain:  &laboratorycontroller.PullKeychain{Reader: mgr.GetAPIReader(), Namespace: names.SystemNamespace, Names: cfg.ImagePullSecrets},
+			TTL:       cfg.Cache.PinTTL,
+			PlainHTTP: cfg.Cache.PlainHTTPRegistries,
 			// One node architecture: pin the platform manifest, so the cache fetches
 			// that image and not every architecture of an index.
 			Platforms: platforms,
@@ -372,7 +373,7 @@ func Run() {
 		RequireDigest:             cfg.Cache.RequireDigest,
 		CredentialResolver: func(kc authn.Keychain) imagecache.Resolver {
 			// the lab's own credentials only: the digest of a private image, asked of its registry directly
-			return &imagecache.RegistryResolver{Keychain: kc, TTL: cfg.Cache.PinTTL, Platforms: platforms}
+			return &imagecache.RegistryResolver{Keychain: kc, TTL: cfg.Cache.PinTTL, Platforms: platforms, PlainHTTP: cfg.Cache.PlainHTTPRegistries}
 		},
 		PinEvents:      pinEvents,
 		NetConfigImage: cfg.NetConfigImage,

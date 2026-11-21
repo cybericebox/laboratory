@@ -291,6 +291,9 @@ type CacheConfig struct {
 	// default): a tag that cannot be resolved to a digest fails the creation of the lab. Off, it is pulled by its tag.
 	RequireDigest bool     `env:"IMAGE_CACHE_REQUIRE_DIGEST" envDefault:"true"`
 	Registries    []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	// PlainHTTPRegistries are the served registries the chart lists with an http:// url (IMAGE_CACHE_PLAIN_HTTP_REGISTRIES): the tag resolver
+	// asks them over plain http, as the registry gate does.
+	PlainHTTPRegistries []string `env:"IMAGE_CACHE_PLAIN_HTTP_REGISTRIES" envSeparator:","`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)

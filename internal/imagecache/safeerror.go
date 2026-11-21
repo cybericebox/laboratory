@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -73,9 +74,14 @@ func classify(registry string, err error) (*PinError, bool) {
 	var host x509.HostnameError
 	var invalid x509.CertificateInvalidError
 	var verify *tls.CertificateVerificationError
+	var record tls.RecordHeaderError
 	switch {
 	case errors.As(err, &dns):
 		return &PinError{Registry: registry, Reason: "the name did not resolve"}, true
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return &PinError{Registry: registry, Reason: "the connection was refused"}, true
+	case errors.As(err, &record), strings.Contains(err.Error(), "server gave HTTP response to HTTPS client"):
+		return &PinError{Registry: registry, Reason: "the registry does not speak https"}, true
 	case errors.As(err, &unknownCA), errors.As(err, &host), errors.As(err, &invalid), errors.As(err, &verify):
 		return &PinError{Registry: registry, Reason: "the certificate was not accepted"}, true
 	}

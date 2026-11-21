@@ -410,6 +410,26 @@ func TestImageCacheCustomRegistriesAndAnonymousFill(t *testing.T) {
 	}
 }
 
+// The tag resolver of the operator and the agent asks the registries that the chart lists with an http:// url over plain http, as the gate
+// does; none of the built-in ones.
+func TestPlainHTTPRegistriesReachTheResolvers(t *testing.T) {
+	set := []string{"--set", "registry.cache.enabled=true", "--set", "registry.cache.extraRegistries[0].name=registry.e2e.test",
+		"--set", "registry.cache.extraRegistries[0].url=http://registry.e2e.test",
+		"--set", "registry.cache.extraRegistries[1].name=reg.example.com",
+		"--set", "registry.cache.extraRegistries[1].url=https://reg.example.com"}
+	if got := operatorConfig(t, set...)["IMAGE_CACHE_PLAIN_HTTP_REGISTRIES"]; got != "registry.e2e.test" {
+		t.Errorf("operator: %q", got)
+	}
+	if got := operatorConfig(t, "--set", "registry.cache.enabled=true")["IMAGE_CACHE_PLAIN_HTTP_REGISTRIES"]; got != "" {
+		t.Errorf("the built-in registries are https: %q", got)
+	}
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, append([]string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}, set...)...)
+	if got := envOf(dep.Spec.Template.Spec.Containers[0])["IMAGE_CACHE_PLAIN_HTTP_REGISTRIES"].Value; got != "registry.e2e.test" {
+		t.Errorf("agent: %q", got)
+	}
+}
+
 func TestAgentPrewarmWiring(t *testing.T) {
 	on := []string{"--set", "registry.cache.enabled=true", "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com",
 		"--set", "imagePullSecrets[0].name=pull-one", "--set", "registry.cache.prewarm.concurrency=7"}

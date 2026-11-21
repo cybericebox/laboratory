@@ -223,6 +223,8 @@ type CacheConfig struct {
 	NodePrefix string `env:"IMAGE_CACHE_PREFIX"`
 	// Registries are the upstream registries the cache serves.
 	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	// PlainHTTPRegistries: the served registries listed with an http:// url (the tag resolver asks them over plain http, as the gate does).
+	PlainHTTPRegistries []string `env:"IMAGE_CACHE_PLAIN_HTTP_REGISTRIES" envSeparator:","`
 	// GateAddr is host:port of the registry gate's TLS port, where the cache path is served: PrewarmImages warms images through it, with the
 	// credentials of the call. Empty = names.RegistryGateAddr. GateCAFile is the authority the agent trusts there (the chart gives it the CA
 	// of the gate's certificate only); without it the agent speaks plain http, which only a development setup does.

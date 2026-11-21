@@ -147,3 +147,27 @@ func TestResolverErrorCarriesNoBodyOfTheRegistry(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// A registry the chart lists with an http:// url (a plain registry inside the cluster) is asked over plain http, as the gate asks it; any
+// other registry over https only.
+func TestResolverAsksAPlainHTTPRegistryOnlyWhenItIsListedSo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			answerWith(dg1)(w, r)
+		}
+	}))
+	defer srv.Close()
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) { // the name of the registry is dialed to the test server
+		var d net.Dialer
+		return d.DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	const ref = "registry.e2e.test/cybericebox/lab:e2e"
+	if _, err := (&RegistryResolver{TTL: time.Minute, Transport: tr}).Resolve(context.Background(), ref); err == nil {
+		t.Fatal("an unlisted registry is asked over https")
+	}
+	d, err := (&RegistryResolver{TTL: time.Minute, Transport: tr, PlainHTTP: []string{"registry.e2e.test"}}).Resolve(context.Background(), ref)
+	if err != nil || d != dg1 {
+		t.Fatalf("%q %v", d, err)
+	}
+}

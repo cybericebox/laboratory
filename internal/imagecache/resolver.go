@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,10 @@ type RegistryResolver struct {
 	// cache fetches that one image and not every architecture of the index. With
 	// several (or none known) the index digest is pinned.
 	Platforms func(ctx context.Context) []v1.Platform
+	// PlainHTTP lists registries (as they are named in an image reference: "registry.e2e.test", "host:5000") that are asked over plain
+	// http, as the registry gate asks the ones the chart lists with an http:// url (a plain registry inside the cluster). Any other is
+	// asked over https only.
+	PlainHTTP []string
 	// Transport carries every request to a registry. Nil: the default transport with the guard of netguard, which refuses a redirect
 	// to an internal address (see defaultTransport). A first request goes where the reference says, whatever the address.
 	Transport http.RoundTripper
@@ -100,6 +105,11 @@ func (r *RegistryResolver) Resolve(ctx context.Context, ref string) (string, err
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
 		return "", err
+	}
+	if slices.Contains(r.PlainHTTP, parsed.Context().RegistryStr()) {
+		if parsed, err = name.ParseReference(ref, name.Insecure); err != nil {
+			return "", err
+		}
 	}
 	var platform *v1.Platform
 	if r.Platforms != nil {
