@@ -946,7 +946,7 @@ registry:
     # for each tag once and the lab's pods pull REG/repo@sha256:..., so a lab, and the
     # labs created in the same wave, run one image even if an upstream tag moves. A
     # resolved digest is remembered for pinTTL; an image that cannot be resolved is
-    # pulled by its tag and named in Lab.status.imageWarning.
+    # pulled by its tag and named in Lab.status.imageWarning (with requireDigest, the lab fails instead).
     pinTTL: 30m
     # How many tags are resolved at the same time (1 to 64). The resolving runs in the background: a new lab waits for its
     # digests without holding an operator worker, and one tag is resolved once however many labs ask for it.
@@ -986,10 +986,11 @@ registry:
     # verified; after it the next pull is served and checked again in the background. A refusal is repeated without asking for deniedFor.
     decisionMaxAge: 2m
     deniedFor: 30s
-    # On: the gate refuses a manifest requested by tag (403, CIB_UNPINNED) and the operator treats a tag it cannot resolve to a digest as a
-    # failure to create the lab (it names the image) instead of a warning. Off (the default): an unresolvable tag is pulled by tag and named in
-    # Lab.status.imageWarning. To be switched on for events.
-    requireDigest: false
+    # On (the default): the gate refuses a manifest requested by tag (403, CIB_UNPINNED) and the operator treats a tag it cannot resolve to a
+    # digest as a failure to create the lab (it names the image) instead of a warning. A tag is resolved by the operator at creation of
+    # the lab, so a lab whose image reference already carries @sha256 needs no lookup at all. Off: an unresolvable tag is pulled by tag
+    # and named in Lab.status.imageWarning.
+    requireDigest: true
     # Percent of the registry volume in use above which a miss is streamed through to the pod and not stored (hits still serve).
     diskHighWater: 90
     # Optional login for rate-limit relief (for example Docker Hub): the NAME of a Secret of the release namespace of type

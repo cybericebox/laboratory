@@ -49,7 +49,7 @@ type Config struct {
 	// PullGrace and GrantMaxAge bound how long a node may keep fetching what a manifest it was served lists.
 	PullGrace     time.Duration `env:"GATE_PULL_GRACE" envDefault:"2m"`
 	GrantMaxAge   time.Duration `env:"GATE_GRANT_MAX_AGE" envDefault:"1h"`
-	RequireDigest bool          `env:"GATE_REQUIRE_DIGEST" envDefault:"false"`
+	RequireDigest bool          `env:"GATE_REQUIRE_DIGEST" envDefault:"true"`
 	// Limits of 2.4.6a.
 	GrantsPerNode     int `env:"GATE_GRANTS_PER_NODE" envDefault:"2000"`
 	GrantMaxDigests   int `env:"GATE_GRANT_MAX_DIGESTS" envDefault:"512"`

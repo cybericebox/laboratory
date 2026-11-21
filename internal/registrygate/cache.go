@@ -60,7 +60,7 @@ type Cache struct {
 	Schedule *Schedule
 	Creds    CredentialSource
 	Grants   *Grants
-	// RequireDigest refuses a manifest request by tag from a node (GATE_REQUIRE_DIGEST, off by default).
+	// RequireDigest refuses a manifest request by tag from a node (GATE_REQUIRE_DIGEST, on by default).
 	RequireDigest bool
 	// AgentMaxFills is how many requests of the agent the gate serves at once (GATE_AGENT_MAX_FILLS, default 8).
 	AgentMaxFills int

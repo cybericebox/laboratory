@@ -173,7 +173,7 @@ func TestRegistryGateIsNotRenderedWithoutTheRegistry(t *testing.T) {
 }
 
 // The wiring of the gate: how a caller is known (the audience of the token and the accounts that may call), the cache (always on), the limits of a
-// pull and of a push, and requireDigest (off by default).
+// pull and of a push, and requireDigest (on by default).
 func TestRegistryGateWiring(t *testing.T) {
 	gate := containerNamed(registryPod(t, "--set", "agent.enabled=true", "--set", "registry.cache.staleIfError=7m"), "gate")
 	vars := envOf(*gate)
@@ -181,7 +181,7 @@ func TestRegistryGateWiring(t *testing.T) {
 		"GATE_CACHE_ENABLED": "true", "GATE_STALE_IF_ERROR": "7m", "GATE_DECISION_MAX_AGE": "2m", "GATE_DENIED_FOR": "30s", "GATE_DISK_HIGH_WATER": "90",
 		"GATE_IMAGE_HOST": "localhost:5035", "GATE_SNAPSHOTS_ENABLED": "true",
 		"GATE_OPERATOR_ACCOUNT": "laboratory-system/laboratory-controller-manager", "GATE_NODE_ACCOUNT": "laboratory-system/laboratory-node-agent",
-		"GATE_AGENT_ACCOUNT": "laboratory-agent/laboratory-agent", "GATE_REQUIRE_DIGEST": "false", "GATE_BIND_SOURCE": "true",
+		"GATE_AGENT_ACCOUNT": "laboratory-agent/laboratory-agent", "GATE_REQUIRE_DIGEST": "true", "GATE_BIND_SOURCE": "true",
 		"GATE_TOKEN_CACHE_TTL": "5m", "GATE_PULL_GRACE": "2m", "GATE_GRANT_MAX_AGE": "1h", "GATE_API_STALE_MAX": "15m", "GATE_AGENT_MAX_FILLS": "8",
 	} {
 		if vars[k].Value != want {
@@ -197,13 +197,13 @@ func TestRegistryGateWiring(t *testing.T) {
 			t.Errorf("%s comes from a Secret or a field: the gate holds its settings as plain values", e.Name)
 		}
 	}
-	// requireDigest reaches the gate and the operator
-	on := envOf(*containerNamed(registryPod(t, "--set", "registry.cache.requireDigest=true"), "gate"))
-	if on["GATE_REQUIRE_DIGEST"].Value != "true" || operatorConfig(t, "--set", "registry.cache.requireDigest=true")["IMAGE_CACHE_REQUIRE_DIGEST"] != "true" {
-		t.Errorf("requireDigest: gate %q", on["GATE_REQUIRE_DIGEST"].Value)
+	// requireDigest reaches the gate and the operator, and is on by default
+	off := envOf(*containerNamed(registryPod(t, "--set", "registry.cache.requireDigest=false"), "gate"))
+	if off["GATE_REQUIRE_DIGEST"].Value != "false" || operatorConfig(t, "--set", "registry.cache.requireDigest=false")["IMAGE_CACHE_REQUIRE_DIGEST"] != "false" {
+		t.Errorf("requireDigest=false: gate %q", off["GATE_REQUIRE_DIGEST"].Value)
 	}
-	if operatorConfig(t)["IMAGE_CACHE_REQUIRE_DIGEST"] != "false" {
-		t.Error("requireDigest is off by default")
+	if operatorConfig(t)["IMAGE_CACHE_REQUIRE_DIGEST"] != "true" {
+		t.Error("requireDigest is on by default")
 	}
 	// the push rules are the gate's, not node-state's: rendered only with state persistence
 	for _, k := range []string{"GATE_MIN_PUSH_INTERVAL", "GATE_PUSH_BUDGET_BYTES", "GATE_PUSH_BUDGET_WINDOW", "GATE_TENANT_QUOTA_BYTES", "GATE_REGISTRY_RESERVE", "GATE_SUPERSEDED_GRACE", "GATE_EXIT_MAX_BYTES", "GATE_EXIT_PUSHES_PER_HOUR"} {

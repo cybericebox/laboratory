@@ -359,6 +359,21 @@ func TestLoadConfigAPIRate(t *testing.T) {
 	}
 }
 
+// A tag that cannot be pinned fails the lab unless the operator says otherwise (the gate refuses a pull by tag by default as well).
+func TestLoadConfigRequireDigestIsOnByDefault(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || !cfg.Cache.RequireDigest {
+		t.Fatalf("default: %v %v", cfg.Cache.RequireDigest, err)
+	}
+	t.Setenv("IMAGE_CACHE_REQUIRE_DIGEST", "false")
+	if cfg, err = LoadConfig(); err != nil || cfg.Cache.RequireDigest {
+		t.Fatalf("false: %v %v", cfg.Cache.RequireDigest, err)
+	}
+}
+
 func TestLoadConfigPinConcurrency(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "labs.example.com")
