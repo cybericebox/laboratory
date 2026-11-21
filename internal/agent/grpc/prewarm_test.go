@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -644,5 +646,24 @@ func TestPrewarmUsesTheTenantSegmentAndTheAgentsToken(t *testing.T) {
 	}
 	if len(z.tokens) != 1 || !z.tokens["agent-token"] {
 		t.Errorf("every request carries the agent's token: %v", z.tokens)
+	}
+}
+
+func TestCredentialIDTellsLoginsApartWithoutShowingThem(t *testing.T) {
+	a := credentialID("reg.example", "bot", "s3cret")
+	if a != credentialID("reg.example", "bot", "s3cret") {
+		t.Fatal("the same login must give the same id")
+	}
+	for _, other := range []string{
+		credentialID("reg.example", "bot", "s3cret2"), credentialID("reg.example", "bo", "ts3cret"),
+		credentialID("reg2.example", "bot", "s3cret"),
+	} {
+		if other == a {
+			t.Fatal("another login gave the same id")
+		}
+	}
+	plain := sha256.Sum256([]byte("reg.example\x00bot\x00s3cret"))
+	if a == hex.EncodeToString(plain[:8]) {
+		t.Fatal("the id is a bare hash of the secret, open to guessing offline")
 	}
 }
