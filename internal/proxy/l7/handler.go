@@ -406,7 +406,8 @@ func filterSetCookies(hdr http.Header, keep func(name, domain string) bool) {
 		for _, attr := range parts[1:] {
 			k, val, _ := strings.Cut(strings.TrimSpace(attr), "=")
 			if strings.EqualFold(k, "domain") {
-				domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), "."))
+				// a trailing dot names the same host (Domain=example.test. is Domain=example.test): compare without it
+				domain = strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), ".")), ".")
 			}
 		}
 		if keep(strings.TrimSpace(cookieName), domain) {

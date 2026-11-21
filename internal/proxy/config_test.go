@@ -16,7 +16,7 @@ func TestLoadL7Config_GrantSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GrantMaxTTL != 8*time.Hour || cfg.CookieName != "cib_grant" || len(cfg.PlatformOrigins) != 0 {
+	if cfg.GrantMaxTTL != 8*time.Hour || cfg.CookieName != "__Host-cib_grant" || len(cfg.PlatformOrigins) != 0 {
 		t.Fatalf("defaults: %v %q %v", cfg.GrantMaxTTL, cfg.CookieName, cfg.PlatformOrigins)
 	}
 	t.Setenv("PLATFORM_ORIGINS", "https://app.example.com,https://*.example.org")

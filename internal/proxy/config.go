@@ -17,8 +17,10 @@ type L7Config struct {
 	// tenant-<name>-access-keys of the access keys namespace (see l7.SecretKeys); the proxy has no key of its own and signs nothing.
 	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
 	Listen     string `env:"LISTEN_HTTPS"  envDefault:":8443"`
-	// CookieName is the host-only cookie a web host keeps its grant in (chart proxy.l7.grantCookieName).
-	CookieName string `env:"GRANT_COOKIE_NAME" envDefault:"cib_grant"`
+	// CookieName is the host-only cookie a web host keeps its grant in (chart proxy.l7.grantCookieName). The default carries the __Host- prefix:
+	// a browser then accepts it only when it is Secure, has Path=/ and no Domain, so a sibling site under the parent domain cannot set or shadow
+	// it. The name is used everywhere (the cookie, the strip before the device, the filter of the device's own Set-Cookie).
+	CookieName string `env:"GRANT_COOKIE_NAME" envDefault:"__Host-cib_grant"`
 	// GrantMaxTTL is the longest exp - iat of a grant the proxy accepts (chart proxy.l7.grantMaxTTL); the agent reports it to the backend.
 	GrantMaxTTL time.Duration `env:"GRANT_MAX_TTL" envDefault:"8h"`
 	// PlatformOrigins are the pages that may post a grant (https://host[:port] or https://*.base[:port], as the embedding lists): the form
