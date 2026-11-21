@@ -211,7 +211,7 @@ type SchedulerConfig struct {
 }
 
 // CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition. The names are the operator's
-// (IMAGE_CACHE_*, IMAGE_PULL_SECRETS): one chart value, one name.
+// (IMAGE_CACHE_*): one chart value, one name.
 type CacheConfig struct {
 	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
 	// NodePrefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); a tenant image that names it
@@ -219,10 +219,6 @@ type CacheConfig struct {
 	NodePrefix string `env:"IMAGE_CACHE_PREFIX"`
 	// Registries are the upstream registries the cache serves.
 	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
-	// PullSecrets are dockerconfigjson Secrets of the release namespace used to ask the upstream registries for digests.
-	PullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
-	// PullSecretNamespace is the namespace of those Secrets; empty = names.SystemNamespace.
-	PullSecretNamespace string `env:"AGENT_PULL_SECRET_NAMESPACE"`
 	// GateAddr is host:port of the registry gate's TLS port, where the cache path is served: PrewarmImages warms images through it, with the
 	// credentials of the call. Empty = names.RegistryGateAddr. GateCAFile is the authority the agent trusts there (the chart gives it the CA
 	// of the gate's certificate only); without it the agent speaks plain http, which only a development setup does.
@@ -270,9 +266,6 @@ func Load() (*Config, error) {
 	}
 	if c.Cache.GateAddr == "" {
 		c.Cache.GateAddr = names.RegistryGateAddr
-	}
-	if c.Cache.PullSecretNamespace == "" {
-		c.Cache.PullSecretNamespace = names.SystemNamespace
 	}
 	if c.Cache.NodePrefix == "" {
 		c.Cache.NodePrefix = names.RegistryNodePrefix
