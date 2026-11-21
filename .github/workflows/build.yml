@@ -88,5 +88,5 @@ jobs:
           target: ${{ matrix.target }}
           push: true
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-develop
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-release
           tags: ${{ matrix.image }}:${{ steps.meta.outputs.sha }}
