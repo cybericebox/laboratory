@@ -570,3 +570,17 @@ func TestLauncherServiceUserIsNeverImplicitRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestPodBootstrapAttemptNeverWraps(t *testing.T) {
+	for annotation, want := range map[string]int32{
+		"": 1, "x": 1, "0": 1, "-3": 1, "2": 2, "2147483647": 2147483647,
+		// 1<<32+2 would be 2 as an int32 cut down from 64 bits.
+		"4294967298": 1, "2147483648": 1,
+	} {
+		pod := &corev1.Pod{}
+		pod.Annotations = map[string]string{names.AnnotationBootstrapAttempt: annotation}
+		if got := podBootstrapAttempt(pod); got != want {
+			t.Errorf("annotation %q: attempt %d, want %d", annotation, got, want)
+		}
+	}
+}
