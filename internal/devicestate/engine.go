@@ -62,8 +62,9 @@ type Engine struct {
 	RegistryHost string
 	// WorkDir holds the temporary layer files of a snapshot.
 	WorkDir string
-	// MaxWatchDirs is how many directories of one writable layer are watched with inotify (the kernel's watch limit is shared
-	// by everything on the node); past it the layer is only polled. Zero means DefaultMaxWatchDirs.
+	// MaxWatchDirs is how many directories of ALL the writable layers of the node are watched with inotify together (the kernel's watch
+	// limit is shared by everything on the node, and one budget is shared by every device); past it a layer is only polled. Zero means
+	// DefaultMaxWatchDirs.
 	MaxWatchDirs int
 	// Poll is the writable-layer scan interval (DefaultPollInterval when zero).
 	Poll time.Duration
@@ -72,29 +73,26 @@ type Engine struct {
 	// ExitTimeout bounds the exit snapshot so it ends before the controller
 	// stops waiting for it (25s when zero).
 	ExitTimeout time.Duration
+	// MaxConcurrentDiffs is how many layers the node diffs at once (DefaultMaxConcurrentDiffs when zero); TempBudgetBytes is how many bytes
+	// of temporary files in WorkDir all the running diffs may hold together (each reserves the write quota of its device; zero: no budget
+	// beyond the number of diffs). PrescanTime caps the look at a layer before its diff (DefaultPrescanTime when zero).
+	MaxConcurrentDiffs int
+	TempBudgetBytes    int64
+	PrescanTime        time.Duration
 	// RetryBase and RetryMax bound the retry of a failed snapshot (10s doubling to 5m when zero).
 	RetryBase, RetryMax time.Duration
 
-	// The registry is shared by every tenant, so what a device may push is bounded (zero values switch the bound off):
-	// MinPushInterval is the least time between two pushes of one device (the exit snapshot is exempt: it must not be lost),
-	// PushBudget the most state it may push within PushBudgetWindow (an hour when zero). A change that comes sooner or over the
-	// budget waits; nothing is lost, the next snapshot has it.
-	MinPushInterval  time.Duration
-	PushBudget       int64
-	PushBudgetWindow time.Duration
-	// SupersededGrace is how long the manifest a new snapshot replaced is kept before it and its blobs are deleted from the
-	// registry (a pod being created from it a moment ago must still be able to pull it). Zero deletes at once.
-	SupersededGrace time.Duration
-	// Space refuses a push when the registry is nearly full; Retained adds the state the tenant still has in repositories of labs that
-	// are gone to the tenant's quota. Both are optional.
-	Space    SpaceGuard
-	Retained RetainedCounter
-	Log      logr.Logger
+	Log logr.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// SnapshotsBlocked, when set, is why no snapshot can be taken on this node (an AppArmor profile that denies mount): devices are
 	// still followed, but each gets it as its warning and no snapshot is attempted.
 	SnapshotsBlocked string
+
+	watchOnce   sync.Once
+	watchBudget *WatchBudget
+	diffOnce    sync.Once
+	diffs       *diffLimiter
 
 	captureWorkers sync.WaitGroup
 	holdWorkers    sync.WaitGroup
@@ -125,21 +123,15 @@ type tracked struct {
 	watching       bool // a normal persistence watcher exists, rather than a recovery placeholder
 	lastSnapshot   Snapshot
 	failures       int // consecutive failed live snapshots (touched by the live loop only)
-	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
-	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
-	prevRef string
-	pushes  []pushRecord
 	// holdUntil: no live snapshot before it (the layer was over the write quota, a diff that is bound to fail again).
 	holdUntil time.Time
+	// broken is why this device is not snapshotted any more in this incarnation: a goroutine of its snapshot machinery panicked (guarded by
+	// e.mu). Another pod of the device, or a restart of the node-state pod, starts clean.
+	broken string
 }
 
 // quotaHold is how long a layer over the write quota waits before the device is diffed again.
 const quotaHold = 5 * time.Minute
-
-type pushRecord struct {
-	at    time.Time
-	bytes int64
-}
 
 // errDeferred is a snapshot that was not taken now, for a reason that is not a failure: it waits for after. A deferred snapshot is
 // retried then and does not count as a failed one.
@@ -155,35 +147,7 @@ func (t *tracked) allow() *errDeferred {
 	e := t.e
 	now := e.now()
 	if now.Before(t.holdUntil) {
-		return &errDeferred{after: t.holdUntil.Sub(now), reason: "the layer is over the write quota"}
-	}
-	if e.MinPushInterval > 0 && len(t.pushes) > 0 {
-		last := t.pushes[len(t.pushes)-1].at
-		if wait := e.MinPushInterval - now.Sub(last); wait > 0 {
-			return &errDeferred{after: wait, reason: "the device pushed a snapshot a moment ago"}
-		}
-	}
-	if e.PushBudget > 0 {
-		window := e.PushBudgetWindow
-		if window <= 0 {
-			window = time.Hour
-		}
-		var sum int64
-		kept := t.pushes[:0]
-		for _, p := range t.pushes {
-			if now.Sub(p.at) < window {
-				kept = append(kept, p)
-				sum += p.bytes
-			}
-		}
-		t.pushes = kept
-		if sum >= e.PushBudget && len(kept) > 0 {
-			wait := window - now.Sub(kept[0].at)
-			if wait < time.Second {
-				wait = time.Second
-			}
-			return &errDeferred{after: wait, reason: fmt.Sprintf("the device has pushed %d bytes in the last %s, its budget is %d", sum, window, e.PushBudget)}
-		}
+		return &errDeferred{after: t.holdUntil.Sub(now), reason: "the layer is over the write quota or the entry limit"}
 	}
 	return nil
 }
@@ -194,13 +158,6 @@ func (e *Engine) snapshotRef(ref string) string {
 		return ref
 	}
 	return ""
-}
-
-// repoOfRef is "repo" of "host/repo@digest".
-func repoOfRef(ref string) string {
-	_, rest, _ := strings.Cut(ref, "/")
-	repo, _, _ := strings.Cut(rest, "@")
-	return repo
 }
 
 func (e *Engine) retryBase() time.Duration {
@@ -215,6 +172,67 @@ func (e *Engine) retryMax() time.Duration {
 		return e.RetryMax
 	}
 	return defaultRetryMax
+}
+
+// errDeviceFailed is the answer of a device that stopped being snapshotted after a panic in its machinery (see Engine.panicked).
+var errDeviceFailed = errors.New("snapshots of this device stopped after an internal error")
+
+// goSafe runs fn in a goroutine of the engine for the container. A panic in it does not take the node-state pod down with the snapshots
+// of every other device: it is logged with its stack and marks the device failed (panicked).
+func (e *Engine) goSafe(name, containerID string, fn func()) {
+	go safeGo(name, e.panicked(containerID), fn)
+}
+
+// panicked is the handler of a recovered panic of a goroutine that works for the container: the error and the stack are logged, and the
+// device stops being snapshotted in this incarnation (its status says so); the engine goes on with every other device.
+func (e *Engine) panicked(containerID string) func(error) {
+	return func(err error) {
+		var stack []byte
+		var pe *PanicError
+		if errors.As(err, &pe) {
+			stack = pe.Stack
+		}
+		e.Log.Error(err, "recovered from a panic: the snapshots of this device stop for this incarnation", "container", containerID, "stack", string(stack))
+		e.failDevice(containerID, err)
+	}
+}
+
+// failDevice marks the tracked container broken and says so in the device status. A container the engine does not follow has nothing to mark.
+func (e *Engine) failDevice(containerID string, cause error) {
+	e.mu.Lock()
+	t := e.tracked[containerID]
+	if t != nil {
+		t.broken = cause.Error()
+	}
+	e.mu.Unlock()
+	if t == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	msg := snapshot.TruncateWarning("snapshots of this device are stopped after an internal error of the node: " + cause.Error())
+	if err := e.Cluster.Warn(ctx, t.pod, msg); err != nil && !errors.Is(err, ErrStale) {
+		e.Log.Error(err, "report the stopped device", "pod", t.pod.Pod)
+	}
+}
+
+// failedWith is why the device is stopped, "" when it is not.
+func (t *tracked) failedWith() string {
+	t.e.mu.Lock()
+	defer t.e.mu.Unlock()
+	return t.broken
+}
+
+// diffGate is the node-wide limit on diffs, made on first use.
+func (e *Engine) diffGate() *diffLimiter {
+	e.diffOnce.Do(func() { e.diffs = newDiffLimiter(e.MaxConcurrentDiffs, e.TempBudgetBytes) })
+	return e.diffs
+}
+
+// watchDirs is the node-wide budget of watched directories, made on first use from MaxWatchDirs.
+func (e *Engine) watchDirs() *WatchBudget {
+	e.watchOnce.Do(func() { e.watchBudget = NewWatchBudget(e.MaxWatchDirs) })
+	return e.watchBudget
 }
 
 func (e *Engine) now() time.Time {
@@ -255,7 +273,7 @@ func (e *Engine) Run(ctx context.Context) error {
 				exits = nil
 				continue
 			}
-			go e.onExit(ctx, id)
+			e.goSafe("exit snapshot", id, func() { e.onExit(ctx, id) })
 		case <-tick.C:
 			e.Sync(ctx)
 		}
@@ -294,12 +312,12 @@ func (e *Engine) Sync(ctx context.Context) {
 		if p.CaptureRequest != nil {
 			req := *p.CaptureRequest
 			e.captureWorkers.Add(1)
-			go func() {
+			e.goSafe("required capture", p.ContainerID, func() {
 				defer e.captureWorkers.Done()
 				if _, err := e.captureRequired(ctx, p, req, false); err != nil {
 					e.Log.Error(err, "required capture", "pod", p.Pod)
 				}
-			}()
+			})
 			continue
 		}
 		if p.ContainerID == "" {
@@ -409,7 +427,7 @@ func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
 
 // track registers the container and starts its change watcher.
 func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
-	t := &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+	t := &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}}
 	e.mu.Lock()
 	if old, ok := e.tracked[p.ContainerID]; ok {
 		t = old
@@ -436,7 +454,9 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 	}
 	e, p, c := t.e, t.pod, t.c
 	wctx, cancel := context.WithCancel(ctx)
-	changes, err := Watch(wctx, c.UpperDir, p.Policy, e.Poll, e.MaxWatchDirs)
+	changes, err := WatchWith(wctx, c.UpperDir, p.Policy, WatchOptions{Poll: e.Poll, Budget: e.watchDirs(), OnPanic: e.panicked(c.ID), OnOverCap: func() {
+		e.Log.Info("the writable layer is over the scan limits: it is followed by filesystem events only", "device", p.Device, "pod", p.Pod)
+	}})
 	if err != nil {
 		e.Log.Error(err, "watch writable layer", "upper", c.UpperDir)
 		cancel()
@@ -455,7 +475,7 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 	e.mu.Lock()
 	t.retry = retry
 	e.mu.Unlock()
-	go func() {
+	e.goSafe("change forwarder", c.ID, func() {
 		defer close(in)
 		for {
 			select {
@@ -476,43 +496,45 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 				}
 			}
 		}
-	}()
+	})
 	maxWait := time.Duration(maxWaitFactor) * p.Policy.Debounce
 	if maxWait < minMaxWait {
 		maxWait = minMaxWait
 	}
-	go Debounce(wctx, in, p.Policy.Debounce, maxWait, func() {
-		lctx, lcancel := context.WithTimeout(wctx, defaultLiveTimeout)
-		defer lcancel()
-		err := t.snapshot(lctx, true)
-		later := func(d time.Duration) {
-			go func() {
-				select {
-				case <-time.After(d):
+	e.goSafe("debounce", c.ID, func() {
+		Debounce(wctx, in, p.Policy.Debounce, maxWait, func() {
+			lctx, lcancel := context.WithTimeout(wctx, defaultLiveTimeout)
+			defer lcancel()
+			err := t.snapshot(lctx, true)
+			later := func(d time.Duration) {
+				e.goSafe("retry timer", c.ID, func() {
 					select {
-					case retry <- struct{}{}:
-					default:
+					case <-time.After(d):
+						select {
+						case retry <- struct{}{}:
+						default:
+						}
+					case <-wctx.Done():
 					}
-				case <-wctx.Done():
-				}
-			}()
-		}
-		var def *errDeferred
-		switch {
-		case err == nil:
-			t.failures = 0
-		case errors.As(err, &def):
-			// Not a failure: the registry is shared and this device has had its share for now.
-			e.Log.Info("snapshot deferred", "device", p.Device, "pod", p.Pod, "reason", def.reason, "after", def.after.String())
-			later(def.after)
-		case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
-		case errors.Is(err, ErrSnapshotsBlocked):
-			// Logged once at startup and shown on the device; a retry would fail the same way.
-		default:
-			e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
-			t.failures++
-			later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
-		}
+				})
+			}
+			var def *errDeferred
+			switch {
+			case err == nil:
+				t.failures = 0
+			case errors.As(err, &def):
+				// Not a failure: the registry is shared and this device has had its share for now.
+				e.Log.Info("snapshot deferred", "device", p.Device, "pod", p.Pod, "reason", def.reason, "after", def.after.String())
+				later(def.after)
+			case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
+			case errors.Is(err, ErrSnapshotsBlocked), errors.Is(err, errDeviceFailed):
+				// Logged once at startup and shown on the device; a retry would fail the same way.
+			default:
+				e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
+				t.failures++
+				later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
+			}
+		})
 	})
 	return true
 }
@@ -541,7 +563,7 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 			e.markExit(ctx, p)
 			return
 		}
-		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}}
 		e.mu.Lock()
 		e.tracked[p.ContainerID] = t
 		e.mu.Unlock()
@@ -612,8 +634,11 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		return nil
 	}
 	e, pol := t.e, t.pod.Policy
+	if t.failedWith() != "" {
+		return errDeviceFailed
+	}
 	started := e.now()
-	var diffTook, pushTook time.Duration
+	var pushTook time.Duration
 	if freeze {
 		if d := t.allow(); d != nil {
 			return d
@@ -627,23 +652,14 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		}
 	}()
 
-	rc, err := e.Runtime.Diff(ctx, t.c, freeze, pol)
-	diffTook = e.now().Sub(started)
-	if err != nil {
-		return fmt.Errorf("diff writable layer: %w", err)
+	lf, stop, err := t.takeLayer(ctx, freeze, required, pol, started)
+	if lf != nil {
+		defer lf.cleanup()
 	}
-	dir, err := os.MkdirTemp(e.WorkDir, "snap-")
-	if err != nil {
-		_ = rc.Close()
+	if stop {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-
-	layerPath := filepath.Join(dir, "layer.tar")
-	stats, digest, refused, err := t.filterSnapshotLayer(ctx, rc, layerPath, pol, required)
-	if refused {
-		return err
-	}
+	stats, digest, layerPath, dir, diffTook := lf.stats, lf.digest, lf.path, lf.dir, lf.diffTook
 
 	// Files over the size limit are left out of the layer; the status names them.
 	skipMsg := stats.SkippedWarning(pol.MaxFileSize)
@@ -670,31 +686,17 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	if err != nil {
 		return err
 	}
-	if refused, err := t.refuseTenantQuota(ctx, required, digest, chain.Bytes()); refused {
-		return err
-	}
 	if required {
 		if d := t.allow(); d != nil {
 			return d
 		}
 	}
-	// The registry volume is shared by every tenant and the platform: no push while it is nearly full.
-	if e.Space != nil {
-		if serr := e.Space.Check(ctx, chain.Bytes()); serr != nil {
-			if required {
-				return serr
-			}
-			t.warn(ctx, serr.Error())
-			if freeze {
-				return &errDeferred{after: 5 * time.Minute, reason: serr.Error()}
-			}
-			return nil // the exit snapshot is not retried: the last good one stays
-		}
-	}
-	img = snapshot.Annotated(img, t.pod.Tenant, chain.Bytes())
 	pushStart := e.now()
 	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base, imagecache.Rewriter{Prefix: e.RegistryHost}.RepoOf(t.c.ImageRef))
 	if err != nil {
+		if handled, herr := t.gateRefusal(ctx, err, required, freeze, digest); handled {
+			return herr
+		}
 		return fmt.Errorf("push snapshot: %w", err)
 	}
 	pushTook = e.now().Sub(pushStart)
@@ -706,10 +708,6 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	t.lastSnapshot = Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}
 	t.lastPublishedDiff = digest
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
-	t.pushes = append(t.pushes, pushRecord{at: e.now(), bytes: chain.Bytes()})
-	if !required {
-		t.supersede(ref, img)
-	}
 	t.warnSkipped(ctx, skipMsg)
 	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
@@ -717,27 +715,55 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	return nil
 }
 
-// supersede deletes the manifest the new snapshot replaced (and the blobs only it used) from the registry, after the grace period.
-func (t *tracked) supersede(newRef string, keep v1.Image) {
-	old := t.prevRef
-	t.prevRef = newRef
+// layerFile is a snapshot layer taken from a device: the filtered tar in a temporary directory, and what the node reserved for it.
+type layerFile struct {
+	stats     snapshot.Stats
+	digest    string
+	path, dir string
+	diffTook  time.Duration
+	ticket    *diffTicket
+}
+
+// cleanup removes the temporary files and gives the node's reservation back.
+func (l *layerFile) cleanup() {
+	_ = os.RemoveAll(l.dir)
+	l.ticket.release()
+}
+
+// takeLayer looks at the writable layer, diffs it and filters the diff into a temporary file. The layer is looked at before containerd is
+// asked to diff it: a layer over the limits is refused here, with the same errors and the same hold as when the filter refuses it after the
+// diff, and costs the node a bounded scan instead of a diff of all of it. The diff and its temporary files are the node's shared resource,
+// a few at a time (diffGate). stop says the caller returns err as it is (a refusal, a deferral or a failure), and then the returned layer,
+// when not nil, is still to be cleaned up.
+func (t *tracked) takeLayer(ctx context.Context, freeze, required bool, pol snapshot.Policy, started time.Time) (lf *layerFile, stop bool, err error) {
 	e := t.e
-	s, ok := e.Pusher.(Superseder)
-	if !ok || old == "" || old == newRef || repoOfRef(old) != t.pod.Repo {
-		return
+	if refused, rerr := t.refuseFilteredLayer(ctx, required, prescanLayer(t.c.UpperDir, pol, e.PrescanTime)); refused {
+		return nil, true, rerr
 	}
-	run := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := s.Supersede(ctx, t.pod.Repo, old, keep); err != nil {
-			e.Log.Error(err, "delete the superseded snapshot", "device", t.pod.Device, "ref", old)
-		}
+	ticket, err := e.diffGate().acquire(ctx, reserveFor(pol), !freeze || required)
+	if err != nil {
+		return nil, true, err
 	}
-	if e.SupersededGrace <= 0 {
-		run()
-		return
+	rc, err := e.Runtime.Diff(ctx, t.c, freeze, pol)
+	diffTook := e.now().Sub(started)
+	if err != nil {
+		ticket.release()
+		return nil, true, fmt.Errorf("diff writable layer: %w", err)
 	}
-	time.AfterFunc(e.SupersededGrace, run)
+	dir, err := os.MkdirTemp(e.WorkDir, "snap-")
+	if err != nil {
+		_ = rc.Close()
+		ticket.release()
+		return nil, true, err
+	}
+	lf = &layerFile{dir: dir, path: filepath.Join(dir, "layer.tar"), diffTook: diffTook, ticket: ticket}
+	var refused bool
+	lf.stats, lf.digest, refused, err = t.filterSnapshotLayer(ctx, rc, lf.path, pol, required)
+	ticket.done() // the layer is read and filtered; what follows (the push) does not hold a diff slot
+	if refused {
+		return lf, true, err
+	}
+	return lf, false, nil
 }
 
 func (t *tracked) loadImage(ctx context.Context) (v1.Image, error) {
@@ -812,8 +838,9 @@ func (t *tracked) refuseFilteredLayer(ctx context.Context, required bool, ferr e
 		return true, nil
 	}
 	if errors.Is(ferr, snapshot.ErrEntries) {
-		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
-		// most likely be refused again, but the warning is cleared by a snapshot that fits).
+		// Too many files: the last good snapshot stays, and the same layer is not diffed again for a while (a layer that big is made
+		// again at once by the next change; the warning is cleared by a snapshot that fits).
+		t.holdUntil = t.e.now().Add(quotaHold)
 		t.warn(ctx, ferr.Error())
 		if required {
 			return true, ferr
@@ -852,38 +879,6 @@ func (t *tracked) snapshotEmptyLayer(ctx context.Context, required bool, skipMsg
 	}
 	t.warnSkipped(ctx, skipMsg)
 	return nil // nothing (else) changed since the device started
-}
-
-// refuseTenantQuota keeps tenant and retained accounting before push admission.
-func (t *tracked) refuseTenantQuota(ctx context.Context, required bool, digest string, chainBytes int64) (bool, error) {
-	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
-	if t.pod.TenantQuota > 0 {
-		others, qerr := t.e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
-		if qerr != nil {
-			return true, fmt.Errorf("tenant registry usage: %w", qerr)
-		}
-		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
-		if t.e.Retained != nil {
-			if live, lerr := t.e.Cluster.LiveRepos(ctx); lerr == nil {
-				if ret, rerr := t.e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
-					others += ret
-				} else if required {
-					return true, rerr
-				}
-			} else if required {
-				return true, lerr
-			}
-		}
-		if others+chainBytes > t.pod.TenantQuota {
-			if required {
-				return true, fmt.Errorf("%w: tenant quota exceeded", snapshot.ErrQuota)
-			}
-			t.lastDiff = digest
-			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chainBytes, t.pod.TenantQuota))
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // filterSnapshotLayer closes both streams before applying the unchanged filter

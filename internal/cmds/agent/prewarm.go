@@ -20,22 +20,15 @@ func prewarmConfig(cfg *config.Config, k8s kubernetes.Interface) (grpcserver.Pre
 	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &selector); err != nil {
 		return grpcserver.PrewarmConfig{}, fmt.Errorf("LAB_NODE_SELECTOR: %w", err)
 	}
-	var tlsCfg *tls.Config
-	if cfg.Cache.GateCAFile != "" {
-		pem, err := os.ReadFile(cfg.Cache.GateCAFile)
-		if err != nil {
-			return grpcserver.PrewarmConfig{}, fmt.Errorf("AGENT_PREWARM_GATE_CA_FILE: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return grpcserver.PrewarmConfig{}, fmt.Errorf("AGENT_PREWARM_GATE_CA_FILE: no certificate in %s", cfg.Cache.GateCAFile)
-		}
-		tlsCfg = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	tlsCfg, err := gateTLS(cfg)
+	if err != nil {
+		return grpcserver.PrewarmConfig{}, err
 	}
 	return grpcserver.PrewarmConfig{
 		Enabled:      true,
 		RegistryAddr: cfg.Cache.GateAddr,
 		CacheTLS:     tlsCfg,
+		Token:        imagecache.NewTokenFile(cfg.RegistryTokenFile),
 		Registries:   cfg.Cache.Registries,
 		Resolver: &imagecache.RegistryResolver{
 			Keychain:  &grpcserver.SecretKeychain{K8s: k8s, Namespace: cfg.Cache.PullSecretNamespace, Names: cfg.Cache.PullSecrets},
@@ -45,4 +38,21 @@ func prewarmConfig(cfg *config.Config, k8s kubernetes.Interface) (grpcserver.Pre
 		Concurrency: cfg.Cache.Concurrency,
 		Timeout:     cfg.Cache.Timeout,
 	}, nil
+}
+
+// gateTLS is the TLS configuration of the agent towards the registry gate: it trusts the certificate authority in AGENT_PREWARM_GATE_CA_FILE
+// (the chart mounts the ConfigMap laboratory-registry-ca there) and nothing else; nil when no file is configured (a development setup).
+func gateTLS(cfg *config.Config) (*tls.Config, error) {
+	if cfg.Cache.GateCAFile == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(cfg.Cache.GateCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("AGENT_PREWARM_GATE_CA_FILE: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("AGENT_PREWARM_GATE_CA_FILE: no certificate in %s", cfg.Cache.GateCAFile)
+	}
+	return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, nil
 }

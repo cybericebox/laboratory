@@ -6,9 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/uuid"
 	"k8s.io/apimachinery/pkg/api/resource"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -29,10 +27,9 @@ func SetupRegistryForwarder(mgr ctrl.Manager, cfg *Config) error {
 	log := ctrl.Log.WithName("registry-forwarder")
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		log.Info("registry forwarder", "listen", "127.0.0.1", "port", cfg.StateForwardPort, "target", cfg.StateRegistryAddr)
-		var opts []devicestate.ForwardOption
-		if cfg.StateRegistryReaderUser != "" {
-			opts = append(opts, devicestate.WithReader(cfg.StateRegistryReaderUser, cfg.StateRegistryReaderPassword),
-				devicestate.WithHost(fmt.Sprintf("localhost:%d", cfg.StateForwardPort)))
+		opts := []devicestate.ForwardOption{devicestate.WithNodeToken(cfg.RegistryTokenFile)}
+		if cfg.StatePersistence {
+			opts = append(opts, devicestate.WithPushSocket(cfg.StatePushSocket, cfg.StatePushSocketUID))
 		}
 		if cfg.StateRegistryCAFile != "" {
 			opts = append(opts, devicestate.WithTLS(cfg.StateRegistryCAFile))
@@ -53,39 +50,19 @@ func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	rt.SourceKeychain = devicestate.NewPodSourceKeychain(mgr.GetAPIReader(), cfg.NodeName)
-	reg := &snapshot.Registry{Host: local}
-	if cfg.StateRegistryUser != "" {
-		reg.Auth = &authn.Basic{Username: cfg.StateRegistryUser, Password: cfg.StateRegistryPassword}
-	}
-	capacity := &snapshot.Capacity{Registry: reg, ReserveFraction: cfg.StateRegistryReserve, TTL: time.Minute}
-	if cfg.StateRegistryCapacity != "" {
-		q, err := resource.ParseQuantity(cfg.StateRegistryCapacity)
+	// A snapshot is pushed through the unix socket of the relay (the TCP port refuses every write); the client keeps the logical host.
+	reg := &snapshot.Registry{Host: local, Transport: devicestate.UnixTransport(cfg.StatePushSocket)}
+	var tempBudget int64
+	if cfg.StateTempBudget != "" {
+		q, err := resource.ParseQuantity(cfg.StateTempBudget)
 		if err != nil || q.Sign() < 0 {
-			return fmt.Errorf("STATE_REGISTRY_CAPACITY %q: not a quantity", cfg.StateRegistryCapacity)
+			return fmt.Errorf("STATE_TEMP_BUDGET %q: not a quantity", cfg.StateTempBudget)
 		}
-		capacity.Total = q.Value()
-	}
-	if cfg.StateRegistryReserve < 0 || cfg.StateRegistryReserve >= 1 {
-		return fmt.Errorf("STATE_REGISTRY_RESERVE %v must be at least 0 and below 1", cfg.StateRegistryReserve)
-	}
-	var budget int64
-	if cfg.StatePushBudget != "" {
-		q, err := resource.ParseQuantity(cfg.StatePushBudget)
-		if err != nil || q.Sign() < 0 {
-			return fmt.Errorf("STATE_PUSH_BUDGET %q: not a quantity", cfg.StatePushBudget)
-		}
-		budget = q.Value()
+		tempBudget = q.Value()
 	}
 	engine := &devicestate.Engine{
-		NodeAgentEpoch:   uuid.NewString(),
-		MinPushInterval:  cfg.StateMinPushInterval,
-		PushBudget:       budget,
-		PushBudgetWindow: cfg.StatePushBudgetWindow,
-		SupersededGrace:  cfg.StateSupersededGrace,
-		Space:            capacity,
-		Retained:         reg,
-		Runtime:          rt,
+		NodeAgentEpoch: uuid.NewString(),
+		Runtime:        rt,
 		Cluster: &devicestate.KubeCluster{
 			Client:   mgr.GetClient(),
 			Reader:   mgr.GetAPIReader(),
@@ -96,6 +73,9 @@ func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
 		WorkDir:      cfg.StateWorkDir,
 		MaxWatchDirs: cfg.StateMaxWatchDirs,
 		Log:          log,
+
+		MaxConcurrentDiffs: cfg.StateMaxConcurrentDiffs,
+		TempBudgetBytes:    tempBudget,
 	}
 	if label := devicestate.AppArmorLabel(); devicestate.AppArmorBlocksSnapshots(label) {
 		// The runtime's default profile has `deny mount` and the snapshot filter mounts read-only overlays: every snapshot would

@@ -20,7 +20,7 @@ func TestLoadDefaultsAndTenantSettings(t *testing.T) {
 	if c.ServerTLS.CertFile != "/tls/tls.crt" || c.MTLS.ClientCAKeyFile != "/ca/tls.key" {
 		t.Errorf("the chart's mount paths are baked in: %+v %+v", c.ServerTLS, c.MTLS)
 	}
-	if c.RegistryAddr != "laboratory-registry.laboratory-system.svc:5000" || c.Cache.NodePrefix != "localhost:5035" {
+	if c.RegistryAddr != "laboratory-registry.laboratory-system.svc:5443" || c.Cache.NodePrefix != "localhost:5035" {
 		t.Errorf("the registry addresses are derived: %q %q", c.RegistryAddr, c.Cache.NodePrefix)
 	}
 	// The code defaults mirror the chart values.

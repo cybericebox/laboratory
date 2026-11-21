@@ -1,14 +1,13 @@
 // Package imagepull pulls images onto a node through the container runtime's image
 // service (CRI), for the node-agent. Nothing from an image runs: the runtime only fetches
-// and unpacks it, which is all a prepull needs, and the credentials of the pull are the
-// tenant's own, handed over per request.
+// and unpacks it, which is all a prepull needs. The pull carries no credentials: the references already
+// name the tenant (<prefix>/c/<tenant>/...), and the registry gate decides by the node and the reference.
 package imagepull
 
 import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,17 +16,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-// Auth is the registry credential of one pull.
-type Auth struct {
-	Username, Password string
-}
-
 // Puller is the container runtime's image service.
 type Puller interface {
 	// Present reports whether the node already holds the image.
 	Present(ctx context.Context, ref string) (bool, error)
-	// Pull fetches the image; auth is nil for an anonymous pull.
-	Pull(ctx context.Context, ref string, auth *Auth) error
+	// Pull fetches the image.
+	Pull(ctx context.Context, ref string) error
 }
 
 // Failure is an image that could not be pulled.
@@ -47,8 +41,6 @@ type Options struct {
 	Concurrency int
 	// Timeout bounds one image (5m).
 	Timeout time.Duration
-	// Credentials returns the credential for an image's registry; nil or a nil Auth means anonymous.
-	Credentials func(ref string) *Auth
 }
 
 const maxMessage = 300
@@ -80,15 +72,11 @@ func Pull(ctx context.Context, p Puller, images []string, o Options) Result {
 		go func(img string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			var auth *Auth
-			if o.Credentials != nil {
-				auth = o.Credentials(img)
-			}
-			err := pullOne(ctx, p, img, auth, o.Timeout)
+			err := pullOne(ctx, p, img, o.Timeout)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				res.Failed = append(res.Failed, Failure{Image: img, Message: scrub(err.Error(), auth)})
+				res.Failed = append(res.Failed, Failure{Image: img, Message: scrub(err.Error())})
 				return
 			}
 			res.Pulled = append(res.Pulled, img)
@@ -100,7 +88,7 @@ func Pull(ctx context.Context, p Puller, images []string, o Options) Result {
 	return res
 }
 
-func pullOne(ctx context.Context, p Puller, ref string, auth *Auth, timeout time.Duration) error {
+func pullOne(ctx context.Context, p Puller, ref string, timeout time.Duration) error {
 	if _, err := name.ParseReference(ref); err != nil {
 		return fmt.Errorf("invalid image reference: %v", err)
 	}
@@ -111,7 +99,7 @@ func pullOne(ctx context.Context, p Puller, ref string, auth *Auth, timeout time
 		pullSeconds.WithLabelValues("present").Observe(time.Since(started).Seconds())
 		return nil
 	}
-	err := p.Pull(ctx, ref, auth)
+	err := p.Pull(ctx, ref)
 	result := "pulled"
 	if err != nil {
 		result = "error"
@@ -130,15 +118,8 @@ var pullSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 
 func init() { metrics.Registry.MustRegister(pullSeconds) }
 
-// scrub keeps a runtime message short and free of the credential it was given.
-func scrub(msg string, auth *Auth) string {
-	if auth != nil {
-		for _, secret := range []string{auth.Password, auth.Username} {
-			if len(secret) >= 4 {
-				msg = strings.ReplaceAll(msg, secret, "***")
-			}
-		}
-	}
+// scrub keeps a runtime message short.
+func scrub(msg string) string {
 	if len(msg) > maxMessage {
 		msg = msg[:maxMessage]
 	}

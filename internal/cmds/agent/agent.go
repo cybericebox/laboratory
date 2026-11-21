@@ -22,6 +22,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
@@ -95,9 +96,12 @@ func Run() {
 	h.SetRenewMinInterval(cfg.Server.RenewMinInterval)
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
-	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
+	exportTLS, err := gateTLS(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetRegistryTransport(exportTLS, imagecache.NewTokenFile(cfg.RegistryTokenFile))
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
-	h.SetPlatformImages(cfg.Cache.NodePrefix, cfg.ImagePlatformOnly)
 	allowedRegistries := cfg.AllowedRegistries
 	if cfg.Cache.Enabled {
 		// The image cache is on: an image goes through it or is refused, so only the registries it serves may be named. An empty

@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,25 +14,25 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/imagepull"
 )
 
 type recordingPuller struct {
 	mu    sync.Mutex
-	pulls map[string]*imagepull.Auth
+	pulls map[string]bool
 	fail  map[string]error
 }
 
 func (p *recordingPuller) Present(context.Context, string) (bool, error) { return false, nil }
-func (p *recordingPuller) Pull(_ context.Context, ref string, a *imagepull.Auth) error {
+func (p *recordingPuller) Pull(_ context.Context, ref string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pulls == nil {
-		p.pulls = map[string]*imagepull.Auth{}
+		p.pulls = map[string]bool{}
 	}
-	p.pulls[ref] = a
+	p.pulls[ref] = true
 	return p.fail[ref]
 }
 
@@ -44,10 +45,17 @@ func pullFixture(t *testing.T, node string, ip *laboratoryv1alpha1.ImagePull, ob
 	if err := corev1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
+	// The node-agent reads no Secret: any access to one fails the test.
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(objs, ip)...).
-		WithStatusSubresource(&laboratoryv1alpha1.ImagePull{}).Build()
+		WithStatusSubresource(&laboratoryv1alpha1.ImagePull{}).
+		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, secret := obj.(*corev1.Secret); secret {
+				t.Errorf("the node-agent must not read a Secret: %v", key)
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		}}).Build()
 	p := &recordingPuller{}
-	return &ImagePullReconciler{Client: c, Reader: c, NodeName: node, ImagesNamespace: "laboratory-images", Puller: p}, p, c
+	return &ImagePullReconciler{Client: c, NodeName: node, Puller: p}, p, c
 }
 
 func request(nodes ...string) *laboratoryv1alpha1.ImagePull {
@@ -101,29 +109,17 @@ func TestImagePullReconcilerIgnoresRequestsForOtherNodes(t *testing.T) {
 	}
 }
 
-func TestImagePullReconcilerUsesTheRequestsCredentialsOnly(t *testing.T) {
+// The references of the request already carry the tenant; they are pulled as they are, and the request names no Secret.
+func TestImagePullReconcilerPullsTheReferencesAsTheyAre(t *testing.T) {
 	ip := request("n1")
-	ip.Spec.PullSecret = "prepull-x"
-	creds := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "prepull-x", Namespace: "laboratory-images"},
-		Type:       corev1.SecretTypeDockerConfigJson,
-		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"ghcr.io":{"username":"tenant","password":"tpass"}}}`)},
-	}
-	// A platform secret in another namespace must never be read.
-	platform := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "prepull-x", Namespace: "laboratory-system"},
-		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"ghcr.io":{"username":"platform","password":"ppass"}}}`)},
-	}
-	r, p, _ := pullFixture(t, "n1", ip, creds, platform)
+	ip.Spec.Tenant = "acme"
+	ip.Spec.Images = []string{"localhost:5035/c/acme/ghcr.io/o/a@sha256:" + strings.Repeat("a", 64)}
+	r, p, c := pullFixture(t, "n1", ip)
 	runReconcile(t, r)
-	if a := p.pulls["ghcr.io/o/a:1"]; a == nil || a.Username != "tenant" {
-		t.Fatalf("auth: %+v", a)
+	if !p.pulls[ip.Spec.Images[0]] || len(p.pulls) != 1 {
+		t.Fatalf("%v", p.pulls)
 	}
-
-	// Without the Secret the pull is anonymous.
-	r2, p2, _ := pullFixture(t, "n1", ip)
-	runReconcile(t, r2)
-	if a, ok := p2.pulls["ghcr.io/o/a:1"]; !ok || a != nil {
-		t.Fatalf("anonymous expected: %+v", a)
+	if n := status(t, c)["n1"]; !n.Done || len(n.Failed) != 0 {
+		t.Fatalf("%+v", n)
 	}
 }

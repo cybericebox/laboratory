@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // One API server (envtest: kube-apiserver and etcd with the laboratory CRDs) serves the whole package. Starting one takes seconds and
@@ -92,6 +93,9 @@ func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 	if err != nil {
 		t.Fatalf("build kubernetes clientset: %v", err)
 	}
+
+	// The credentials of the labs are written for the registry gate into this namespace.
+	mustNamespace(t, k8s, names.UpstreamNamespace)
 
 	// nil metrics client: envtest has no metrics-server, so live usage
 	// degrades to zero. namespaceUsage tests inject a fake metrics client.

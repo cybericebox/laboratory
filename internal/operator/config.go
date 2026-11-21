@@ -286,8 +286,11 @@ type CacheConfig struct {
 	// the same wave run the same image even when the upstream tag moves.
 	PinTTL time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	// PinConcurrency is how many image tags are resolved at once, in the background, for new labs (IMAGE_CACHE_PIN_CONCURRENCY).
-	PinConcurrency int      `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
-	Registries     []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	PinConcurrency int `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
+	// RequireDigest (IMAGE_CACHE_REQUIRE_DIGEST, the chart's registry.cache.requireDigest, like GATE_REQUIRE_DIGEST of the gate): a tag
+	// that cannot be resolved to a digest fails the creation of the lab.
+	RequireDigest bool     `env:"IMAGE_CACHE_REQUIRE_DIGEST" envDefault:"false"`
+	Registries    []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)
@@ -304,11 +307,13 @@ func (c CacheConfig) Rewriter() imagecache.Rewriter {
 // snapshot registry.
 type StateConfig struct {
 	Enabled bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
-	// RegistryAddr is host:port of the snapshot registry Service, used by the operator to drop snapshots (device reset, retention);
-	// empty = names.RegistryServiceAddr (the chart always installs the registry there).
-	RegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
-	RegistryUser     string `env:"STATE_REGISTRY_USER"`
-	RegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
+	// RegistryAddr is host:port of the registry gate's TLS port, used by the operator to drop snapshots (device reset, retention);
+	// empty = names.RegistryGateAddr. The operator is known to the gate by its own projected ServiceAccount token (RegistryTokenFile,
+	// audience laboratory-registry-gate) and trusts the certificate authority in RegistryCAFile (the chart mounts the ConfigMap
+	// laboratory-registry-ca); it has no registry account. Without a CA file the operator speaks plain http (a development setup).
+	RegistryAddr      string `env:"STATE_REGISTRY_ADDR"`
+	RegistryCAFile    string `env:"STATE_REGISTRY_CA_FILE"`
+	RegistryTokenFile string `env:"STATE_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
 	// Debounce is how long a device's writable layer must stay quiet before a snapshot.
 	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
 	// ExcludePaths are never snapshotted (comma-separated absolute paths).
@@ -373,7 +378,7 @@ func (cfg *Config) applyDefaults() {
 		&cfg.OperatorServiceAccount: names.OperatorServiceAccount,
 		&cfg.OperatorNamespace:      names.SystemNamespace,
 		&cfg.Cache.Prefix:           names.RegistryNodePrefix,
-		&cfg.State.RegistryAddr:     names.RegistryServiceAddr,
+		&cfg.State.RegistryAddr:     names.RegistryGateAddr,
 	} {
 		if *dst == "" {
 			*dst = def

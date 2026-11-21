@@ -172,15 +172,15 @@ type Config struct {
 	// operator's values (operator.baseDomain, operator.publicVPNEndpoint): the chart passes one value to both.
 	BaseDomain        string `env:"BASE_DOMAIN"`
 	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT"`
-	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it: snapshot export reads the device snapshots from
-	// it, and PrewarmImages makes the cache fetch through it. Empty = names.RegistryServiceAddr (the chart always installs it there).
+	// RegistryAddr is host:port of the registry gate's TLS port as the agent reaches it: snapshot export reads the device snapshots from
+	// it (the same gate that PrewarmImages warms the cache through, Cache.GateAddr). Empty = names.RegistryGateAddr.
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
 	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform images):
 	// the agent has no registry address, a snapshot export is refused and PrewarmImages is off. Default true.
 	RegistryEnabled bool `env:"AGENT_REGISTRY_ENABLED" envDefault:"true"`
-	// RegistryUser and RegistryPassword are the reader account of the registry: the snapshots are not anonymous.
-	RegistryUser     string `env:"AGENT_REGISTRY_USER"`
-	RegistryPassword string `env:"AGENT_REGISTRY_PASSWORD"`
+	// RegistryTokenFile is the projected ServiceAccount token (audience laboratory-registry-gate) the agent presents to the registry gate,
+	// for the snapshot export and the prewarm. The agent has no registry account.
+	RegistryTokenFile string `env:"AGENT_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's
@@ -189,11 +189,6 @@ type Config struct {
 	// AllowedRegistries are the registries lab images may come from (the chart's registry.allowedRegistries, with the registries of
 	// the platform's own images added); an image from another registry is refused with REGISTRY_NOT_ALLOWED. "*" allows every registry.
 	AllowedRegistries []string `env:"ALLOWED_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
-	// ImagePlatformOnly makes every tenant run only the images of the platform registry, pinned by digest
-	// (platform:<name>@sha256:<hex>); any other reference is refused with the reason IMAGE_NOT_PLATFORM. A tenant can also be
-	// platform-only on its own (Tenant.spec.images.platformOnly). The registry address the nodes pull from is the constant
-	// names.RegistryNodePrefix (Cache.NodePrefix).
-	ImagePlatformOnly bool `env:"AGENT_IMAGE_PLATFORM_ONLY" envDefault:"false"`
 }
 
 // StateConfig is the state persistence values of the operator, under the operator's names (STATE_*): one chart value, one name.
@@ -268,7 +263,7 @@ func Load() (*Config, error) {
 		}
 		c.RegistryAddr = ""
 	} else if c.RegistryAddr == "" {
-		c.RegistryAddr = names.RegistryServiceAddr
+		c.RegistryAddr = names.RegistryGateAddr
 	}
 	c.PublicVPNEndpoint = names.WithPublicVPNPort(c.PublicVPNEndpoint)
 	if c.ReleaseNamespace == "" {

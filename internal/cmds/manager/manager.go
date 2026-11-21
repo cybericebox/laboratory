@@ -368,6 +368,7 @@ func Run() {
 		State:                     statePolicy,
 		Mirror:                    mirror,
 		Pinner:                    pinner,
+		RequireDigest:             cfg.Cache.RequireDigest,
 		CredentialResolver: func(kc authn.Keychain) imagecache.Resolver {
 			// the lab's own credentials only: the digest of a private image, asked of its registry directly
 			return &imagecache.RegistryResolver{Keychain: kc, TTL: cfg.Cache.PinTTL, Platforms: platforms}

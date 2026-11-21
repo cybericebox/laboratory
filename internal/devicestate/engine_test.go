@@ -95,29 +95,17 @@ func (f *fakeRuntime) setDiff(b []byte) {
 }
 
 type fakeCluster struct {
-	mu      sync.Mutex
-	pods    []PodInfo
-	records []Snapshot
-	warns   []string
-	exits   []string
-	// tenantBytes is what the other devices of the tenant take in the registry.
-	tenantBytes   int64
+	mu            sync.Mutex
+	pods          []PodInfo
+	records       []Snapshot
+	warns         []string
+	exits         []string
 	invalidateErr error
 	checkFailures int
 	onInvalidate  func()
 	deleting      bool
 	capture       api.DeviceCaptureResult
 	guard         api.DeviceCaptureResult
-}
-
-func (c *fakeCluster) TenantBytes(context.Context, string, types.NamespacedName) (int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.tenantBytes, nil
-}
-
-func (c *fakeCluster) LiveRepos(context.Context) (map[string]bool, error) {
-	return map[string]bool{snapshot.Repo("ns", "lab", "web"): true}, nil
 }
 
 func (c *fakeCluster) Pods(context.Context) ([]PodInfo, error) {
@@ -155,11 +143,14 @@ type rig struct {
 	cl  *fakeCluster
 	reg *snapshot.Registry
 	pod PodInfo
+	// gate is the registry in front of which the gate's refusals are played.
+	gate *fakeGate
 }
 
 func newRig(t *testing.T, debounce time.Duration, maxBytes int64) *rig {
 	t.Helper()
-	srv := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
+	gate := &fakeGate{inner: registry.New(registry.Logger(log.New(io.Discard, "", 0)))}
+	srv := httptest.NewServer(gate)
 	t.Cleanup(srv.Close)
 	reg := &snapshot.Registry{Host: strings.TrimPrefix(srv.URL, "http://")}
 	base, err := random.Image(1024, 2)
@@ -181,7 +172,7 @@ func newRig(t *testing.T, debounce time.Duration, maxBytes int64) *rig {
 		Poll: time.Hour, Log: logr.Discard(), ExitTimeout: 10 * time.Second,
 	}
 	e.tracked = map[string]*tracked{}
-	return &rig{e: e, rt: rt, cl: cl, reg: reg, pod: pod}
+	return &rig{e: e, rt: rt, cl: cl, reg: reg, pod: pod, gate: gate}
 }
 
 func (r *rig) track(t *testing.T) *tracked {
@@ -375,7 +366,7 @@ func TestEngineWarnsAboutFilesSkippedForSize(t *testing.T) {
 	if len(recs) != 1 || recs[0].SizeBytes != 2 {
 		t.Fatalf("the small file is snapshotted, the big one is not: %+v", recs)
 	}
-	if len(warns) != 1 || !strings.Contains(warns[0], "/data/big (100 bytes)") || strings.Contains(warns[0], "small") {
+	if len(warns) != 1 || !strings.Contains(warns[0], `"/data/big" (100 bytes)`) || strings.Contains(warns[0], "small") {
 		t.Fatalf("warnings %v", warns)
 	}
 	// A change of the big file alone leaves the snapshot as it is and keeps the warning.
@@ -387,7 +378,7 @@ func TestEngineWarnsAboutFilesSkippedForSize(t *testing.T) {
 	if len(recs) != 2 {
 		t.Fatalf("records %+v", recs)
 	}
-	if got := warns[len(warns)-1]; !strings.Contains(got, "/data/big (200 bytes)") {
+	if got := warns[len(warns)-1]; !strings.Contains(got, `"/data/big" (200 bytes)`) {
 		t.Fatalf("the new size is reported: %v", warns)
 	}
 }
@@ -448,32 +439,6 @@ func TestEngineRefusesALayerWithTooManyEntries(t *testing.T) {
 	recs, warns, _ := r.cl.snapshot()
 	if len(recs) != 0 || len(warns) != 1 || !strings.Contains(warns[0], "too many files") {
 		t.Fatalf("records %v warns %v", recs, warns)
-	}
-}
-
-// All the snapshots of one tenant stay under its registry quota, whatever the per-device quota says.
-func TestEngineHonoursTheTenantRegistryQuota(t *testing.T) {
-	r := newRig(t, time.Hour, 1<<20)
-	r.pod.Tenant, r.pod.TenantQuota = "acme", 1000
-	r.cl.pods = []PodInfo{r.pod}
-	r.cl.tenantBytes = 990 // the tenant's other devices already hold almost everything
-	tr := r.track(t)
-	r.rt.setDiff(tarOf(map[string]string{"data": strings.Repeat("x", 100)}))
-	if err := tr.snapshot(context.Background(), true); err != nil {
-		t.Fatal(err)
-	}
-	recs, warns, _ := r.cl.snapshot()
-	if len(recs) != 0 || len(warns) != 1 || !strings.Contains(warns[0], "tenant's quota is 1000") {
-		t.Fatalf("records %v warns %v", recs, warns)
-	}
-	// with room it goes through
-	r.cl.tenantBytes = 100
-	r.rt.setDiff(tarOf(map[string]string{"data": strings.Repeat("y", 100)}))
-	if err := tr.snapshot(context.Background(), true); err != nil {
-		t.Fatal(err)
-	}
-	if recs, _, _ = r.cl.snapshot(); len(recs) != 1 {
-		t.Fatalf("a snapshot that fits the tenant quota is taken: %v", recs)
 	}
 }
 

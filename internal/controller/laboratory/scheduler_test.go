@@ -982,9 +982,9 @@ func TestSchedulerSlowPrepullDoesNotBlockOtherGroups(t *testing.T) {
 	}
 }
 
-// The prepull pulls with the tenant's own credentials, never the platform's: they are
-// copied for the node-agents into the images namespace and go with the request.
-func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
+// The prepull request names the tenant and carries no credential: the registry gate reads the tenant's own credentials (never the
+// platform's) for it, and the operator copies nothing for the node-agents.
+func TestSchedulerPrepullNamesTheTenantAndCarriesNoCredentials(t *testing.T) {
 	f := newSchedFixture(t, prepullSchedCfg())
 	f.s.LabNodeSelector = map[string]string{"pool": "labs"}
 	f.addLabNode("n1")
@@ -1006,40 +1006,17 @@ func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
 	if err := f.c.Get(context.Background(), types.NamespacedName{Name: prepullName(prepClass("acme", "g/g1"))}, &ip); err != nil {
 		t.Fatal(err)
 	}
-	if ip.Spec.PullSecret == "" || ip.Spec.Tenant != "acme" {
+	if ip.Spec.Tenant != "acme" {
 		t.Fatalf("spec %+v", ip.Spec)
 	}
-	var sec corev1.Secret
-	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.ImagesNamespace, Name: ip.Spec.PullSecret}, &sec); err != nil {
+	var secrets corev1.SecretList
+	if err := f.c.List(context.Background(), &secrets); err != nil {
 		t.Fatal(err)
 	}
-	if string(sec.Data[corev1.DockerConfigJsonKey]) != `{"auths":{"reg":{"auth":"dGVuYW50"}}}` {
-		t.Fatalf("the tenant's credentials are copied: %s", sec.Data[corev1.DockerConfigJsonKey])
-	}
-
-	// The credentials go with the request.
-	f.stampIP(&ip)
-	f.report(&ip, "n1", true)
-	f.tick()
-	f.tick()
-	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.ImagesNamespace, Name: ip.Spec.PullSecret}, &sec); err == nil {
-		t.Fatal("the credentials must be removed with the request")
-	}
-
-	// A tenant without credentials: anonymous, no Secret.
-	f2 := newSchedFixture(t, prepullSchedCfg())
-	f2.s.LabNodeSelector = map[string]string{"pool": "labs"}
-	f2.addLabNode("n1")
-	f2.createPlain(regSecret("platform-cred", corev1.SecretTypeDockerConfigJson, `{"auths":{}}`))
-	f2.addLab("a", "g1", nil, "web")
-	f2.tick()
-	got := f2.imagePull("g/g1")
-	if got == nil || got.Spec.PullSecret != "" {
-		t.Fatalf("anonymous: %+v", got)
-	}
-	var secrets corev1.SecretList
-	if err := f2.c.List(context.Background(), &secrets, client.InNamespace(names.ImagesNamespace)); err != nil || len(secrets.Items) != 0 {
-		t.Fatalf("no credentials copied: %v %v", secrets.Items, err)
+	for _, s := range secrets.Items {
+		if s.Namespace != names.TenantsNamespace && s.Name != "platform-cred" {
+			t.Errorf("the operator wrote a Secret for the prepull: %s/%s", s.Namespace, s.Name)
+		}
 	}
 }
 

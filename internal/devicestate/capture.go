@@ -105,7 +105,7 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	}
 	t := e.tracked[p.ContainerID]
 	if t == nil {
-		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}}
 		if direct {
 			t.captureAttempt = &req
 		}
@@ -126,16 +126,6 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 			return h.Result, nil
 		}
 		return fail(errors.New("prior capture is still held"))
-	}
-	// A live push can finish during lifecycle preparation, before Sync observes
-	// this request. Reserve its remaining interval under the same mutex as live
-	// snapshots, but do not freeze or publish a hold until the wait is over.
-	if err = t.waitPushInterval(sctx); err != nil {
-		result, _ = fail(err)
-		failureCtx, failureCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_ = cl.RecordCapture(failureCtx, p, result)
-		failureCancel()
-		return result, err
 	}
 	// Strict capture always uses the successfully inspected current OCI metadata.
 	t.c = c
@@ -192,7 +182,7 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 				if thawErr := h.thaw(); thawErr != nil {
 					t.required = h
 					e.holdWorkers.Add(1)
-					go e.watchHold(ctx, t, h, rt, cl, time.Now())
+					e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, time.Now()) })
 					return result, errors.Join(err, thawErr)
 				}
 			}
@@ -201,43 +191,13 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		}
 		t.required = h
 		e.holdWorkers.Add(1)
-		go e.watchHold(ctx, t, h, rt, cl, time.Now())
+		e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, time.Now()) })
 		return result, errors.Join(err, invErr)
 	}
 	t.required = h
 	e.holdWorkers.Add(1)
-	go e.watchHold(ctx, t, h, rt, cl, deadline)
+	e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, deadline) })
 	return result, nil
-}
-
-// waitPushInterval holds t.mu; no ordinary push can renew the interval while a
-// Required request waits. All other push refusals remain in snapshotLocked.
-func (t *tracked) waitPushInterval(ctx context.Context) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if t.e.MinPushInterval <= 0 || len(t.pushes) == 0 {
-			return nil
-		}
-		last := t.pushes[len(t.pushes)-1].at
-		wait := t.e.MinPushInterval - t.e.now().Sub(last)
-		if wait <= 0 {
-			return nil
-		}
-		if deadline, ok := ctx.Deadline(); ok && wait >= time.Until(deadline) {
-			// Empty or unchanged Required layers need no push. Preserve that
-			// decision in the frozen diff; an actual push still fails allow().
-			return nil
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
 }
 
 func (e *Engine) writeHold(h *requiredHold) error {
@@ -436,7 +396,7 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			e.tracked[h.Container.ID] = t
 			e.mu.Unlock()
 			e.holdWorkers.Add(1)
-			go e.watchHold(ctx, t, h, rt, cl, time.Now())
+			e.goSafe("capture hold", h.Container.ID, func() { e.watchHold(ctx, t, h, rt, cl, time.Now()) })
 		}
 		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, h.Result)
 		if checkErr != nil && !errors.Is(checkErr, ErrStale) || deleting || h.Result.Committed && checkErr == nil {

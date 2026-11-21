@@ -6,22 +6,28 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 )
 
-// Gate is the HTTP handler in front of zot: it refuses what checkPath refuses and passes everything else to zot unchanged, streaming,
-// with the client's Authorization (zot's own accounts decide on the pass-through paths).
+// Gate is the HTTP handler in front of zot. Every request is authenticated (the projected ServiceAccount token of the caller, verified
+// with the API server) before anything else, and then routed by who the caller is and what it asks for: the image cache (/v2/c/...), the
+// snapshot repositories (/v2/lab/...) and the few things the operator does. Nothing the caller sends reaches zot unchecked, no X-Cib-*
+// header and no Authorization header is ever passed on, and zot never sees any account but the gate's own.
 type Gate struct {
-	proxy *httputil.ReverseProxy
-	zot   string
+	zot string
 	// Metrics is served on the health port, when set.
 	Metrics http.Handler
+	M       *Metrics
+	// Auth turns a request into a principal.
+	Auth *Authenticator
 	// Cache is the cache path (/v2/c/...). Without it that path is refused: zot is never reached by it.
-	Cache http.Handler
-	// CacheTLSOnly refuses the cache path on a connection that is not TLS: the pull's credentials are in it.
-	CacheTLSOnly bool
+	Cache *Cache
+	// Lab is the snapshot path (/v2/lab/..., /v2/_catalog, /v2/base/...). Without it that path is refused.
+	Lab *LabGate
+	// TLSOnly refuses every request on a connection that is not TLS: the token is in it.
+	TLSOnly bool
 }
 
 // New makes the gate for a zot at addr (host:port, plain HTTP, on the loopback of the pod).
@@ -30,19 +36,13 @@ func New(zotAddr string) (*Gate, error) {
 	if err != nil || target.Host == "" {
 		return nil, errors.New("registrygate: zot address must be host:port")
 	}
-	p := &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			// zot builds the Location of an upload from the Host header, and the client must get its own registry name back
-			// (localhost:5035 on a node): SetURL rewrites Host to the target's, so it is put back.
-			r.SetURL(target)
-			r.Out.Host = r.In.Host
-		},
-		FlushInterval: -1, // blobs are streamed, never buffered
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-			http.Error(w, "the registry store is not reachable", http.StatusBadGateway)
-		},
+	return &Gate{zot: target.Host}, nil
+}
+
+func (g *Gate) authMetric(result string) {
+	if g.M != nil {
+		g.M.auth.WithLabelValues(result).Inc()
 	}
-	return &Gate{proxy: p, zot: target.Host}, nil
 }
 
 // ServeHTTP implements http.Handler.
@@ -51,19 +51,63 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request path", http.StatusBadRequest)
 		return
 	}
-	if isCache(r) {
+	if g.TLSOnly && r.TLS == nil {
+		refuse(w, http.StatusForbidden, "DENIED", "the registry is served over TLS only", false)
+		return
+	}
+	if g.Auth == nil {
+		refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", "the registry gate has no authentication", false)
+		return
+	}
+	p, err := g.Auth.Authenticate(r.Context(), r)
+	// whatever the outcome, no X-Cib-* header (the token one included) and no Authorization of a node goes any further
+	StripPlatformHeaders(r.Header)
+	switch {
+	case errors.Is(err, ErrUnauthenticated):
+		g.authMetric("unauthenticated")
+		refuse(w, http.StatusUnauthorized, "UNAUTHORIZED", "a valid node token is required", false)
+		return
+	case errors.Is(err, ErrRateLimited):
+		g.authMetric("rate_limited")
+		w.Header().Set("Retry-After", "5")
+		refuse(w, http.StatusTooManyRequests, "TOOMANYREQUESTS", "too many token checks from this address", false)
+		return
+	case errors.Is(err, ErrForbidden):
+		g.authMetric("forbidden")
+		refuse(w, http.StatusForbidden, "DENIED", "the caller is not accepted", false)
+		return
+	case err != nil:
+		g.authMetric("unavailable")
+		w.Header().Set("Retry-After", "30")
+		refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", "the cluster view is not available, try again", false)
+		return
+	}
+	g.authMetric("ok_" + p.Kind.String())
+	escaped := r.URL.EscapedPath()
+	switch {
+	case escaped == "/v2" || escaped == "/v2/":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			refuse(w, http.StatusMethodNotAllowed, "UNSUPPORTED", "only GET", false)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Docker-Distribution-Api-Version", "registry/2.0")
+		_, _ = w.Write([]byte("{}"))
+	case isCache(r):
 		if g.Cache == nil {
 			refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "the image cache is off", false)
 			return
 		}
-		if g.CacheTLSOnly && r.TLS == nil {
-			refuse(w, http.StatusForbidden, "DENIED", "the image cache is served over TLS only", false)
+		g.Cache.Serve(w, r, p)
+	case strings.HasPrefix(escaped, "/v2/lab/") || escaped == "/v2/_catalog" || strings.HasPrefix(escaped, "/v2/base/"):
+		if g.Lab == nil {
+			refuse(w, http.StatusNotFound, "NAME_UNKNOWN", "snapshots are off", false)
 			return
 		}
-		g.Cache.ServeHTTP(w, r)
-		return
+		g.Lab.Serve(w, r, p)
+	default:
+		refuse(w, http.StatusForbidden, "DENIED", "not allowed", false)
 	}
-	g.proxy.ServeHTTP(w, r)
 }
 
 // Ready says whether zot accepts a connection: the pod is ready only then (the Service routes to the gate).
@@ -127,5 +171,35 @@ func NewServer(addr string, h http.Handler) *http.Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    16 << 10,
+		// the listener gives a new connection a deadline for the TLS handshake and the first request line; it is lifted once a request is
+		// being served, so that long uploads and pulls are not cut
+		ConnState: func(c net.Conn, st http.ConnState) {
+			if st == http.StateActive {
+				_ = c.SetReadDeadline(time.Time{})
+			}
+		},
 	}
+}
+
+// NewDeadlineListener listens on addr and gives every accepted connection d to finish its TLS handshake and send its first request.
+func NewDeadlineListener(addr string, d time.Duration) (net.Listener, error) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return &deadlineListener{Listener: l, d: d}, nil
+}
+
+type deadlineListener struct {
+	net.Listener
+	d time.Duration
+}
+
+func (l *deadlineListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetReadDeadline(time.Now().Add(l.d))
+	return c, nil
 }
