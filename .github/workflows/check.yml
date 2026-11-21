@@ -2,13 +2,17 @@ name: Check
 
 # A PR into develop or into a release line (release/X.Y): tests plus the image build. Nothing is published and nothing is written to a
 # registry: a check runs the code of the pull request, so it holds no Docker Hub credential that could write (those are secrets of the
-# environments "candidate" and "release"). It reads the layer cache that the candidate builds write (buildcache-release, public).
-# main takes no pull requests: it only receives promoted lines (promote.yml). The required check is "Check passed".
+# environments "candidate", "release" and "build"). It reads the layer cache that the candidate builds write (buildcache-release, public).
+# A pull request into main is normally the one that Promote opens (head promote/vX.Y.Z): the commits of the line were checked when each
+# entered it, so the tests are not run again; the job "Main gate" checks that the release exists and the head contains it
+# (.github/scripts/main_gate.py). Any other pull request into main (the one-time bootstrap from develop) gets the full check.
+# The required check is "Check passed". It must come from a pull_request run: a check of a workflow_dispatch run is not evaluated for a
+# pull request, so this workflow has no dispatch trigger.
 on:
   pull_request:
     # edited: a pull request that is moved from develop to a line (a new base) has to be checked again against the line
     types: [ opened, synchronize, reopened, edited ]
-    branches: [ develop, 'release/*' ]
+    branches: [ develop, 'release/*', main ]
 
 concurrency:
   group: check-${{ github.event.pull_request.number }}
@@ -23,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.c.outputs.code }}
+      promote: ${{ steps.c.outputs.promote }}
     steps:
       - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,9 +38,17 @@ jobs:
       - name: Is there more than docs
         id: c
         env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          if [[ "$BASE_REF" == main ]] && python3 .github/scripts/main_gate.py is-promote "$HEAD_REF"; then
+            echo "promote=true" >> "$GITHUB_OUTPUT"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "promote=false" >> "$GITHUB_OUTPUT"
           code=false
           if ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
             code=true
@@ -48,6 +61,24 @@ jobs:
             done <<<"$files"
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  main-gate:
+    name: Main gate
+    needs: changes
+    if: needs.changes.outputs.promote == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: The release exists and the head contains it
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --tags --force --quiet
+          python3 .github/scripts/main_gate.py check "$HEAD_REF" "$HEAD_SHA"
 
   test:
     name: Test
@@ -100,7 +131,7 @@ jobs:
   passed:
     name: Check passed
     if: ${{ always() }}
-    needs: [changes, test, image]
+    needs: [changes, main-gate, test, image]
     runs-on: ubuntu-latest
     steps:
       - name: Every check passed

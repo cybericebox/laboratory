@@ -3,12 +3,12 @@ name: Backport
 # After every push to a release line (a merged pull request), open a pull request with the same change into develop (a cherry-pick), so a
 # fix never exists only in the line. A change that does not apply cleanly gets an issue that says so (.github/scripts/backport.sh).
 #
-# Pull requests made with the default GITHUB_TOKEN do not start other workflows, so such a pull request would get no "Check passed" by
-# itself. Set the secret BACKPORT_TOKEN (a fine-grained token or an app token with contents, pull requests and issues write) and the
-# checks start; without it the workflow still works, and the owner closes and reopens the pull request to start them.
-# The repository setting "Allow GitHub Actions to create and approve pull requests" is needed either way.
-# BACKPORT_TOKEN is a secret of the environment "candidate" (deployment branches: release/*) and is NOT the token that may update main
-# (RELEASE_TOKEN, environment "release"): a token that can write main must never be readable by this workflow.
+# It uses only the token of the job (contents, pull requests and issues write, in this job alone): no other credential, no environment.
+# Events made with GITHUB_TOKEN do not start workflows, except workflow_dispatch and repository_dispatch; a pull request it opens does
+# start a pull_request run of check.yml, but in an "approval-required" state: the owner presses "Approve workflows to run" on the pull
+# request (or closes and reopens it). The check cannot be started by a dispatch instead: a check of a workflow_dispatch run is not
+# evaluated for a pull request, so it would not satisfy the required "Check passed".
+# The setting "Allow GitHub Actions to create and approve pull requests" is required.
 # The job runs only the code that is already merged into the line, never code of a pull request.
 on:
   push:
@@ -29,7 +29,6 @@ jobs:
   backport:
     name: Pull request into develop
     runs-on: ubuntu-latest
-    environment: candidate
     permissions:
       contents: write
       pull-requests: write
@@ -39,10 +38,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.BACKPORT_TOKEN || github.token }}
+          token: ${{ github.token }}
       - name: Cherry-pick into develop
         env:
-          GH_TOKEN: ${{ secrets.BACKPORT_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           LINE_BRANCH: ${{ github.ref_name }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}

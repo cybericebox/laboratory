@@ -7,16 +7,20 @@ name: Promote
 #            (.github/scripts/release_gate.py; any failed lookup refuses). There is no review requirement.
 #   release  the SAME images get the tag vX.Y.Z (no rebuild; latest moves when this is the newest release), the chart is published with
 #            the final version, the git tag and the GitHub release page are created at the commit of the candidate
-#   main     the commit is merged into main with a merge commit
-#   cleanup  retention (cleanup.yml): the candidates of every released version are deleted, then the older patches and minors
+#   main     LAST, once everything is published: the branch promote/vX.Y.Z is pushed at the commit and a pull request into main is opened
+#            with the job's own token and set to auto-merge (merge commit); main_gate.py is its check (.github/scripts/main_pr.sh)
+#   cleanup  retention (cleanup.yml), in parallel with main: it does not wait for the merge (candidates and old releases do not depend on
+#            main); only its last step, the dev images of commits that main has, lags until a later run
 # dry_run verifies and prints the plan and changes nothing (it only reads: the retention list is made with the Docker Hub credentials).
 #
 # It runs only from main: the scripts that decide are the ones on main, never the ones of the line or of a pull request. The default
 # branch of this repository is develop, so it must be started with `gh workflow run promote.yml --ref main` (a run on any other ref stops
 # at the first step). The workflow file has to exist on the default branch too (GitHub lists a dispatchable workflow from there) and on
 # main: the first promote of a repository needs these workflows on both already.
-# Secrets (the Docker Hub credentials and RELEASE_TOKEN) are secrets of the environment "release" (deployment branch: main only), so a
-# run from any other ref, with any edited copy of this file, cannot read them.
+# The Docker Hub credentials are secrets of the environment "release" (deployment branch: main only), so a run from any other ref, with
+# any edited copy of this file, cannot read them. There is no other credential: the pull request into main is made with GITHUB_TOKEN.
+# Bootstrap: the workflow has to exist on main before the first promote, so the first change that brings promote.yml, cleanup.yml and
+# .github/scripts to main is an ordinary pull request develop -> main (full check, merged by the owner).
 on:
   workflow_dispatch:
     inputs:
@@ -121,14 +125,6 @@ jobs:
       SHA: ${{ needs.verify.outputs.sha }}
       LATEST: ${{ needs.verify.outputs.latest }}
     steps:
-      # First, before a single tag is pushed: the last job needs this token, and a release cannot be undone (version tags are immutable).
-      - name: The token that updates main is there and can push
-        env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          [[ -n "$RELEASE_TOKEN" ]] || { echo "::error::the secret RELEASE_TOKEN is not set: main could not be updated after the release. Nothing is published"; exit 1; }
-          push=$(GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$GITHUB_REPOSITORY" --jq .permissions.push)
-          [[ "$push" == true ]] || { echo "::error::RELEASE_TOKEN has no push access to $GITHUB_REPOSITORY. Nothing is published"; exit 1; }
       - name: Check repository (the trusted scripts)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -179,42 +175,33 @@ jobs:
           .github/scripts/release.sh "$VERSION" "$SHA" "$LATEST" "$RUNNER_TEMP/dist/laboratory-${VERSION#v}.tgz"
 
   main:
-    name: Merge the line into main
+    name: Pull request into main
     needs: [verify, release]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
+      pull-requests: write
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       SHA: ${{ needs.verify.outputs.sha }}
     steps:
-      # main is protected: only the owner and RELEASE_TOKEN (a fine-grained token or an app token with contents write that the ruleset of
-      # main lets bypass the pull request rule) may update it. The commit of the candidate goes in with a merge commit.
-      - name: Check main
+      # Last on purpose: the images, the chart, the tag and the release page are public by now. This job fails (red) when the pull request
+      # cannot merge; the release itself stays published and Promote can be run again. No bypass actor and no extra token: the branch
+      # promote/vX.Y.Z and the pull request are made with GITHUB_TOKEN, and the owner approves the check runs of the pull request.
+      - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: main
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_TOKEN }}
-      - name: Merge
+      - name: Open the pull request into main
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          [[ -n "$RELEASE_TOKEN" ]] || { echo "::error::the secret RELEASE_TOKEN is not set: main cannot be updated. Merge ${SHA:0:7} into main by hand, then run Promote again (or Retention)"; exit 1; }
-          if git merge-base --is-ancestor "$SHA" HEAD; then
-            echo "main already has ${SHA:0:7}"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git merge --no-ff -m "Release $VERSION" "$SHA" || { echo "::error::$VERSION is published but merging ${SHA:0:7} into main conflicts: merge it by hand, then run Promote again (it skips what is done) or Retention"; exit 1; }
-          git push origin HEAD:main || { echo "::error::$VERSION is published but main could not be pushed (the ruleset of main must let RELEASE_TOKEN bypass): fix it, then run Promote again"; exit 1; }
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/main_pr.sh
 
   cleanup:
     name: Retention
-    needs: [verify, release, main]
-    if: ${{ !cancelled() && needs.verify.result == 'success' && (inputs.dry_run || (needs.release.result == 'success' && needs.main.result == 'success')) }}
+    # Not after main: the release is public, and retention does not need the merge (see the header).
+    needs: [verify, release]
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (inputs.dry_run || needs.release.result == 'success') }}
     permissions:
       contents: write
     uses: ./.github/workflows/cleanup.yml
