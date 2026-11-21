@@ -4,29 +4,22 @@
 *.dll
 *.so
 *.dylib
+# Everything our tasks write outside the tree: the manager binary, the envtest assets, the code generators
 bin/*
-Dockerfile.cross
+# make build-installer
+/dist/
 /graphify-out/*
 
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
-
 # Go workspace file
 go.work
-
-# Kubernetes Generated files - skip generated files, except for vendored files
-!vendor/**/zz_generated.*
 
 # Kubeconfig files — may contain private keys and cluster credentials
 kubeconfig
 *.kubeconfig
 kubeconfig.*
-
-# k0s dev cluster artifacts (join tokens, kubeconfig)
-.k0s/
 
 # editor and IDE paraphernalia
 .idea
@@ -34,20 +27,10 @@ kubeconfig.*
 *.swp
 *.swo
 *~
-internal/proxy/demux/xdp/llvm-strip
 
-# Stale root build artifacts (compiled fresh inside Docker images)
-/cni-gate
-/node-agent
-/gateway
+# Root build artifacts of `go build ./cmd/<name>` (the images compile inside Docker)
 /proxy
-/cni-gate
 /ovs-diag
-# captured node-agent logs
-laboratory-node-agent-*.log
-# helm dependency lock/vendor
-charts/laboratory/Chart.lock
-charts/laboratory/charts/
 
 .DS_Store
 .worktrees/
@@ -58,4 +41,3 @@ charts/laboratory/charts/
 /.claude/
 /.superpowers/
 /docs/superpowers/
-/.worktrees/
