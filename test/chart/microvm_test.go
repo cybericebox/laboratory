@@ -51,35 +51,6 @@ func TestMicroVMRuntimeClass(t *testing.T) {
 	}
 }
 
-func TestL7ProxyProtocolTrustList(t *testing.T) {
-	off, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, off)
-	}
-	if strings.Contains(off, "L7_PROXY_PROTOCOL_FROM") {
-		t.Error("the PROXY protocol is off by default")
-	}
-	on, err := helmTemplate(t, "--set", "proxy.l7.proxyProtocol.trustedFrom={10.0.0.1/32,10.0.0.2/32}", "-s", "templates/proxy/deployment.yaml")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, on)
-	}
-	if strings.Contains(on, "L7_PROXY_PROTOCOL_SECRETS") {
-		t.Error("no secretRef: no secret is required")
-	}
-	withSecret, err := helmTemplate(t, "--set", "proxy.l7.proxyProtocol.trustedFrom={10.0.0.1/32}", "--set", "proxy.l7.proxyProtocol.secretRef.name=edge-pp", "--set", "proxy.l7.proxyProtocol.secretRef.key=secrets", "-s", "templates/proxy/deployment.yaml")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, withSecret)
-	}
-	for _, want := range []string{"L7_PROXY_PROTOCOL_SECRETS", "secretKeyRef", "name: edge-pp", "key: secrets", `"224"`} {
-		if !strings.Contains(withSecret, want) {
-			t.Errorf("the secret wiring lacks %q", want)
-		}
-	}
-	if !strings.Contains(on, "L7_PROXY_PROTOCOL_FROM") || !strings.Contains(on, `"10.0.0.1/32,10.0.0.2/32"`) {
-		t.Errorf("the trust list does not reach the proxy:\n%s", on)
-	}
-}
-
 // The bandwidth protection with the proxy off must not name the proxy namespace: it does not exist, and the Role there fails the install.
 func TestBandwidthWithoutTheProxyNamesNoProxyNamespace(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "bandwidth.enabled=true", "--set", "proxy.enabled=false", "-s", "templates/operator/role-bandwidth.yaml")

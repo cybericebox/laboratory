@@ -303,7 +303,7 @@ func TestAgentGetsTheFeatureValues(t *testing.T) {
 	for _, want := range []string{"name: STATE_DEBOUNCE\n              value: \"9s\"", "name: STATE_WRITE_QUOTA\n              value: \"1Gi\"",
 		"name: STATE_MAX_FILE_SIZE\n              value: \"256Mi\"", "name: STATE_EXCLUDE_PATHS\n              value: \"/tmp,/var/tmp,/run\"",
 		"name: SCHEDULER_MAX_PODS\n              value: \"7\"", "name: SCHEDULER_ENABLED\n              value: \"true\"",
-		"name: ACCESS_TOKEN_MAX_TTL\n              value: \"60s\"", "name: SESSION_IDLE_TTL\n              value: \"24h\"", "name: SESSION_MAX_TTL\n              value: \"168h\"",
+		"name: GRANT_MAX_TTL\n              value: \"8h\"", "name: TERMINAL_GRANT_MAX_TTL\n              value: \"8h\"",
 		"name: BASE_DOMAIN", "name: PUBLIC_VPN_ENDPOINT"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)

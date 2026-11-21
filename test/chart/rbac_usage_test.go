@@ -13,13 +13,13 @@ import (
 )
 
 // operatorGrants renders every Role and ClusterRole the operator is bound to (its cluster role, the namespaced role that is
-// bound in each group namespace and in the release namespace, the leader-election role, the tenants and images roles) and returns
+// bound in each group namespace and in the release namespace, the leader-election role, the tenants and upstream credentials roles) and returns
 // the set they grant: "group|resource|verb" for a rule on every object, "group|resource|verb|name" for a rule limited by
 // resourceNames.
 func operatorGrants(t *testing.T) map[string]bool {
 	t.Helper()
 	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml", "-s", "templates/operator/clusterrole-namespaced.yaml",
-		"-s", "templates/operator/role.yaml", "-s", "templates/tenants-namespace.yaml", "-s", "templates/images-namespace.yaml")
+		"-s", "templates/operator/role.yaml", "-s", "templates/tenants-namespace.yaml", "-s", "templates/upstream-namespace.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

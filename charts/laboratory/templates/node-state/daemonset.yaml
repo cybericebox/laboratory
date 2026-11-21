@@ -30,27 +30,21 @@ spec:
       serviceAccountName: laboratory-node-state
       # Below the node-agent (system-node-critical): when the node is short of room this goes first and the pod networking stays.
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
-      # The host network: the registry is reached through the relay the node-agent serves on the loopback of the node (127.0.0.1:5035).
+      # The host network. The snapshots are pushed through the node-agent's relay, over a unix socket in a directory only the two share.
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
-      # Where the node-agent runs: the lab nodes (labWorkloads), with the same tolerations for the DaemonSet availability and Cilium
-      # taints. No toleration for the startup taint: the node-agent removes it, and this starts after.
-      {{- with .Values.labWorkloads.nodeSelector }}
+      # The lab pool, with the same tolerations for the DaemonSet availability and Cilium taints. No toleration for the startup taint: the
+      # node-agent removes it, and this starts after. No image pull secret: a lab pod holds no registry credential.
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        node-restriction.kubernetes.io/cib-pool: lab
       tolerations:
         - key: node.cilium.io/agent-not-ready
           operator: Exists
           effect: NoSchedule
-        {{- with .Values.labWorkloads.tolerations }}
+        {{- with .Values.pools.lab.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
         - name: node-state
           image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
@@ -78,30 +72,11 @@ spec:
               value: {{ .Values.devices.statePersistence.containerdRoot | quote }}
             - name: STATE_MAX_WATCH_DIRS
               value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
-            # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
-            - name: STATE_MIN_PUSH_INTERVAL
-              value: {{ .Values.devices.statePersistence.minPushInterval | quote }}
-            - name: STATE_PUSH_BUDGET
-              value: {{ .Values.devices.statePersistence.pushBudget | quote }}
-            - name: STATE_PUSH_BUDGET_WINDOW
-              value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
-            - name: STATE_SUPERSEDED_GRACE
-              value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
-            - name: STATE_REGISTRY_CAPACITY
-              value: {{ .Values.registry.size | quote }}
-            - name: STATE_REGISTRY_RESERVE
-              value: {{ .Values.devices.statePersistence.registryReserve | quote }}
-            # The writer account: the snapshots are pushed through the node-agent's relay (the registry itself is not reachable from here).
-            - name: STATE_REGISTRY_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: username
-            - name: STATE_REGISTRY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: password
+            # No registry credential and no push limit here: the gate counts what it sees (the push interval, the budget, the tenant quota, the
+            # reserve and the superseded snapshots are gate settings, see templates/registry/deployment.yaml). The snapshots are pushed through
+            # a unix socket the node-agent serves in the directory below; node-state answers a 429 or a CIB_* refusal with its deferral.
+            - name: STATE_REGISTRY_PUSH_SOCKET
+              value: /run/cybericebox/registry-push.sock
           {{- end }}
           securityContext:
             {{- if .Values.devices.statePersistence.enabled }}
@@ -150,6 +125,9 @@ spec:
               readOnly: true
             - name: state-work
               mountPath: /var/cache/cybericebox/state
+            # The directory node-agent and node-state share: the push socket of the relay (mode 0600, owned by the user of this pod).
+            - name: registry-push
+              mountPath: /run/cybericebox
           {{- end }}
           {{- with .Values.nodeState.resources }}
           resources:
@@ -174,6 +152,10 @@ spec:
           # Required capture holds must survive node-state Pod recreation.
           hostPath:
             path: /var/cache/cybericebox/state
+            type: DirectoryOrCreate
+        - name: registry-push
+          hostPath:
+            path: /run/cybericebox
             type: DirectoryOrCreate
       {{- end }}
 {{- end }}

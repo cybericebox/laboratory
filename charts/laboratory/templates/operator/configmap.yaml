@@ -58,10 +58,25 @@ data:
   TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
   # The operator checks at start that the admission policies are enforced on it and exits if they are not (with them off it is told so).
   OPERATOR_REQUIRE_ADMISSION_POLICY: {{ .Values.operator.admissionPolicy.enabled | quote }}
-  # State persistence: the credentials come from the registry Secret.
+  {{- if include "laboratory.deviceAccess.enabled" . }}
+  # The operator copies the access public keys of the tenants (public data) into the ConfigMap laboratory-access-keys of this namespace, which the
+  # device access service mounts.
+  DEVICE_ACCESS_NAMESPACE: {{ include "laboratory.deviceAccess.namespace" . | quote }}
+  {{- end }}
+  {{- if include "laboratory.registryEnabled" . }}
+  # The registry gate: the operator presents its own projected ServiceAccount token to it (no registry password exists), and writes the
+  # upstream credentials (tenant-<name>, platform) into the namespace only the gate reads.
+  REGISTRY_GATE_ADDR: {{ include "laboratory.registryServiceAddr" . | quote }}
+  REGISTRY_GATE_CA_FILE: /etc/registry-ca/ca.crt
+  REGISTRY_GATE_TOKEN_FILE: /var/run/secrets/registry-gate/token
+  UPSTREAM_NAMESPACE: {{ include "laboratory.upstreamNamespace" . | quote }}
+  {{- end }}
+  # State persistence.
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
-  STATE_REGISTRY_ADDR: {{ include "laboratory.registryAddr" $ | quote }}
+  STATE_REGISTRY_ADDR: {{ include "laboratory.registryServiceAddr" $ | quote }}
+  STATE_REGISTRY_CA_FILE: /etc/registry-ca/ca.crt
+  STATE_REGISTRY_TOKEN_FILE: /var/run/secrets/registry-gate/token
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}

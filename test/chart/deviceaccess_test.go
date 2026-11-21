@@ -294,8 +294,8 @@ func TestDeviceAccessHasANamespaceOfItsOwn(t *testing.T) {
 		t.Fatalf("namespace %v, service %v", sawNS, sawSvc)
 	}
 	want := map[string]bool{"ServiceAccount/laboratory-device-access": true, "DaemonSet/laboratory-device-access": true, "Service/laboratory-device-access": true,
-		"CiliumNetworkPolicy/laboratory-device-access": true, "Secret/laboratory-device-access-auth": true, "Role/laboratory-proxy-device-access": true,
-		"RoleBinding/laboratory-proxy-device-access": true}
+		"CiliumNetworkPolicy/laboratory-device-access": true, "Role/laboratory-proxy-device-access": true,
+		"RoleBinding/laboratory-proxy-device-access": true, "Role/laboratory-operator-access-keys-mirror": true, "RoleBinding/laboratory-operator-access-keys-mirror": true}
 	for k := range inNS {
 		if !want[k] {
 			t.Errorf("unexpected object in the service's namespace: %s", k)
@@ -339,77 +339,62 @@ func TestDeviceAccessListensOnThePodIPOnly(t *testing.T) {
 	}
 }
 
-// The shared secret: one value in two Secrets, mounted as files, never an environment variable; the chart refuses a short one.
-func TestSharedSecretIsMountedAsFilesAndNeverInTheEnvironment(t *testing.T) {
-	const secret = "0123456789abcdef0123456789abcdef0123456789"
-	set := append(append([]string{}, consoleOn...), "--set", "terminal.sharedSecret.value="+secret, "--set", "terminal.sharedSecret.accept=fedcba9876543210fedcba9876543210fedcba98")
-	out, err := helmTemplate(t, set...)
+// No secret is shared by the proxy and the service: a console is opened with a grant signed by the tenant, which the service verifies with the
+// tenant's public key. The keys reach the service as a ConfigMap (public data) the operator mirrors; the chart makes no Secret for either side.
+func TestConsoleSharesNoSecretWithTheProxy(t *testing.T) {
+	out, err := helmTemplate(t, consoleOn...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	values := map[string]map[string]any{}
 	for _, d := range docs(t, out) {
 		meta, _ := d["metadata"].(map[string]any)
-		if d["kind"] == "Secret" && strings.HasSuffix(meta["name"].(string), "device-access-auth") {
-			values[meta["namespace"].(string)], _ = d["stringData"].(map[string]any)
-		}
-	}
-	if values["laboratory-device-access"]["current"] != secret || values["laboratory-proxy"]["current"] != secret {
-		t.Fatalf("secrets: %v", values)
-	}
-	if values["laboratory-device-access"]["accept"] == nil || values["laboratory-proxy"]["accept"] != nil {
-		t.Errorf("the service accepts the second secret, the proxy never signs with it: %v", values)
-	}
-	// nowhere in a workload: no env value, no argument
-	for _, d := range docs(t, out) {
-		kind, _ := d["kind"].(string)
-		if kind != "DaemonSet" && kind != "Deployment" {
-			continue
-		}
-		raw, _ := yaml.Marshal(d)
-		if strings.Contains(string(raw), secret) {
-			t.Errorf("the secret appears in a %s", kind)
+		name, _ := meta["name"].(string)
+		if d["kind"] == "Secret" && (meta["namespace"] == "laboratory-device-access" || strings.Contains(name, "device-access")) {
+			t.Errorf("a Secret for the console: %s/%s", meta["namespace"], name)
 		}
 	}
 	ds := deviceAccessDaemonSet(t)
+	c := ds.Spec.Template.Spec.Containers[0]
+	env := envOf(c)
+	if env["KEY_DIR"].Value != "/etc/device-access/access-keys" || env["GRANT_MAX_TTL"].Value != "8h" || env["KEY_RELOAD"].Value != "15s" {
+		t.Errorf("the grant settings: %v", env)
+	}
 	var mounted bool
-	for _, m := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
-		if m.Name == "auth" && m.MountPath == "/etc/device-access/auth" && m.ReadOnly {
+	for _, m := range c.VolumeMounts {
+		if m.Name == "access-keys" && m.MountPath == "/etc/device-access/access-keys" && m.ReadOnly {
 			mounted = true
 		}
 	}
 	if !mounted {
-		t.Error("the service does not mount the secret read-only")
+		t.Error("the service does not mount the access keys read-only")
+	}
+	for _, v := range ds.Spec.Template.Spec.Volumes {
+		if v.Secret != nil {
+			t.Errorf("the service mounts the Secret %s", v.Secret.SecretName)
+		}
+		if v.Name == "access-keys" && (v.ConfigMap == nil || v.ConfigMap.Name != "laboratory-access-keys" || v.ConfigMap.Optional == nil || !*v.ConfigMap.Optional) {
+			t.Errorf("the access keys volume: %+v", v)
+		}
 	}
 	var dep appsv1.Deployment
 	render(t, "templates/proxy/deployment.yaml", &dep, consoleOn...)
-	var proxyMount bool
 	for _, m := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
-		proxyMount = proxyMount || m.Name == "device-access-auth" && m.MountPath == "/etc/proxy/device-access-auth" && m.ReadOnly
-	}
-	if !proxyMount {
-		t.Error("the proxy does not mount the secret")
-	}
-	for _, short := range []string{"terminal.sharedSecret.value=short", "terminal.sharedSecret.accept=short"} {
-		if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "--set", short)...); err == nil {
-			t.Errorf("%s accepted:\n%s", short, out)
+		if strings.Contains(m.Name, "auth") {
+			t.Errorf("the proxy mounts %s: it signs nothing", m.Name)
 		}
 	}
-	// without a value the chart makes one of at least 32 characters, the same in both namespaces
-	out, err = helmTemplate(t, consoleOn...)
-	if err != nil {
-		t.Fatal(err)
+	if env := envOf(dep.Spec.Template.Spec.Containers[0]); env["TERMINAL_KEY_FILE"].Value != "" {
+		t.Errorf("the proxy has a key file for the service: %v", env["TERMINAL_KEY_FILE"])
 	}
-	gen := map[string]string{}
-	for _, d := range docs(t, out) {
-		meta, _ := d["metadata"].(map[string]any)
-		if d["kind"] == "Secret" && strings.HasSuffix(meta["name"].(string), "device-access-auth") {
-			sd, _ := d["stringData"].(map[string]any)
-			gen[meta["namespace"].(string)], _ = sd["current"].(string)
+	// the grant lifetime is a value, and the chart refuses what is no duration
+	ds = deviceAccessDaemonSet(t, "--set", "terminal.grantMaxTTL=2h", "--set", "terminal.keyReload=30s")
+	if env := envOf(ds.Spec.Template.Spec.Containers[0]); env["GRANT_MAX_TTL"].Value != "2h" || env["KEY_RELOAD"].Value != "30s" {
+		t.Errorf("the grant settings do not follow the values: %v", env)
+	}
+	for _, bad := range []string{"terminal.grantMaxTTL=soon", "terminal.keyReload=0"} {
+		if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "--set", bad)...); err == nil {
+			t.Errorf("%s accepted:\n%s", bad, out)
 		}
-	}
-	if len(gen["laboratory-proxy"]) < 32 || gen["laboratory-proxy"] != gen["laboratory-device-access"] {
-		t.Errorf("generated secrets: %v", gen)
 	}
 }
 

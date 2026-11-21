@@ -149,20 +149,19 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 	if _, catchAll := repos["**"]; catchAll {
 		t.Error("there must be no catch-all pattern")
 	}
-	for _, private := range []string{"lab/**", "base", "base/**"} {
+	// zot has one account, the gate: nobody reads anything anonymously and no node, operator, agent or platform account exists
+	for _, private := range []string{"lab/**", "base", "base/**", "c/**"} {
 		r, ok := repos[private]
 		if !ok || len(r.AnonymousPolicy) != 0 {
 			t.Errorf("%s must exist and not be anonymous: %+v", private, r)
 			continue
 		}
-		var readers, writers bool
-		for _, p := range r.Policies {
-			readers = readers || (strings.Join(p.Users, ",") == "reader" && strings.Join(p.Actions, ",") == "read")
-			writers = writers || strings.Join(p.Users, ",") == "writer"
+		if len(r.Policies) != 1 || strings.Join(r.Policies[0].Users, ",") != "gate" || strings.Join(r.Policies[0].Actions, ",") != "read,create,update,delete" {
+			t.Errorf("%s belongs to the gate account alone: %+v", private, r.Policies)
 		}
-		if !readers || !writers {
-			t.Errorf("%s: the reader reads, the writer writes: %+v", private, r.Policies)
-		}
+	}
+	if len(repos) != 4 {
+		t.Errorf("the repositories of zot are lab/**, base, base/** and c/** only (nothing for the platform): %v", repos)
 	}
 	// the image cache is the gate's tree: nobody reads it anonymously, and the only account with a right there is the gate
 	for _, upstream := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
@@ -170,33 +169,24 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 			t.Errorf("%s: the old public cache patterns are gone (the cache lives under c/**): %+v", upstream, r)
 		}
 	}
-	c, ok := repos["c/**"]
-	if !ok || len(c.AnonymousPolicy) != 0 || len(c.Policies) != 1 || strings.Join(c.Policies[0].Users, ",") != "gate" {
-		t.Errorf("c/** belongs to the gate account alone: %+v", c)
-	}
 	if strings.Contains(cm.Data["config.json"], "adminPolicy") {
 		t.Error("no account may have rights over every repository")
 	}
-	// both accounts exist, and the agent gets the reader in its own namespace
-	if !strings.Contains(out, "readerPassword:") || !strings.Contains(out, "reader:$2") || !strings.Contains(out, "writer:$2") {
-		t.Errorf("the registry secret needs a reader and a writer account:\n%s", out)
+	// one account, the gate's: no reader and no writer password exists, in the Secret or in another namespace
+	if !strings.Contains(out, "gatePassword:") || !strings.Contains(out, "gate:$2") {
+		t.Errorf("the registry secret needs the gate account:\n%s", out)
 	}
-	agentOut, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/secret.yaml", "-s", "templates/agent/deployment.yaml")...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"name: laboratory-registry-reader", "namespace: laboratory-agent", "name: AGENT_REGISTRY_USER", "name: AGENT_REGISTRY_PASSWORD"} {
-		if !strings.Contains(agentOut, want) {
-			t.Errorf("missing %q", want)
+	for _, gone := range []string{"readerPassword", "reader:$2", "writer:$2", "readerUsername", "platformPassword", "username: writer", "laboratory-registry-reader"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("the registry secret still holds %q:\n%s", gone, out)
 		}
 	}
-	// the reader reaches the node-agent too (its forwarder adds it to the pulls of snapshots)
 	nodeOut, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-agent/daemonset.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(nodeOut, "STATE_REGISTRY_READER_PASSWORD") || !strings.Contains(nodeOut, "key: readerPassword") {
-		t.Error("the node-agent needs the reader account")
+	if strings.Contains(nodeOut, "secretKeyRef") || strings.Contains(nodeOut, "STATE_REGISTRY_READER") {
+		t.Errorf("the node-agent holds no registry credential:\n%s", nodeOut)
 	}
 }
 
@@ -444,13 +434,14 @@ func TestAgentAndProxyNamespacesEnforcePodSecurity(t *testing.T) {
 	}
 }
 
-// L-10: zot has no ServiceAccount token (it never talks to the API) and its writer account cannot touch the public cache.
-func TestRegistryPodHasNoServiceAccountToken(t *testing.T) {
+// The registry pod has its own ServiceAccount, whose token the gate needs for TokenReview and its watches. Kubernetes mounts a token per pod, so zot sees
+// it too: the account has no right on Secrets outside laboratory-upstream (rbac tests), and zot runs as another user.
+func TestRegistryPodHasTheGateServiceAccountOnly(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/deployment.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "automountServiceAccountToken: false") {
-		t.Errorf("zot must not mount a token:\n%s", out)
+	if !strings.Contains(out, "serviceAccountName: laboratory-registry-gate") || !strings.Contains(out, "automountServiceAccountToken: true") {
+		t.Errorf("the registry pod runs as the gate's ServiceAccount with its token:\n%s", out)
 	}
 }

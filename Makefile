@@ -86,6 +86,8 @@ KIND_CONFIG    ?= hack/kind/kind-config.yaml
 .PHONY: cluster-up
 cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 lab workers); for test-e2e name it kind: make cluster-up KIND_CLUSTER_NAME=kind
 	$(KIND) create cluster --config $(KIND_CONFIG) --name $(KIND_CLUSTER_NAME)
+	$(KUBECTL) label node $(KIND_CLUSTER_NAME)-control-plane node-restriction.kubernetes.io/cib-pool=lab-control --overwrite
+	$(KUBECTL) label node $(KIND_CLUSTER_NAME)-worker $(KIND_CLUSTER_NAME)-worker2 node-restriction.kubernetes.io/cib-pool=lab --overwrite
 	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
 
 .PHONY: cluster-down
@@ -132,11 +134,10 @@ kind-demux-up: ## Create the demux kind cluster (icebox-demux, Cilium 1.20.2, no
 kind-demux-e2e: ## Build the proxy image and run the demux e2e on icebox-demux (KIND_DEMUX_MODE=upgrade|userspace|tc|xdp|detach)
 	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
 	KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) hack/kind-demux/e2e.sh $(KIND_DEMUX_MODE)
-kind-demux-e2e-all: ## Build the proxy image once and run the demux e2e: upgrade from develop, userspace, tc, xdp, LB-IPAM, detach back to userspace
+kind-demux-e2e-all: ## Build the proxy image once and run the demux e2e: upgrade from develop, userspace, tc, xdp, detach back to userspace
 	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
-	@summary="$$(mktemp)"; for m in upgrade userspace tc xdp lbipam detach; do \
-		if [ $$m = lbipam ]; then run="hack/kind-demux/lbipam.sh"; else run="hack/kind-demux/e2e.sh $$m"; fi; \
-		KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) KIND_DEMUX_SUMMARY="$$summary" $$run || { cat "$$summary"; rm -f "$$summary"; exit 1; }; \
+	@summary="$$(mktemp)"; for m in upgrade userspace tc xdp detach; do \
+		KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) KIND_DEMUX_SUMMARY="$$summary" hack/kind-demux/e2e.sh $$m || { cat "$$summary"; rm -f "$$summary"; exit 1; }; \
 	done; printf '\n== summary\n'; cat "$$summary"; rm -f "$$summary"
 kind-demux-down: ## Delete the demux kind cluster and its client containers
 	hack/kind-demux/down.sh
