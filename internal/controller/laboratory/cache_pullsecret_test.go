@@ -181,3 +181,22 @@ func TestRequireDigestFailsALabWhoseTagCannotBePinned(t *testing.T) {
 		t.Error("nothing is decided for a lab that failed")
 	}
 }
+
+// A Lab written by hand cannot name another tenant's cache path or the platform's: only its own tenant's segment and snapshots pass.
+func TestLabCannotNameAnotherTenantsCachePath(t *testing.T) {
+	r := &LabReconciler{Mirror: imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}, AllowedRegistries: []string{"*"}}
+	mk := func(img string) *laboratoryv1alpha1.Lab {
+		return &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{names.LabelTenant: "acme"}},
+			Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{{Name: "a", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: img}}},
+		}
+	}
+	if err := r.validateRegistries(mk("localhost:5035/c/acme/docker.io/library/nginx:1")); err != nil {
+		t.Fatalf("its own segment: %v", err)
+	}
+	for _, bad := range []string{"localhost:5035/c/other/docker.io/library/nginx:1", "LOCALHOST:5035/c/platform/ghcr.io/o/vpn:1", "localhost:5035/base:1"} {
+		if err := r.validateRegistries(mk(bad)); err == nil {
+			t.Errorf("%s must be refused", bad)
+		}
+	}
+}
