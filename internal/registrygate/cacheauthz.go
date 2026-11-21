@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -45,6 +46,15 @@ func parseCacheImage(image string) (imageRef, bool) {
 		return imageRef{}, false
 	}
 	return out, true
+}
+
+// CheckImageHost refuses to start the cache without the host the nodes pull from: with none every host prefix in front of /c/ would be
+// accepted as a cache reference (allowAny is for tests and local runs).
+func CheckImageHost(cacheEnabled bool, host string, allowAny bool) error {
+	if cacheEnabled && host == "" && !allowAny {
+		return errors.New("GATE_IMAGE_HOST is empty: set the host the nodes pull cache images from (for example localhost:5035); GATE_ALLOW_ANY_IMAGE_HOST=true is for tests only")
+	}
+	return nil
 }
 
 // parseImage is parseCacheImage that also checks the host when the gate knows the one the nodes pull from (ImageHost).
@@ -187,4 +197,36 @@ func childDigests(body []byte) []string {
 func sha256Digest(b []byte) string {
 	s := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(s[:])
+}
+
+// childSizes are the descriptor sizes of the digests a manifest lists (config and layers): what an upload of such a blob may weigh.
+func childSizes(body []byte) map[string]int64 {
+	var m struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"manifests"`
+		Config struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"layers"`
+	}
+	out := map[string]int64{}
+	if json.Unmarshal(body, &m) != nil {
+		return out
+	}
+	for _, c := range m.Manifests {
+		out[c.Digest] = c.Size
+	}
+	if m.Config.Digest != "" {
+		out[m.Config.Digest] = m.Config.Size
+	}
+	for _, l := range m.Layers {
+		out[l.Digest] = l.Size
+	}
+	return out
 }

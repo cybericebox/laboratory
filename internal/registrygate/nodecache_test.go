@@ -593,3 +593,35 @@ func TestAForeignTokenRealmIs502AndSendsNothing(t *testing.T) {
 		t.Fatalf("the foreign token endpoint got %d requests", evilHits.Load())
 	}
 }
+
+// Review 2, item 6: the manifests held in memory are bounded in all requests together; a request that finds the budget used up is 503.
+func TestHeldManifestsAreBoundedInAll(t *testing.T) {
+	n := newNodeRig(t)
+	n.devicePod("lg-acme", "dev-tag", "node-a", pfx+"acme/up/library/nginx:latest")
+	n.cache.HoldBytes = 8 // smaller than any manifest
+	code, _, hdr := n.get(tokA, "GET", n.mp("acme", "library/nginx", "latest"), nil)
+	if code != 503 || hdr.Get("Retry-After") == "" {
+		t.Fatalf("%d %v", code, hdr)
+	}
+	if used := n.cache.holdUsed.Load(); used != 0 {
+		t.Fatalf("the budget leaked %d bytes", used)
+	}
+	n.cache.HoldBytes = 0 // the default
+	if code, _, _ := n.get(tokA, "GET", n.mp("acme", "library/nginx", "latest"), nil); code != 200 {
+		t.Fatalf("with room: %d", code)
+	}
+	if used := n.cache.holdUsed.Load(); used != 0 {
+		t.Fatalf("the budget leaked %d bytes", used)
+	}
+}
+
+func TestTheCacheNeedsItsImageHost(t *testing.T) {
+	if err := CheckImageHost(true, "", false); err == nil || !strings.Contains(err.Error(), "GATE_IMAGE_HOST") {
+		t.Fatalf("an empty host with the cache on must refuse to start: %v", err)
+	}
+	for _, ok := range [][3]any{{true, "localhost:5035", false}, {false, "", false}, {true, "", true}} {
+		if err := CheckImageHost(ok[0].(bool), ok[1].(string), ok[2].(bool)); err != nil {
+			t.Fatalf("%v: %v", ok, err)
+		}
+	}
+}

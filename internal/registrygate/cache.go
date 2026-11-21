@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cybericebox/laboratory/internal/imagecache"
@@ -41,9 +43,12 @@ type Cache struct {
 	ImageHost string
 	// ManifestMaxBytes bounds a manifest the gate holds (GATE_MANIFEST_MAX_BYTES, default 4 MiB).
 	ManifestMaxBytes int
-	Up               *Upstream
-	Zot              *Zot
-	Store            *Store
+	// HoldBytes bounds the manifests held in memory in all requests together (GATE_MANIFEST_HOLD_BYTES, default 64 MiB).
+	HoldBytes int64
+	holdUsed  atomic.Int64
+	Up        *Upstream
+	Zot       *Zot
+	Store     *Store
 	// DiskFull says that the volume is above its high-water mark: a miss is then streamed through and not stored.
 	DiskFull func() bool
 	// Fill is the optional login used to fill an image proved public (rate-limit relief); never for a private one.
@@ -248,11 +253,26 @@ func (c *Cache) serveGranted(w http.ResponseWriter, r *http.Request, reg Registr
 	up := Object{Repo: o.Repo, Kind: o.Kind, Ref: o.Ref, Accept: r.Header.Get("Accept")}
 	c.M.decisions.WithLabelValues("grant").Inc()
 	if o.Kind == kindManifests {
-		c.serveManifestAndGrant(w, r, reg, o, up, who, &p, "", true)
+		c.serveManifestAndGrant(w, r, reg, o, up, who, &p, "", grantUnder)
 		return
 	}
 	c.serveBlob(w, r, reg, o, up, who)
 }
+
+// holdReserve takes n bytes of the budget for manifests held in memory in all requests at once (GATE_MANIFEST_HOLD_BYTES, default 64 MiB).
+func (c *Cache) holdReserve(n int64) bool {
+	limit := c.HoldBytes
+	if limit <= 0 {
+		limit = 64 << 20
+	}
+	if c.holdUsed.Add(n) > limit {
+		c.holdUsed.Add(-n)
+		return false
+	}
+	return true
+}
+
+func (c *Cache) holdFree(n int64) { c.holdUsed.Add(-n) }
 
 func (c *Cache) manifestMax() int {
 	if c.ManifestMaxBytes > 0 {
@@ -314,36 +334,57 @@ func (c *Cache) serveChecked(w http.ResponseWriter, r *http.Request, reg Registr
 	o.Ref = digest // a tag is resolved upstream and never answered from memory
 	up.Ref = digest
 	if o.Kind == kindManifests {
-		c.serveManifestAndGrant(w, r, reg, o, up, chosen, p, tag, stale)
+		mode := grantProve
+		if stale {
+			mode = grantStale
+		}
+		c.serveManifestAndGrant(w, r, reg, o, up, chosen, p, tag, mode)
 		return
 	}
 	c.serveBlob(w, r, reg, o, up, chosen)
 }
 
-// serveManifestAndGrant serves a manifest and, for a node, records it and the digests it lists in the grant of (node, segment, repository).
-// tag is the tag the pod asked for ("" for a digest). onlyExtend is true when the answer rests on a stale decision (or on an existing grant):
-// then a live grant is renewed and none is ever created. The manifest is held back until the grant is made: one that cannot be granted
-// (too many digests, a malformed digest) is refused, never served with its blobs silently unreachable.
-func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller, p *Principal, tag string, onlyExtend bool) {
+// How a served manifest touches the grant of its node.
+type grantMode int
+
+const (
+	grantProve grantMode = iota // the proof was made in this request: make or extend the grant
+	grantStale                  // the answer rests on a stale decision: only renew what is already granted, add nothing
+	grantUnder                  // a child manifest served under a live grant: its listing joins that grant, nothing else changes
+)
+
+// serveManifestAndGrant serves a manifest and, for a node, records it and the digests it lists in the grant of (node, segment, repository)
+// as mode says. tag is the tag the pod asked for ("" for a digest). The manifest is held back until the grant is made: one that cannot be
+// granted (too many digests, a malformed digest) is refused, never served with its blobs silently unreachable.
+func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, reg Registry, o objectRef, up Object, who caller, p *Principal, tag string, mode grantMode) {
 	if p == nil {
 		c.serveManifest(w, r, reg, o, up, who)
 		return
 	}
-	hw := &holdWriter{ResponseWriter: w, max: c.manifestMax()}
+	hw := &holdWriter{ResponseWriter: w, max: c.manifestMax(), cache: c}
+	defer hw.freeBudget()
 	c.serveManifest(hw, r, reg, o, up, who)
 	if hw.status != http.StatusOK && hw.status != 0 {
 		hw.release()
 		return
 	}
+	if hw.busy {
+		hw.drop()
+		c.M.refusals.WithLabelValues("hold_busy").Inc()
+		w.Header().Set("Retry-After", "5")
+		refuse(w, http.StatusServiceUnavailable, "UNAVAILABLE", reasonUnavailable, false)
+		return
+	}
 	if hw.over {
 		hw.drop()
 		c.M.refusals.WithLabelValues("manifest_too_large").Inc()
-		refuse(w, http.StatusForbidden, "CIB_MANIFEST_TOO_BIG", "the manifest is larger than the gate serves", false)
+		refuse(w, http.StatusForbidden, "CIB_MANIFEST_TOO_BIG", fmt.Sprintf("the manifest is larger than %d bytes (GATE_MANIFEST_MAX_BYTES)", c.manifestMax()), false)
 		return
 	}
-	children := childDigests(hw.body.Bytes())
-	root := o.Ref
-	if !onlyExtend {
+	body := hw.body.Bytes()
+	children, root := childDigests(body), o.Ref
+	switch mode {
+	case grantProve:
 		if err := c.Grants.Add(p.Node, o.Tenant, o.fullRepo(), who.creds, tag, root, children); err != nil {
 			hw.drop()
 			status, code := http.StatusBadGateway, "MANIFEST_INVALID"
@@ -354,19 +395,28 @@ func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, re
 			refuse(w, status, code, "the pull cannot be authorised: "+err.Error(), false)
 			return
 		}
-	} else {
-		c.Grants.Extend(p.Node, o.Tenant, o.fullRepo(), who.creds, tag, root, children)
+		c.Grants.NoteSizes(p.Node, o.Tenant, o.fullRepo(), childSizes(body))
+	case grantStale:
+		c.Grants.Renew(p.Node, o.Tenant, o.fullRepo(), root)
+	case grantUnder:
+		if c.Grants.Expand(p.Node, o.Tenant, o.fullRepo(), root, children) {
+			c.Grants.NoteSizes(p.Node, o.Tenant, o.fullRepo(), childSizes(body))
+		}
 	}
 	hw.release()
 }
 
-// holdWriter keeps a manifest response back (bounded) until the caller decides to send it.
+// holdWriter keeps a manifest response back (bounded per response, and in all by the cache's hold budget) until the caller decides to
+// send it.
 type holdWriter struct {
 	http.ResponseWriter
-	max    int
-	status int
-	body   bytes.Buffer
-	over   bool
+	cache    *Cache
+	max      int
+	status   int
+	body     bytes.Buffer
+	over     bool
+	busy     bool // the cache-wide hold budget is used up
+	reserved int64
 }
 
 func (h *holdWriter) WriteHeader(code int) {
@@ -379,12 +429,22 @@ func (h *holdWriter) Write(p []byte) (int, error) {
 	if h.status == 0 {
 		h.status = http.StatusOK
 	}
+	if h.over || h.busy {
+		return len(p), nil
+	}
 	if h.body.Len()+len(p) > h.max {
 		h.over = true
 		return len(p), nil
 	}
+	if !h.cache.holdReserve(int64(len(p))) {
+		h.busy = true
+		return len(p), nil
+	}
+	h.reserved += int64(len(p))
 	return h.body.Write(p)
 }
+
+func (h *holdWriter) freeBudget() { h.cache.holdFree(h.reserved) }
 
 // release sends what was held.
 func (h *holdWriter) release() {

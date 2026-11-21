@@ -1,6 +1,7 @@
 package registrygate
 
 import (
+	"strconv"
 	"sync"
 	"time"
 )
@@ -13,9 +14,52 @@ type informerHealth struct {
 	Window time.Duration
 	Now    func() time.Time
 
+	// StallAfter is how long an informer may stay behind the API server without advancing before it counts as stalled (default 3 minutes).
+	StallAfter time.Duration
+
 	mu      sync.Mutex
 	errAt   map[string]time.Time
 	listErr map[string]error
+	prog    map[string]*progress
+}
+
+// progress is what a silent stall is told from: the resourceVersion the informer last synced to against the one a fresh list returns.
+type progress struct {
+	inf, list uint64
+	moved     time.Time // the last time the informer advanced or was caught up
+}
+
+func (h *informerHealth) stallAfter() time.Duration {
+	if h.StallAfter > 0 {
+		return h.StallAfter
+	}
+	return 3 * time.Minute
+}
+
+// Observe compares the resourceVersion the informer of a kind has synced to with the one the beat's list returned. An informer that is
+// behind and has not moved for StallAfter is stalled: its watch is dead without having reported an error (a hung connection), which no
+// event and no heartbeat can show. Versions that cannot be read are ignored.
+func (h *informerHealth) Observe(kind, informerRV, listRV string) {
+	inf, err1 := strconv.ParseUint(informerRV, 10, 64)
+	list, err2 := strconv.ParseUint(listRV, 10, 64)
+	if err1 != nil || err2 != nil {
+		return
+	}
+	now := h.now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.prog == nil {
+		h.prog = map[string]*progress{}
+	}
+	p := h.prog[kind]
+	if p == nil {
+		p = &progress{moved: now}
+		h.prog[kind] = p
+	}
+	if inf >= list || inf != p.inf {
+		p.moved = now
+	}
+	p.inf, p.list = inf, list
 }
 
 func (h *informerHealth) now() time.Time {
@@ -59,6 +103,11 @@ func (h *informerHealth) Healthy() (ok bool, unhealthy string) {
 	now := h.now()
 	for k, err := range h.listErr {
 		if err != nil {
+			return false, k
+		}
+	}
+	for k, p := range h.prog {
+		if p.list > p.inf && now.Sub(p.moved) > h.stallAfter() {
 			return false, k
 		}
 	}

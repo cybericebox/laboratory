@@ -3,6 +3,7 @@ package registrygate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"sync"
 	"time"
@@ -18,8 +19,12 @@ type grant struct {
 	digests map[string]struct{}
 	// roots: manifest digest -> the digests that manifest lists; tags: tag -> the manifest digest it was served as. They let a check be
 	// made against ONE reference of a pod (the pinned digest, or the tag), not against anything the repository was ever asked for.
-	roots   map[string]map[string]struct{}
-	tags    map[string]string
+	roots map[string]map[string]struct{}
+	tags  map[string]string
+	// order lists the roots oldest first: when the grant is full the oldest root gives way, never the whole grant.
+	order []string
+	// sizes are the descriptor sizes of the digests the manifests listed (the size an upload of that digest may have).
+	sizes   map[string]int64
 	creds   Creds
 	created time.Time
 	expires time.Time
@@ -97,33 +102,8 @@ func (g *Grants) perNode() int {
 // it was asked for by ("" for a digest), children what it lists. It creates the grant of (node, segment, repo) with the credentials that
 // proved access or extends it. It refuses, recording nothing, a malformed digest or a manifest that lists more than a grant holds.
 func (g *Grants) Add(node, seg, repo string, creds Creds, tag, root string, children []string) error {
-	return g.add(node, seg, repo, creds, tag, root, children, true)
-}
-
-// Extend renews the grant of (node, segment, repo) with a manifest served on a stale decision (StaleIfError): it never creates a grant,
-// and reports whether there was a live one.
-func (g *Grants) Extend(node, seg, repo string, creds Creds, tag, root string, children []string) bool {
-	return g.add(node, seg, repo, creds, tag, root, children, false) == nil && g.live(node, seg, repo)
-}
-
-func (g *Grants) live(node, seg, repo string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	gr := g.m[node][grantKey{seg, repo}]
-	return gr != nil && g.now().Before(gr.expires)
-}
-
-func (g *Grants) add(node, seg, repo string, creds Creds, tag, root string, children []string, create bool) error {
-	if !digestFormat.MatchString(root) {
-		return ErrBadDigest
-	}
-	for _, d := range children {
-		if !digestFormat.MatchString(d) {
-			return ErrBadDigest
-		}
-	}
-	if len(children)+1 > g.maxDigests() {
-		return ErrTooManyBlobs
+	if err := g.check(root, children); err != nil {
+		return err
 	}
 	now := g.now()
 	k := grantKey{seg, repo}
@@ -139,9 +119,6 @@ func (g *Grants) add(node, seg, repo string, creds Creds, tag, root string, chil
 		gr = nil
 	}
 	if gr == nil {
-		if !create {
-			return nil
-		}
 		if mine == nil {
 			mine = map[grantKey]*grant{}
 			g.m[node] = mine
@@ -149,38 +126,133 @@ func (g *Grants) add(node, seg, repo string, creds Creds, tag, root string, chil
 		if len(mine) >= g.perNode() {
 			g.dropOldestLocked(mine, now)
 		}
-		gr = &grant{digests: map[string]struct{}{}, roots: map[string]map[string]struct{}{}, tags: map[string]string{}, created: now, podSeen: now}
+		gr = &grant{digests: map[string]struct{}{}, roots: map[string]map[string]struct{}{}, tags: map[string]string{}, sizes: map[string]int64{}, created: now, podSeen: now}
 		mine[k] = gr
 	}
-	fresh := 0
-	if _, have := gr.digests[root]; !have {
-		fresh++
+	gr.creds = creds
+	g.putRootLocked(gr, tag, root, children)
+	gr.expires = minTime(now.Add(g.grace()), gr.created.Add(g.maxAge()))
+	return nil
+}
+
+// Expand adds what a manifest lists to a root that a live grant already holds (a child manifest served under that grant, whose layers are
+// then reachable). It creates nothing, changes no credentials and adds no root, and reports whether it did anything.
+func (g *Grants) Expand(node, seg, repo, root string, children []string) bool {
+	if g.check(root, children) != nil {
+		return false
 	}
-	for _, d := range children {
-		if _, have := gr.digests[d]; !have {
-			fresh++
+	now := g.now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gr := g.m[node][grantKey{seg, repo}]
+	if gr == nil || !now.Before(gr.expires) {
+		return false
+	}
+	if _, ok := gr.digests[root]; !ok {
+		return false
+	}
+	g.putRootLocked(gr, "", root, children)
+	gr.expires = minTime(now.Add(g.grace()), gr.created.Add(g.maxAge()))
+	return true
+}
+
+// Renew prolongs a live grant that already holds root, on an answer given from a stale decision (StaleIfError): only the expiry moves.
+// No root, child, tag or credential is added or changed, and no grant is created.
+func (g *Grants) Renew(node, seg, repo, root string) bool {
+	now := g.now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gr := g.m[node][grantKey{seg, repo}]
+	if gr == nil || !now.Before(gr.expires) {
+		return false
+	}
+	if _, ok := gr.digests[root]; !ok {
+		return false
+	}
+	gr.expires = minTime(now.Add(g.grace()), gr.created.Add(g.maxAge()))
+	return true
+}
+
+// NoteSizes records the descriptor sizes of digests of a live grant (what an upload of such a digest may weigh).
+func (g *Grants) NoteSizes(node, seg, repo string, sizes map[string]int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gr := g.m[node][grantKey{seg, repo}]
+	if gr == nil {
+		return
+	}
+	for d, n := range sizes {
+		if _, ok := gr.digests[d]; ok && n >= 0 {
+			gr.sizes[d] = n
 		}
 	}
-	if len(gr.digests)+fresh > g.maxDigests() {
-		// what accumulated for other references of this repository gives way: they must ask for their manifests again
-		gr.digests, gr.roots, gr.tags = map[string]struct{}{}, map[string]map[string]struct{}{}, map[string]string{}
+}
+
+// Size is the descriptor size of a digest of a live grant that covers it from ref (the pod's pinned digest or tag).
+func (g *Grants) Size(node, seg, repo, ref, digest string) (int64, bool) {
+	if !g.Covers(node, seg, repo, ref, digest) {
+		return 0, false
 	}
-	gr.creds = creds
-	gr.digests[root] = struct{}{}
-	set := gr.roots[root]
-	if set == nil {
-		set = map[string]struct{}{}
-		gr.roots[root] = set
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n, ok := g.m[node][grantKey{seg, repo}].sizes[digest]
+	return n, ok
+}
+
+func (g *Grants) check(root string, children []string) error {
+	if !digestFormat.MatchString(root) {
+		return ErrBadDigest
 	}
 	for _, d := range children {
-		gr.digests[d] = struct{}{}
-		set[d] = struct{}{}
+		if !digestFormat.MatchString(d) {
+			return ErrBadDigest
+		}
+	}
+	if len(children)+1 > g.maxDigests() {
+		return fmt.Errorf("%w: the manifest lists %d, a grant holds %d (GATE_GRANT_MAX_DIGESTS)", ErrTooManyBlobs, len(children)+1, g.maxDigests())
+	}
+	return nil
+}
+
+// putRootLocked records a root and its children, giving way to the OLDEST roots of the grant (never wiping it) when it would pass the limit,
+// so that the other pulls of the repository on this node that are still in flight keep what they were granted.
+func (g *Grants) putRootLocked(gr *grant, tag, root string, children []string) {
+	if _, have := gr.roots[root]; !have {
+		gr.order = append(gr.order, root)
+		gr.roots[root] = map[string]struct{}{}
+	}
+	for _, d := range children {
+		gr.roots[root][d] = struct{}{}
 	}
 	if tag != "" {
 		gr.tags[tag] = root
 	}
-	gr.expires = minTime(now.Add(g.grace()), gr.created.Add(g.maxAge()))
-	return nil
+	gr.digests[root] = struct{}{}
+	for _, d := range children {
+		gr.digests[d] = struct{}{}
+	}
+	for len(gr.digests) > g.maxDigests() && len(gr.order) > 1 {
+		old := gr.order[0]
+		gr.order = gr.order[1:]
+		delete(gr.roots, old)
+		for t, r := range gr.tags {
+			if r == old {
+				delete(gr.tags, t)
+			}
+		}
+		gr.digests = map[string]struct{}{}
+		for _, r := range gr.order {
+			gr.digests[r] = struct{}{}
+			for d := range gr.roots[r] {
+				gr.digests[d] = struct{}{}
+			}
+		}
+		for d := range gr.sizes {
+			if _, ok := gr.digests[d]; !ok {
+				delete(gr.sizes, d)
+			}
+		}
+	}
 }
 
 // dropOldestLocked removes the oldest grant of a node (lapsed ones first).

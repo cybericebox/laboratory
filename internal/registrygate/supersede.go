@@ -110,12 +110,19 @@ func (s *Superseder) Sweep(ctx context.Context) int {
 	return len(due)
 }
 
+// isLatest says whether the manifest being superseded is the current "latest" again (the same content pushed again within the grace).
+func (s *Superseder) isLatest(ctx context.Context, t supersession) (bool, error) {
+	h, ok, err := s.Store.Head(ctx, t.repo, kindManifests, tagLatest)
+	if err != nil {
+		return false, err
+	}
+	return ok && h.Get("Docker-Content-Digest") == t.old, nil
+}
+
 func (s *Superseder) apply(ctx context.Context, t supersession) error {
-	// the same content pushed again within the grace makes the old snapshot "latest" again: the current latest is never deleted
-	if h, ok, err := s.Store.Head(ctx, t.repo, kindManifests, tagLatest); err != nil {
+	// the current latest is never deleted
+	if again, err := s.isLatest(ctx, t); err != nil || again {
 		return err
-	} else if ok && h.Get("Docker-Content-Digest") == t.old {
-		return nil
 	}
 	oldBody, err := s.Store.ManifestBody(ctx, t.repo, t.old)
 	if err != nil || oldBody == nil {
@@ -144,12 +151,20 @@ func (s *Superseder) apply(ctx context.Context, t supersession) error {
 	if len(keep) == 0 {
 		return nil // the replacement is not there: delete nothing
 	}
+	// zot has no conditional delete: the check is repeated right before each destructive step, so that a push of the old content that made it
+	// "latest" again in the meantime is noticed at the latest possible moment
+	if again, err := s.isLatest(ctx, t); err != nil || again {
+		return err
+	}
 	if err := s.Store.DeleteManifest(ctx, t.repo, t.old); err != nil {
 		return err
 	}
 	for d := range oldBlobs {
 		if keep[d] {
 			continue
+		}
+		if again, err := s.isLatest(ctx, t); err != nil || again {
+			return err
 		}
 		if err := s.Store.DeleteBlob(ctx, t.repo, d); err != nil {
 			return err

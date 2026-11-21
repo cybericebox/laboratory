@@ -61,26 +61,78 @@ func TestGrantTableIsBounded(t *testing.T) {
 	}
 }
 
-// A grant made from a stale decision is never created, only renewed.
-func TestExtendNeverCreatesAGrant(t *testing.T) {
+// Review 2, item 1: an answer on a stale decision only renews the expiry of what is already granted: no new root, child, tag or credential,
+// and no grant. A child manifest served under a live grant may add its listing to that grant, but nothing else.
+func TestRenewAndExpandNeverWidenWhatWasProven(t *testing.T) {
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	g := &Grants{Now: func() time.Time { return now }}
-	if g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), nil) || g.Len() != 0 {
-		t.Fatal("no grant, none made")
+	if g.Renew("n", "acme", "r/x", hexd(1)) || g.Expand("n", "acme", "r/x", hexd(1), []string{hexd(2)}) || g.Len() != 0 {
+		t.Fatal("no grant: nothing is made")
 	}
-	if err := g.Add("n", "acme", "r/x", Creds{}, "", hexd(1), []string{hexd(2)}); err != nil {
+	if err := g.Add("n", "acme", "r/x", Creds{"alice", "pw"}, "", hexd(1), []string{hexd(2)}); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(time.Minute)
-	if !g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), []string{hexd(3)}) {
-		t.Fatal("a live grant is renewed")
+	now = now.Add(time.Minute + 30*time.Second)
+	if g.Renew("n", "acme", "r/x", hexd(9)) {
+		t.Fatal("a root the grant does not hold is not renewed")
 	}
-	if _, ok := g.Has("n", "acme", "r/x", hexd(3), true); !ok {
-		t.Fatal("and carries the new digest")
+	if !g.Renew("n", "acme", "r/x", hexd(1)) {
+		t.Fatal("a held root is renewed")
+	}
+	now = now.Add(time.Minute) // past the original expiry, inside the renewed one
+	cr, ok := g.Has("n", "acme", "r/x", hexd(2), true)
+	if !ok || cr != (Creds{"alice", "pw"}) {
+		t.Fatalf("the renewed grant keeps what it had: %v %v", ok, cr)
+	}
+	if _, ok := g.Has("n", "acme", "r/x", hexd(3), true); ok {
+		t.Fatal("a stale renewal added a digest")
+	}
+	if g.Expand("n", "acme", "r/x", hexd(9), []string{hexd(3)}) {
+		t.Fatal("a root the grant does not hold cannot be expanded")
+	}
+	if !g.Expand("n", "acme", "r/x", hexd(2), []string{hexd(3)}) {
+		t.Fatal("a child under the grant adds its listing")
+	}
+	if !g.Covers("n", "acme", "r/x", hexd(1), hexd(3)) {
+		t.Fatal("and it is reachable from the pod's reference")
 	}
 	now = now.Add(5 * time.Minute) // lapsed
-	if g.Extend("n", "acme", "r/x", Creds{}, "", hexd(1), nil) {
+	if g.Renew("n", "acme", "r/x", hexd(1)) || g.Expand("n", "acme", "r/x", hexd(2), []string{hexd(4)}) {
 		t.Fatal("a lapsed grant is not brought back")
+	}
+}
+
+// Review 2, item 6: a full grant gives way to its oldest root, never wiped; the error names the limit.
+func TestAFullGrantEvictsItsOldestRootAndTheErrorNamesTheLimit(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	g := &Grants{Now: func() time.Time { return now }, MaxDigests: 6}
+	add := func(root int, kids ...int) error {
+		var ks []string
+		for _, k := range kids {
+			ks = append(ks, hexd(k))
+		}
+		return g.Add("n", "acme", "r/x", Creds{}, "", hexd(root), ks)
+	}
+	if err := add(1, 11, 12); err != nil { // 3 digests
+		t.Fatal(err)
+	}
+	if err := add(2, 21, 22); err != nil { // 6
+		t.Fatal(err)
+	}
+	if err := add(3, 31, 32); err != nil { // would be 9: the oldest root (1) gives way, not the whole grant
+		t.Fatal(err)
+	}
+	if _, ok := g.Has("n", "acme", "r/x", hexd(11), true); ok {
+		t.Fatal("the oldest root's digests are gone")
+	}
+	for _, d := range []int{2, 21, 22, 3, 31, 32} {
+		if _, ok := g.Has("n", "acme", "r/x", hexd(d), true); !ok {
+			t.Fatalf("digest %d of a newer root must stay: other pulls of the repository are still in flight", d)
+		}
+	}
+	err := add(4, 41, 42, 43, 44, 45, 46) // 7 digests: more than a grant holds, whatever is evicted
+	if !errors.Is(err, ErrTooManyBlobs) || !strings.Contains(err.Error(), "GATE_GRANT_MAX_DIGESTS") || !strings.Contains(err.Error(), "7") {
+		t.Fatalf("the message must say which limit was hit: %v", err)
 	}
 }
 

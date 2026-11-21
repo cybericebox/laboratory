@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -236,7 +237,10 @@ func (a *Authenticator) review(ctx context.Context, token, remote string) (Revie
 		return Review{}, call.err
 	}
 	defer a.release()
-	call.rv, call.err = a.doReview(ctx, h, token, now)
+	// the review belongs to everyone waiting for it: it runs on a context of its own, so a leader that hangs up does not fail the others
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	call.rv, call.err = a.doReview(rctx, h, token, now)
 	return call.rv, call.err
 }
 
@@ -340,8 +344,11 @@ func (a *Authenticator) allowSource(remote string, now time.Time) bool {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.rate == nil || len(a.rate) > maxCachedTokens {
+	if a.rate == nil {
 		a.rate = map[string]*bucket{}
+	}
+	if len(a.rate) >= maxCachedTokens {
+		a.evictBucketsLocked(now)
 	}
 	b := a.rate[host]
 	if b == nil {
@@ -358,6 +365,31 @@ func (a *Authenticator) allowSource(remote string, now time.Time) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// evictBucketsLocked makes room in the table of per-address buckets: idle addresses first, then the oldest tenth. The table is never wiped
+// wholesale (that would hand every address a full bucket at once).
+func (a *Authenticator) evictBucketsLocked(now time.Time) {
+	for k, b := range a.rate {
+		if now.Sub(b.at) > time.Minute {
+			delete(a.rate, k)
+		}
+	}
+	if len(a.rate) < maxCachedTokens {
+		return
+	}
+	type kv struct {
+		k  string
+		at time.Time
+	}
+	all := make([]kv, 0, len(a.rate))
+	for k, b := range a.rate {
+		all = append(all, kv{k, b.at})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for _, e := range all[:len(all)/10+1] {
+		delete(a.rate, e.k)
+	}
 }
 
 // structurallyOurs is what can be told of a token without the API server (2.4.6a): three base64url parts of at most 8 KiB in all, whose
