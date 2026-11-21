@@ -13,29 +13,22 @@ type L7Config struct {
 	// The certificate and key of the wildcard Secret proxy-tls, where the chart mounts it.
 	TLSCertPath string `env:"TLS_CERT_PATH" envDefault:"/etc/proxy/tls/tls.crt"`
 	TLSKeyPath  string `env:"TLS_KEY_PATH" envDefault:"/etc/proxy/tls/tls.key"`
-	// The handoff links are verified with the access public keys of the tenants, kept in the Secrets
-	// tenant-<name>-access-keys of the access keys namespace (see l7.SecretKeys); there is no shared key.
+	// The access grants are verified with the access public keys of the tenants, kept in the Secrets
+	// tenant-<name>-access-keys of the access keys namespace (see l7.SecretKeys); the proxy has no key of its own and signs nothing.
 	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
 	Listen     string `env:"LISTEN_HTTPS"  envDefault:":8443"`
-	CookieName string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
-	// SessionSecret signs the proxy's own session cookie (HMAC-SHA256, at least 32
-	// bytes). It is shared by all replicas and never leaves the cluster; the
-	// platform does not know it and it is never the lab access key.
-	SessionSecret string `env:"SESSION_SECRET,required"`
+	// CookieName is the host-only cookie a web host keeps its grant in (chart proxy.l7.grantCookieName).
+	CookieName string `env:"GRANT_COOKIE_NAME" envDefault:"cib_grant"`
+	// GrantMaxTTL is the longest exp - iat of a grant the proxy accepts (chart proxy.l7.grantMaxTTL); the agent reports it to the backend.
+	GrantMaxTTL time.Duration `env:"GRANT_MAX_TTL" envDefault:"8h"`
+	// PlatformOrigins are the pages that may post a grant (https://host[:port] or https://*.base[:port], as the embedding lists): the form
+	// comes from the platform page, so the Origin of the post must match one of them. Empty: every post is refused.
+	PlatformOrigins []string `env:"PLATFORM_ORIGINS" envSeparator:","`
 	// HealthAddr is where the readiness and liveness probes are served (the l7 container; the wg-demux container uses another port).
 	HealthAddr string `env:"HEALTH_ADDR" envDefault:":8081"`
 	// Instance names this replica in its traffic reports (the pod name).
 	Instance       string        `env:"POD_NAME"`
 	ReportInterval time.Duration `env:"REPORT_INTERVAL" envDefault:"1m"`
-	// AccessTokenMaxTTL is the longest exp - iat of a handoff link the proxy accepts; SessionMaxTTL is the
-	// longest its own session cookie lives, whatever the link asks for. The agent reports both to the backend.
-	AccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
-	// The session is sliding: it expires SessionIdleTTL after the last request, the cookie is re-issued only when
-	// less than SessionRenewBefore of it remains, and it ends SessionMaxTTL after the handoff at the latest (and
-	// never past the link's sess).
-	SessionIdleTTL     time.Duration `env:"SESSION_IDLE_TTL" envDefault:"12h"`
-	SessionRenewBefore time.Duration `env:"SESSION_RENEW_BEFORE" envDefault:"1h"`
-	SessionMaxTTL      time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
 	// LiveMaxLifetime caps one request or upgraded (WebSocket) connection; LiveCheckInterval is how often the
 	// open ones are checked against the access policy again, so a lock cuts them within about that time.
 	LiveMaxLifetime   time.Duration `env:"LIVE_MAX_LIFETIME" envDefault:"12h"`
@@ -81,8 +74,6 @@ type L7Config struct {
 	TerminalPerClient int           `env:"TERMINAL_PER_CLIENT" envDefault:"3"`
 	TerminalIdle      time.Duration `env:"TERMINAL_IDLE_TIMEOUT" envDefault:"30m"`
 	TerminalLifetime  time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
-	// TerminalKeyFile is the file of the key shared with the device access service (a mounted Secret); every open request is signed with it.
-	TerminalKeyFile string `env:"TERMINAL_KEY_FILE" envDefault:"/etc/proxy/device-access-auth/current"`
 	// TerminalEmbedAllow and TerminalEmbedDeny are the lists of sites that may (and may not) show the console page in a frame; see
 	// l7.EmbedMatcher. Empty allow: no embedding.
 	TerminalEmbedAllow []string `env:"TERMINAL_EMBED_ALLOW" envSeparator:","`
@@ -124,16 +115,10 @@ type WGConfig struct {
 	Resync           time.Duration `env:"DEMUX_BPF_RESYNC" envDefault:"10s"`
 }
 
-// MinSessionSecretLen is the shortest accepted SESSION_SECRET.
-const MinSessionSecretLen = 32
-
 func LoadL7Config() (*L7Config, error) {
 	cfg := &L7Config{}
 	if err := config.Load(cfg); err != nil {
 		return cfg, err
-	}
-	if len(cfg.SessionSecret) < MinSessionSecretLen {
-		return cfg, fmt.Errorf("SESSION_SECRET must be at least %d bytes", MinSessionSecretLen)
 	}
 	if cfg.MaxConnections < 0 || cfg.LivePerClient < 0 || cfg.LivePerGroup < 0 || cfg.LiveTotal < 0 || cfg.AuthRate < 0 || cfg.AuthBurst < 0 {
 		return cfg, fmt.Errorf("MAX_CONNECTIONS, LIVE_PER_CLIENT, LIVE_PER_GROUP, LIVE_TOTAL, AUTH_RATE and AUTH_BURST must not be negative")
@@ -141,8 +126,8 @@ func LoadL7Config() (*L7Config, error) {
 	if cfg.ReadHeaderTimeout <= 0 || cfg.ReadTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.MaxHeaderBytes <= 0 {
 		return cfg, fmt.Errorf("READ_HEADER_TIMEOUT, READ_TIMEOUT, IDLE_TIMEOUT and MAX_HEADER_BYTES must be positive")
 	}
-	if cfg.SessionIdleTTL <= 0 || cfg.SessionMaxTTL <= 0 || cfg.SessionRenewBefore < 0 || cfg.SessionRenewBefore >= cfg.SessionIdleTTL {
-		return cfg, fmt.Errorf("SESSION_IDLE_TTL and SESSION_MAX_TTL must be positive and SESSION_RENEW_BEFORE must be shorter than SESSION_IDLE_TTL")
+	if cfg.GrantMaxTTL <= 0 {
+		return cfg, fmt.Errorf("GRANT_MAX_TTL must be positive")
 	}
 	if cfg.TerminalEnabled {
 		if cfg.TerminalNamespace == "" || cfg.TerminalPort < 1 || cfg.TerminalPort > 65535 || cfg.TerminalPerClient < 0 {

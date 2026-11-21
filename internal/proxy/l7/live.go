@@ -100,17 +100,15 @@ func (h *Handler) WithLiveMaxLifetime(d time.Duration) *Handler {
 	return h
 }
 
-// liveDeadline is when a request that starts now must end: the session's absolute end, and the lifetime cap.
-func (h *Handler) liveDeadline(abs int64) time.Time {
+// liveDeadline is when a request that starts now must end: the end of the grant it was authorized by, and the lifetime cap.
+func (h *Handler) liveDeadline(end time.Time) time.Time {
 	max := h.liveMax
 	if max <= 0 {
 		max = DefaultLiveMaxLifetime
 	}
 	d := h.now().Add(max)
-	if abs > 0 {
-		if a := time.Unix(abs, 0); a.Before(d) {
-			d = a
-		}
+	if !end.IsZero() && end.Before(d) {
+		d = end
 	}
 	return d
 }

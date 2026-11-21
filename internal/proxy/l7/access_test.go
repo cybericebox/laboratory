@@ -81,7 +81,7 @@ func TestCompactProxyCacheKeepsRoutingAndDeletion(t *testing.T) {
 	}
 }
 func TestGroupedLiveChecksReuseAuthorization(t *testing.T) {
-	h := NewHandler(nil, nil, "", "", nil)
+	h := NewHandler(nil, "", "", nil)
 	calls := 0
 	h.WithAuthorizer(func(string, string, string) bool { calls++; return true })
 	for i := 0; i < 20; i++ {
@@ -134,7 +134,7 @@ func TestStoppedLabRevokesCachedSessionAndLiveConnection(t *testing.T) {
 	if !a.Allowed(ctx, "ns", "p", "lab") {
 		t.Fatal("legacy running lab denied")
 	}
-	h := NewHandler(nil, nil, "", "", nil).WithAccessReader(a)
+	h := NewHandler(nil, "", "", nil).WithAccessReader(a)
 	closed := false
 	h.live.tryAdd(&liveEntry{group: "g", tenant: "tenant", client: "p", lab: "lab", deadline: time.Now().Add(time.Hour), cancel: func() { closed = true }}, LiveCaps{})
 	target.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
@@ -184,11 +184,11 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = lab.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
-	target := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "legacy"}}
+	target := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}
 	group := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "g1", Labels: map[string]string{names.LabelTenant: "acme"}}, Status: lab.LabGroupStatus{Namespace: "legacy"}}
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "a", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target, group, member, policy, svc).Build()
 	h.WithAccessReader(&AccessReader{Reader: c})
 	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
@@ -238,4 +238,37 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 		t.Fatal("stale cookie bypassed desired stop", resp.StatusCode)
 	}
 	t.Logf("desired stop in cache to native upgrade close and stale-cookie rejection: %s", time.Since(start))
+}
+
+// The grant is for one device: a grant for the right host but another lab or device name is refused, whatever else is right.
+func TestWebGrantMustAgreeWithTheRouteOfTheHost(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = lab.AddToScheme(scheme)
+	group := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "g1", Labels: map[string]string{names.LabelTenant: "acme"}}, Status: lab.LabGroupStatus{Namespace: "legacy"}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
+	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
+	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
+	h, _, _, _ := liveFixture(t, http.NotFoundHandler())
+	h.WithAccessReader(&AccessReader{Reader: c})
+	h.transport = accountingRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok")), ContentLength: 2}, nil
+	})
+	get := func(labName, dev string) int {
+		cookie := signCookie(t, jwtClaims{GroupID: "g1", Client: "p-u1", Tenant: "acme", Lab: labName, Dev: dev, Host: "web-abc12w.challenges.example.com"})
+		req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+		req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := get("lab", "web"); code != 200 {
+		t.Fatalf("the matching grant: %d", code)
+	}
+	for name, c := range map[string][2]string{"another lab": {"other", "web"}, "another device": {"lab", "db"}} {
+		if code := get(c[0], c[1]); code != 404 {
+			t.Errorf("%s: %d, want 404", name, code)
+		}
+	}
 }

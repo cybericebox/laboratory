@@ -1,8 +1,6 @@
 package l7
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,8 +14,7 @@ const errHost = "web-abc12w.challenges.example.com"
 
 func errHandler(t *testing.T, resolve func(task, groupID string) (string, error)) *Handler {
 	t.Helper()
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	return NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", resolve)
+	return NewHandler(testKeys(), "challenges.example.com", "challenge", resolve)
 }
 
 func errCall(t *testing.T, h *Handler, host, accept, lang string) *httptest.ResponseRecorder {

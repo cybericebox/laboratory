@@ -21,6 +21,9 @@ const (
 // Target names a device. It is all a caller says about the container it wants.
 type Target struct {
 	Namespace, Lab, Device string
+	// GroupName, when not empty, is the name of the LabGroup (names.EncodeName of the platform's group id) the pod must be stamped with
+	// (names.LabelGroupName). The console always sets it; the checker socket, which has no group, does not.
+	GroupName string
 }
 
 // Refusals of Resolve. The service tells a caller only the short code, not which one of the checks failed in detail.
@@ -86,6 +89,9 @@ func resolve(ctx context.Context, rt Runtime, t Target, needConsole bool) (Devic
 		// The sandbox was selected by namespace, lab and device already; check them again on what came back, so a runtime or a fake
 		// that matched loosely cannot widen the white list.
 		if l[labelPodNamespace] != t.Namespace || l[names.LabelLab] != t.Lab || l[names.LabelDevice] != t.Device {
+			continue
+		}
+		if t.GroupName != "" && l[names.LabelGroupName] != t.GroupName {
 			continue
 		}
 		if needConsole && l[names.LabelTerminal] != "true" {

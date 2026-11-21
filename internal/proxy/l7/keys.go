@@ -3,8 +3,6 @@ package l7
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/x509"
-	"encoding/pem"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grant"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -31,18 +30,7 @@ func SecretKeys(r client.Reader) KeyLookup {
 }
 
 // ParseAccessKey reads a PKIX PEM Ed25519 public key.
-func ParseAccessKey(data []byte) (ed25519.PublicKey, bool) {
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, false
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, false
-	}
-	k, ok := pub.(ed25519.PublicKey)
-	return k, ok
-}
+func ParseAccessKey(data []byte) (ed25519.PublicKey, bool) { return grant.ParseAccessKey(data) }
 
 // LabGroupTenant tells the tenant of a LabGroup from its tenant label: the group's custom resource
 // is named after the platform's id (encoded when needed). A group created before tenancy has no label

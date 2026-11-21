@@ -24,8 +24,9 @@ import (
 // device has a console. It then relays the stream to the device access service on the node of the device, which opens the shell.
 // The proxy never learns the container; it names a device (namespace, lab, device) and the service finds the container itself.
 //
-// The console has no cookie. The handoff link (/_auth?t=) is verified on the console host itself and answered with the page, which carries a
-// console session token signed by the proxy; the page opens the WebSocket with that token in Sec-WebSocket-Protocol. See terminal_console.go.
+// The console has no cookie. The console grant the platform page posts to /_auth is verified on the console host itself and answered with the
+// page, which carries the grant; the page opens the WebSocket with it in Sec-WebSocket-Protocol, and the proxy forwards it to the service. The
+// proxy signs nothing. See terminal_console.go.
 
 // ErrNoConsole is returned by a DeviceLookup for a device that has no console (or does not exist; the answer is the same).
 var ErrNoConsole = errors.New("the device has no console")
@@ -60,9 +61,6 @@ type TerminalConfig struct {
 	OriginScheme string
 	// Embed decides which sites may show the console page in a frame (see terminal_embed.go); nil means none.
 	Embed *EmbedMatcher
-	// Signer signs every open request towards a service with the key it shares with it (see wire.Sign). It is required: without it no
-	// console opens.
-	Signer func(*wire.OpenRequest) error
 	// Dial opens the stream to a service; nil dials the base URL of the directory over a WebSocket.
 	Dial func(ctx context.Context, base string) (*websocket.Conn, error)
 }
@@ -85,6 +83,7 @@ type terminalState struct {
 type consoleSession struct {
 	group, client       string
 	tenant              string
+	grant               string // the console grant, forwarded in the open request
 	namespace, lab, dev string
 	base                string
 	command             []string
@@ -135,7 +134,7 @@ func (t *terminalState) remove(s *consoleSession) {
 // terminalTarget is a console request that passed authorization.
 type terminalTarget struct {
 	namespace, lab, device string
-	claims                 jwtClaims
+	claims                 sessionGrant
 	client                 string
 	info                   DeviceInfo
 	base                   string
@@ -144,7 +143,7 @@ type terminalTarget struct {
 // authorizeTerminal is the authorization of a console request: the client may reach the lab (the same Allowed check as for a web
 // request: the client exists, the policy allows the lab, the lab is not stopped) and the device has a console. Every refusal is the
 // same card, so the answer does not tell a lab that does not exist from one the client may not use.
-func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, hostDevice, hostCode string, claims jwtClaims, client string, group AccessGroup) (terminalTarget, bool) {
+func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, hostDevice, hostCode string, claims sessionGrant, client string, group AccessGroup) (terminalTarget, bool) {
 	t := h.terminal
 	if t.cfg.Devices == nil || t.cfg.Services == nil {
 		fail(w, r, http.StatusNotFound, pageGone, "not found")
@@ -159,6 +158,12 @@ func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, host
 		return terminalTarget{}, false
 	}
 	lab, device := info.Lab, info.Device
+	// The grant is for one device (lab and dev); the host resolved to another one only if the platform signed the wrong grant. The device
+	// access service refuses the same disagreement, this refuses it before a stream is dialled.
+	if lab != claims.Lab || device != claims.Dev {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return terminalTarget{}, false
+	}
 	svc, ok := t.cfg.Services(info.Node)
 	if !ok {
 		// The device is not placed yet, or its node has no service: not an error of the client.
@@ -234,13 +239,10 @@ func (t *terminalState) dial(ctx context.Context, base string) (*websocket.Conn,
 	return c, nil
 }
 
-// openMessage signs an open request and encodes it.
+// openMessage encodes an open request. It carries the grant of the session unchanged; the proxy signs nothing.
 func (t *terminalState) openMessage(req wire.OpenRequest) ([]byte, error) {
-	if t.cfg.Signer == nil {
-		return nil, errors.New("no key to sign the request with")
-	}
-	if err := t.cfg.Signer(&req); err != nil {
-		return nil, err
+	if req.Grant == "" {
+		return nil, errors.New("no grant to forward")
 	}
 	return json.Marshal(req)
 }

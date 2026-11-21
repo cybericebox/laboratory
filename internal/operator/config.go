@@ -32,7 +32,11 @@ type Config struct {
 	// BandwidthEntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy: each gets the ConfigMap with the entry
 	// limits of every node (BANDWIDTH_ENTRY_NAMESPACES, comma separated).
 	BandwidthEntryNamespaces []string `env:"BANDWIDTH_ENTRY_NAMESPACES" envSeparator:","`
-	RuntimeObservation       bool     `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// DeviceAccessNamespace is the namespace of the device access service (DEVICE_ACCESS_NAMESPACE): the operator mirrors the tenants'
+	// access public keys into the ConfigMap names.AccessKeysConfigMap there, which the service verifies console grants with. Empty: no
+	// mirror (the console is off).
+	DeviceAccessNamespace string `env:"DEVICE_ACCESS_NAMESPACE"`
+	RuntimeObservation    bool   `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
 	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled (the same two the management agent reads):
 	// the options of lab checks and the browser terminal. Nothing in the operator acts on them yet; the checker and the terminal
 	// components will.

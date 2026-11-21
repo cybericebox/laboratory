@@ -573,6 +573,9 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	device.Status.State.StoppedAt = nil
 
 	labels, _, annotations, podSpec := r.workloadTemplateFor(device, true, plan)
+	if err := r.stampGroupName(ctx, device, labels); err != nil {
+		return err
+	}
 	setPullSecrets(&podSpec, pullSecrets)
 	annotations[names.AnnotationStateEpoch] = fmt.Sprint(st.Epoch)
 	annotations[names.AnnotationStateDevice] = device.Name

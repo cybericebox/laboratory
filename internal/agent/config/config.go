@@ -155,11 +155,12 @@ type Config struct {
 	State StateConfig
 	// Scheduler and Endpoints are reported by GetFeatures (the same chart values as the operator's).
 	Scheduler SchedulerConfig
-	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures. They are
-	// read under the proxy's own names (the same variables of the same chart values), not as a second copy.
-	ProxyAccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
-	ProxySessionIdleTTL    time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
-	ProxySessionMaxTTL     time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
+	// ProxyGrantMaxTTL and TerminalGrantMaxTTL are the longest exp - iat of an access grant that the L7 proxy
+	// (chart proxy.l7.grantMaxTTL) and device-access (chart terminal.grantMaxTTL) accept. GetFeatures reports the
+	// smaller one, so a grant the backend signs is accepted by both. They are read under the same names as the
+	// services' own variables (the same chart values), not as a second copy.
+	ProxyGrantMaxTTL    time.Duration `env:"GRANT_MAX_TTL" envDefault:"8h"`
+	TerminalGrantMaxTTL time.Duration `env:"TERMINAL_GRANT_MAX_TTL" envDefault:"8h"`
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`

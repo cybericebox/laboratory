@@ -2,8 +2,6 @@ package l7
 
 import (
 	"bufio"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -47,9 +45,8 @@ func TestL7MemoryHelper(t *testing.T) {
 	if backend == "" {
 		t.Skip("helper of TestL7MemoryPerConnection")
 	}
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	meter := NewMeter("boot", time.Now())
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "lab", true })
 	srv := httptest.NewUnstartedServer(h)

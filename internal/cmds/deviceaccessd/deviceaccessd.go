@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess"
-	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/grant"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -32,10 +32,12 @@ type Config struct {
 	ContainerdNamespace string `env:"CONTAINERD_NAMESPACE" envDefault:"k8s.io"`
 	FifoDir             string `env:"FIFO_DIR" envDefault:"/run/containerd/fifo"`
 
-	// KeyFile and KeyFileAccept are the files of the shared key with the L7 proxy (a mounted Secret, never an environment variable): the
-	// current key, and one more accepted key while a key is rotated. The service does not start without the current one.
-	KeyFile       string `env:"KEY_FILE" envDefault:"/etc/device-access/auth/current"`
-	KeyFileAccept string `env:"KEY_FILE_ACCEPT" envDefault:"/etc/device-access/auth/accept"`
+	// KeyDir is the directory of the tenants' access public keys, one PEM file <tenant>.<key id> each: the ConfigMap the operator mirrors from
+	// the access key Secrets, mounted as files (public data). A console grant is verified with them; the service holds no key of its own.
+	// KeyReload is how often the directory is read again; GrantMaxTTL is the longest exp - iat of a grant the service accepts.
+	KeyDir      string        `env:"KEY_DIR" envDefault:"/etc/device-access/access-keys"`
+	KeyReload   time.Duration `env:"KEY_RELOAD" envDefault:"15s"`
+	GrantMaxTTL time.Duration `env:"GRANT_MAX_TTL" envDefault:"8h"`
 
 	// The checker socket (empty path: none). The lab checker of the node asks the service over it to run the probe in a device; its
 	// protection is the file permissions (group CheckerGID) and the peer credentials (user CheckerUID, group CheckerGID).
@@ -103,10 +105,10 @@ func run(cfg Config) error {
 		return err
 	}
 	defer func() { _ = rt.Close() }()
-	keys, err := wire.NewKeyFiles(10*time.Second, cfg.KeyFile, cfg.KeyFileAccept)
-	if err != nil {
-		return fmt.Errorf("the key of the proxy: %w", err)
+	if cfg.GrantMaxTTL <= 0 {
+		return errors.New("GRANT_MAX_TTL must be positive")
 	}
+	keys := grant.NewDirKeys(cfg.KeyDir, cfg.KeyReload)
 	execs, fifos, err := rt.Sweep(ctx)
 	if err != nil {
 		return fmt.Errorf("sweep: %w", err)
@@ -116,7 +118,7 @@ func run(cfg Config) error {
 	lim := deviceaccess.DefaultLimits()
 	lim.PerClient, lim.PerLab, lim.PerNode = cfg.PerClient, cfg.PerLab, cfg.PerNode
 	lim.Idle, lim.Lifetime = cfg.Idle, cfg.Lifetime
-	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Accepted)})
+	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL)})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())

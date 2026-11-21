@@ -2,8 +2,6 @@ package l7
 
 import (
 	"bufio"
-	"crypto/ed25519"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
@@ -19,12 +17,11 @@ import (
 
 func liveFixture(t *testing.T, backend http.Handler) (*Handler, *httptest.Server, *atomic.Bool, string) {
 	t.Helper()
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	b := httptest.NewServer(backend)
 	t.Cleanup(b.Close)
 	var allowed atomic.Bool
 	allowed.Store(true)
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return b.URL, nil }).
 		WithAuthorizer(func(group, client, lab string) bool { return allowed.Load() })
 	srv := httptest.NewServer(h)

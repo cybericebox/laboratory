@@ -1,21 +1,22 @@
 package deviceaccess
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/grant"
+	"github.com/cybericebox/laboratory/internal/grant/granttest"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -217,8 +218,8 @@ func (c *pipeConn) hangUp() { c.one.Do(func() { close(c.cl) }) }
 // proxy side helpers
 func (c *pipeConn) sendOpen(t *testing.T, r wire.OpenRequest) {
 	t.Helper()
-	if err := wire.Sign(testKey, &r, time.Now()); err != nil {
-		t.Fatal(err)
+	if r.Grant == "" { // a test that wants another grant sets it
+		r.Grant = testGrantFor(t, r, time.Now())
 	}
 	b, _ := json.Marshal(r)
 	c.in <- message{true, b}
@@ -263,7 +264,8 @@ func sandboxLabels(uid string) map[string]string {
 		labelKind: kindSandbox, labelPodNamespace: testNS, labelPodUID: uid,
 		names.LabelLab: testLab, names.LabelDevice: testDev,
 		names.LabelLabUID: "lab-uid", names.LabelDeviceUID: "dev-uid",
-		names.LabelTerminal: "true",
+		names.LabelGroupName: names.EncodeName("g-1"),
+		names.LabelTerminal:  "true",
 	}
 }
 
@@ -294,17 +296,25 @@ func labRuntime() *fakeRuntime {
 	return rt
 }
 
-var testKey = bytes.Repeat([]byte("k"), 32)
+// testGrantKey is the access key of tenant acme the service verifies grants with.
+var testGrantKey = granttest.MustKey("acme", "k1")
+
+// testGrantFor mints the console grant the platform would sign for the open request: the group, client, lab and device of the request.
+func testGrantFor(t *testing.T, r wire.OpenRequest, now time.Time) string {
+	t.Helper()
+	c := testGrantKey.Claims(now, time.Hour, "dev-abc12t.labs.example.test")
+	c.Group, c.Lab, c.Dev, c.Kind, c.Subject = r.Group, r.Lab, r.Device, grant.KindConsole, r.Client
+	c.Audience = jwt.ClaimStrings{grant.AudienceProxy, grant.AudienceDeviceAccess}
+	return testGrantKey.Sign(t, c)
+}
 
 func testService(rt Runtime) *Service {
 	lim := DefaultLimits()
 	lim.WriteTimeout = time.Second
 	lim.Cleanup = time.Second
-	return New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), Auth: NewAuth(func() [][]byte { return [][]byte{testKey} })})
+	return New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), Auth: NewAuth(testGrantKey.Lookup(), 8*time.Hour)})
 }
 
 func openReq() wire.OpenRequest {
 	return wire.OpenRequest{Kind: wire.KindConsole, Namespace: testNS, Lab: testLab, Device: testDev, Client: "c-1", Group: "g-1", Cols: 100, Rows: 30}
 }
-
-func writeFile(p, v string) error { return os.WriteFile(p, []byte(v), 0o600) }

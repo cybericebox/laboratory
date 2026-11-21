@@ -56,7 +56,8 @@ const (
 	CodeBadRequest  = "bad-request"
 	CodeUnavailable = "unavailable"
 	CodeBusy        = "busy"
-	// CodeUnauthorized: the open request was not signed with a key the service accepts, or was stale or repeated. Nothing says which.
+	// CodeUnauthorized: the grant of the open request is not valid for it (signature, audience, kind, lifetime, or a field that does not
+	// agree with it). Nothing says which.
 	CodeUnauthorized = "unauthorized"
 )
 
@@ -92,10 +93,10 @@ type OpenRequest struct {
 	// counts consoles per client; it does not interpret them.
 	Client string `json:"client,omitempty"`
 	Group  string `json:"group,omitempty"`
-	// Time, Nonce and Sig authenticate the request (see auth.go): the proxy's HMAC over every other field.
-	Time  int64  `json:"ts,omitempty"`
-	Nonce string `json:"nonce,omitempty"`
-	Sig   string `json:"sig,omitempty"`
+	// Grant is the console grant the browser presented to the proxy, forwarded unchanged: a JWS the tenant's platform signed (see
+	// internal/grant). The service verifies it with the tenant's access key and requires every other field of the request to agree with it
+	// (client with sub, group with group_id, lab, device with dev); nothing else authenticates the request, and the proxy signs nothing.
+	Grant string `json:"grant"`
 }
 
 // OpenReply answers an open request.

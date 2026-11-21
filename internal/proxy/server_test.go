@@ -101,7 +101,6 @@ func TestHugeHeadersAreRefused(t *testing.T) {
 }
 
 func TestServerLimitsComeFromTheConfig(t *testing.T) {
-	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
 	t.Setenv("TLS_CERT_PATH", "/x")
 	t.Setenv("TLS_KEY_PATH", "/y")
 	t.Setenv("BASE_DOMAIN", "labs.example.com")
@@ -113,8 +112,8 @@ func TestServerLimitsComeFromTheConfig(t *testing.T) {
 	if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 5*time.Minute || srv.IdleTimeout != 2*time.Minute || srv.MaxHeaderBytes != 65536 || srv.WriteTimeout != 0 {
 		t.Fatalf("limits: %v %v %v %d %v", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout, srv.MaxHeaderBytes, srv.WriteTimeout)
 	}
-	if cfg.AccessTokenMaxTTL != 60*time.Second {
-		t.Fatalf("the access token limit is 60s: %v", cfg.AccessTokenMaxTTL)
+	if cfg.GrantMaxTTL != 8*time.Hour {
+		t.Fatalf("the grant limit is 8h: %v", cfg.GrantMaxTTL)
 	}
 	t.Setenv("READ_HEADER_TIMEOUT", "0s")
 	if _, err := LoadL7Config(); err == nil {
@@ -193,7 +192,6 @@ func TestL7LimitsDefaults(t *testing.T) {
 	t.Setenv("TLS_CERT_PATH", "/c")
 	t.Setenv("TLS_KEY_PATH", "/k")
 	t.Setenv("BASE_DOMAIN", "x.y")
-	t.Setenv("SESSION_SECRET", strings.Repeat("s", 40))
 	cfg, err := LoadL7Config()
 	if err != nil {
 		t.Fatal(err)

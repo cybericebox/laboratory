@@ -9368,15 +9368,12 @@ func (x *TenantLimits) GetMaxLabs() int32 {
 // Limits the L7 proxy enforces on lab access.
 type ProxyFeature struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The longest exp - iat of an access token (handoff link) the proxy accepts; a longer one is refused.
-	AccessTokenMaxTtlSeconds int64 `protobuf:"varint,1,opt,name=access_token_max_ttl_seconds,json=accessTokenMaxTtlSeconds,proto3" json:"access_token_max_ttl_seconds,omitempty"`
-	// The proxy's session is sliding: it expires after this much inactivity (the cookie is renewed while the
-	// user is active) ...
-	SessionIdleTtlSeconds int64 `protobuf:"varint,3,opt,name=session_idle_ttl_seconds,json=sessionIdleTtlSeconds,proto3" json:"session_idle_ttl_seconds,omitempty"`
-	// ... and never lives longer than this from the handoff, nor past the link's own session end.
-	SessionMaxTtlSeconds int64 `protobuf:"varint,2,opt,name=session_max_ttl_seconds,json=sessionMaxTtlSeconds,proto3" json:"session_max_ttl_seconds,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// The longest exp - iat of an access grant (the JWS the platform signs for one device host) that the L7 proxy and the
+	// device-access service accept; a longer one is refused. The backend caps the exp of a grant with it. There is no
+	// session on the proxy side: the grant itself is the session, so no idle or sliding limit exists.
+	GrantMaxTtlSeconds int64 `protobuf:"varint,1,opt,name=grant_max_ttl_seconds,json=grantMaxTtlSeconds,proto3" json:"grant_max_ttl_seconds,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ProxyFeature) Reset() {
@@ -9409,23 +9406,9 @@ func (*ProxyFeature) Descriptor() ([]byte, []int) {
 	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{108}
 }
 
-func (x *ProxyFeature) GetAccessTokenMaxTtlSeconds() int64 {
+func (x *ProxyFeature) GetGrantMaxTtlSeconds() int64 {
 	if x != nil {
-		return x.AccessTokenMaxTtlSeconds
-	}
-	return 0
-}
-
-func (x *ProxyFeature) GetSessionIdleTtlSeconds() int64 {
-	if x != nil {
-		return x.SessionIdleTtlSeconds
-	}
-	return 0
-}
-
-func (x *ProxyFeature) GetSessionMaxTtlSeconds() int64 {
-	if x != nil {
-		return x.SessionMaxTtlSeconds
+		return x.GrantMaxTtlSeconds
 	}
 	return 0
 }
@@ -14379,11 +14362,9 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x12max_cpu_millicores\x18\x02 \x01(\x03R\x10maxCpuMillicores\x12(\n" +
 	"\x10max_memory_bytes\x18\x03 \x01(\x03R\x0emaxMemoryBytes\")\n" +
 	"\fTenantLimits\x12\x19\n" +
-	"\bmax_labs\x18\x01 \x01(\x05R\amaxLabs\"\xbe\x01\n" +
-	"\fProxyFeature\x12>\n" +
-	"\x1caccess_token_max_ttl_seconds\x18\x01 \x01(\x03R\x18accessTokenMaxTtlSeconds\x127\n" +
-	"\x18session_idle_ttl_seconds\x18\x03 \x01(\x03R\x15sessionIdleTtlSeconds\x125\n" +
-	"\x17session_max_ttl_seconds\x18\x02 \x01(\x03R\x14sessionMaxTtlSeconds\"\xeb\x02\n" +
+	"\bmax_labs\x18\x01 \x01(\x05R\amaxLabs\"\x9e\x01\n" +
+	"\fProxyFeature\x121\n" +
+	"\x15grant_max_ttl_seconds\x18\x01 \x01(\x03R\x12grantMaxTtlSecondsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x17session_max_ttl_secondsR\x18session_idle_ttl_secondsR\x1caccess_token_max_ttl_seconds\"\xeb\x02\n" +
 	"\x17StatePersistenceFeature\x12\x1c\n" +
 	"\tavailable\x18\x01 \x01(\bR\tavailable\x12.\n" +
 	"\x13default_debounce_ms\x18\x02 \x01(\x03R\x11defaultDebounceMs\x12*\n" +

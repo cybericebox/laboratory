@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -185,6 +186,11 @@ func Run() {
 		// watch on every Secret of the cluster, and the operator has no such permission (only in its own namespaces).
 		// The same for Roles (the lab checker's Role per lab): the operator holds them in the group namespaces only.
 		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &rbacv1.Role{}}}},
+		// The one Secret informer the operator has (the access key mirror) is limited to the access keys namespace: the operator may list
+		// and watch Secrets there and nowhere else.
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}},
+		}},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -323,6 +329,14 @@ func Run() {
 		}
 		if err = (&laboratorycontroller.BandwidthReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Config: bw, EntryNamespaces: cfg.BandwidthEntryNamespaces}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Bandwidth")
+			os.Exit(1)
+		}
+	}
+	if cfg.DeviceAccessNamespace != "" {
+		// The device access service verifies console grants with the tenants' access keys; it holds no API token, so the operator mirrors
+		// the (public) keys into a ConfigMap it mounts.
+		if err = (&laboratorycontroller.AccessKeysMirror{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Namespace: cfg.DeviceAccessNamespace}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AccessKeysMirror")
 			os.Exit(1)
 		}
 	}

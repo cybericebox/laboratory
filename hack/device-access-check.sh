@@ -5,7 +5,9 @@
 # The listener of the service is bound to the pod IP and its network policy admits only the L7 proxy, so a port-forward cannot reach it. The
 # script therefore builds the checker for linux, copies it into the service pod on the node of the device (needs `sh` and `cat` in the node
 # image; if there is none, run the checker from an ephemeral container: kubectl debug --target=device-access, which shares the pod's network
-# and, with the secret copied, does the same) and runs it there. It signs its open requests with the secret the pod has mounted.
+# and, with the grant file copied, does the same) and runs it there. Its open requests carry a console grant: a JWS signed by the tenant's key for
+# this group, lab and device (aud laboratory-device-access, kind console), which the platform mints; the file is GRANT_FILE, and GRANT_CLIENT and
+# GRANT_GROUP are its sub and group_id (the request must agree with them). The grant is never printed.
 #
 # Needs: kubectl with access to the cluster, go (to build the checker), a lab with a device whose template has terminal.enabled, running on the
 # node under test; terminal.enabled on in the chart and the service pod Ready on that node.
@@ -65,7 +67,9 @@ trap 'rm -rf "$tmp"' EXIT
 kubectl -n "$service_ns" exec -i "$pod" -- sh -c 'cat > /tmp/device-access-check && chmod +x /tmp/device-access-check' < "$tmp/device-access-check"
 
 rc=0
-kubectl -n "$service_ns" exec "$pod" -- /tmp/device-access-check -namespace "$ns" -lab "$lab" -device "$device" -user "$user" -refuse "${REFUSE:-}" || rc=$?
+kubectl -n "$service_ns" exec -i "$pod" -- sh -c 'cat > /tmp/console.grant && chmod 600 /tmp/console.grant' < "${GRANT_FILE:?GRANT_FILE is the file of a console grant for this device}"
+kubectl -n "$service_ns" exec "$pod" -- /tmp/device-access-check -namespace "$ns" -lab "$lab" -device "$device" -user "$user" -refuse "${REFUSE:-}" -grant-file /tmp/console.grant -client "${GRANT_CLIENT:-check}" -group "${GRANT_GROUP:-check}" || rc=$?
+kubectl -n "$service_ns" exec "$pod" -- rm -f /tmp/console.grant || true
 
 if kubectl -n "${CHECKER_NS:-laboratory-system}" get ds laboratory-checker >/dev/null 2>&1; then
   echo "--- the checker path"
