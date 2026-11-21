@@ -31,7 +31,7 @@ func TestGatewayReadFailureClearsDHCPReadiness(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = lab.AddToScheme(scheme)
 	_ = allocation.AddToScheme(scheme)
-	gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: "a-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: "a", NetworkIndex: 1}, Status: lab.LabGatewayStatus{Phase: lab.LabGatewayPhaseReady, NATReady: true, DHCPReady: true, DHCPEnabled: true}}
+	gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: "a-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: "a", Device: "internet", NetworkIndex: 1}, Status: lab.LabGatewayStatus{Phase: lab.LabGatewayPhaseReady, NATReady: true, DHCPReady: true, DHCPEnabled: true}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gw).WithObjects(gw).Build()
 	m := dhcp.NewManager()
 	defer m.Close()
@@ -52,7 +52,7 @@ func TestGatewayMissingInterfaceCannotKeepReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = lab.AddToScheme(scheme)
 	_ = allocation.AddToScheme(scheme)
-	gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: "a-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: "a", NetworkIndex: 65000}, Status: lab.LabGatewayStatus{Phase: lab.LabGatewayPhaseReady, NATReady: true, DHCPReady: true}}
+	gw := &lab.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: "a-gw", Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}, Spec: lab.LabGatewaySpec{LabName: "a", Device: "internet", NetworkIndex: 65000}, Status: lab.LabGatewayStatus{Phase: lab.LabGatewayPhaseReady, NATReady: true, DHCPReady: true}}
 	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(gw).WithObjects(gw, l).Build()
 	m := dhcp.NewManager()

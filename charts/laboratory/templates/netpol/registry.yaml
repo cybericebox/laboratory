@@ -1,8 +1,12 @@
 {{- if and (include "laboratory.registryEnabled" .) .Values.registry.networkPolicy.enabled }}
 {{- /*
-The snapshot registry accepts connections from the node-agents (hostNetwork pods: the
-Cilium entities "host" and "remote-node", because their forwarder dials the Service from
-the node) and from the operator (device reset, retention). Its egress is open: the image cache fetches from the upstream registries.
+The registry gate has one listener, TLS on 5443, and the policy admits three kinds of caller on that port and nothing else:
+  - the lab nodes: the relay of a node-agent dials the internal load balancer, whose traffic reaches the pod with the node's address (the Cilium
+    entities "host" and "remote-node");
+  - the operator (device reset, retention, the sweep) and the management agent (snapshot export, PrewarmImages), by pod label.
+No plain port, no namespace of the platform and nothing from the platform pool: the platform never writes to the registry. Every caller shows a
+ServiceAccount token the gate checks (TokenReview), so the network rule is the second lock, not the first. Egress is open: the gate calls the
+API server and the upstream registries.
 */ -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -21,24 +25,24 @@ spec:
         - remote-node
       toPorts:
         - ports:
-            - port: "5000"
+            - port: "5443"
               protocol: TCP
     - fromEndpoints:
         - matchLabels:
             control-plane: controller-manager
       toPorts:
         - ports:
-            - port: "5000"
+            - port: "5443"
               protocol: TCP
 {{- if .Values.agent.enabled }}
-    # The management agent: snapshot export, and PrewarmImages with the cache.
+    # The management agent: snapshot export, and PrewarmImages.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $.Values.agent.namespace }}
             app: laboratory-agent
       toPorts:
         - ports:
-            - port: "5000"
+            - port: "5443"
               protocol: TCP
 {{- end }}
 {{- end }}

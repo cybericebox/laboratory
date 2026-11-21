@@ -21,6 +21,8 @@ import (
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
+	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
@@ -35,6 +37,7 @@ func Run() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	grouppods.SetCluster(cfg.VPNEnabled, cfg.InternetEnabled)
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
@@ -63,6 +66,9 @@ func Run() {
 	if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(k8s.Discovery()), 60*time.Second, func(err error) { log.Printf("%v", err) }); err != nil {
 		log.Fatalf("%v", err)
 	}
+	if cfg.MetricsAddr != "" {
+		serveMetrics(cfg.MetricsAddr)
+	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
 	h.EnableReadCache()
@@ -89,8 +95,21 @@ func Run() {
 	h.SetRenewMinInterval(cfg.Server.RenewMinInterval)
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
-	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
+	exportTLS, err := gateTLS(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetRegistryTransport(exportTLS, gateToken(cfg))
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
+	allowedRegistries := cfg.AllowedRegistries
+	if cfg.Cache.Enabled {
+		// The image cache is on: an image goes through it or is refused, so only the registries it serves may be named. An empty
+		// answer would read as "every registry", so it is a registry that no image has.
+		if allowedRegistries = imagepolicy.ServedOnly(cfg.AllowedRegistries, cfg.Cache.Registries); len(allowedRegistries) == 0 {
+			allowedRegistries = []string{"-"}
+		}
+	}
+	h.SetAllowedRegistries(allowedRegistries)
 	var labSelector map[string]string
 	var labTolerations []corev1.Toleration
 	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &labSelector); err != nil {
@@ -176,13 +195,16 @@ func Run() {
 
 // features is what GetFeatures reports from the agent's own configuration.
 func features(cfg *config.Config) (f grpcserver.Features, err error) {
+	sw := cfg.Switches()
 	f = grpcserver.Features{
+		Switches:         &sw,
 		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
+		MaxLabGateways: cfg.MaxLabGateways, ChecksEnabled: cfg.ChecksEnabled, ActivityReports: cfg.ActivityReports, TerminalMaxLifetime: cfg.TerminalMaxLifetime, VPNFirewall: cfg.VPNFirewall, CheckerRequired: cfg.ChecksEnabled, TerminalEnabled: cfg.TerminalEnabled, TerminalServed: cfg.TerminalServed, CheckMaxTimeLimit: int32(cfg.ChecksMaxTimeLimit), ManualCooldown: cfg.ChecksManualCooldown,
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		NodeTimeoutSeconds: int32(cfg.Scheduler.NodeTimeout / time.Second),
 		LabsDomain:         cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
-		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionIdleTTL: cfg.ProxySessionIdleTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
+		ProxyGrantMaxTTL: cfg.ProxyGrantMaxTTL, TerminalGrantMaxTTL: cfg.TerminalGrantMaxTTL,
 	}
 	if f.DeviceProfiles, err = profiles.Enabled(cfg.DeviceProfiles); err != nil {
 		return f, fmt.Errorf("AGENT_DEVICE_PROFILES: %w", err)
@@ -209,7 +231,7 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	f.GroupLimits = cfg.GroupLimits
 	// the pods are sized for at most this many users and labs: the maximum the agent reports is the size at these counts, so the default
 	// size must fit inside THAT maximum (not the one of vpn.sizing.maxUsers, which groupLimits.maxUsers replaces)
-	f.GroupPods.Sizing.VPN.MaxUnits, f.GroupPods.Sizing.Gateway.MaxUnits = cfg.GroupLimits.MaxUsers, cfg.GroupLimits.MaxLabs
+	f.GroupPods.Sizing.VPN.MaxUnits, f.GroupPods.Sizing.Gateway.MaxUnits = cfg.GroupLimits.MaxUsers, cfg.GroupLimits.InternetLegs(cfg.GroupLimits.MaxLabs)
 	if err = cfg.GroupPods.CheckWithin(f.GroupPods.Sizing); err != nil {
 		return f, err
 	}

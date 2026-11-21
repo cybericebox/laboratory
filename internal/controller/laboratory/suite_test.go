@@ -109,13 +109,12 @@ var _ = BeforeSuite(
 		Expect(err).NotTo(HaveOccurred())
 
 		err = (&LabGroupReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorderFor("labgroup"),
-			VPNBaseNetwork:  "10.8.0.0/10",
-			InetBaseNetwork: "10.9.0.0/10",
-			VPNImage:        "cybericebox/laboratory-lab:v0.0.0-test",
-			GatewayImage:    "cybericebox/laboratory-lab:v0.0.0-test",
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			Recorder:       mgr.GetEventRecorderFor("labgroup"),
+			LabBaseNetwork: "10.8.0.0/10",
+			VPNImage:       "cybericebox/laboratory-lab:v0.0.0-test",
+			GatewayImage:   "cybericebox/laboratory-lab:v0.0.0-test",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -123,16 +122,16 @@ var _ = BeforeSuite(
 			Client:         mgr.GetClient(),
 			Scheme:         mgr.GetScheme(),
 			Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
-			VPNBaseNetwork: "10.8.0.0/10",
+			LabBaseNetwork: "10.8.0.0/10",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 
 		err = (&LabReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorderFor("lab"),
-			VPNBaseNetwork:  "10.8.0.0/10",
-			InetBaseNetwork: "10.9.0.0/10",
+			Workers:        8,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			Recorder:       mgr.GetEventRecorderFor("lab"),
+			LabBaseNetwork: "10.8.0.0/10",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -156,11 +155,11 @@ var _ = AfterSuite(
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by
 // controller-runtime. When running tests directly (e.g., via an IDE) without using
-// Makefile targets, the 'BinaryAssetsDirectory' must be explicitly configured.
+// the mise task test, the 'BinaryAssetsDirectory' must be explicitly configured.
 //
 // This function streamlines the process by finding the required binaries, similar to
 // setting the 'KUBEBUILDER_ASSETS' environment variable. To ensure the binaries are
-// properly set up, run 'make setup-envtest' beforehand.
+// properly set up, run 'mise run setup-envtest' beforehand.
 func getFirstFoundEnvTestBinaryDir() string {
 	basePath := filepath.Join("..", "..", "..", "bin", "k8s")
 	entries, err := os.ReadDir(basePath)

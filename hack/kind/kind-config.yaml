@@ -1,12 +1,16 @@
-# Kind cluster of the e2e tests: one control plane and two lab workers (label cybericebox.com/lab of the recommended
-# lab-node placement, see labWorkloads in the chart). One lab worker is tainted cybericebox.com/lab=true:NoSchedule, so the
-# toleration path of the scheduler runs; the other is not, because the scaffold's own e2e test deploys the operator and
-# cert-manager with no tolerations and they need a node to land on.
+# Kind cluster of the e2e tests: one control plane and two lab workers. The pools of the chart are made after the cluster exists
+# (mise run cluster-up and the CI step label the nodes node-restriction.kubernetes.io/cib-pool: lab-control on the control plane, lab on the workers:
+# the label is an administrator's, a kubelet cannot put it on its own node). One lab worker is tainted cybericebox.com/lab=true:NoSchedule, so the
+# toleration path of the scheduler runs (pools.lab.tolerations in e2e-values.yaml); the other is not.
+# The node image is pinned to Kubernetes 1.35 (the chart's minimum, KEP-2535 on by default): the CI runs the same cluster every time, not
+# whatever the kind release defaults to. Change the three lines together.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
   - role: worker
+    image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
     labels:
       cybericebox.com/lab: "true"
     kubeadmConfigPatches:
@@ -18,5 +22,6 @@ nodes:
               value: "true"
               effect: NoSchedule
   - role: worker
+    image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
     labels:
       cybericebox.com/lab: "true"

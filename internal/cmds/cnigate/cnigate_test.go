@@ -55,7 +55,7 @@ func TestEnsureEth0_PresentWithoutIP(t *testing.T) {
 	base := &cniv1.Result{
 		Interfaces: []*cniv1.Interface{
 			{Name: "eth0", Sandbox: "/ns/1"},
-			{Name: "accessport", Sandbox: "/ns/1"},
+			{Name: "eda", Sandbox: "/ns/1"},
 		},
 		IPs: []*cniv1.IPConfig{ipConfig(1, "10.244.0.5/32")},
 	}
@@ -70,18 +70,18 @@ func TestEnsureEth0_PresentWithoutIP(t *testing.T) {
 	if stub.Address.IP.String() != "127.0.0.1" {
 		t.Fatalf("stub IP must be 127.0.0.1, got %s", stub.Address.IP)
 	}
-	// Real IP must still point at accessport (index 1).
+	// Real IP must still point at eda (index 1).
 	if *got.IPs[0].Interface != 1 {
 		t.Fatalf("real IP index must be untouched, got %d", *got.IPs[0].Interface)
 	}
 }
 
 func TestEnsureEth0_AbsentWithRealIP(t *testing.T) {
-	// Access-port pod: delegate wired the real IP onto "accessport". The result
+	// EDA pod: delegate wired the real IP onto "eda". The result
 	// must report the REAL IP on eth0 so Kubernetes uses it as pod.status.podIP —
 	// a stub 127.0.0.1 at IPs[0] would break Service endpoints for exposed devices.
 	base := &cniv1.Result{
-		Interfaces: []*cniv1.Interface{{Name: "accessport", Sandbox: "/ns/1"}},
+		Interfaces: []*cniv1.Interface{{Name: "eda", Sandbox: "/ns/1"}},
 		IPs:        []*cniv1.IPConfig{ipConfig(0, "10.244.0.5/32")},
 	}
 	got := ensureEth0(base, "/ns/1")
@@ -102,7 +102,7 @@ func TestEnsureEth0_AbsentWithRealIP(t *testing.T) {
 func TestEnsureEth0_AbsentMultipleIPs(t *testing.T) {
 	base := &cniv1.Result{
 		Interfaces: []*cniv1.Interface{
-			{Name: "accessport", Sandbox: "/ns/1"},
+			{Name: "eda", Sandbox: "/ns/1"},
 			{Name: "extra", Sandbox: "/ns/1"},
 		},
 		IPs: []*cniv1.IPConfig{ipConfig(0, "10.244.0.5/32"), ipConfig(1, "10.244.0.6/32")},

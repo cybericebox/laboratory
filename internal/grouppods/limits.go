@@ -9,7 +9,18 @@ type Limits struct {
 	MaxLabs      int `env:"GROUP_MAX_LABS" envDefault:"50"`
 	DefaultUsers int `env:"GROUP_DEFAULT_USERS" envDefault:"1"`
 	DefaultLabs  int `env:"GROUP_DEFAULT_LABS" envDefault:"5"`
+	// VPNGatewaysPerLab and InternetGatewaysPerLab are how many VPN and Internet gateways a lab is expected to have: the VPN pod has a leg
+	// and an access rule per client for every VPN gateway of every lab, the gateway pod a leg for every Internet gateway. The pods are
+	// sized for labs x these (GROUP_VPN_GATEWAYS_PER_LAB, GROUP_INTERNET_GATEWAYS_PER_LAB; 0 counts as 1).
+	VPNGatewaysPerLab      int `env:"GROUP_VPN_GATEWAYS_PER_LAB" envDefault:"2"`
+	InternetGatewaysPerLab int `env:"GROUP_INTERNET_GATEWAYS_PER_LAB" envDefault:"1"`
 }
+
+// VPNLegs is the number of VPN gateways a group made for `labs` labs is sized for.
+func (l Limits) VPNLegs(labs int) int { return labs * max(l.VPNGatewaysPerLab, 1) }
+
+// InternetLegs is the number of Internet gateways a group made for `labs` labs is sized for.
+func (l Limits) InternetLegs(labs int) int { return labs * max(l.InternetGatewaysPerLab, 1) }
 
 // Validate checks that the maxima are positive and the defaults within them.
 func (l Limits) Validate() error {
@@ -18,6 +29,9 @@ func (l Limits) Validate() error {
 	}
 	if l.DefaultUsers <= 0 || l.DefaultUsers > l.MaxUsers || l.DefaultLabs <= 0 || l.DefaultLabs > l.MaxLabs {
 		return fmt.Errorf("GROUP_DEFAULT_USERS and GROUP_DEFAULT_LABS must be positive and within the maxima")
+	}
+	if l.VPNGatewaysPerLab < 0 || l.InternetGatewaysPerLab < 0 {
+		return fmt.Errorf("GROUP_VPN_GATEWAYS_PER_LAB and GROUP_INTERNET_GATEWAYS_PER_LAB must not be negative")
 	}
 	return nil
 }
@@ -80,7 +94,8 @@ func ceilTo(v, step int64) int64 {
 	return v
 }
 
-// VPNSize is the size of the VPN pod of a group made for `users` clients and `labs` labs (rules = users x labs).
+// VPNSize is the size of the VPN pod of a group made for `users` clients and `labs` VPN gateways (rules = users x gateways; Limits.VPNLegs
+// turns the labs of a group into gateways).
 func VPNSize(users, labs int) Overhead {
 	u, l := int64(users), int64(labs)
 	mem := vpnMemBase + vpnMemPerUser*u + vpnMemPerLab*l + vpnMemPerRule*u*l
@@ -88,7 +103,7 @@ func VPNSize(users, labs int) Overhead {
 	return Overhead{CPU: (cpu + 999) / 1000, Memory: ceilTo(mem, memStep)}
 }
 
-// GatewaySize is the size of the gateway pod of a group made for `labs` labs.
+// GatewaySize is the size of the gateway pod of a group made for `labs` Internet gateways (Limits.InternetLegs turns labs into gateways).
 func GatewaySize(labs int) Overhead {
 	l := int64(labs)
 	mem := gwMemBase + gwMemPerLab*l

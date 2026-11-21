@@ -19,7 +19,6 @@ package e2e
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -55,8 +54,7 @@ func TestE2E(t *testing.T) {
 var _ = BeforeSuite(
 	func() {
 		By("building the manager(Operator) image")
-		cmd := exec.Command("make", "docker-build-controller", fmt.Sprintf("CONTROLLER_IMG=%s", projectImage))
-		_, err := utils.Run(cmd)
+		_, err := utils.MiseRun([]string{"CONTROLLER_IMG=" + projectImage}, "image:build", "controller")
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
 		// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is

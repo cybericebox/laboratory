@@ -5,7 +5,7 @@
 #   controller  /manager                                  distroless static, non-root, no shell
 #   agent       /agent                                    distroless static, non-root, no shell
 #   proxy       /proxy  (proxy-l7, proxy-wg)              distroless static, non-root, no shell
-#   node        /node   (node-agent, install-cni, netconfig, cni-gate), /probe (device readiness) + Open vSwitch    alpine (root and a shell:
+#   node        /node   (node-agent, node-state, install-cni, netconfig, cni-gate, checker), /probe (device readiness, lab checks) + Open vSwitch    alpine (root and a shell:
 #               it drives OVS and pod networking on the host, and start-ovs.sh and the init scripts are shell)
 #   lab         /lab    (vpn, gateway) + the iptables and nft binaries only                     built from scratch: no shell,
 #               no package manager (root: the pods need NET_ADMIN, which Kubernetes gives only to root)
@@ -16,7 +16,7 @@ ARG DISTROLESS=gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c5
 
 # The Go stage always runs on the build host and cross-compiles, so multi-arch builds
 # do not go through QEMU.
-FROM --platform=$BUILDPLATFORM mirror.gcr.io/library/golang:1.27.1@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS builder
+FROM --platform=$BUILDPLATFORM mirror.gcr.io/library/golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /workspace
@@ -78,7 +78,7 @@ ENTRYPOINT ["/manager"]
 
 FROM ${DISTROLESS} AS agent
 # The API contract of pkg/agent/client.ContractVersion; a test keeps the two equal.
-LABEL com.cybericebox.laboratory.api-contract="1.4"
+LABEL com.cybericebox.laboratory.api-contract="3.0"
 COPY --from=build-agent /out/agent /agent
 USER 65532:65532
 ENTRYPOINT ["/agent"]

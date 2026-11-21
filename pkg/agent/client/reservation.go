@@ -18,6 +18,9 @@ const (
 	ReasonReservationMismatch = "RESERVATION_MISMATCH"
 	// ReasonOverQuota: the tenant's overlapping reservations would peak above its quota.
 	ReasonOverQuota = "OVER_QUOTA"
+	// ReasonCooldown: RunChecks came inside the cooldown between manual runs of a lab; ItemResult.retry_after says how
+	// long to wait.
+	ReasonCooldown = "COOLDOWN"
 )
 
 // Reasons of a FAILED Lab create item whose name is taken by a Lab of another generation.
@@ -63,3 +66,32 @@ const (
 // unavailable_reason). Nothing is created or started; the text carries only the fixed reason (`<CODE>:<n>/<m>`).
 // Not retryable until the cluster is repaired.
 const ReasonPersistenceUnavailable = "PERSISTENCE_UNAVAILABLE"
+
+// Reasons of a FAILED item for the feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled,
+// proxy.enabled and its accesses, checks.enabled; contract 2.8). Not retryable: the laboratory does not serve it.
+const (
+	// ReasonVPNUnavailable: the lab has a VPN gateway, or a LabGroupClient / LabGroupAccessPolicy / a group's VPN
+	// switch is asked for, and this laboratory runs no VPN.
+	ReasonVPNUnavailable = "VPN_UNAVAILABLE"
+	// ReasonInternetUnavailable: the lab has an Internet gateway, or a group's internet switch is asked for, and this
+	// laboratory has no internet gateway.
+	ReasonInternetUnavailable = "INTERNET_UNAVAILABLE"
+	// ReasonAccessUnavailable: a device asks for an access (http, terminal, rdp, vnc) this laboratory does not serve.
+	ReasonAccessUnavailable = "ACCESS_UNAVAILABLE"
+	// ReasonChecksUnavailable: the lab has checks and this laboratory runs no lab checker.
+	ReasonChecksUnavailable = "CHECKS_UNAVAILABLE"
+)
+
+// Reasons of a FAILED item for the switches of a LabGroup's servers (LabGroupItem.vpn_enabled,
+// internet_enabled; contract 2.7).
+const (
+	// ReasonGroupVPNOff: a lab with a VPN gateway, or a LabGroupClient, in a group whose VPN is off. Not retryable
+	// until the group's vpn_enabled is turned on (UpdateLabGroups).
+	ReasonGroupVPNOff = "GROUP_VPN_OFF"
+	// ReasonGroupInternetOff: a lab with an Internet gateway in a group whose internet is off. Not retryable until the
+	// group's internet_enabled is turned on.
+	ReasonGroupInternetOff = "GROUP_INTERNET_OFF"
+	// ReasonGroupServerInUse: a switch turned off while a lab of the group uses that server (a VPN gateway, an Internet
+	// gateway). The text names the labs; nothing changed. Delete the labs first.
+	ReasonGroupServerInUse = "GROUP_SERVER_IN_USE"
+)

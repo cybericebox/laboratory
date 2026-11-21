@@ -32,7 +32,7 @@ if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -
   apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack openvswitch-switch nftables python3 iperf3 traceroute >/dev/null
 fi
 out=$(mktemp -d)
-pkgs=${NETNS_PKGS:-"vpn vpn/reconciler gateway accessroute cmds/cnigate nodeagent"} # NETNS_PKGS="nodeagent" runs one package
+pkgs=${NETNS_PKGS:-"vpn vpn/reconciler gateway edaroute cmds/cnigate nodeagent"} # NETNS_PKGS="nodeagent" runs one package
 for pkg in $pkgs; do
   go test -c -o "$out/${pkg//\//_}.test" "./internal/$pkg"
 done

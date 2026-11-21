@@ -127,11 +127,11 @@ type EndpointSpec struct {
 // InterfaceSpec defines a network interface on a device.
 type InterfaceSpec struct {
 	// Name is the interface name inside the pod: a lowercase word of at most 15
-	// characters; lo and accessport are reserved.
+	// characters; lo, eda and accessport (the EDA interface; accessport is its name before the rename) are reserved.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=15
 	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]{0,14}$`
-	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'accessport'",message="reserved interface name"
+	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'eda' && self != 'accessport'",message="reserved interface name"
 	Name string `json:"name"`
 	// Addr is optional: nil means the interface is created without an IP.
 	// +optional
@@ -154,20 +154,28 @@ type AddrSpec struct {
 	Routes     []Route       `json:"routes,omitempty"`
 }
 
-// NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+// NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
 // The lab reconciler resolves it before creating a Device.
 type NetworkIPRef struct {
-	// +kubebuilder:validation:Enum=vpn;internet
-	Network string `json:"network"`
+	// Gateway is the name of a gateway declared in spec.gateways.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=35
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	Gateway string `json:"gateway"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=254
 	Host int32 `json:"host"`
 }
 
-// NetworkSubnetRef selects the full lab-allocated VPN or Internet /24.
+// NetworkSubnetRef selects the full /24 of a gateway of the lab (see NetworkIPRef).
 type NetworkSubnetRef struct {
-	// +kubebuilder:validation:Enum=vpn;internet
-	Network string `json:"network"`
+	// Gateway is the name of a gateway declared in spec.gateways.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=35
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	Gateway string `json:"gateway"`
 }
 
 // Route is a static route entry.
@@ -176,18 +184,4 @@ type Route struct {
 	DstRef *NetworkSubnetRef `json:"dstRef,omitempty"`
 	Via    string            `json:"via,omitempty"`
 	ViaRef *NetworkIPRef     `json:"viaRef,omitempty"`
-}
-
-// ExposureSpec declares how a device is externally reachable.
-type ExposureSpec struct {
-	Web *WebExposure `json:"web,omitempty"`
-}
-
-// WebExposure publishes a device port via an L7 proxy.
-type WebExposure struct {
-	// +kubebuilder:validation:Required
-	Port int32 `json:"port"`
-	// Protocol is "http" or "https".
-	// +kubebuilder:default=http
-	Protocol string `json:"protocol,omitempty"`
 }

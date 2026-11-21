@@ -55,7 +55,10 @@ func TestRetireSwitchEndpointsDoesNotLookUpTheVirtualPeerAsADevice(t *testing.T)
 	}
 	sw := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name("l", "sw-1"), Namespace: "ns"},
 		Spec: laboratoryv1alpha1.DeviceSpec{LabRef: "l", Name: "sw-1", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch}}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(sw).Build()
+	// The VPN endpoint is a gateway of the Lab (not a Device): the Lab says so, the reconciler does not guess from the name.
+	parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l", Namespace: "ns"},
+		Spec: laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN}}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(sw, parent).Build()
 	r := &ConnectionReconciler{Client: c, Reader: c, NodeName: "node"}
 	conn := &laboratoryv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: "ns"}, Spec: laboratoryv1alpha1.ConnectionSpec{LabRef: "l",
 		Endpoints: []laboratoryv1alpha1.EndpointSpec{{Device: "vpn", Interface: "eth0"}, {Device: "sw-1", Interface: "g0"}}}}

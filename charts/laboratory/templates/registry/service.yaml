@@ -1,4 +1,7 @@
 {{- if include "laboratory.registryEnabled" . }}
+# The registry gate's entry: a NodePort Service with externalTrafficPolicy Local and the TLS port only. The lab nodes (and nothing else outside
+# the cluster) reach it through the internal load balancer of infrastructure, which sends registry.gate.address to the node port of the nodes
+# that run the registry pod; the operator and the management agent reach it by the Service name.
 apiVersion: v1
 kind: Service
 metadata:
@@ -6,12 +9,21 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
+  {{- with .Values.registry.gate.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: NodePort
+  externalTrafficPolicy: Local
   selector:
     {{- include "laboratory.registrySelector" . | nindent 4 }}
   ports:
-    - name: registry
-      port: 5000
-      targetPort: registry
+    - name: registry-tls
+      port: 5443
+      targetPort: registry-tls
+      protocol: TCP
+      {{- with .Values.registry.gate.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
 {{- end }}

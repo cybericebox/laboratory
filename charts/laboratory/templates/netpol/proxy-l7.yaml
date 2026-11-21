@@ -7,34 +7,32 @@ internal/names/labels.go:ProxyL7App). The pod runs the l7 container only
 has its own pod and policy (netpol/wg-demux.yaml).
 
 Ingress:
-  - l7 (TCP): admitted from Cilium's own Envoy proxy acting as the
-    Gateway/TLSRoute data-path, via the `ingress` reserved entity
-    (CiliumNetworkPolicy only — live-cluster check with `cilium-dbg identity
-    list` confirms `reserved:ingress` = identity 8 whenever
-    gatewayAPI/l7Proxy is enabled). A podSelector/namespaceSelector peer for
-    kube-system (k8s-app=cilium or cilium-envoy) CANNOT work for a vanilla
-    NetworkPolicy here: Cilium's dedicated cilium-envoy DaemonSet pods run
-    hostNetwork: true and are verifiably NOT tracked as CiliumEndpoints
-    (`kubectl get ciliumendpoint -n kube-system` never lists them), so no
-    podSelector/namespaceSelector peer can ever match their traffic — this
-    was the original placeholder's bug. The vanilla NetworkPolicy below only
-    keeps an ipBlock peer for .Values.operator.proxySourceCIDRs, a fallback
-    for hostNetwork proxy sources on non-Cilium clusters (e.g. Kind).
+  - l7 (TCP): the Service is a NodePort with externalTrafficPolicy Local (templates/proxy/service.yaml), so a visitor's connection arrives from
+    outside the cluster with its own address: the `world` entity (CiliumNetworkPolicy). Whether Cilium classes a Local NodePort client as
+    `world`, and whether `host` or `remote-node` must be added for the node health check, is proved on the staging cluster
+    (docs/laboratory/specs/pools-release.md, S3). The vanilla NetworkPolicy below only keeps an ipBlock peer for
+    .Values.operator.proxySourceCIDRs, a fallback for hostNetwork proxy sources on non-Cilium clusters (e.g. Kind).
 
-Egress: kube-dns (vanilla NetworkPolicy — unrelated to Cilium identities)
-plus, via the CiliumNetworkPolicy, kube-apiserver (operator watch/leases)
-and endpoints in LabGroup namespaces only: l7 dials per-device Services in
+Egress: the CiliumNetworkPolicy only. No cluster DNS: the proxy takes the address of a device pod from the Device it watches
+(Device.status.podIP) and never resolves a name. It allows kube-apiserver (watches/leases),
+the DEVICE pods of LabGroup namespaces (selected by the namespace's group
+label AND the pod's device label, not every pod of the namespace: the VPN
+and gateway pods of a group and anything else there are not reachable) and,
+with the console on, the device access service pods on their one port.
+What the proxy dials in those namespaces, checked in the code: the pod
+behind the Service of an exposed device (internal/proxy/l7/access.go
+Route, the web port of the device); its traffic reports and the report
+preparation go through the API server. Nothing else.
+l7 dials the pods of devices in
 namespaces the operator creates dynamically per LabGroup/Lab (see
-internal/proxy/l7/handler.go's ServiceResolver). Those namespaces can't be
+internal/proxy/l7/access.go). Those namespaces can't be
 enumerated at chart-authoring time, but the operator stamps each one with
 the stable label laboratory.cybericebox.com/group
 (internal/names/labels.go:LabelGroup, applied in
 labgroup_controller.go:ensureNamespace), which Cilium folds into every
 endpoint identity in the namespace as
 k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group
-(live-verified with cilium-dbg identity get). Service ClusterIP translation
-happens before policy, so matching the backend endpoint identity works for
-the l7 dial. Everything else — including
+(live-verified with cilium-dbg identity get). Everything else — including
 other in-cluster namespaces — is denied.
 */}}
 {{- if and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.networkPolicy.enabled }}
@@ -52,7 +50,6 @@ spec:
       app: laboratory-proxy-l7
   policyTypes:
     - Ingress
-    - Egress
   ingress:
     {{- if .Values.operator.proxySourceCIDRs }}
     - from:
@@ -64,19 +61,6 @@ spec:
         - protocol: TCP
           port: {{ $l7Port }}
     {{- end }}
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -91,7 +75,7 @@ spec:
       app: laboratory-proxy-l7
   ingress:
     - fromEntities:
-        - ingress
+        - world
       toPorts:
         - ports:
             - port: {{ $l7Port | quote }}
@@ -103,4 +87,17 @@ spec:
         - matchExpressions:
             - key: k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group
               operator: Exists
+            - key: k8s:laboratory.cybericebox.com/device
+              operator: Exists
+{{- if .Values.terminal.enabled }}
+    # The device access service, on its stream port only.
+    - toEndpoints:
+        - matchLabels:
+            app: laboratory-device-access
+            k8s:io.kubernetes.pod.namespace: {{ include "laboratory.deviceAccess.namespace" . }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.terminal.port | quote }}
+              protocol: TCP
+{{- end }}
 {{- end }}

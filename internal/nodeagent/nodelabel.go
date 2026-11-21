@@ -114,3 +114,15 @@ func (l *NodeLabeler) set(ctx context.Context, ready bool) error {
 	}
 	return nil
 }
+
+// withoutStatePersistence is the annotations of a start-up check without the one of state persistence: that annotation belongs to the
+// node-state DaemonSet, which owns the snapshot engine it describes, and the node-agent must not put its own value over it.
+func withoutStatePersistence(annotations map[string]string) map[string]string {
+	out := make(map[string]string, len(annotations))
+	for k, v := range annotations {
+		if k != names.AnnotationStatePersistence {
+			out[k] = v
+		}
+	}
+	return out
+}

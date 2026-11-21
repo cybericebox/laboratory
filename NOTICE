@@ -2,3 +2,8 @@ CyberICEBox Laboratory
 Copyright 2026 CyberICEBox
 
 Licensed under the Apache License, Version 2.0.
+
+This product includes, unmodified except that the source map reference is removed, the browser terminal xterm.js 6.0.0 with its
+fit and web-links addons (0.11.0 and 0.12.0), embedded in the L7 proxy (internal/proxy/l7/terminalassets). Copyright (c) 2017-2019 The
+xterm.js authors, (c) 2014-2016 SourceLair Private Company, (c) 2012-2013 Christopher Jeffrey. MIT licence, see
+internal/proxy/l7/terminalassets/LICENSE-xterm.txt.

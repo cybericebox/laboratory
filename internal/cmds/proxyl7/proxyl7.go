@@ -17,6 +17,8 @@ import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -31,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/proxy"
@@ -61,7 +64,7 @@ func Run() {
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: cfg.HealthAddr,
 			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
-			Cache: proxyCacheOptions(),
+			Cache: proxyCacheOptions(cfg),
 		},
 	)
 	if err != nil {
@@ -77,14 +80,42 @@ func Run() {
 	meter := l7.NewMeter(fmt.Sprintf("%s-%d", instance, started.UnixNano()), started)
 
 	access := &l7.AccessReader{Reader: mgr.GetClient()}
-	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName, nil).
-		WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).
+	origins, err := l7.NewEmbedMatcher(cfg.PlatformOrigins, nil)
+	if err != nil {
+		log.Error(err, "PLATFORM_ORIGINS")
+		os.Exit(1)
+	}
+	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), cfg.BaseDomain, cfg.CookieName, nil).
+		WithGrantMaxTTL(cfg.GrantMaxTTL).WithPlatformOrigins(origins).
 		WithAccounting(meter, nil).WithAccessReader(access).WithLiveMaxLifetime(cfg.LiveMaxLifetime).
 		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst).
 		WithAccessLog(log.WithName("access"), cfg.SlowRequest)
+	if cfg.TerminalEnabled {
+		tc := l7.DefaultTerminalConfig()
+		tc.Log = log.WithName("console")
+		tc.PerClient, tc.Idle, tc.Lifetime = cfg.TerminalPerClient, cfg.TerminalIdle, cfg.TerminalLifetime
+		if tc.Embed, err = l7.NewEmbedMatcher(cfg.TerminalEmbedAllow, cfg.TerminalEmbedDeny); err != nil {
+			log.Error(err, "the embedding lists of the console")
+			os.Exit(1)
+		}
+		tc.Devices = access.Device
+		tc.Services = l7.EndpointDirectory(mgr.GetClient(), cfg.TerminalNamespace, names.DeviceAccessApp, cfg.TerminalPort)
+		handler.WithTerminal(tc)
+	}
+	if activity.Enabled() {
+		// Console sessions are handed, as raw facts, to the agent through a ring in the group namespace; off by default (activityReports.enabled).
+		hub := activity.New(mgr.GetClient(), "proxy-"+instance)
+		hub.Reader = mgr.GetAPIReader()
+		hub.OnError = func(err error) { log.Error(err, "write activity report") }
+		handler.WithActivity(hub)
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error { hub.Run(ctx, activity.FlushEvery); return nil })); err != nil {
+			log.Error(err, "add activity writer")
+			os.Exit(1)
+		}
+	}
 	// Register all required informers before the manager starts: readiness must
 	// wait for each cache used by authorization, rather than an empty cache set.
-	if err := warmProxyCache(context.Background(), mgr.GetCache()); err != nil {
+	if err := warmProxyCache(context.Background(), mgr.GetCache(), cfg); err != nil {
 		log.Error(err, "register proxy cache")
 		os.Exit(1)
 	}
@@ -109,9 +140,6 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if len(cfg.ProxyProtocolFrom) > 0 && len(cfg.ProxyProtocolSecrets) == 0 {
-		log.Info("WARNING: L7_PROXY_PROTOCOL_FROM is set without L7_PROXY_PROTOCOL_SECRETS: a PROXY header from a listed peer is believed without proof that it comes from the edge")
-	}
 	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
 		log.Error(err, "init TLS cert watcher")
@@ -121,6 +149,8 @@ func Run() {
 	httpsSrv := proxy.NewHTTPServer(cfg, handler, &tls.Config{
 		GetCertificate: certWatcher.GetCertificate,
 		MinVersion:     tls.VersionTLS12,
+		// a browser takes h2; the WebSocket of the console is HTTP/1.1.
+		NextProtos: []string{"h2", "http/1.1"},
 	})
 
 	for _, r := range []struct {
@@ -137,12 +167,6 @@ func Run() {
 				return err
 			}
 			defer func() { _ = ln.Close() }()
-			// The edge may put the client's address in a PROXY header in front of the TLS; only the listed peers are believed.
-			if ln, err = proxy.ProxyProtocolListener(ln, proxy.ProxyProtocol{
-				Trusted: cfg.ProxyProtocolFrom, Secrets: cfg.ProxyProtocolSecrets,
-				TLVType: cfg.ProxyProtocolTLVType, HeaderTimeout: cfg.ReadHeaderTimeout}); err != nil {
-				return err
-			}
 			return l7.RunLifecycle(ctx, httpsSrv, handler, reports, cfg.ReportInterval, cfg.LiveCheckInterval, func() error {
 				listening.Set()
 				return httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", "")
@@ -163,8 +187,9 @@ func Run() {
 	go func() {
 		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, os.Getenv("NODE_NAME"),
 			func(l bandwidth.Limits) {
+				handler.Throttle().SetFloor(l.MinKbps)
 				handler.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
-				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps, "participantMinKbps", l.MinKbps)
 			},
 			func(err error) { log.Error(err, "read the bandwidth annotation") })
 		if err != nil {
@@ -180,18 +205,32 @@ func Run() {
 	}
 }
 
-func proxyCacheOptions() cache.Options {
-	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: map[client.Object]cache.ByObject{
+func proxyCacheOptions(cfg *proxy.L7Config) cache.Options {
+	by := map[client.Object]cache.ByObject{
 		&corev1.Secret{}:                           {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}, Transform: l7.CompactCacheObject},
 		&corev1.Service{}:                          {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.Lab{}:                  {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroup{}:             {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroupClient{}:       {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
-	}}
+	}
+	if cfg.TerminalEnabled {
+		// The console reads the devices (their terminal settings and node) and the EndpointSlices of the device access service, and nothing
+		// else: the slices are limited to the one namespace of the service and to its Service, and no pod is read at all.
+		by[&laboratoryv1alpha1.Device{}] = cache.ByObject{Transform: l7.CompactCacheObject}
+		by[&discoveryv1.EndpointSlice{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{cfg.TerminalNamespace: {LabelSelector: labels.SelectorFromSet(labels.Set{l7.ServiceNameLabel: names.DeviceAccessApp})}},
+			Transform:  l7.CompactCacheObject,
+		}
+	}
+	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: by}
 }
-func warmProxyCache(ctx context.Context, c cache.Cache) error {
-	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
+func warmProxyCache(ctx context.Context, c cache.Cache, cfg *proxy.L7Config) error {
+	objects := []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}}
+	if cfg.TerminalEnabled {
+		objects = append(objects, &laboratoryv1alpha1.Device{}, &discoveryv1.EndpointSlice{})
+	}
+	for _, object := range objects {
 		if _, err := c.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {
 			return err
 		}

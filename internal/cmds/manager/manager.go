@@ -19,28 +19,37 @@ package manager
 import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
+	"github.com/google/go-containerregistry/pkg/authn"
 
 	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/cybericebox/laboratory/internal/health"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -49,9 +58,11 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/admissioncheck"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/operator"
@@ -134,11 +145,11 @@ func Run() {
 
 	// The metrics server is off unless --metrics-bind-address is given; controller-runtime then makes a self-signed certificate.
 
-	// The scheduler writes the queue status of many objects; the default client-side
-	// rate limit (20 QPS, burst 30) would also slow every reconciler.
+	// The scheduler writes the queue status of many objects and the controllers run several workers each; the default client-side
+	// rate limit (20 QPS, burst 30) would make them all wait. API_QPS and API_BURST (chart operator.api) default to 200 and 400.
 	restCfg := ctrl.GetConfigOrDie()
-	restCfg.QPS = 60
-	restCfg.Burst = 120
+	restCfg.QPS = cfg.APIQPS
+	restCfg.Burst = cfg.APIBurst
 
 	// The operator and the agent need the CRDs of this release (the enrollment epoch among them): refuse to run on older ones.
 	if dc, err := discovery.NewDiscoveryClientForConfig(restCfg); err != nil {
@@ -173,7 +184,13 @@ func Run() {
 		LeaderElectionID:       "2b172d9d.cybericebox.com",
 		// Secrets are read straight from the API server, not through an informer: an informer would need list and
 		// watch on every Secret of the cluster, and the operator has no such permission (only in its own namespaces).
-		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
+		// The same for Roles (the lab checker's Role per lab): the operator holds them in the group namespaces only.
+		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &rbacv1.Role{}}}},
+		// The one Secret informer the operator has (the access key mirror) is limited to the access keys namespace: the operator may list
+		// and watch Secrets there and nowhere else.
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}},
+		}},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -194,17 +211,43 @@ func Run() {
 	// Image cache: lab images of labs created while it is on are pulled through it.
 	mirror := cfg.Cache.Rewriter()
 	var resolver imagecache.Resolver
+	var pinner *imagecache.AsyncResolver
+	var pinEvents chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab]
+
+	platforms := laboratorycontroller.NodePlatforms(mgr.GetAPIReader(), labNodeSelector)
 
 	if cfg.Cache.Enabled {
 		// Tags are pinned to digests asked of the upstream registries directly, with
 		// the operator's pull secrets.
 		resolver = &imagecache.RegistryResolver{
-			Keychain: &laboratorycontroller.PullKeychain{Reader: mgr.GetAPIReader(), Namespace: names.SystemNamespace, Names: cfg.ImagePullSecrets},
-			TTL:      cfg.Cache.PinTTL,
+			Keychain:  &laboratorycontroller.PullKeychain{Reader: mgr.GetAPIReader(), Namespace: names.SystemNamespace, Names: cfg.ImagePullSecrets},
+			TTL:       cfg.Cache.PinTTL,
+			PlainHTTP: cfg.Cache.PlainHTTPRegistries,
 			// One node architecture: pin the platform manifest, so the cache fetches
 			// that image and not every architecture of an index.
-			Platforms: laboratorycontroller.NodePlatforms(mgr.GetAPIReader(), labNodeSelector),
+			Platforms: platforms,
 		}
+		// A new lab does not wait for the registry inside its worker: its tags are resolved in the background, once for all labs, and
+		// the lab is woken when they are there. The operator's own pull secrets are the source for labs without credentials; a lab with
+		// credentials of its own (or its tenant's) adds a source of its own, made of those credentials only (EnsureSource).
+		pinEvents = make(chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab], 4096)
+		pinner = &imagecache.AsyncResolver{
+			Sources:     map[string]imagecache.Resolver{imagecache.OperatorSource: resolver},
+			Scope:       func(ctx context.Context) string { return imagecache.PlatformScope(platforms(ctx)) },
+			Concurrency: cfg.Cache.PinConcurrency,
+			SuccessTTL:  cfg.Cache.PinTTL,
+			Notify: func(waiter string) {
+				ns, name, _ := strings.Cut(waiter, "/")
+				select {
+				case pinEvents <- event.TypedGenericEvent[*laboratoryv1alpha1.Lab]{Object: &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}}:
+				default: // full: the lab looks again by itself after a few seconds
+				}
+			},
+		}
+		ctrlmetrics.Registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "laboratory_image_pin_pending",
+			Help: "Image tag resolutions (digest pinning of new labs) running or queued in the background.",
+		}, func() float64 { return float64(pinner.Pending()) }))
 	}
 
 	statePolicy, stateRegistry, err := laboratorycontroller.SetupState(cfg.State)
@@ -237,14 +280,15 @@ func Run() {
 		Recorder:                    mgr.GetEventRecorderFor("labgroup"),
 		PublicVPNEndpoint:           cfg.PublicVPNEndpoint,
 		WGDemuxMode:                 cfg.WGDemuxMode,
-		VPNBaseNetwork:              cfg.VPNBaseNetwork,
+		LabBaseNetwork:              cfg.LabBaseNetwork,
 		VPNFirewall:                 cfg.VPNFirewall,
+		ActivityReports:             cfg.ActivityReports,
 		GatewayMaxConnectionsPerLab: cfg.GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab: cfg.GatewayNewConnectionsPerSecondPerLab,
 		GatewayEgressEnv:        gatewayEgressEnv(cfg),
-		InetBaseNetwork:         cfg.InetBaseNetwork,
 		VPNImage:                cfg.VPNImage,
 		Mirror:                  mirror,
 		Resolver:                resolver,
+		RequireDigest:           cfg.Cache.RequireDigest,
 		GatewayImage:            cfg.GatewayImage,
 		GroupPods:               cfg.GroupPods,
 		PriorityClass:           cfg.GroupPriorityClass,
@@ -267,12 +311,14 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
 	}
+	clusterSwitches := cfg.Switches()
 	if err = (&laboratorycontroller.LabGroupClientReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
 		Reader:         mgr.GetAPIReader(),
-		VPNBaseNetwork: cfg.VPNBaseNetwork,
+		LabBaseNetwork: cfg.LabBaseNetwork,
+		Switches:       &clusterSwitches,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
@@ -288,12 +334,25 @@ func Run() {
 			os.Exit(1)
 		}
 	}
+	if cfg.DeviceAccessNamespace != "" {
+		// The device access service verifies console grants with the tenants' access keys; it holds no API token, so the operator mirrors
+		// the (public) keys into a ConfigMap it mounts.
+		if err = (&laboratorycontroller.AccessKeysMirror{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Namespace: cfg.DeviceAccessNamespace}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AccessKeysMirror")
+			os.Exit(1)
+		}
+	}
 	vniRetirer := &laboratorycontroller.VNIRetirer{Client: mgr.GetClient(), Interval: cfg.VNIRetireFlush}
 	if err = mgr.Add(vniRetirer); err != nil {
 		setupLog.Error(err, "unable to add the VNI retirer")
 		os.Exit(1)
 	}
+	grouppods.SetCluster(cfg.VPNEnabled, cfg.InternetEnabled)
 	if err = (&laboratorycontroller.LabReconciler{
+		Workers:                   cfg.LabWorkers,
+		Switches:                  &clusterSwitches,
+		AllowedRegistries:         cfg.AllowedRegistries,
+		CheckerEnabled:            cfg.ChecksEnabled,
 		VNI:                       vniRetirer,
 		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 		LabNodeSelector:           labNodeSelector,
@@ -306,12 +365,18 @@ func Run() {
 		Recorder:                  mgr.GetEventRecorderFor("lab"),
 		BaseDomain:                cfg.BaseDomain,
 		ProxySourceCIDRs:          cfg.ProxySourceCIDRs,
-		VPNBaseNetwork:            cfg.VPNBaseNetwork,
-		InetBaseNetwork:           cfg.InetBaseNetwork,
+		LabBaseNetwork:            cfg.LabBaseNetwork,
+		MaxLabGateways:            cfg.MaxLabGateways,
 		State:                     statePolicy,
 		Mirror:                    mirror,
-		Resolver:                  resolver,
-		NetConfigImage:            cfg.NetConfigImage,
+		Pinner:                    pinner,
+		RequireDigest:             cfg.Cache.RequireDigest,
+		CredentialResolver: func(kc authn.Keychain) imagecache.Resolver {
+			// the lab's own credentials only: the digest of a private image, asked of its registry directly
+			return &imagecache.RegistryResolver{Keychain: kc, TTL: cfg.Cache.PinTTL, Platforms: platforms, PlainHTTP: cfg.Cache.PlainHTTPRegistries}
+		},
+		PinEvents:      pinEvents,
+		NetConfigImage: cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
@@ -377,6 +442,7 @@ func Run() {
 		microVMRuntimeClass = cfg.Profiles.MicroVMRuntimeClass
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
+		Workers:                 cfg.DeviceWorkers,
 		Scheduled:               cfg.SchedulerEnabled,
 		Recorder:                mgr.GetEventRecorderFor("device"),
 		MirrorRegistries:        mirror.Registries,
@@ -408,6 +474,7 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.ConnectionReconciler{
+		Workers:  cfg.ConnectionWorkers,
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("connection"),
@@ -436,6 +503,9 @@ func Run() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		TTL:    cfg.TenantEnrollmentTTL,
+		// the credentials of images.pullSecret must be usable with the cache
+		CacheEnabled: cfg.Cache.Enabled,
+		Recorder:     mgr.GetEventRecorderFor("tenant"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Tenant")
 		os.Exit(1)
@@ -453,6 +523,12 @@ func Run() {
 			os.Exit(1)
 		}
 	}
+	if cfg.Cache.Enabled {
+		if err = mgr.Add(&laboratorycontroller.UpstreamSweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}); err != nil {
+			setupLog.Error(err, "unable to add the upstream credentials sweep")
+			os.Exit(1)
+		}
+	}
 	if cfg.RuntimeObservation {
 		if err = mgr.Add(&laboratorycontroller.RetentionSweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Registry: stateRegistry, RetirementsOnly: true, Interval: 5 * time.Second}); err != nil {
 			setupLog.Error(err, "unable to add lifecycle retirement sweep")
@@ -464,11 +540,23 @@ func Run() {
 		os.Exit(1)
 	}
 	if cfg.EgressMonitorEnabled {
-		if err = mgr.Add(&laboratorycontroller.EgressMonitor{
+		monitor := &laboratorycontroller.EgressMonitor{
 			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorderFor("egress"), Log: ctrl.Log.WithName("egress-monitor"),
-			Port: cfg.EgressStatsPort, LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
+			LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
 			HostLabsThreshold: cfg.EgressSignalHostLabs, CapMinutes: cfg.EgressSignalCapMinutes,
-		}); err != nil {
+		}
+		if activity.Enabled() {
+			// The gateways' per-address rows go, as raw facts, to the agent through a ring in each group namespace (activityReports.enabled).
+			hub := activity.New(mgr.GetClient(), "egress")
+			hub.Reader = mgr.GetAPIReader()
+			hub.OnError = func(err error) { setupLog.Error(err, "write activity report") }
+			monitor.Activity = hub
+			if err = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error { hub.Run(ctx, activity.FlushEvery); return nil })); err != nil {
+				setupLog.Error(err, "unable to add the activity writer")
+				os.Exit(1)
+			}
+		}
+		if err = mgr.Add(monitor); err != nil {
 			setupLog.Error(err, "unable to add the egress monitor")
 			os.Exit(1)
 		}
@@ -505,11 +593,13 @@ func gatewayEgressEnv(cfg *operator.Config) []corev1.EnvVar {
 		{"EGRESS_DNS_UPSTREAMS", cfg.EgressDNSUpstreams}, {"EGRESS_DNS_QUERIES_PER_SECOND", cfg.EgressDNSQueriesPerSecond},
 		{"EGRESS_HOST_NEW_PER_SECOND", cfg.EgressHostNewPerSecond}, {"EGRESS_HOST_GATEWAY_NEW_PER_SECOND", cfg.EgressHostGatewayNewPerSecond}, {"EGRESS_MAX_CONN_SECONDS", cfg.EgressMaxConnSeconds},
 		{"EGRESS_TUNNEL_SUFFIXES", cfg.EgressTunnelSuffixes}, {"EGRESS_ICMP_PER_SECOND", cfg.EgressICMPPerSecond},
-		{"EGRESS_STATS_PORT", fmt.Sprint(cfg.EgressStatsPort)},
 	} {
 		if e.value != "" {
 			env = append(env, corev1.EnvVar{Name: e.name, Value: e.value})
 		}
+	}
+	if cfg.ActivityReports {
+		env = append(env, corev1.EnvVar{Name: "ACTIVITY_REPORTS", Value: "true"})
 	}
 	if cfg.Bandwidth.LabInternetCapMbit > 0 {
 		env = append(env, corev1.EnvVar{Name: "GATEWAY_DOWNLOAD_KBPS", Value: fmt.Sprint(cfg.Bandwidth.LabInternetCapMbit * 1000)})

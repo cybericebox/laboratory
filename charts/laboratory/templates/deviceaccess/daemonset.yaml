@@ -1,0 +1,196 @@
+{{- if include "laboratory.deviceAccess.enabled" . }}
+{{- /*
+The device access service (docs/specs/2026-11-12-device-access-and-checks.md, section 3; DEPLOY.md, "Device console"): a DaemonSet on the lab
+nodes, one container, the only component that holds the container runtime socket. It opens a shell in a lab device for the L7
+proxy, which is the only caller its network policy admits. Made only while terminal.enabled is true.
+*/ -}}
+{{- $socket := include "laboratory.deviceAccess.socket" . }}
+{{- $lim := .Values.terminal.limits }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-device-access
+  namespace: {{ include "laboratory.deviceAccess.namespace" . }}
+  labels:
+    {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 4 }}
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 8 }}
+        {{- include "laboratory.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: laboratory-device-access
+      automountServiceAccountToken: false
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      # The pod network, not the host's: the proxy dials the pod, and nothing of the node is opened. No host PID, no host IPC.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      enableServiceLinks: false
+      # The service ends its streams and removes their execs on SIGTERM; the grace period leaves it the time.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        {{- $groups := .Values.terminal.securityContext.supplementalGroups }}
+        {{- if .Values.checks.enabled }}
+        {{- /* A member of the checker's group can hand the checker socket to it without CAP_CHOWN. */}}
+        {{- $groups = append (without $groups (int .Values.checks.socketGid)) (int .Values.checks.socketGid) }}
+        {{- end }}
+        {{- with $groups }}
+        supplementalGroups:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      # The lab pool, with the same tolerations for the startup taints. No image pull secret: a lab pod holds no registry credential.
+      nodeSelector:
+        node-restriction.kubernetes.io/cib-pool: lab
+      tolerations:
+        - key: node.cilium.io/agent-not-ready
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.pools.lab.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: device-access
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
+          command: [ "/node", "device-access" ]
+          env:
+            # The listener is bound to the pod IP only, not to every interface.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: LISTEN
+              value: {{ printf "$(POD_IP):%d" (int .Values.terminal.port) | quote }}
+            - name: METRICS_LISTEN
+              value: {{ printf "$(POD_IP):%d" (int .Values.terminal.metricsPort) | quote }}
+            - name: CONTAINERD_SOCK
+              value: {{ $socket | quote }}
+            - name: CONTAINERD_NAMESPACE
+              value: {{ .Values.terminal.containerdNamespace | quote }}
+            - name: FIFO_DIR
+              value: {{ .Values.terminal.fifoDir | quote }}
+            # A console is opened with a grant signed by the tenant; no secret is shared with the proxy.
+            - name: KEY_DIR
+              value: /etc/device-access/access-keys
+            - name: KEY_RELOAD
+              value: {{ .Values.terminal.keyReload | quote }}
+            - name: GRANT_MAX_TTL
+              value: {{ .Values.terminal.grantMaxTTL | quote }}
+            - name: LIMIT_PER_CLIENT
+              value: {{ $lim.perClient | quote }}
+            - name: LIMIT_PER_LAB
+              value: {{ $lim.perLab | quote }}
+            - name: LIMIT_PER_NODE
+              value: {{ $lim.perNode | quote }}
+            - name: IDLE_TIMEOUT
+              value: {{ $lim.idleTimeout | quote }}
+            - name: MAX_LIFETIME
+              value: {{ $lim.maxLifetime | quote }}
+            {{- if .Values.checks.enabled }}
+            # The checker socket: the lab checker of this node runs the probe in a device through it (file permissions: group {{ .Values.checks.socketGid }}).
+            - name: CHECKER_SOCKET
+              value: {{ printf "%s/checker.sock" (trimSuffix "/" .Values.checks.socketDir) | quote }}
+            - name: CHECKER_UID
+              value: {{ .Values.checks.socketUid | quote }}
+            - name: CHECKER_GID
+              value: {{ .Values.checks.socketGid | quote }}
+            - name: CHECKER_MAX_SECONDS
+              value: {{ .Values.checks.maxTimeLimitSeconds | quote }}
+            - name: CHECKER_MAX_CONCURRENT
+              value: {{ .Values.checks.maxConcurrent | quote }}
+            {{- end }}
+          ports:
+            - name: stream
+              containerPort: {{ .Values.terminal.port }}
+            - name: metrics
+              containerPort: {{ .Values.terminal.metricsPort }}
+          securityContext:
+            # No privilege and no capability. Root, because the runtime socket is root:root 0660 on k0s and the FIFO directory is made by
+            # this user for the root shim to open: a root user without capabilities may use both, since it owns them. A non-root user works
+            # where the group of the socket is known (terminal.securityContext: runAsUser, runAsGroup, the socket's group in
+            # supplementalGroups, the FIFO directory writable by that user); that group differs per installation, so it is a value and not
+            # the default. DEPLOY.md and hack/device-access-check.sh say how to find it and test it. Nothing is writable except the two
+            # host directories below and /tmp.
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: {{ ne (int .Values.terminal.securityContext.runAsUser) 0 }}
+            runAsUser: {{ .Values.terminal.securityContext.runAsUser }}
+            runAsGroup: {{ .Values.terminal.securityContext.runAsGroup }}
+            capabilities:
+              drop: [ ALL ]
+          # No inbound probe from outside: the kubelet runs a command that asks the local listener.
+          startupProbe:
+            exec:
+              command: [ "/node", "device-access-health" ]
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [ "/node", "device-access-health" ]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [ "/node", "device-access-health" ]
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          volumeMounts:
+            # The runtime socket and the FIFO directory at the same path as on the host (the shim opens the FIFOs by the path in the request).
+            - name: runtime-sock
+              mountPath: {{ $socket | quote }}
+            - name: fifo
+              mountPath: {{ .Values.terminal.fifoDir | quote }}
+            {{- if .Values.checks.enabled }}
+            - name: checker-socket
+              mountPath: {{ .Values.checks.socketDir | quote }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+            # The access public keys of the tenants (public data, mirrored by the operator): the service verifies the grant of a console with them.
+            - name: access-keys
+              mountPath: /etc/device-access/access-keys
+              readOnly: true
+          {{- with .Values.terminal.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: runtime-sock
+          hostPath:
+            path: {{ $socket | quote }}
+            type: Socket
+        - name: fifo
+          hostPath:
+            path: {{ .Values.terminal.fifoDir | quote }}
+            # Made on the host beforehand (DEPLOY.md): a missing directory keeps the pod from starting, which says so, instead of a
+            # directory the kubelet would make with the wrong owner.
+            type: Directory
+        {{- if .Values.checks.enabled }}
+        - name: checker-socket
+          hostPath:
+            path: {{ .Values.checks.socketDir | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi
+        # Optional: the pod starts before the operator has made the ConfigMap, and refuses every grant until it exists.
+        - name: access-keys
+          configMap:
+            name: laboratory-access-keys
+            optional: true
+{{- end }}

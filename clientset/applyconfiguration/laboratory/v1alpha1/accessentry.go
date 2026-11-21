@@ -22,10 +22,13 @@ package v1alpha1
 //
 // AccessEntry describes a single externally reachable endpoint.
 type AccessEntryApplyConfiguration struct {
-	Device   *string `json:"device,omitempty"`
-	Port     *int32  `json:"port,omitempty"`
+	Device *string `json:"device,omitempty"`
+	Port   *int32  `json:"port,omitempty"`
+	// Protocol is http or https for a web port, and "terminal" for the browser terminal of the device.
 	Protocol *string `json:"protocol,omitempty"`
-	URL      *string `json:"url,omitempty"`
+	// URL is the address of a web port, and of the console of a terminal entry (https://<device>-<code>t.<labs domain>; the last character of the first label is the kind of access). It is empty
+	// until the device has its code.
+	URL *string `json:"url,omitempty"`
 }
 
 // AccessEntryApplyConfiguration constructs a declarative configuration of the AccessEntry type for use with

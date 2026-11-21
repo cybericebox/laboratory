@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build the proxy image and run the demux e2e on icebox-demux. Env: KIND_DEMUX_MODE (upgrade|userspace|tc|xdp|detach, default userspace), KIND_DEMUX_IMG (default cybericebox/laboratory-proxy:kind-demux)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+export KIND_DEMUX_IMG="${KIND_DEMUX_IMG:-cybericebox/laboratory-proxy:kind-demux}"
+PROXY_IMG="$KIND_DEMUX_IMG" mise-tasks/image/build proxy
+hack/kind-demux/e2e.sh "${KIND_DEMUX_MODE:-userspace}"

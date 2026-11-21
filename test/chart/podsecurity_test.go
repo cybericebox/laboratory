@@ -149,57 +149,44 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 	if _, catchAll := repos["**"]; catchAll {
 		t.Error("there must be no catch-all pattern")
 	}
-	for _, private := range []string{"lab/**", "base", "base/**"} {
+	// zot has one account, the gate: nobody reads anything anonymously and no node, operator, agent or platform account exists
+	for _, private := range []string{"lab/**", "base", "base/**", "c/**"} {
 		r, ok := repos[private]
 		if !ok || len(r.AnonymousPolicy) != 0 {
 			t.Errorf("%s must exist and not be anonymous: %+v", private, r)
 			continue
 		}
-		var readers, writers bool
-		for _, p := range r.Policies {
-			readers = readers || (strings.Join(p.Users, ",") == "reader" && strings.Join(p.Actions, ",") == "read")
-			writers = writers || strings.Join(p.Users, ",") == "writer"
-		}
-		if !readers || !writers {
-			t.Errorf("%s: the reader reads, the writer writes: %+v", private, r.Policies)
+		if len(r.Policies) != 1 || strings.Join(r.Policies[0].Users, ",") != "gate" || strings.Join(r.Policies[0].Actions, ",") != "read,create,update,delete" {
+			t.Errorf("%s belongs to the gate account alone: %+v", private, r.Policies)
 		}
 	}
-	for _, public := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
-		r, ok := repos[public]
-		if !ok || len(r.AnonymousPolicy) != 1 || r.AnonymousPolicy[0] != "read" {
-			t.Errorf("%s is the public cache: anonymous read: %+v", public, r)
-			continue
-		}
-		// the writer account is on every node: it may read the cache and never write or delete there (zot's own sync fills it)
-		for _, p := range r.Policies {
-			if strings.Join(p.Users, ",") == "writer" && strings.Join(p.Actions, ",") != "read" {
-				t.Errorf("%s: the writer must only read the cache: %v", public, p.Actions)
-			}
+	if len(repos) != 4 {
+		t.Errorf("the repositories of zot are lab/**, base, base/** and c/** only (nothing for the platform): %v", repos)
+	}
+	// the image cache is the gate's tree: nobody reads it anonymously, and the only account with a right there is the gate
+	for _, upstream := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
+		if r, ok := repos[upstream]; ok {
+			t.Errorf("%s: the old public cache patterns are gone (the cache lives under c/**): %+v", upstream, r)
 		}
 	}
 	if strings.Contains(cm.Data["config.json"], "adminPolicy") {
 		t.Error("no account may have rights over every repository")
 	}
-	// both accounts exist, and the agent gets the reader in its own namespace
-	if !strings.Contains(out, "readerPassword:") || !strings.Contains(out, "reader:$2") || !strings.Contains(out, "writer:$2") {
-		t.Errorf("the registry secret needs a reader and a writer account:\n%s", out)
+	// one account, the gate's: no reader and no writer password exists, in the Secret or in another namespace
+	if !strings.Contains(out, "gatePassword:") || !strings.Contains(out, "gate:$2") {
+		t.Errorf("the registry secret needs the gate account:\n%s", out)
 	}
-	agentOut, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/secret.yaml", "-s", "templates/agent/deployment.yaml")...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"name: laboratory-registry-reader", "namespace: laboratory-agent", "name: AGENT_REGISTRY_USER", "name: AGENT_REGISTRY_PASSWORD"} {
-		if !strings.Contains(agentOut, want) {
-			t.Errorf("missing %q", want)
+	for _, gone := range []string{"readerPassword", "reader:$2", "writer:$2", "readerUsername", "platformPassword", "username: writer", "laboratory-registry-reader"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("the registry secret still holds %q:\n%s", gone, out)
 		}
 	}
-	// the reader reaches the node-agent too (its forwarder adds it to the pulls of snapshots)
 	nodeOut, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-agent/daemonset.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(nodeOut, "STATE_REGISTRY_READER_PASSWORD") || !strings.Contains(nodeOut, "key: readerPassword") {
-		t.Error("the node-agent needs the reader account")
+	if strings.Contains(nodeOut, "secretKeyRef") || strings.Contains(nodeOut, "STATE_REGISTRY_READER") {
+		t.Errorf("the node-agent holds no registry credential:\n%s", nodeOut)
 	}
 }
 
@@ -334,24 +321,39 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 	}
 }
 
-// The agent runs two replicas by default, spread over nodes, with a budget; and mTLS off needs the insecure flag by name.
+// The agent runs ONE replica by default (reservation fit and quota are serialized inside one process); more than one is refused unless
+// acknowledged, and then it is spread over nodes with a budget. mTLS off needs the insecure flag by name.
 func TestAgentReplicasAndInsecureFlag(t *testing.T) {
-	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml", "-s", "templates/agent/pdb.yaml")...)
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+	if !strings.Contains(out, "replicas: 1") {
+		t.Errorf("the agent must default to one replica:\n%s", out)
+	}
+	// an empty template is an error of helm -s: no output means no budget
+	if pdb, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/pdb.yaml")...); err == nil && strings.Contains(pdb, "PodDisruptionBudget") {
+		t.Errorf("a budget on one replica blocks every drain:\n%s", pdb)
+	}
+	// more than one replica: refused with the reason, until acknowledged
+	if out, err := helmTemplate(t, append(agentSet, "--set", "agent.replicas=2")...); err == nil || !strings.Contains(out, "agent.multiReplicaAck") {
+		t.Errorf("agent.replicas=2 without the acknowledgement must be refused and name the value: %v\n%s", err, out)
+	}
+	out, err = helmTemplate(t, append(agentSet, "--set", "agent.replicas=2", "--set", "agent.multiReplicaAck=true", "-s", "templates/agent/deployment.yaml", "-s", "templates/agent/pdb.yaml")...)
+	if err != nil {
+		t.Fatalf("acknowledged replicas=2: %v\n%s", err, out)
+	}
 	if !strings.Contains(out, "replicas: 2") || !strings.Contains(out, "kind: PodDisruptionBudget") || !strings.Contains(out, "topologySpreadConstraints") {
-		t.Errorf("the agent must default to two replicas with a budget and a spread:\n%s", out)
+		t.Errorf("two acknowledged replicas must be spread over nodes with a budget:\n%s", out)
+	}
+	// the agent switched off: the replica rule does not apply
+	if _, err := helmTemplate(t, "--set", "agent.replicas=3"); err != nil {
+		t.Errorf("agent.replicas is only checked when the agent is enabled: %v", err)
 	}
 	for _, want := range []string{"AGENT_ENROLL_MAX_MESSAGE_BYTES", "AGENT_MAX_CONCURRENT_STREAMS", "AGENT_STREAM_RECHECK", "AGENT_ALLOW_INSECURE"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s", want)
 		}
-	}
-	// one replica: no budget (it would block drains)
-	out, err = helmTemplate(t, append(agentSet, "--set", "agent.replicas=1", "-s", "templates/agent/pdb.yaml")...)
-	if err == nil && strings.Contains(out, "PodDisruptionBudget") {
-		t.Error("a budget on a single replica would block every drain")
 	}
 	// There is one switch: agent.mtls.enabled is gone (a stale values file fails), agent.allowInsecure turns the client check off.
 	if _, err := helmTemplate(t, append(agentSet, "--set", "agent.mtls.enabled=false", "-s", "templates/agent/deployment.yaml")...); err == nil {
@@ -369,20 +371,21 @@ func TestAgentReplicasAndInsecureFlag(t *testing.T) {
 	}
 }
 
-// C-16: the chart refuses a Kubernetes older than 1.33 (user namespaces for device pods, native sidecars, admission policies).
-func TestChartRefusesKubernetesBelow133(t *testing.T) {
-	for _, v := range []string{"1.29.0", "1.30.4", "1.32.9"} {
+// C-16: the chart refuses a Kubernetes older than 1.35 (the kubelet's check of pull credentials, KEP-2535; user namespaces for device pods,
+// native sidecars, admission policies).
+func TestChartRefusesKubernetesBelow135(t *testing.T) {
+	for _, v := range []string{"1.29.0", "1.32.9", "1.33.0", "1.34.7"} {
 		out, err := helmTemplate(t, "--kube-version", v, "-s", "templates/operator/configmap.yaml")
-		if err == nil || !strings.Contains(out, "1.33") {
+		if err == nil || !strings.Contains(out, "1.35") {
 			t.Errorf("%s must be refused with the required version in the message: %v\n%s", v, err, out)
 		}
 	}
-	if out, err := helmTemplate(t, "--kube-version", "1.33.0", "-s", "templates/operator/configmap.yaml"); err != nil {
-		t.Errorf("1.33.0 must render: %v\n%s", err, out)
+	if out, err := helmTemplate(t, "--kube-version", "1.35.0", "-s", "templates/operator/configmap.yaml"); err != nil {
+		t.Errorf("1.35.0 must render: %v\n%s", err, out)
 	}
 	data, err := os.ReadFile("../../charts/laboratory/Chart.yaml")
-	if err != nil || !strings.Contains(string(data), "kubeVersion: \">=1.33.0-0\"") {
-		t.Errorf("Chart.yaml must carry kubeVersion >=1.33.0-0: %v", err)
+	if err != nil || !strings.Contains(string(data), "kubeVersion: \">=1.35.0-0\"") {
+		t.Errorf("Chart.yaml must carry kubeVersion >=1.35.0-0: %v", err)
 	}
 }
 
@@ -428,16 +431,5 @@ func TestAgentAndProxyNamespacesEnforcePodSecurity(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("%d namespaces rendered", n)
-	}
-}
-
-// L-10: zot has no ServiceAccount token (it never talks to the API) and its writer account cannot touch the public cache.
-func TestRegistryPodHasNoServiceAccountToken(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/deployment.yaml")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	if !strings.Contains(out, "automountServiceAccountToken: false") {
-		t.Errorf("zot must not mount a token:\n%s", out)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -284,6 +283,9 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 	if suspended {
 		return ctrl.Result{}, nil
 	}
+	if bootstrapFailed(device) {
+		return ctrl.Result{}, nil // the bootstrap used its attempts: no pod until the device is reset
+	}
 	if len(pods) > 0 {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil // an old pod is still going away
 	}
@@ -304,10 +306,10 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		}
 	}
 	if err := r.createDevicePod(ctx, device); err != nil {
-		if stderrors.Is(err, errProfileUnsupported) {
-			return ctrl.Result{}, nil // refused for good, with an event
+		if refused, serr := r.refusedForGood(ctx, device, err); refused {
+			return ctrl.Result{}, serr // refused with an event: nothing to retry
 		}
-		return r.pullSecretWait(ctx, device, err)
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
@@ -396,6 +398,9 @@ func (r *DeviceReconciler) reconcileCurrentPod(ctx context.Context, device *labo
 	if err := r.reportSnapshotPull(ctx, device, cur); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.syncStateBootstrap(ctx, device, cur); err != nil {
+		return ctrl.Result{}, err
+	}
 	if !podReady(cur) || cur.Status.PodIP == "" {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
@@ -445,6 +450,9 @@ func (r *DeviceReconciler) reconcileEndedPod(ctx context.Context, device *labora
 		st.StoppedAt = &metav1.Time{Time: finished}
 	}
 	if err := r.publishPlacement(ctx, device, nil); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.recordEndedBootstrapPod(ctx, device, cur); err != nil {
 		return ctrl.Result{}, err
 	}
 	if st.ExitSnapshotPod != cur.Name {
@@ -517,20 +525,38 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	if err := r.refuseUnrunnableProfile(device); err != nil {
 		return err
 	}
-	// Before the incarnation moves: a device that waits for its lab's pull Secret starts
-	// the same incarnation once it is there.
-	pullSecrets, err := r.devicePullSecrets(ctx, device)
-	if err != nil {
+	if err := r.refuseUnbootstrappable(device); err != nil {
+		return err
+	}
+	if err := r.refuseUncached(device); err != nil {
 		return err
 	}
 	st := device.Status.State
 	spec := device.Spec.State
 	next := st.Incarnation + 1
-	image, restored := "", false
-	if st.Image != "" {
-		image, restored = st.Image, true
+	plan, discard := planForStatePod(device, st.Image != "", spec.Rescue)
+	image, restored := "", plan.Restored
+	if restored {
+		image = st.Image
 	}
 	patch := statePatch{"incarnation": next, "stoppedAt": nil}
+	if discard {
+		// The saved state comes from a filesystem whose bootstrap did not finish: it is never restored. The pod starts from the
+		// base image and bootstraps it again.
+		if r.Registry != nil {
+			repo := snapshot.Repo(device.Namespace, device.Spec.LabRef, device.Spec.Name)
+			if err := r.Registry.DeleteRepo(ctx, repo); err != nil {
+				return fmt.Errorf("delete snapshots %s: %w", repo, err)
+			}
+		}
+		patch["image"], patch["snapshotAt"], patch["sizeBytes"], patch["layers"], patch["restoredAt"] = nil, nil, nil, nil, nil
+	}
+	if launchModeFor(device, plan) == launchRun && bootstrapDone(device) {
+		// A clean filesystem again (no state was saved before the pod ended): the bootstrap starts over.
+		if err := r.setBootstrapStatus(ctx, device, &laboratoryv1alpha1.DeviceBootstrapStatus{Phase: laboratoryv1alpha1.BootstrapPending}); err != nil {
+			return err
+		}
+	}
 	if restored {
 		patch["restoredAt"] = r.now().UTC().Format(time.RFC3339)
 	}
@@ -540,8 +566,10 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	device.Status.State.Incarnation = next
 	device.Status.State.StoppedAt = nil
 
-	labels, _, annotations, podSpec := r.workloadTemplate(device, true)
-	setPullSecrets(&podSpec, pullSecrets)
+	labels, _, annotations, podSpec := r.workloadTemplateFor(device, true, plan)
+	if err := r.stampGroupName(ctx, device, labels); err != nil {
+		return err
+	}
 	annotations[names.AnnotationStateEpoch] = fmt.Sprint(st.Epoch)
 	annotations[names.AnnotationStateDevice] = device.Name
 	annotations[names.AnnotationStateIncarnation] = fmt.Sprint(next)
@@ -626,6 +654,12 @@ func (r *DeviceReconciler) resetDevice(ctx context.Context, device *laboratoryv1
 		"exitSnapshotPod": nil,
 	}); err != nil {
 		return ctrl.Result{}, err
+	}
+	if bootstrapEnabled(device) {
+		// Back to the original image: the bootstrap starts over, and a device that gave up may try again.
+		if err := r.setBootstrapStatus(ctx, device, &laboratoryv1alpha1.DeviceBootstrapStatus{Phase: laboratoryv1alpha1.BootstrapPending}); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	return ctrl.Result{Requeue: true}, nil
 }

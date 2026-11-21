@@ -16,7 +16,7 @@ import (
 func TestPodsCarryTheirPriorityClass(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
-	r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", PriorityClass: "laboratory-group"}
+	r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", PriorityClass: "laboratory-group"}
 	if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestPodsCarryTheirPriorityClass(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{}
 	device.Spec.Name = "web"
 	device.Spec.LabRef = "lab"
-	_, _, _, spec := (&DeviceReconciler{PriorityClass: "laboratory-device"}).workloadTemplate(device, false)
+	_, _, _, spec := (&DeviceReconciler{PriorityClass: "laboratory-device"}).workloadTemplate(device)
 	if spec.PriorityClassName != "laboratory-device" {
 		t.Errorf("device: class %q, want laboratory-device", spec.PriorityClassName)
 	}
@@ -47,7 +47,7 @@ func TestPodsCarryTheLabSchedulerName(t *testing.T) {
 	ctx := context.Background()
 	for _, name := range []string{"laboratory-binpack", ""} {
 		c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
-		r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SchedulerName: name}
+		r := &LabGroupReconciler{Client: c, LabBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SchedulerName: name}
 		if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func TestPodsCarryTheLabSchedulerName(t *testing.T) {
 		}
 		device := &laboratoryv1alpha1.Device{}
 		device.Spec.Name, device.Spec.LabRef = "web", "lab"
-		_, _, _, spec := (&DeviceReconciler{SchedulerName: name}).workloadTemplate(device, false)
+		_, _, _, spec := (&DeviceReconciler{SchedulerName: name}).workloadTemplate(device)
 		if spec.SchedulerName != name {
 			t.Errorf("device: scheduler %q, want %q", spec.SchedulerName, name)
 		}

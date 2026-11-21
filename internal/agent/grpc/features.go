@@ -12,17 +12,33 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/gatewayspec"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/internal/switches"
 	"github.com/cybericebox/laboratory/internal/tenant"
+	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 // Features are the platform's choices the backend needs to know, set once from the chart.
+// grantMaxTTL is the longest grant lifetime the whole entry accepts: the smaller of the configured limits of the L7 proxy
+// and of device-access (a grant for a console is checked by both). Zero when neither is configured.
+func (f Features) grantMaxTTL() time.Duration {
+	var out time.Duration
+	for _, d := range []time.Duration{f.ProxyGrantMaxTTL, f.TerminalGrantMaxTTL} {
+		if d > 0 && (out == 0 || d < out) {
+			out = d
+		}
+	}
+	return out
+}
+
 type Features struct {
 	Lifecycle *protobuf.LifecycleFeature
 	// StatePersistence is the cluster switch; Debounce, ExcludePaths, WriteQuota and MaxFileSize are its cluster values
@@ -45,10 +61,10 @@ type Features struct {
 	// LabsDomain and VPNEndpoint are the public hosts of lab endpoints and of WireGuard.
 	LabsDomain  string
 	VPNEndpoint string
-	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits.
-	ProxyAccessTokenMaxTTL time.Duration
-	ProxySessionIdleTTL    time.Duration
-	ProxySessionMaxTTL     time.Duration
+	// ProxyGrantMaxTTL and TerminalGrantMaxTTL are the longest exp - iat of an access grant the L7 proxy and device-access
+	// accept. GetFeatures reports the smaller one (grantMaxTTL); zero means "not configured" and is skipped.
+	ProxyGrantMaxTTL    time.Duration
+	TerminalGrantMaxTTL time.Duration
 	// DeviceProfiles are the enabled catalog profile IDs (internal/profiles).
 	DeviceProfiles []string
 	// Limits are the caps CreateLabs enforces.
@@ -62,6 +78,31 @@ type Features struct {
 	GroupPods GroupPodsFeature
 	// GroupLimits are the most users and labs a group may be made for and the counts it gets by default.
 	GroupLimits grouppods.Limits
+	// ChecksEnabled and TerminalEnabled are the chart's two independent options (checks.enabled, terminal.enabled): a lab with
+	// checks, or with a terminal device, is refused while the matching one is off.
+	ChecksEnabled   bool
+	TerminalEnabled bool
+	// TerminalServed: the component that serves terminals exists in this installation. features.access.terminal is true only with both
+	// this and the option (a lab with a terminal device is refused by the option alone).
+	TerminalServed bool
+	// CheckMaxTimeLimit is the ceiling of the time limit of one check run in seconds (0: the contract's); ManualCooldown is the least time
+	// between two manual runs of one lab (0: none). Both are chart values (checks.maxTimeLimitSeconds, checks.manualCooldown).
+	CheckMaxTimeLimit int32
+	ManualCooldown    time.Duration
+	// MaxLabGateways is the most gateways one lab may have (0: gatewayspec.DefaultMax); CreateLabs refuses a lab with more.
+	MaxLabGateways int
+	// CheckerRequired: checks count as available only while the checker DaemonSet exists (production sets it with ChecksEnabled).
+	CheckerRequired bool
+	// ActivityReports is the chart's activityReports.enabled: the cluster keeps raw activity facts and GetLabGroupActivity answers.
+	ActivityReports bool
+	// TerminalMaxLifetime is the longest console session (chart terminal.limits.maxLifetime); VPNFirewall is the chart's vpn.firewall ("nft"
+	// keeps no connection tracking, so no devices-touched events).
+	TerminalMaxLifetime time.Duration
+	VPNFirewall         string
+	// Switches is what the laboratory serves (chart vpn.enabled, inetGateway.enabled, proxy.enabled and its accesses, checks.enabled).
+	// Nil: every switch is on (an installation, or a test, that does not say). A lab, a client or a group switch that asks for what is off is
+	// refused with a reason (VPN_UNAVAILABLE, INTERNET_UNAVAILABLE, ACCESS_UNAVAILABLE, CHECKS_UNAVAILABLE).
+	Switches *switches.Cluster
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
@@ -124,10 +165,17 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			}
 			p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
 			base = &protobuf.FeaturesResponse{
-				Tenant:          name,
-				ContractVersion: client.ContractVersion,
-				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
-				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
+				Tenant:            name,
+				ContractVersion:   client.ContractVersion,
+				GroupLimits:       &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
+				Lifecycle:         cloneLifecycleFeature(f.Lifecycle),
+				Checks:            h.checksFeature(),
+				Access:            h.accessFeature(),
+				Internet:          &protobuf.InternetFeature{Enabled: h.cluster().Internet},
+				AllowedRegistries: h.allowedRegistriesFeature(),
+				Bootstrap:         bootstrapFeature(),
+				Vpn:               h.vpnFeature(),
+				Activity:          h.activityFeature(),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,
 					DefaultDebounceMs:  f.Debounce.Milliseconds(),
@@ -166,7 +214,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				// Every LabGroup and Lab runs under a reservation: there is no way around it on this agent (decision 17).
 				Reservations: &protobuf.ReservationsFeature{Required: true, EndingNoticeSeconds: int32(h.reservationNotice() / time.Second)},
 				Proxy: &protobuf.ProxyFeature{
-					AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
+					GrantMaxTtlSeconds: int64(f.grantMaxTTL().Seconds()),
 				},
 			}
 			// the chart says what is configured; the nodes say what they can do
@@ -240,4 +288,59 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 		return &protobuf.LifecycleFeature{}
 	}
 	return proto.Clone(f).(*protobuf.LifecycleFeature)
+}
+
+// vpnFeature reports whether the VPN gates enforce the block of connections started by a lab towards a client. The answer comes from the
+// code that generates the rules (vpn.LabInitiatedBlockEnforced), so it cannot say true for a gate that does not install them.
+func (h *Handler) vpnFeature() *protobuf.VPNFeature {
+	enabled := h.cluster().VPN
+	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced(), MaxGateways: int32(h.maxLabGateways()), Enabled: &enabled}
+}
+
+// cluster is what the laboratory serves: the configured switches, or everything on when none were given.
+func (h *Handler) cluster() switches.Cluster {
+	if h.features.Switches != nil {
+		return *h.features.Switches
+	}
+	return switches.Everything()
+}
+
+// accessFeature is which accesses of a device the laboratory serves: http while the L7 proxy runs, the others also by their own switch.
+func (h *Handler) accessFeature() *protobuf.AccessFeature {
+	c, f := h.cluster(), h.features
+	return &protobuf.AccessFeature{Http: c.L7, Terminal: c.L7 && f.TerminalEnabled && f.TerminalServed, Rdp: c.L7 && c.RDP, Vnc: c.L7 && c.VNC}
+}
+
+// clusterRefusal is the refusal of a lab spec that asks for what a switch of the laboratory has turned off, as an error with a stable
+// reason; nil when it is fine. Terminal and checks have their own earlier refusals, which say the same.
+func (h *Handler) clusterRefusal(spec *laboratoryv1alpha1.LabSpec) error {
+	if r := h.cluster().Refuse(spec); r != nil {
+		return refusal(r.Reason, "%s", r.Text)
+	}
+	return nil
+}
+
+// maxLabGateways is the most gateways one lab may have: the configured limit, or the default.
+func (h *Handler) maxLabGateways() int {
+	if h.features.MaxLabGateways > 0 {
+		return h.features.MaxLabGateways
+	}
+	return gatewayspec.DefaultMax
+}
+
+// allowedRegistriesFeature is the list of registries lab images may come from, as GetFeatures reports it: canonical hosts, or any.
+func (h *Handler) allowedRegistriesFeature() *protobuf.AllowedRegistriesFeature {
+	out := &protobuf.AllowedRegistriesFeature{}
+	if len(h.allowedRegistries) == 0 {
+		out.Any = true
+		return out
+	}
+	for _, r := range h.allowedRegistries {
+		if r = strings.TrimSpace(r); r == imagepolicy.AnyRegistry {
+			return &protobuf.AllowedRegistriesFeature{Any: true}
+		} else if r != "" {
+			out.Registries = append(out.Registries, imagepolicy.CanonicalRegistry(r))
+		}
+	}
+	return out
 }

@@ -31,9 +31,16 @@ func TestLabToProtoStatus(t *testing.T) {
 	lab.Name = "ctf1"
 	lab.Namespace = "team-alpha"
 	lab.Status.Phase = laboratoryv1alpha1.PhaseReady
-	lab.Status.VPN.CIDR = "10.128.1.0/24"
-	lab.Status.VPN.Ready = true
-	lab.Status.Internet.Ready = true
+	lab.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{
+		{Name: "attack", Kind: laboratoryv1alpha1.GatewayKindVPN},
+		{Name: "out", Kind: laboratoryv1alpha1.GatewayKindInternet},
+		{Name: "user", Kind: laboratoryv1alpha1.GatewayKindVPN, ReverseConnections: true},
+	}
+	lab.Status.Gateways = []laboratoryv1alpha1.GatewayStatus{
+		{Name: "attack", Kind: laboratoryv1alpha1.GatewayKindVPN, CIDR: "10.128.1.0/24", Ready: true, LabInitiatedBlocked: true},
+		{Name: "out", Kind: laboratoryv1alpha1.GatewayKindInternet, CIDR: "10.128.2.0/24", Ready: true},
+		{Name: "user", Kind: laboratoryv1alpha1.GatewayKindVPN, CIDR: "10.128.3.0/24", LabInitiatedBlocked: true},
+	}
 	lab.Status.Devices = []laboratoryv1alpha1.DeviceRef{
 		{Name: "attacker", Ready: true},
 		{Name: "victim", Ready: false},
@@ -49,11 +56,14 @@ func TestLabToProtoStatus(t *testing.T) {
 	if p.Name != "ctf1" || p.Namespace != "team-alpha" {
 		t.Errorf("name/ns wrong: %+v", p)
 	}
-	if p.Status.Phase != "Ready" || p.Status.VpnCidr != "10.128.1.0/24" {
+	if p.Status.Phase != "Ready" {
 		t.Errorf("status wrong: %+v", p.Status)
 	}
-	if !p.Status.VpnReady || !p.Status.InternetReady {
-		t.Errorf("network readiness lost: %+v", p.Status)
+	gws := p.Status.Gateways
+	if len(gws) != 3 || gws[0].Name != "attack" || gws[0].Kind != "vpn" || gws[0].Cidr != "10.128.1.0/24" || !gws[0].Ready || !gws[0].LabInitiatedBlocked ||
+		gws[1].Name != "out" || gws[1].Kind != "internet" || !gws[1].Ready || gws[1].LabInitiatedBlocked ||
+		gws[2].Name != "user" || gws[2].Ready || gws[2].LabInitiatedBlocked {
+		t.Errorf("gateways wrong (a switch that is on reports no block): %+v", gws)
 	}
 	if len(p.Status.Devices) != 2 || p.Status.Devices[0].Name != "attacker" || !p.Status.Devices[0].Ready || p.Status.Devices[1].Ready {
 		t.Errorf("devices wrong: %+v", p.Status.Devices)
@@ -73,13 +83,13 @@ func TestLabToProtoCarriesSpecJSON(t *testing.T) {
 	in := &laboratoryv1alpha1.Lab{}
 	in.Name = "ctf1"
 	in.Namespace = "team-alpha"
-	in.Spec.VPN.Enabled = true
+	in.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 
 	out, err := parseLabSpec(labToProto(in).SpecJson, false)
 	if err != nil {
 		t.Fatalf("parseLabSpec: %v", err)
 	}
-	if !out.VPN.Enabled {
+	if len(out.Gateways) != 1 || out.Gateways[0].Name != "vpn" {
 		t.Errorf("lost data: %+v", out)
 	}
 }

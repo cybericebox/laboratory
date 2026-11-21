@@ -38,6 +38,10 @@ type userXattrLayer struct {
 	bytes, metadata    int64
 	metadataLimit      int64
 	bookkeeping        int
+	// badNames counts the user.* attribute names left out because they cannot be written as a PAX record (see readUserXattrs).
+	badNames int
+	// droppedLinks counts hard links left out because their target was not written by this stage.
+	droppedLinks int
 }
 
 // writeUserXattrLayer retains containerd's changeset and supplements user.*
@@ -47,9 +51,23 @@ type userXattrLayer struct {
 // admission cap; exported user metadata is bounded by WriteQuota and 64 MiB.
 // These guards do not change snapshot.Stats.Bytes (regular payload accounting).
 func writeUserXattrLayer(ctx context.Context, raw io.Reader, out io.Writer, upper, live, lower *os.Root, pol snapshot.Policy) error {
+	return writeUserXattrLayerReport(ctx, raw, out, upper, live, lower, pol, nil)
+}
+
+// xattrReport is what writeUserXattrLayerReport left out of the layer without failing it.
+type xattrReport struct {
+	BadNames     int // user.* attribute names that cannot be PAX record keys
+	DroppedLinks int // hard links whose target was not passed on
+}
+
+// writeUserXattrLayerReport is writeUserXattrLayer that also says, in *report when it is not nil, what it left out.
+func writeUserXattrLayerReport(ctx context.Context, raw io.Reader, out io.Writer, upper, live, lower *os.Root, pol snapshot.Policy, report *xattrReport) (err error) {
 	l := &userXattrLayer{ctx: ctx, pol: pol, upper: upper, live: live, lower: lower, tw: tar.NewWriter(out), seen: map[[32]byte]bool{}, skipped: map[[32]byte]bool{}, links: map[xattrInode]string{}, metadataLimit: xattrLayerMetadataMax}
 	if pol.WriteQuota > 0 && pol.WriteQuota < l.metadataLimit {
 		l.metadataLimit = pol.WriteQuota
+	}
+	if report != nil {
+		defer func() { report.BadNames, report.DroppedLinks = l.badNames, l.droppedLinks }()
 	}
 	tr := tar.NewReader(contextReader{ctx, raw})
 	for {
@@ -65,6 +83,13 @@ func writeUserXattrLayer(ctx context.Context, raw io.Reader, out io.Writer, uppe
 			return err
 		}
 		if pol.Excluded(xattrLogicalPath(name)) {
+			continue
+		}
+		// A hard link is kept only when the entry it points at was seen in this layer and is not excluded: a link to an excluded path
+		// or to a name that never was an entry would dangle. (The snapshot filter that follows applies the same rule to what it
+		// drops itself.)
+		if h.Typeflag == tar.TypeLink && !l.linkTargetKept(h.Linkname) {
+			l.droppedLinks++
 			continue
 		}
 		if err := l.remember(name); err != nil {
@@ -111,6 +136,15 @@ func (l *userXattrLayer) remember(name string) error {
 		l.seen[key] = true
 	}
 	return nil
+}
+
+// linkTargetKept says the target of a hard link is an entry this stage has passed on: seen in the layer, and not an excluded path.
+func (l *userXattrLayer) linkTargetKept(linkname string) bool {
+	target, err := xattrRootName(linkname)
+	if err != nil || l.pol.Excluded(xattrLogicalPath(target)) {
+		return false
+	}
+	return l.seen[sha256.Sum256([]byte(target))]
 }
 
 func (l *userXattrLayer) reserveBookkeeping(n int) error {
@@ -222,7 +256,7 @@ func (l *userXattrLayer) parentAttrs(name string) (map[string]string, bool, erro
 		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
-	attrs, err := readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-len(name))
+	attrs, err := readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-len(name), nil)
 	return attrs, info.IsDir(), err
 }
 
@@ -287,7 +321,7 @@ func (l *userXattrLayer) supplement(name string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	attrs, err := readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-len(name))
+	attrs, err := readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-len(name), &l.badNames)
 	if err != nil {
 		return err
 	}
@@ -389,7 +423,10 @@ func stableXattrFile(f *os.File, before unix.Stat_t) bool {
 	return unix.Fstat(int(f.Fd()), &after) == nil && before.Dev == after.Dev && before.Ino == after.Ino && before.Mode == after.Mode && before.Uid == after.Uid && before.Gid == after.Gid && before.Size == after.Size && before.Nlink == after.Nlink && before.Mtim == after.Mtim && before.Ctim == after.Ctim
 }
 
-func readUserXattrs(ctx context.Context, f *os.File, remaining int) (map[string]string, error) {
+// readUserXattrs reads the user.* attributes of an open file. A name that cannot be a PAX record key (it holds "=", which would make the
+// record "key=value" ambiguous and which tar.Writer refuses, or a NUL, or is empty) is skipped, and counted in *skipped when that is not nil:
+// a participant that set one would otherwise fail every snapshot of its device.
+func readUserXattrs(ctx context.Context, f *os.File, remaining int, skipped *int) (map[string]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -414,6 +451,12 @@ func readUserXattrs(ctx context.Context, f *os.File, remaining int) (map[string]
 		if !strings.HasPrefix(name, "user.") {
 			continue
 		}
+		if !exportableXattrName(name) {
+			if skipped != nil {
+				*skipped++
+			}
+			continue
+		}
 		remaining -= len(xattrPAXPrefix) + len(name)
 		value, err := readFileXattr(ctx, f, name, remaining)
 		if err != nil {
@@ -423,6 +466,11 @@ func readUserXattrs(ctx context.Context, f *os.File, remaining int) (map[string]
 		attrs[name] = value
 	}
 	return attrs, nil
+}
+
+// exportableXattrName says an attribute name can be written as the key of a PAX record: not empty, no "=" and no NUL.
+func exportableXattrName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "=\x00")
 }
 
 func readFileXattr(ctx context.Context, f *os.File, name string, remaining int) (string, error) {
@@ -516,7 +564,7 @@ func (l *userXattrLayer) changedHeaderAttrs(h *tar.Header, name string) (map[str
 			_ = f.Close()
 			return nil, fmt.Errorf("snapshot inode metadata changed for %q", name)
 		}
-		attrs, err = readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-layerHeaderBytes(h))
+		attrs, err = readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-layerHeaderBytes(h), &l.badNames)
 		if err == nil && info.IsDir() {
 			err = l.checkDirectoryRemoval(name, attrs)
 		}

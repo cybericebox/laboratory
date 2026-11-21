@@ -17,6 +17,12 @@ rules:
 - apiGroups: [""]
   resources: [pods]
   verbs: [create, delete, get, list, patch, watch]
+# One Role per lab with checks (get on that lab's checks Secret only) for the lab checker; its binding is a RoleBinding (cluster rule
+# `rolebindings` of laboratory-manager-role). The operator already holds `get secrets` here, so it needs neither `escalate` nor `bind`.
+# The admission policy laboratory-operator-scope allows roles only in the group namespaces.
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [roles]
+  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [apps]
   resources: [replicasets]
   verbs: [get]

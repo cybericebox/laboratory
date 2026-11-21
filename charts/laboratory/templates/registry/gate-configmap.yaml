@@ -1,0 +1,15 @@
+{{- if include "laboratory.registryEnabled" . }}
+{{- /*
+The upstream registries the gate may call for the image cache: the one list (name an image carries, url). A change of the list is a change of
+this ConfigMap; the gate reloads it within a few seconds, with no restart of the gate and none of zot (zot carries no registry list).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-registry-gate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+data:
+  registries.json: {{ include "laboratory.cacheUpstreams" . | quote }}
+{{- end }}

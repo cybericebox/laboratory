@@ -1,6 +1,6 @@
-{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+{{- if include "laboratory.wgEnabled" . }}
 {{- $hostNet := include "laboratory.wgHostNetwork" . }}
-# The WireGuard demux: one pod on every entry node (proxy.wg.nodeSelector, else labWorkloads, narrows the set). userspace runs on the pod network, unprivileged;
+# The WireGuard demux: one pod on every node of the lab pool. userspace runs on the pod network, unprivileged;
 # tc and xdp run on the host network as root with the BPF capabilities only and the host's bpffs, to keep the pinned maps and links across
 # restarts (see DEPLOY.md).
 apiVersion: apps/v1
@@ -45,13 +45,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       {{- end }}
-      {{- with include "laboratory.placement" (dict "own" .Values.proxy.wg "root" $ "daemon" true) }}
-      {{- . | nindent 6 }}
-      {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "laboratory.pool" (dict "pool" "lab" "root" $ "daemon" true) | nindent 6 }}
       containers:
       - name: wg-demux
         image: {{ include "laboratory.imageRef" (dict "image" .Values.proxy.image "root" $) | quote }}

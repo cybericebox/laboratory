@@ -252,6 +252,7 @@ func (p *Proxy) handle(ctx context.Context, c net.Conn, isTLS bool) {
 	defer func() {
 		if p.Stats != nil {
 			p.Stats.End(lab, name, atomic.LoadInt64(&sent), atomic.LoadInt64(&got))
+			p.recordFlow(lab, c, up, atomic.LoadInt64(&sent), atomic.LoadInt64(&got))
 		}
 	}()
 	if _, err := up.Write(raw); err != nil {
@@ -259,6 +260,17 @@ func (p *Proxy) handle(ctx context.Context, c net.Conn, isTLS bool) {
 	}
 	atomic.AddInt64(&sent, int64(len(raw)))
 	p.splice(ctx, c, up, &sent, &got)
+}
+
+// recordFlow adds the finished connection to the per-address rows of the minute. With activity reports off (Stats.Detail false) it does
+// nothing at all: no address is turned into a string and no map is touched.
+func (p *Proxy) recordFlow(lab string, from, to net.Conn, up, down int64) {
+	if !p.Stats.Detail {
+		return
+	}
+	if dst, ok := to.RemoteAddr().(*net.TCPAddr); ok {
+		p.Stats.Flow(lab, remoteAddr(from).String(), dst.IP.String(), dst.Port, up, down)
+	}
 }
 
 // splice copies both ways until either side ends or the connection is as old as MaxConnAge.

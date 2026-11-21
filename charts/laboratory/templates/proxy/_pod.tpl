@@ -7,7 +7,7 @@ spec:
   serviceAccountName: laboratory-proxy
   priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
   # After SIGTERM the proxy stops admission, closes tracked HTTP/WebSocket work and saves the settled counters; the preStop sleep lets
-  # the Gateway and the Service stop sending connections to the pod first.
+  # the load balancer and the Service stop sending connections to the pod first.
   terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
   securityContext:
     runAsNonRoot: true
@@ -24,13 +24,7 @@ spec:
             app: laboratory-proxy-l7
         topologyKey: kubernetes.io/hostname
   {{- end }}
-  {{- with include "laboratory.placement" (dict "own" .Values.proxy "root" $ "daemon" (eq .Values.proxy.mode "daemonset")) }}
-  {{- . | nindent 2 }}
-  {{- end }}
-  {{- with .Values.imagePullSecrets }}
-  imagePullSecrets:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "laboratory.pool" (dict "pool" "lab" "root" $ "daemon" (eq .Values.proxy.mode "daemonset")) | nindent 2 }}
   containers:
   {{- if .Values.proxy.l7.enabled }}
   - name: l7
@@ -46,37 +40,14 @@ spec:
     {{- /* The listen address (:8443), the probe port (:8081) and the TLS files (/etc/proxy/tls) are baked into the image. */}}
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
-  {{- if .Values.proxy.l7.proxyProtocol.trustedFrom }}
-    # The peers (the edge nodes) whose connections may begin with a PROXY protocol header; any other peer's header is ignored.
-    - name: L7_PROXY_PROTOCOL_FROM
-      value: {{ join "," .Values.proxy.l7.proxyProtocol.trustedFrom | quote }}
-    - name: L7_PROXY_PROTOCOL_TLV_TYPE
-      value: {{ .Values.proxy.l7.proxyProtocol.tlvType | quote }}
-  {{- with .Values.proxy.l7.proxyProtocol.secretRef }}
-    # The shared secret(s) the edge puts in a TLV of its PROXY v2 header (one value, or "current,next" while rotating), from a Secret that
-    # infrastructure makes: never a chart value.
-    - name: L7_PROXY_PROTOCOL_SECRETS
-      valueFrom:
-        secretKeyRef:
-          name: {{ .name }}
-          key: {{ .key }}
-  {{- end }}
-  {{- end }}
-    - name: SESSION_COOKIE_NAME
-      value: {{ .Values.proxy.l7.sessionCookieName | quote }}
-    - name: SESSION_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: {{ .Values.proxy.l7.sessionSecret.name | quote }}
-          key: {{ .Values.proxy.l7.sessionSecret.key | quote }}
-    - name: ACCESS_TOKEN_MAX_TTL
-      value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
-    - name: SESSION_IDLE_TTL
-      value: {{ .Values.proxy.l7.sessionIdleTTL | quote }}
-    - name: SESSION_RENEW_BEFORE
-      value: {{ .Values.proxy.l7.sessionRenewBefore | quote }}
-    - name: SESSION_MAX_TTL
-      value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
+    # The grants the platform signs for a device host: the longest exp - iat accepted, and the origins whose page may post one to /_auth.
+    # The public keys that verify them are read from the Secrets of laboratory-access-keys; the proxy holds no secret of its own.
+    - name: GRANT_MAX_TTL
+      value: {{ .Values.proxy.l7.grantMaxTTL | quote }}
+    - name: PLATFORM_ORIGINS
+      value: {{ join "," .Values.proxy.l7.platformOrigins | quote }}
+    - name: GRANT_COOKIE_NAME
+      value: {{ .Values.proxy.l7.grantCookieName | quote }}
     - name: LIVE_MAX_LIFETIME
       value: {{ .Values.proxy.l7.liveMaxLifetime | quote }}
     - name: LIVE_CHECK_INTERVAL
@@ -101,6 +72,8 @@ spec:
       value: {{ .Values.proxy.l7.livePerGroup | quote }}
     - name: LIVE_TOTAL
       value: {{ .Values.proxy.l7.liveTotal | quote }}
+    - name: ACTIVITY_REPORTS
+      value: {{ .Values.activityReports.enabled | quote }}
     - name: AUTH_RATE
       value: {{ .Values.proxy.l7.authRate | quote }}
     - name: AUTH_BURST
@@ -109,6 +82,25 @@ spec:
       valueFrom:
         fieldRef:
           fieldPath: metadata.name
+    {{- if .Values.terminal.enabled }}
+    # The console: the device access service pods (their namespace and port) and the limits the proxy applies itself.
+    - name: TERMINAL_ENABLED
+      value: "true"
+    - name: TERMINAL_SERVICE_NAMESPACE
+      value: {{ include "laboratory.deviceAccess.namespace" . | quote }}
+    - name: TERMINAL_EMBED_ALLOW
+      value: {{ join "," .Values.terminal.embedding.allow | quote }}
+    - name: TERMINAL_EMBED_DENY
+      value: {{ join "," .Values.terminal.embedding.deny | quote }}
+    - name: TERMINAL_SERVICE_PORT
+      value: {{ .Values.terminal.port | quote }}
+    - name: TERMINAL_PER_CLIENT
+      value: {{ .Values.terminal.limits.perClient | quote }}
+    - name: TERMINAL_IDLE_TIMEOUT
+      value: {{ .Values.terminal.limits.idleTimeout | quote }}
+    - name: TERMINAL_MAX_LIFETIME
+      value: {{ .Values.terminal.limits.maxLifetime | quote }}
+    {{- end }}
     {{- if .Values.bandwidth.enabled }}
     - name: NODE_NAME
       valueFrom:

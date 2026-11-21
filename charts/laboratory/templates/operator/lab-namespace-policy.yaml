@@ -32,7 +32,16 @@ spec:
       expression: "request.operation == 'UPDATE' && oldObject.metadata.?labels.orValue({}).exists(k, k == 'laboratory.cybericebox.com/group')"
     - name: changed
       expression: "variables.newLabeled != variables.oldLabeled || (variables.newLabeled && object.metadata.labels['laboratory.cybericebox.com/group'] != oldObject.metadata.labels['laboratory.cybericebox.com/group'])"
+    # the switches of the group (laboratory.cybericebox.com/vpn-enabled, internet-enabled): read by laboratory-feature-lab and the other feature
+    # policies, so only the operator may set them
+    - name: switchChanged
+      expression: >-
+        ['laboratory.cybericebox.com/vpn-enabled', 'laboratory.cybericebox.com/internet-enabled'].exists(k,
+        object.metadata.?labels.orValue({})[?k].orValue('') != (request.operation == 'UPDATE' ? oldObject.metadata.?labels.orValue({})[?k].orValue('') : ''))
   validations:
+    - expression: {{ printf "!variables.switchChanged || request.userInfo.username == '%s'" $operator | quote }}
+      message: "only the operator may add, change or remove the labels laboratory.cybericebox.com/vpn-enabled and internet-enabled of a namespace (the switches of a LabGroup)"
+      reason: Forbidden
     - expression: {{ printf "!variables.changed || request.userInfo.username == '%s'" $operator | quote }}
       message: "only the operator may add, change or remove the label laboratory.cybericebox.com/group of a namespace"
       reason: Forbidden

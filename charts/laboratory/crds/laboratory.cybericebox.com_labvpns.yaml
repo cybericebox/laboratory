@@ -39,15 +39,21 @@ spec:
           spec:
             description: LabVPNSpec defines the desired state of LabVPN.
             properties:
+              device:
+                description: Device is the name of the gateway of the lab this object
+                  serves (spec.gateways[].name).
+                minLength: 1
+                type: string
               labName:
                 description: LabName is the name of the parent Lab.
                 type: string
               networkIndex:
                 description: |-
-                  NetworkIndex is the subnet index N from the lab-subnets pool.
-                  VPN CIDR is derived as 10.8.N.0/24. Immutable after FinalizerController is set.
+                  NetworkIndex is the number of the gateway's leg (interface lab<N>), from the lab-subnets pool. The CIDR is not derived from
+                  it: it is in the parent Lab status (status.gateways). Immutable after FinalizerController is set.
                 type: integer
             required:
+            - device
             - labName
             type: object
           status:
@@ -163,6 +169,18 @@ spec:
                 type: boolean
               dhcpReady:
                 type: boolean
+              labInitiatedBlocked:
+                description: |-
+                  LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
+                  starts towards a VPN client, has applied it to this lab (reverseConnections of the gateway is false). Written only by a program
+                  that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
+                type: boolean
+              labInitiatedDropped:
+                description: |-
+                  LabInitiatedDropped counts the packets the block dropped for this lab since the VPN process started. For the cluster
+                  administrator's metrics; it is not part of the agent API.
+                format: int64
+                type: integer
               phase:
                 description: LabVPNPhase is the lifecycle phase of a LabVPN.
                 enum:

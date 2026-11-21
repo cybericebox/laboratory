@@ -302,13 +302,13 @@ func TestSnapshotBarrierInvalidatedOrWrongBootGuardPreservesRuntime(t *testing.T
 func TestCurrentAccessFenceRejectsOldBootOperationGenerationAndGroup(t *testing.T) {
 	r, l, _, c := lifecycleFixture(t, "Skip")
 	ctx := context.Background()
-	l.Spec.VPN.Enabled = true
+	l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}}
 	_ = c.Update(ctx, l)
 	group := &lab.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "group-uid"}, Status: lab.LabGroupStatus{Namespace: "g"}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "g", Labels: map[string]string{names.LabelGroup: "team"}}}
 	boot := lab.VPNRuntimeIdentity{BootID: "boot1", PodName: "vpn-pod", PodUID: "vpn-pod-uid", ContainerID: "containerd://1", RestartCount: 1}
 	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: boot.PodName, Namespace: "g", UID: types.UID(boot.PodUID), Labels: map[string]string{names.LabelComponent: names.ComponentVPN}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "vpn", ContainerID: boot.ContainerID, RestartCount: 1, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}}
-	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName(l.Name), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{Kind: "Lab", UID: l.UID}}}, Status: lab.LabVPNStatus{Runtime: &boot, AccessFence: &lab.LabAccessFence{OperationID: "op", Revision: 1, LabUID: string(l.UID), ObservedGeneration: 3, GroupUID: "group-uid", VPNRuntimeIdentity: boot, FencedAt: metav1.Now()}}}
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName(l.Name, "vpn"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{Kind: "Lab", UID: l.UID}}}, Status: lab.LabVPNStatus{Runtime: &boot, AccessFence: &lab.LabAccessFence{OperationID: "op", Revision: 1, LabUID: string(l.UID), ObservedGeneration: 3, GroupUID: "group-uid", VPNRuntimeIdentity: boot, FencedAt: metav1.Now()}}}
 	witness := &lab.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: "g"}, Spec: lab.LabTrafficReportSpec{Kind: lab.LabTrafficSurfaceVPN, Instance: boot.PodName}, Status: lab.LabTrafficReportStatus{CurrentVPNRuntime: &lab.VPNBootRecord{VPNRuntimeIdentity: boot, GroupUID: "group-uid", PublishedAt: metav1.Now()}}}
 	savedWitnessStatus := witness.Status
 	if err := c.Create(ctx, witness); err != nil {

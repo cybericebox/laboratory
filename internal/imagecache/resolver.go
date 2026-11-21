@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
+	"github.com/cybericebox/laboratory/internal/netguard"
 )
 
 // Resolver turns an image reference into the digest its tag points at now.
@@ -24,7 +27,7 @@ type Resolver interface {
 // RewritePinned is Rewrite for a reference pinned to digest: the tag is
 // replaced by the digest, so every pod of a lab pulls the very same image.
 // A reference the cache does not serve is returned unchanged.
-func (r Rewriter) RewritePinned(ref, digest string) string {
+func (r Scoped) RewritePinned(ref, digest string) string {
 	if digest == "" {
 		return r.Rewrite(ref)
 	}
@@ -67,6 +70,13 @@ type RegistryResolver struct {
 	// cache fetches that one image and not every architecture of the index. With
 	// several (or none known) the index digest is pinned.
 	Platforms func(ctx context.Context) []v1.Platform
+	// PlainHTTP lists registries (as they are named in an image reference: "registry.e2e.test", "host:5000") that are asked over plain
+	// http, as the registry gate asks the ones the chart lists with an http:// url (a plain registry inside the cluster). Any other is
+	// asked over https only.
+	PlainHTTP []string
+	// Transport carries every request to a registry. Nil: the default transport with the guard of netguard, which refuses a redirect
+	// to an internal address (see defaultTransport). A first request goes where the reference says, whatever the address.
+	Transport http.RoundTripper
 	// get resolves a reference to a digest for a platform (nil: any); nil means the
 	// real registry call. A field so tests need no registry.
 	get func(ctx context.Context, ref name.Reference, kc authn.Keychain, platform *v1.Platform) (string, error)
@@ -96,6 +106,11 @@ func (r *RegistryResolver) Resolve(ctx context.Context, ref string) (string, err
 	if err != nil {
 		return "", err
 	}
+	if slices.Contains(r.PlainHTTP, parsed.Context().RegistryStr()) {
+		if parsed, err = name.ParseReference(ref, name.Insecure); err != nil {
+			return "", err
+		}
+	}
 	var platform *v1.Platform
 	if r.Platforms != nil {
 		if ps := r.Platforms(ctx); len(ps) == 1 {
@@ -121,11 +136,14 @@ func (r *RegistryResolver) Resolve(ctx context.Context, ref string) (string, err
 	defer cancel()
 	get := r.get
 	if get == nil {
-		get = registryDigest
+		get = func(ctx context.Context, ref name.Reference, kc authn.Keychain, p *v1.Platform) (string, error) {
+			return registryDigest(ctx, ref, kc, p, r.transport())
+		}
 	}
 	digest, err := get(ctx, parsed, r.Keychain, platform)
 	if err != nil {
-		return "", err
+		// never the text of the registry's answer: this error ends up in a Lab's status, in events and in logs
+		return "", NewPinError(parsed.Context().RegistryStr(), err)
 	}
 	r.mu.Lock()
 	if r.known == nil {
@@ -213,22 +231,48 @@ func ProbeDigest(ctx context.Context, ref string, kc authn.Keychain, rt http.Rou
 	if err != nil {
 		return "", err
 	}
-	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuthFromKeychain(kc)}
-	if rt != nil {
-		opts = append(opts, remote.WithTransport(rt))
+	if rt == nil {
+		rt = defaultTransport()
 	}
+	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuthFromKeychain(kc), remote.WithTransport(rt)}
 	desc, err := remote.Head(parsed, opts...)
 	if err != nil {
-		return "", err
+		return "", NewPinError(parsed.Context().RegistryStr(), err)
 	}
 	return desc.Digest.String(), nil
+}
+
+// maxResolveRedirects is how many redirects a request of the resolver may follow (a manifest request, like a proof of the registry gate).
+const maxResolveRedirects = 3
+
+var (
+	defaultTransportOnce sync.Once
+	defaultTransportRT   http.RoundTripper
+)
+
+// defaultTransport is the transport of a resolver that was given none: a redirect hop (never the first request) must be https, on the
+// default port, to a DNS name and not userinfo, and is dialed through the check that refuses loopback, private, link-local and the other
+// internal addresses when it connects. Proxies from the environment stay as the default transport has them (as in the registry gate): the
+// connection is then made to the proxy and the check judges the proxy's address.
+func defaultTransport() http.RoundTripper {
+	defaultTransportOnce.Do(func() {
+		defaultTransportRT = netguard.Hops{Base: netguard.NewTransport(0, nil), MaxHops: maxResolveRedirects}
+	})
+	return defaultTransportRT
+}
+
+func (r *RegistryResolver) transport() http.RoundTripper {
+	if r.Transport != nil {
+		return r.Transport
+	}
+	return defaultTransport()
 }
 
 // registryDigest asks the registry for the digest of a reference. For an image
 // index and a platform it is the digest of that platform's manifest; otherwise
 // the digest of the reference itself.
-func registryDigest(ctx context.Context, ref name.Reference, kc authn.Keychain, platform *v1.Platform) (string, error) {
-	opts := []remote.Option{remote.WithContext(ctx)}
+func registryDigest(ctx context.Context, ref name.Reference, kc authn.Keychain, platform *v1.Platform, rt http.RoundTripper) (string, error) {
+	opts := []remote.Option{remote.WithContext(ctx), remote.WithTransport(rt)}
 	if kc != nil {
 		opts = append(opts, remote.WithAuthFromKeychain(kc))
 	}

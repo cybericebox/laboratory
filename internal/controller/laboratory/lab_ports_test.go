@@ -99,11 +99,11 @@ func TestGatewayPortValidation(t *testing.T) {
 				lab.Spec.Connections = []laboratoryv1alpha1.ConnectionTemplate{{Endpoints: []laboratoryv1alpha1.EndpointSpec{
 					{Device: gateway, Interface: tc.port}, {Device: "host", Interface: "eth0"},
 				}}}
-				if gateway == "vpn" {
-					lab.Spec.VPN.Enabled = true
-				} else {
-					lab.Spec.Internet.Enabled = true
+				kind := laboratoryv1alpha1.GatewayKindVPN
+				if gateway == "internet" {
+					kind = laboratoryv1alpha1.GatewayKindInternet
 				}
+				lab.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: gateway, Kind: kind}}
 				err := (&LabReconciler{}).validateGraph(lab)
 				if tc.valid && err != nil {
 					t.Fatalf("valid singleton port rejected: %v", err)
@@ -118,7 +118,7 @@ func TestGatewayPortValidation(t *testing.T) {
 
 func TestGatewayPortCannotBeReusedAcrossConnections(t *testing.T) {
 	lab := &laboratoryv1alpha1.Lab{}
-	lab.Spec.VPN.Enabled = true
+	lab.Spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 	for _, host := range []string{"host-a", "host-b"} {
 		lab.Spec.Devices = append(lab.Spec.Devices, laboratoryv1alpha1.DeviceTemplate{
 			Name: host, Type: laboratoryv1alpha1.DeviceTypeContainer,

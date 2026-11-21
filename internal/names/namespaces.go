@@ -30,3 +30,6 @@ const (
 // OperatorServiceAccount is the operator's own ServiceAccount, in SystemNamespace: in every LabGroup namespace the operator binds it
 // to the ClusterRole of its working permissions (it has no cluster-wide write access).
 const OperatorServiceAccount = "laboratory-controller-manager"
+
+// CheckerDaemonSet is the name of the lab checker DaemonSet in SystemNamespace (rendered only while the chart option checks.enabled is on).
+const CheckerDaemonSet = "laboratory-checker"

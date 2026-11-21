@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/bits-and-blooms/bitset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -107,7 +111,28 @@ func NewAllocator(c client.Client, poolNamePrefix, namespace string, poolSize ui
 	}
 }
 
+// allocMu orders the allocations of one process: with several reconcile workers they would otherwise all read the same pool
+// and all but one lose the write. Another process (a second operator, the sweep) is still caught by the pool's resourceVersion.
+var allocMu sync.Mutex
+
+// allocateBackoff is the wait between the tries of an allocation that lost the write: the next read comes from a cache that has
+// to catch up with our own write first.
+var allocateBackoff = wait.Backoff{Steps: 8, Duration: 20 * time.Millisecond, Factor: 1.5, Jitter: 0.1}
+
+// AllocateIndex hands out an index. Allocations of one process go one at a time; one that loses the write of the pool to a
+// conflict reads again and goes on, nothing is taken until the write succeeds.
 func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
+	allocMu.Lock()
+	defer allocMu.Unlock()
+	var out uint
+	err := retry.OnError(allocateBackoff, errors.IsConflict, func() (err error) {
+		out, err = a.allocateOnce(ctx)
+		return err
+	})
+	return out, err
+}
+
+func (a *allocator) allocateOnce(ctx context.Context) (uint, error) {
 	pools, err := a.listPools(ctx, *a.labelRequests.NotFull)
 	if err != nil {
 		return 0, fmt.Errorf("list pools for allocation: %w", err)

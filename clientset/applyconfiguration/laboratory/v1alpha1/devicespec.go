@@ -32,11 +32,14 @@ type DeviceSpecApplyConfiguration struct {
 	Name  *string                        `json:"name,omitempty"`
 	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
 	Image *string                        `json:"image,omitempty"`
-	// SecurityPreset names a device security profile (standard/extended, or the old aliases
-	// basic/service/net/debug); the concrete capabilities are resolved internally by the operator.
+	// Profile is how the device runs (see DeviceTemplate.Profile); empty is container.
+	Profile *laboratoryv1alpha1.DeviceProfile `json:"profile,omitempty"`
+	// SecurityPreset names a device security profile (standard or extended); the concrete capabilities are resolved internally by the operator.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
-	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
+	Access []DeviceAccessApplyConfiguration `json:"access,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 	// State is the optional state-persistence policy and operator controls of
@@ -60,6 +63,12 @@ type DeviceSpecApplyConfiguration struct {
 	// one. It is drawn when the Device is created and never changes. Empty on a
 	// Device that predates codes: its workload keeps the name of the Device.
 	Code *string `json:"code,omitempty"`
+	// WaitReadyFile: the device is Ready only once /run/ready exists inside the container (see DeviceTemplate).
+	WaitReadyFile *bool `json:"waitReadyFile,omitempty"`
+	// Service is the service command of a container device (see DeviceTemplate).
+	Service *DeviceServiceApplyConfiguration `json:"service,omitempty"`
+	// Bootstrap says the device has a bootstrap list in the Secret <device>-bootstrap (see DeviceTemplate).
+	Bootstrap *DeviceBootstrapSpecApplyConfiguration `json:"bootstrap,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -100,6 +109,14 @@ func (b *DeviceSpecApplyConfiguration) WithImage(value string) *DeviceSpecApplyC
 	return b
 }
 
+// WithProfile sets the Profile field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Profile field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithProfile(value laboratoryv1alpha1.DeviceProfile) *DeviceSpecApplyConfiguration {
+	b.Profile = &value
+	return b
+}
+
 // WithSecurityPreset sets the SecurityPreset field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the SecurityPreset field is set to the value of the last call.
@@ -121,11 +138,16 @@ func (b *DeviceSpecApplyConfiguration) WithInterfaces(values ...*InterfaceSpecAp
 	return b
 }
 
-// WithExposure sets the Exposure field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Exposure field is set to the value of the last call.
-func (b *DeviceSpecApplyConfiguration) WithExposure(value *ExposureSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
-	b.Exposure = value
+// WithAccess adds the given value to the Access field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Access field.
+func (b *DeviceSpecApplyConfiguration) WithAccess(values ...*DeviceAccessApplyConfiguration) *DeviceSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithAccess")
+		}
+		b.Access = append(b.Access, *values[i])
+	}
 	return b
 }
 
@@ -172,5 +194,29 @@ func (b *DeviceSpecApplyConfiguration) WithImageDigests(entries map[string]strin
 // If called multiple times, the Code field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithCode(value string) *DeviceSpecApplyConfiguration {
 	b.Code = &value
+	return b
+}
+
+// WithWaitReadyFile sets the WaitReadyFile field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the WaitReadyFile field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithWaitReadyFile(value bool) *DeviceSpecApplyConfiguration {
+	b.WaitReadyFile = &value
+	return b
+}
+
+// WithService sets the Service field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Service field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithService(value *DeviceServiceApplyConfiguration) *DeviceSpecApplyConfiguration {
+	b.Service = value
+	return b
+}
+
+// WithBootstrap sets the Bootstrap field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Bootstrap field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithBootstrap(value *DeviceBootstrapSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
+	b.Bootstrap = value
 	return b
 }

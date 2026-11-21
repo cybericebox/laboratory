@@ -23,6 +23,12 @@ SCRIPT_ROOT="${SCRIPT_DIR}/.."
 K8S_VERSION="$(go list -m -f '{{.Version}}' k8s.io/client-go)"
 CODEGEN_PKG="$(go env GOPATH)/pkg/mod/k8s.io/code-generator@${K8S_VERSION}"
 
+# kube_codegen.sh builds the generators itself (go install, in the code-generator module at the version of client-go). They go to
+# an ignored directory of the repository, not to GOPATH/bin, so no other version found there can be used instead.
+GOBIN="$(cd "${SCRIPT_DIR}/.." && pwd)/bin/codegen"
+export GOBIN
+mkdir -p "${GOBIN}"
+
 # Keep generated clients ABI-compatible with the Kubernetes libraries used by the
 # operator.  A sibling checkout may be from a different Kubernetes release.
 if [[ ! -f "${CODEGEN_PKG}/kube_codegen.sh" ]]; then

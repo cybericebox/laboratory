@@ -1,0 +1,192 @@
+{{- if .Values.operator.admissionPolicy.enabled }}
+{{- /*
+The feature switches of the laboratory, enforced by the API server itself (so they hold for an object made by hand with any kubeconfig, and with
+no management agent at all). The same rule is made by the agent (early, with a stable reason) and by the operator (a Lab that slips through
+fails validation); see DEPLOY.md, "Feature switches".
+
+ 1. Cluster switches (vpn.enabled, inetGateway.enabled, proxy.enabled with terminal.enabled, proxy.rdp.enabled, proxy.vnc.enabled,
+    checks.enabled) are rendered into the policy: a validation exists only for a feature that is OFF.
+ 2. The switches of a LabGroup (spec.vpn.enabled, spec.gateway.enabled) reach the policies as labels of the group's namespace, which the
+    operator copies and only the operator may set (laboratory-group-namespace-label). A lab, a client or a policy lives in that namespace.
+
+An update that leaves the spec as it was (a finalizer, a label, the operator's own writes) is never refused: an object made before a switch
+was turned off stays deletable. A namespace without the labels (not a group's, or a group the operator has not reached yet) is not checked.
+*/ -}}
+{{- $vpn := .Values.vpn.enabled }}
+{{- $internet := .Values.inetGateway.enabled }}
+{{- $l7 := and .Values.proxy.enabled .Values.proxy.l7.enabled }}
+{{- $vpnLabel := "laboratory.cybericebox.com/vpn-enabled" }}
+{{- $internetLabel := "laboratory.cybericebox.com/internet-enabled" }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-feature-lab
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["laboratory.cybericebox.com"]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [labs]
+  variables:
+    # nothing to judge: an update that does not touch the spec, or an object that is being deleted
+    - name: settled
+      expression: "(request.operation == 'UPDATE' && object.spec == oldObject.spec) || has(object.metadata.deletionTimestamp)"
+    - name: gateways
+      expression: "object.spec.?gateways.orValue([])"
+    - name: accesses
+      expression: "object.spec.?devices.orValue([]).map(d, d.?access.orValue([]).map(a, a.kind)).flatten()"
+    - name: labels
+      expression: "namespaceObject.metadata.?labels.orValue({})"
+  validations:
+    {{- if not $vpn }}
+    - expression: "variables.settled || !variables.gateways.exists(g, g.kind == 'vpn')"
+      message: "VPN_UNAVAILABLE: the lab has a VPN gateway but this laboratory runs no VPN (vpn.enabled is off)"
+      reason: Forbidden
+    {{- end }}
+    {{- if not $internet }}
+    - expression: "variables.settled || !variables.gateways.exists(g, g.kind == 'internet')"
+      message: "INTERNET_UNAVAILABLE: the lab has an Internet gateway but this laboratory has no internet gateway (inetGateway.enabled is off)"
+      reason: Forbidden
+    {{- end }}
+    {{- if not .Values.checks.enabled }}
+    - expression: "variables.settled || !has(object.spec.checks)"
+      message: "CHECKS_UNAVAILABLE: the lab has checks but this laboratory runs no lab checker (checks.enabled is off)"
+      reason: Forbidden
+    {{- end }}
+    {{- if not $l7 }}
+    - expression: "variables.settled || variables.accesses.size() == 0"
+      message: "ACCESS_UNAVAILABLE: a device has an access (http, terminal, rdp, vnc) but this laboratory runs no L7 proxy (proxy.enabled is off)"
+      reason: Forbidden
+    {{- else }}
+    {{- if not .Values.terminal.enabled }}
+    - expression: "variables.settled || !variables.accesses.exists(a, a == 'terminal')"
+      message: "ACCESS_UNAVAILABLE: a device has a terminal access but this laboratory does not serve it (terminal.enabled is off)"
+      reason: Forbidden
+    {{- end }}
+    {{- if not .Values.proxy.rdp.enabled }}
+    - expression: "variables.settled || !variables.accesses.exists(a, a == 'rdp')"
+      message: "ACCESS_UNAVAILABLE: a device has an rdp access but this laboratory does not serve it (proxy.rdp.enabled is off)"
+      reason: Forbidden
+    {{- end }}
+    {{- if not .Values.proxy.vnc.enabled }}
+    - expression: "variables.settled || !variables.accesses.exists(a, a == 'vnc')"
+      message: "ACCESS_UNAVAILABLE: a device has a vnc access but this laboratory does not serve it (proxy.vnc.enabled is off)"
+      reason: Forbidden
+    {{- end }}
+    {{- end }}
+    # the switches of the group (labels of its namespace, set by the operator): a group whose VPN or internet is off takes no lab that needs it
+    - expression: {{ printf "variables.settled || !variables.gateways.exists(g, g.kind == 'vpn') || variables.labels[?'%s'].orValue('true') != 'false'" $vpnLabel | quote }}
+      message: "GROUP_VPN_OFF: the lab has a VPN gateway but the VPN of its group is off (spec.vpn.enabled): turn it on first"
+      reason: Forbidden
+    - expression: {{ printf "variables.settled || !variables.gateways.exists(g, g.kind == 'internet') || variables.labels[?'%s'].orValue('true') != 'false'" $internetLabel | quote }}
+      message: "GROUP_INTERNET_OFF: the lab has an Internet gateway but the internet of its group is off (spec.gateway.enabled): turn it on first"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-feature-lab
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-feature-lab
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-feature-group
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["laboratory.cybericebox.com"]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [labgroups]
+  variables:
+    # a switch being turned ON (made on, or changed from off or absent to on)
+    - name: vpnOn
+      expression: "object.spec.?vpn.?enabled.orValue(false) && (request.operation == 'CREATE' || !oldObject.spec.?vpn.?enabled.orValue(false))"
+    - name: internetOn
+      expression: "object.spec.?gateway.?enabled.orValue(false) && (request.operation == 'CREATE' || !oldObject.spec.?gateway.?enabled.orValue(false))"
+  validations:
+    {{- if not $vpn }}
+    - expression: "!variables.vpnOn"
+      message: "VPN_UNAVAILABLE: this laboratory runs no VPN (vpn.enabled is off): the group's VPN cannot be turned on (spec.vpn.enabled)"
+      reason: Forbidden
+    {{- end }}
+    {{- if not $internet }}
+    - expression: "!variables.internetOn"
+      message: "INTERNET_UNAVAILABLE: this laboratory has no internet gateway (inetGateway.enabled is off): the group's internet cannot be turned on (spec.gateway.enabled)"
+      reason: Forbidden
+    {{- end }}
+    {{- if and $vpn $internet }}
+    # nothing is off cluster-wide: the policy has no rule to apply
+    - expression: "true"
+      message: "never"
+    {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-feature-group
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-feature-group
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-feature-vpn-objects
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["laboratory.cybericebox.com"]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [labgroupclients, labgroupaccesspolicies]
+  variables:
+    - name: settled
+      expression: "(request.operation == 'UPDATE' && object.spec == oldObject.spec) || has(object.metadata.deletionTimestamp)"
+    - name: labels
+      expression: "namespaceObject.metadata.?labels.orValue({})"
+  validations:
+    {{- if not $vpn }}
+    # a client is a VPN peer; an access policy is read by the VPN pod and by the L7 proxy, so it is refused only when neither runs
+    - expression: "variables.settled || request.resource.resource != 'labgroupclients'"
+      message: "VPN_UNAVAILABLE: this laboratory runs no VPN (vpn.enabled is off): a LabGroupClient has no server to connect to"
+      reason: Forbidden
+    {{- if not $l7 }}
+    - expression: "variables.settled || request.resource.resource != 'labgroupaccesspolicies'"
+      message: "VPN_UNAVAILABLE: this laboratory runs no VPN and no L7 proxy (vpn.enabled and proxy.enabled are off): nothing would read a LabGroupAccessPolicy"
+      reason: Forbidden
+    {{- end }}
+    {{- end }}
+    # a group whose VPN is off (label of its namespace, set by the operator) takes no client
+    - expression: {{ printf "variables.settled || request.resource.resource != 'labgroupclients' || variables.labels[?'%s'].orValue('true') != 'false'" $vpnLabel | quote }}
+      message: "GROUP_VPN_OFF: the VPN of this group is off (spec.vpn.enabled): a LabGroupClient has no server to connect to; turn it on first"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-feature-vpn-objects
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-feature-vpn-objects
+  validationActions: [Deny]
+{{- end }}

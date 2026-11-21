@@ -9,7 +9,7 @@ metadata:
 data:
   # What the operator and the management agent both read: one map, written once (laboratory.sharedEnv).
   # The state persistence and image cache settings are rendered only with their feature on, so that the operator gets nothing about a feature that is off.
-  {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+  {{- range $name, $value := merge (include "laboratory.sharedEnv" . | fromYaml) (include "laboratory.operatorOnlyEnv" . | fromYaml) }}
   {{- if and (or (not (hasPrefix "STATE_" $name)) $.Values.devices.statePersistence.enabled) (or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled) }}
   {{ $name }}: {{ $value | quote }}
   {{- end }}
@@ -20,10 +20,9 @@ data:
   {{- end }}
   {{- if .Values.bandwidth.enabled }}
   # The namespaces whose pods read the limits of their node from the operator's ConfigMap: the demux, the L7 proxy and the node-agent.
-  BANDWIDTH_ENTRY_NAMESPACES: {{ without (list .Release.Namespace (ternary .Values.proxy.namespace "" .Values.proxy.enabled) (ternary (include "laboratory.wgNamespace" .) "" (and .Values.proxy.enabled .Values.proxy.wg.enabled))) "" | uniq | join "," | quote }}
+  BANDWIDTH_ENTRY_NAMESPACES: {{ without (list .Release.Namespace (ternary .Values.proxy.namespace "" .Values.proxy.enabled) (ternary (include "laboratory.wgNamespace" .) "" (ne (include "laboratory.wgEnabled" .) ""))) "" | uniq | join "," | quote }}
   {{- end }}
-  VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
-  INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
+  LAB_BASE_NETWORK: {{ .Values.operator.labBaseNetwork | quote }}
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
   VPN_IMAGE: {{ include "laboratory.imageRef" (dict "image" .Values.vpn.image "root" $) | quote }}
   {{- /* The gateway is the VPN image (one image, two commands): the operator takes it from VPN_IMAGE unless the chart is told another. */}}
@@ -59,10 +58,19 @@ data:
   TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
   # The operator checks at start that the admission policies are enforced on it and exits if they are not (with them off it is told so).
   OPERATOR_REQUIRE_ADMISSION_POLICY: {{ .Values.operator.admissionPolicy.enabled | quote }}
-  # State persistence: the credentials come from the registry Secret.
+  {{- if include "laboratory.deviceAccess.enabled" . }}
+  # The operator copies the access public keys of the tenants (public data) into the ConfigMap laboratory-access-keys of this namespace, which the
+  # device access service mounts.
+  DEVICE_ACCESS_NAMESPACE: {{ include "laboratory.deviceAccess.namespace" . | quote }}
+  {{- end }}
+  {{- /* The operator writes the upstream credentials (tenant-<name>, platform) into the namespace only the gate reads (names.UpstreamNamespace, a
+  constant of both). Its calls to the gate (the snapshot sweep, the device reset) are the STATE_REGISTRY_* settings below. */}}
+  # State persistence.
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
-  STATE_REGISTRY_ADDR: {{ include "laboratory.registryAddr" $ | quote }}
+  STATE_REGISTRY_ADDR: {{ include "laboratory.registryServiceAddr" $ | quote }}
+  STATE_REGISTRY_CA_FILE: /etc/registry-ca/ca.crt
+  STATE_REGISTRY_TOKEN_FILE: /var/run/secrets/registry-gate/token
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}

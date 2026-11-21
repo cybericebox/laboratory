@@ -98,6 +98,7 @@ type Throttle[K comparable] struct {
 	window   time.Duration
 	classKbp int64
 	capKbps  int64
+	minKbps  int64
 	class    Bucket
 	parts    map[K]*part
 	maxKeys  int
@@ -140,6 +141,13 @@ func (t *Throttle[K]) SetMaxKeys(n int) {
 	t.maxKeys = max(n, 1)
 }
 
+// SetFloor sets the lower bound of one participant's share in kbit/s (0 = none); call it before SetLimits, which applies it.
+func (t *Throttle[K]) SetFloor(minKbps int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.minKbps = max(minKbps, 0)
+}
+
 // SetLimits sets the class and the cap of one participant in kbit/s; 0 is no limit of that kind. Both 0 turns the throttle off.
 func (t *Throttle[K]) SetLimits(classKbps, capKbps int64) {
 	t.mu.Lock()
@@ -174,7 +182,13 @@ func (t *Throttle[K]) rateLocked() int64 {
 	if t.classKbp <= 0 && t.capKbps <= 0 {
 		return 0
 	}
-	return FairShare(t.classKbp, t.capKbps, t.active)
+	return FairShareFloor(t.classKbp, t.capKbps, t.minKbps, t.active)
+}
+
+// flooredLocked says the floor lifts the share above class/active: the class is oversubscribed on purpose, so the shared class bucket
+// must not take the floor away again.
+func (t *Throttle[K]) flooredLocked() bool {
+	return t.minKbps > 0 && t.classKbp > 0 && t.rateLocked() > FairShare(t.classKbp, t.capKbps, t.active)
 }
 
 // rescanLocked counts the active participants, forgets the long silent ones and gives everyone the new rate. It runs at most once
@@ -262,7 +276,7 @@ func (t *Throttle[K]) Allow(key K, n int) bool {
 	if !p.b.Allow(now, n) {
 		return false
 	}
-	return t.class.Allow(now, n)
+	return t.flooredLocked() || t.class.Allow(now, n)
 }
 
 // Delay takes n bytes of a participant and returns how long the sender has to wait (the stream is paced). The longer of the
@@ -276,6 +290,9 @@ func (t *Throttle[K]) Delay(key K, n int) time.Duration {
 	now := t.now()
 	p := t.partLocked(key, now)
 	p.bytes += int64(n)
+	if t.flooredLocked() {
+		return p.b.Reserve(now, n)
+	}
 	return max(p.b.Reserve(now, n), t.class.Reserve(now, n))
 }
 

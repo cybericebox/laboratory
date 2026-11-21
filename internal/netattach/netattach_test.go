@@ -11,7 +11,7 @@ func TestValidateInterfaceName(t *testing.T) {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "lo", "accessport", "1eth", "Eth1", "a@x", "a,b", "a|b", "a b", "-a", "abcdefghijklmnop", "eth1\n", "a/b"} {
+	for _, bad := range []string{"", "lo", "eda", "accessport", "1eth", "Eth1", "a@x", "a,b", "a|b", "a b", "-a", "abcdefghijklmnop", "eth1\n", "a/b"} {
 		if ValidateInterfaceName(bad) == nil {
 			t.Errorf("%q must be rejected", bad)
 		}

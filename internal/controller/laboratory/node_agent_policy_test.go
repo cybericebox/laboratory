@@ -36,8 +36,8 @@ var _ = Describe("node-agent label admission policy", Ordered, func() {
 		if _, err := exec.LookPath("helm"); err != nil {
 			Skip("helm is not installed")
 		}
-		out, err := exec.Command("helm", "template", "x", "../../../charts/laboratory", "--namespace", "laboratory-system", "--kube-version", "1.33.0",
-			"--set", "operator.baseDomain=lab.example.com", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820", "--set", "operator.supportEmail=a@example.com",
+		out, err := exec.Command("helm", "template", "x", "../../../charts/laboratory", "--namespace", "laboratory-system", "--kube-version", "1.35.0",
+			"--set", "operator.baseDomain=lab.example.com", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820", "--set", "operator.supportEmail=a@example.com", "--set", "registry.gate.address=registry.lab.internal:5443",
 			"-s", "templates/node-agent/admission-policy.yaml").CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(out))
 		applied := 0
@@ -49,7 +49,7 @@ var _ = Describe("node-agent label admission policy", Ordered, func() {
 			Expect(k8sClient.Create(ctx, &obj)).To(Succeed(), doc)
 			applied++
 		}
-		Expect(applied).To(Equal(14), "the Node-ready, capture, Device-runtime, Group-runtime, Lab-scope, VNI-ledger and VNI-ledger-guard policies and their bindings")
+		Expect(applied).To(Equal(12), "the Node-ready, Device-runtime, Group-runtime, Lab-scope, VNI-ledger and VNI-ledger-guard policies and their bindings (the capture policy is node-state's)")
 
 		Expect(k8sClient.Create(ctx, &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "adm-test-node-agent"},

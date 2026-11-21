@@ -23,7 +23,7 @@ package v1alpha1
 // InterfaceSpec defines a network interface on a device.
 type InterfaceSpecApplyConfiguration struct {
 	// Name is the interface name inside the pod: a lowercase word of at most 15
-	// characters; lo and accessport are reserved.
+	// characters; lo, eda and accessport (the EDA interface; accessport is its name before the rename) are reserved.
 	Name *string `json:"name,omitempty"`
 	// Addr is optional: nil means the interface is created without an IP.
 	Addr *AddrSpecApplyConfiguration `json:"addr,omitempty"`

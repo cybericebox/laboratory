@@ -31,9 +31,9 @@ type TenantSpec struct {
 type TenantImages struct {
 	// PullSecret names a kubernetes.io/dockerconfigjson Secret of the tenants namespace
 	// (laboratory-tenants) with the tenant's registry credentials. They are used for the
-	// tenant's devices and image prepull, and a tenant that has them pulls straight from
-	// its registries: its images do not go through the shared image cache. Absent: the
-	// tenant's images are public.
+	// tenant's devices: with the image cache on they go through it like every image, re-keyed
+	// for the cache path with the tenant in the username, and the registry gate proves every
+	// pull with them. Absent: the tenant's images are public.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	PullSecret string `json:"pullSecret,omitempty"`
@@ -122,6 +122,11 @@ type TenantStatus struct {
 // fit the lab nodes (at their peak overlap, or now on the nodes); its message has the numbers. A warning for the cluster
 // admin: nothing of the tenant is stopped for it.
 const TenantConditionCapacityShortfall = "CapacityShortfall"
+
+// TenantConditionImageCredentials is False on a tenant while the registry credentials of images.pullSecret cannot be used with the image
+// cache: an entry has no username (the cache writes the tenant into the username). Reason CredentialNotSupported, a message that names the
+// registry; labs of the tenant are refused with the same reason until the Secret is fixed. Absent or True: nothing to fix.
+const TenantConditionImageCredentials = "ImageCredentials"
 
 // TenantConditionGroupsWithdrawn is true on a tenant while some of its groups were withdrawn three times or more in a row
 // because not every pod got a node within the node timeout (a stuck group for the cluster admin); the message names them.

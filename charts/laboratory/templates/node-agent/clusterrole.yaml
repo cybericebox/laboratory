@@ -46,26 +46,14 @@ rules:
     verbs: [ get, list, watch ]
   # Marks its own node ready for lab pods (laboratory.cybericebox.com/node-agent-ready). The patch is limited to that one label of
   # its own node (and the removal of the startup taint cybericebox.com/node-starting) by the admission policy laboratory-node-agent-label.
+  {{- if .Values.operator.admissionPolicy.enabled }}
   - apiGroups: [ "" ]
     resources: [ nodes ]
     verbs: [ patch ]
+  {{- end }}
   - apiGroups: [ "" ]
     resources: [ pods ]
     verbs: [ get, list, watch ]
-  {{- if .Values.devices.statePersistence.enabled }}
-  # The source reader requests only pull Secrets referenced by a freshly
-  # UID/node/container-bound Pod. No Secret list/watch/write is granted.
-  - apiGroups: [ "" ]
-    resources: [ secrets ]
-    verbs: [ get ]
-  {{- end }}
-  {{- if .Values.operator.admissionPolicy.enabled }}
-  # The sibling capture policy confines this to the bound node's Device-owned
-  # Pod capture annotation. No patch privilege exists without that policy.
-  - apiGroups: [ "" ]
-    resources: [ pods ]
-    verbs: [ patch ]
-  {{- end }}
   - apiGroups: [ "" ]
     resources: [ events ]
     verbs: [ create, patch ]

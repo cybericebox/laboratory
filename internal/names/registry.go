@@ -5,6 +5,9 @@ import "strconv"
 const (
 	// RegistryServiceAddr is host:port of the platform registry (zot) Service inside the cluster. The chart installs it in the release
 	// namespace under this name and always installs it.
+	// RegistryGateAddr is host:port of the TLS port of the registry gate, where the image cache is served (the credentials of a pull cross the
+	// cluster network there).
+	RegistryGateAddr    = "laboratory-registry." + SystemNamespace + ".svc:5443"
 	RegistryServiceAddr = "laboratory-registry." + SystemNamespace + ".svc:5000"
 	// RegistryForwardPort is the port on which the node-agent of every node relays the registry on the loopback, so that the container
 	// runtime pulls from localhost:<port> (plain HTTP, no node configuration). It must be free on the node.

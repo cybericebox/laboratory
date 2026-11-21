@@ -1,8 +1,6 @@
 package egressproxy
 
 import (
-	"encoding/json"
-	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -33,15 +31,34 @@ type Denial struct {
 	Count  int64  `json:"count"`
 }
 
+// FlowRow is one lab's traffic from one source address to one destination address and port in one minute. It exists only when the
+// gateway was told to keep activity reports (the chart value activityReports.enabled): the raw facts the platform may ask the agent for. The
+// source address is what the lab used; which device owns it is for the platform to say (best effort: a lab may use any addresses).
+type FlowRow struct {
+	Lab     string `json:"lab"`
+	Source  string `json:"src"`
+	Dest    string `json:"dst"`
+	Port    int    `json:"port"`
+	Conns   int64  `json:"conns"`
+	Up      int64  `json:"up"`
+	Down    int64  `json:"down"`
+	FirstMs int64  `json:"firstMs"`
+	LastMs  int64  `json:"lastMs"`
+}
+
+// MaxFlowRows bounds the flow rows of a minute.
+const MaxFlowRows = 5000
+
 // Minute is a finished minute.
 type Minute struct {
 	Start   time.Time `json:"start"`
+	Flows   []FlowRow `json:"flows,omitempty"`
 	Rows    []Row     `json:"rows,omitempty"`
 	Caps    []CapHit  `json:"caps,omitempty"`
 	Denials []Denial  `json:"denials,omitempty"`
 }
 
-// Summaries is what the gateway serves.
+// Summaries is a set of finished minutes with the pod that made them (the shape the operator reads, built from a LabEgressReport).
 type Summaries struct {
 	// Gateway is the pod that answered (an identifier of the source, so a pulled minute is not counted twice when pods are renamed).
 	Gateway string   `json:"gateway"`
@@ -49,14 +66,20 @@ type Summaries struct {
 }
 
 type rowKey struct{ lab, host string }
+type flowKey struct {
+	lab, src, dst string
+	port          int
+}
 type capKey struct{ lab, reason string }
 
 // Collector keeps per-minute summaries and serves the finished ones. It keeps the last Keep minutes (default 60, an hour) and nothing else:
-// the operator pulls them every minute and keeps the log.
+// the ReportWriter takes them into the LabEgressReport and the operator keeps the log.
 type Collector struct {
 	Gateway string
 	Keep    int
 	Now     func() time.Time
+	// Detail keeps the FlowRows of the minutes (activity reports); off by default.
+	Detail bool
 
 	mu      sync.Mutex
 	start   time.Time
@@ -64,6 +87,7 @@ type Collector struct {
 	caps    map[capKey]int64
 	denials map[capKey]int64
 	done    []Minute
+	flows   map[flowKey]*FlowRow
 }
 
 func NewCollector(gateway string) *Collector {
@@ -75,8 +99,24 @@ func (c *Collector) rollLocked() {
 	if c.rows != nil && now.Equal(c.start) {
 		return
 	}
-	if c.rows != nil && (len(c.rows)+len(c.caps)+len(c.denials)) > 0 {
+	if c.rows != nil && (len(c.rows)+len(c.caps)+len(c.denials)+len(c.flows)) > 0 {
 		m := Minute{Start: c.start}
+		for _, f := range c.flows {
+			m.Flows = append(m.Flows, *f)
+		}
+		sort.Slice(m.Flows, func(i, j int) bool {
+			a, b := m.Flows[i], m.Flows[j]
+			if a.Lab != b.Lab {
+				return a.Lab < b.Lab
+			}
+			if a.Source != b.Source {
+				return a.Source < b.Source
+			}
+			if a.Dest != b.Dest {
+				return a.Dest < b.Dest
+			}
+			return a.Port < b.Port
+		})
 		for _, r := range c.rows {
 			m.Rows = append(m.Rows, *r)
 		}
@@ -103,6 +143,9 @@ func (c *Collector) rollLocked() {
 	}
 	c.start = now
 	c.rows, c.caps, c.denials = map[rowKey]*Row{}, map[capKey]int64{}, map[capKey]int64{}
+	if c.Detail {
+		c.flows = map[flowKey]*FlowRow{}
+	}
 }
 
 func (c *Collector) row(lab, host string) *Row {
@@ -140,6 +183,29 @@ func (c *Collector) End(lab, host string, up, down int64) {
 	r.Down += down
 }
 
+// Flow adds a finished connection of a lab to the raw facts of the minute (only with Detail). up: from the lab, down: to the lab.
+func (c *Collector) Flow(lab, src, dst string, port int, up, down int64) {
+	if !c.Detail {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rollLocked()
+	k := flowKey{lab, src, dst, port}
+	f := c.flows[k]
+	if f == nil {
+		if len(c.flows) >= MaxFlowRows {
+			return
+		}
+		f = &FlowRow{Lab: lab, Source: src, Dest: dst, Port: port, FirstMs: c.Now().UnixMilli()}
+		c.flows[k] = f
+	}
+	f.Conns++
+	f.Up += up
+	f.Down += down
+	f.LastMs = c.Now().UnixMilli()
+}
+
 // Denied counts a refused connection or query.
 func (c *Collector) Denied(lab, host, reason string) {
 	c.mu.Lock()
@@ -171,24 +237,4 @@ func (c *Collector) Since(t time.Time) Summaries {
 		}
 	}
 	return out
-}
-
-// Handler serves GET /summaries?since=<RFC 3339>. It is plain HTTP on the pod network: the network policy of the group lets the operator
-// in, and the lab side of the pod answers nothing (the INPUT policy).
-func (c *Collector) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/summaries", func(w http.ResponseWriter, r *http.Request) {
-		var since time.Time
-		if s := r.URL.Query().Get("since"); s != "" {
-			t, err := time.Parse(time.RFC3339, s)
-			if err != nil {
-				http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			since = t
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(c.Since(since))
-	})
-	return mux
 }

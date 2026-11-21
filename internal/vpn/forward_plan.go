@@ -14,6 +14,9 @@ type ForwardRule struct {
 	ClientCIDR, LabCIDR string
 	LabInterface        string
 	BindingID           string
+	// LabInitiated: devices of the lab may start connections towards the client. False: only replies to connections the client
+	// started are forwarded from the lab to the client. Not part of BindingID.
+	LabInitiated bool
 }
 
 type ForwardPlan struct {
@@ -75,7 +78,7 @@ func forwardBinding(r AccessRule) (ForwardRule, error) {
 		return ForwardRule{}, fmt.Errorf("lab %s: %w", r.LabName, err)
 	}
 	f := ForwardRule{ClientName: r.ClientName, LabName: r.LabName,
-		ClientCIDR: src.Masked().String(), LabCIDR: dst.Masked().String(), LabInterface: iface}
+		ClientCIDR: src.Masked().String(), LabCIDR: dst.Masked().String(), LabInterface: iface, LabInitiated: r.LabInitiated}
 	sum := sha256.Sum256([]byte(f.ClientName + "\x00" + f.LabName + "\x00" + f.ClientCIDR + "\x00" + f.LabCIDR + "\x00" + f.LabInterface))
 	f.BindingID = hex.EncodeToString(sum[:8])
 	return f, nil

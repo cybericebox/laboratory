@@ -2,10 +2,15 @@ package pool
 
 import (
 	"context"
+	"sync"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 )
@@ -64,5 +69,58 @@ func TestRotatingAllocatorDoesNotReuseAtOnce(t *testing.T) {
 	}
 	if !seen[a] {
 		t.Fatal("after a full walk the released index is handed out again")
+	}
+}
+
+// Workers of one process allocate at the same time: every one gets its own index.
+func TestAllocatorConcurrentWorkersGetDistinctIndexes(t *testing.T) {
+	a := newAllocator(t, true)
+	const workers = 12
+	got := make([]uint, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			idx, err := a.AllocateIndex(context.Background())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			got[i] = idx
+		}()
+	}
+	wg.Wait()
+	seen := map[uint]bool{}
+	for _, idx := range got {
+		if seen[idx] {
+			t.Fatalf("index %d was handed out twice: %v", idx, got)
+		}
+		seen[idx] = true
+	}
+}
+
+// A write that loses to another writer (or to a cache that has not seen our last write) is tried again, not returned.
+func TestAllocatorRetriesALostWrite(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := allocationv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	conflicts, initDone := 3, false
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&allocationv1alpha1.Pool{}).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if _, ok := obj.(*allocationv1alpha1.Pool); ok && initDone && conflicts > 0 {
+				conflicts--
+				return apierrors.NewConflict(schema.GroupResource{Resource: "pools"}, obj.GetName(), nil)
+			}
+			initDone = true // the first status write is the initialisation of the pool
+			return cl.SubResource(sub).Update(ctx, obj, opts...)
+		}}).Build()
+	a := NewRotatingAllocator(c, "vni", "ns", 16)
+	if _, err := a.AllocateIndex(context.Background()); err != nil {
+		t.Fatalf("an allocation that lost its write three times must go on: %v", err)
+	}
+	if conflicts != 0 {
+		t.Fatalf("the conflicts were not hit: %d left", conflicts)
 	}
 }

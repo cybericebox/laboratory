@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -52,7 +53,7 @@ func groupItems(names ...string) []*protobuf.LabGroupItem {
 func readyGroup(t *testing.T, h *Handler, k8s kubernetes.Interface, name, ns string, labels map[string]string) {
 	t.Helper()
 	ctx := context.Background()
-	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: name, Labels: labels}}})
+	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: name, Labels: labels, VpnEnabled: proto.Bool(true), InternetEnabled: proto.Bool(true)}}})
 	wantStates(t, res, err, stCreated)
 	if k8s != nil {
 		mustNamespace(t, k8s, ns)
@@ -69,7 +70,7 @@ func readyGroup(t *testing.T, h *Handler, k8s kubernetes.Interface, name, ns str
 
 func specJSON(devices ...string) []byte {
 	spec := laboratoryv1alpha1.LabSpec{}
-	spec.VPN.Enabled = true
+	spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 	for _, d := range devices {
 		spec.Devices = append(spec.Devices, laboratoryv1alpha1.DeviceTemplate{Name: d, Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"})
 	}

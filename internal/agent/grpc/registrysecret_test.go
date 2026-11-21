@@ -67,10 +67,10 @@ func TestValidateRegistryCredentials(t *testing.T) {
 	}
 }
 
-// registrySecret reads the per-lab registry Secret (nil when absent).
+// registrySecret reads the credentials Secret of a lab (nil when absent); it is in the upstream namespace.
 func registrySecret(ctx context.Context, t *testing.T, h *Handler, ns, lab string) *corev1.Secret {
 	t.Helper()
-	s, err := h.k8s.CoreV1().Secrets(ns).Get(ctx, names.LabRegistrySecret(lab), metav1.GetOptions{})
+	s, err := h.k8s.CoreV1().Secrets(names.UpstreamNamespace).Get(ctx, names.UpstreamLabSecret(ns, lab), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -114,7 +114,7 @@ func TestCreateLabWritesRegistrySecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l1.Spec.ImagePullSecret != names.LabRegistrySecret("l1") {
+	if l1.Spec.ImagePullSecret != names.UpstreamLabSecret("team-lab", "l1") {
 		t.Fatalf("l1 imagePullSecret = %q", l1.Spec.ImagePullSecret)
 	}
 	s := registrySecret(ctx, t, h, "team-lab", "l1")
@@ -127,8 +127,11 @@ func TestCreateLabWritesRegistrySecret(t *testing.T) {
 	if want := `{"auths":{"index.docker.io":{"username":"u","password":"p","auth":"dTpw"}}}`; string(s.Data[corev1.DockerConfigJsonKey]) != want {
 		t.Fatalf("data %s", s.Data[corev1.DockerConfigJsonKey])
 	}
-	if len(s.OwnerReferences) != 1 || s.OwnerReferences[0].Kind != "Lab" || s.OwnerReferences[0].UID != l1.UID {
-		t.Fatalf("owner %+v", s.OwnerReferences)
+	if s.Annotations[names.AnnotationUpstreamLabNamespace] != "team-lab" || s.Annotations[names.AnnotationUpstreamLab] != "l1" {
+		t.Fatalf("the Secret says whose it is: %v", s.Annotations)
+	}
+	if len(s.OwnerReferences) != 0 {
+		t.Fatalf("a Secret of another namespace cannot be owned by the Lab (the operator deletes it): %+v", s.OwnerReferences)
 	}
 
 	l2, err := h.cs.LaboratoryV1alpha1().Labs("team-lab").Get(ctx, "l2", metav1.GetOptions{})
@@ -188,7 +191,7 @@ func TestUpdateLabReplacesRegistrySecret(t *testing.T) {
 		t.Fatalf("new credentials: %v", err)
 	}
 	// Removed behind the agent's back: a resend brings it back.
-	if err := k8s.CoreV1().Secrets("team-lab").Delete(ctx, names.LabRegistrySecret("l1"), metav1.DeleteOptions{}); err != nil {
+	if err := k8s.CoreV1().Secrets(names.UpstreamNamespace).Delete(ctx, names.UpstreamLabSecret("team-lab", "l1"), metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	send("new")
@@ -199,7 +202,7 @@ func TestUpdateLabReplacesRegistrySecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lab.Spec.ImagePullSecret != names.LabRegistrySecret("l1") {
+	if lab.Spec.ImagePullSecret != names.UpstreamLabSecret("team-lab", "l1") {
 		t.Fatalf("imagePullSecret = %q", lab.Spec.ImagePullSecret)
 	}
 }
@@ -252,7 +255,7 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	k.PrependReactor("create", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		creates++
 		if creates == 1 {
-			return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.LabRegistrySecret("l1"))
+			return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.UpstreamLabSecret("ns", "l1"))
 		}
 		return false, nil, nil
 	})
@@ -264,7 +267,7 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	if creates != 2 {
 		t.Fatalf("creates = %d, want 2", creates)
 	}
-	s, err := k.CoreV1().Secrets("ns").Get(context.Background(), names.LabRegistrySecret("l1"), metav1.GetOptions{})
+	s, err := k.CoreV1().Secrets(names.UpstreamNamespace).Get(context.Background(), names.UpstreamLabSecret("ns", "l1"), metav1.GetOptions{})
 	if err != nil || s.Type != corev1.SecretTypeDockerConfigJson {
 		t.Fatalf("secret %v %v", s, err)
 	}
@@ -272,7 +275,7 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	// A second conflict in a row is reported.
 	k2 := k8sfake.NewClientset()
 	k2.PrependReactor("create", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.LabRegistrySecret("l1"))
+		return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.UpstreamLabSecret("ns", "l1"))
 	})
 	if err := NewHandler(nil, k2, nil).writeRegistrySecret(context.Background(), lab, []*protobuf.RegistryCredential{regCred("ghcr.io", "u", "p")}); !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("persistent conflict: %v", err)

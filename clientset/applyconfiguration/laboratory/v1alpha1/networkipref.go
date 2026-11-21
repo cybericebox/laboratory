@@ -20,10 +20,11 @@ package v1alpha1
 // NetworkIPRefApplyConfiguration represents a declarative configuration of the NetworkIPRef type for use
 // with apply.
 //
-// NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+// NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
 // The lab reconciler resolves it before creating a Device.
 type NetworkIPRefApplyConfiguration struct {
-	Network *string `json:"network,omitempty"`
+	// Gateway is the name of a gateway declared in spec.gateways.
+	Gateway *string `json:"gateway,omitempty"`
 	Host    *int32  `json:"host,omitempty"`
 }
 
@@ -33,11 +34,11 @@ func NetworkIPRef() *NetworkIPRefApplyConfiguration {
 	return &NetworkIPRefApplyConfiguration{}
 }
 
-// WithNetwork sets the Network field in the declarative configuration to the given value
+// WithGateway sets the Gateway field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Network field is set to the value of the last call.
-func (b *NetworkIPRefApplyConfiguration) WithNetwork(value string) *NetworkIPRefApplyConfiguration {
-	b.Network = &value
+// If called multiple times, the Gateway field is set to the value of the last call.
+func (b *NetworkIPRefApplyConfiguration) WithGateway(value string) *NetworkIPRefApplyConfiguration {
+	b.Gateway = &value
 	return b
 }
 

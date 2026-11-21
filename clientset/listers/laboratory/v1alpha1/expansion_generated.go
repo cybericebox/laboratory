@@ -41,6 +41,22 @@ type LabListerExpansion interface{}
 // LabNamespaceLister.
 type LabNamespaceListerExpansion interface{}
 
+// LabActivityReportListerExpansion allows custom methods to be added to
+// LabActivityReportLister.
+type LabActivityReportListerExpansion interface{}
+
+// LabActivityReportNamespaceListerExpansion allows custom methods to be added to
+// LabActivityReportNamespaceLister.
+type LabActivityReportNamespaceListerExpansion interface{}
+
+// LabEgressReportListerExpansion allows custom methods to be added to
+// LabEgressReportLister.
+type LabEgressReportListerExpansion interface{}
+
+// LabEgressReportNamespaceListerExpansion allows custom methods to be added to
+// LabEgressReportNamespaceLister.
+type LabEgressReportNamespaceListerExpansion interface{}
+
 // LabGatewayListerExpansion allows custom methods to be added to
 // LabGatewayLister.
 type LabGatewayListerExpansion interface{}

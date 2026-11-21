@@ -43,7 +43,7 @@ type Source interface {
 	Dump() ([]Flow, error)
 }
 
-// LabNet is the /24 of one lab as seen from the VPN pod.
+// LabNet is the /24 of one VPN gateway of a lab as seen from the VPN pod; a lab has one per VPN gateway, all under its name.
 type LabNet struct {
 	Name   string
 	Prefix netip.Prefix
@@ -56,13 +56,13 @@ type Topology struct {
 	Labs    []LabNet
 }
 
-func (t Topology) lab(addr netip.Addr) (string, bool) {
+func (t Topology) lab(addr netip.Addr) (LabNet, bool) {
 	for _, lab := range t.Labs {
 		if lab.Prefix.Contains(addr) {
-			return lab.Name, true
+			return lab, true
 		}
 	}
-	return "", false
+	return LabNet{}, false
 }
 
 // Key is the aggregate identity: one VPN client against one lab. Any traffic
@@ -131,7 +131,33 @@ type Collector struct {
 	// resumedUntil is the last moment a previous run had reported (zero on a
 	// fresh start), so flows it already counted are not counted again.
 	resumedUntil time.Time
+
+	// Activity reports (off unless EnableTouches was called): the bytes each client exchanged with each lab address, per minute. The raw
+	// facts only; the platform aggregates them.
+	touches     bool
+	touchLast   map[flowKey][2]uint64
+	touchBucket map[touchKey]*TouchWindow
+	touchStart  time.Time
+	touchDone   []TouchWindow
 }
+
+type touchKey struct {
+	subject, lab, proto string
+	dst                 netip.Addr
+}
+
+// TouchWindow is what one client exchanged with one lab address in one minute (Out: from the client, In: from the lab). Times are Unix ms.
+type TouchWindow struct {
+	MinuteMs        int64
+	Subject, Lab    string
+	Dst, Proto      string
+	BytesOut        int64
+	BytesIn         int64
+	FirstMs, LastMs int64
+}
+
+// MaxTouchWindows bounds the finished windows kept until they are taken.
+const MaxTouchWindows = 4096
 
 // New builds a collector. bootID must change on every process start.
 func New(source Source, topology func() Topology, bootID string, pollEvery time.Duration) *Collector {
@@ -315,23 +341,19 @@ func (c *Collector) Poll(now time.Time) error {
 		if !ok {
 			continue
 		}
-		lab, ok := topo.lab(f.Dst)
-		if !ok {
+		net, ok := topo.lab(f.Dst)
+		if !ok || net.Index != uint16((f.Mark&0x00ffff00)>>8) {
 			continue
 		}
-		for _, l := range topo.Labs {
-			if l.Name == lab && l.Index != uint16((f.Mark&0x00ffff00)>>8) {
-				ok = false
-			}
-		}
-		if !ok {
-			continue
-		}
+		lab := net.Name
 		if !allowedEndpoints[Key{subject, lab}][f.Src] {
 			continue
 		}
 		fk := flowKey{f.ID, f.Proto, f.Src, f.Dst, f.SrcPort, f.DstPort}
 		seen[fk] = true
+		if c.touches {
+			c.noteTouch(now, subject, lab, f, fk)
+		}
 		trackedFlow := c.flows[fk]
 		if trackedFlow == nil {
 			trackedFlow = &tracked{key: Key{subject, lab}}
@@ -357,7 +379,95 @@ func (c *Collector) Poll(now time.Time) error {
 			delete(c.flows, fk)
 		}
 	}
+	for fk := range c.touchLast {
+		if !seen[fk] {
+			delete(c.touchLast, fk)
+		}
+	}
 	return nil
+}
+
+// EnableTouches turns the per-address activity on (needs the conntrack source). Call it before the first Poll.
+func (c *Collector) EnableTouches() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.touches = true
+	c.touchLast = map[flowKey][2]uint64{}
+	c.touchBucket = map[touchKey]*TouchWindow{}
+}
+
+// noteTouch adds the bytes a flow moved since the last poll to the window of the current minute. A flow met for the first time counts its
+// whole counters (the collector may have started in the middle of it); a flow whose counters went back is a new one.
+func (c *Collector) noteTouch(now time.Time, subject, lab string, f Flow, fk flowKey) {
+	last, known := c.touchLast[fk]
+	out, in := f.BytesOut, f.BytesIn
+	if known && out >= last[0] && in >= last[1] {
+		out, in = out-last[0], in-last[1]
+	}
+	c.touchLast[fk] = [2]uint64{f.BytesOut, f.BytesIn}
+	if known && out == 0 && in == 0 {
+		return
+	}
+	c.rollTouches(now)
+	k := touchKey{subject: subject, lab: lab, proto: f.Proto, dst: f.Dst}
+	w := c.touchBucket[k]
+	if w == nil {
+		if len(c.touchBucket) >= MaxTouchWindows {
+			return
+		}
+		w = &TouchWindow{MinuteMs: c.touchStart.UnixMilli(), Subject: subject, Lab: lab, Dst: f.Dst.String(), Proto: f.Proto, FirstMs: now.UnixMilli()}
+		c.touchBucket[k] = w
+	}
+	w.LastMs = now.UnixMilli()
+	add := func(dst *int64, n uint64) {
+		if n > uint64(math.MaxInt64-*dst) {
+			*dst = math.MaxInt64
+			return
+		}
+		*dst += int64(n)
+	}
+	add(&w.BytesOut, out)
+	add(&w.BytesIn, in)
+}
+
+// rollTouches moves the finished minute's windows to the done list.
+func (c *Collector) rollTouches(now time.Time) {
+	minute := now.UTC().Truncate(time.Minute)
+	if c.touchStart.Equal(minute) {
+		return
+	}
+	for _, w := range c.touchBucket {
+		if len(c.touchDone) < MaxTouchWindows {
+			c.touchDone = append(c.touchDone, *w)
+		}
+	}
+	c.touchBucket = map[touchKey]*TouchWindow{}
+	c.touchStart = minute
+}
+
+// TakeTouches returns the windows of the minutes that are over and forgets them.
+func (c *Collector) TakeTouches(now time.Time) []TouchWindow {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.touches {
+		return nil
+	}
+	c.rollTouches(now)
+	out := c.touchDone
+	c.touchDone = nil
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].MinuteMs != out[j].MinuteMs {
+			return out[i].MinuteMs < out[j].MinuteMs
+		}
+		if out[i].Subject != out[j].Subject {
+			return out[i].Subject < out[j].Subject
+		}
+		if out[i].Lab != out[j].Lab {
+			return out[i].Lab < out[j].Lab
+		}
+		return out[i].Dst < out[j].Dst
+	})
+	return out
 }
 
 // Snapshot copies the current ledger.

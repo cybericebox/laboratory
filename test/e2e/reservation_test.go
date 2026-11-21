@@ -45,11 +45,16 @@ const (
 	// clockSlack covers the clock of the test against the clock of the operator and the poll interval.
 	clockSlack = 3 * time.Second
 
-	nodeImage = "cybericebox/laboratory-node:e2e"
+	// The node image is also the netconfig image of the labs: the operator pins that tag to a digest asked of its registry (the stand's, as the
+	// registry of a deployment), so it is named by that registry and published there; it is loaded onto the nodes under the same name, so the
+	// node-agent's own pod needs no pull.
+	nodeImage = utils.KindRegistryHost + "/cybericebox/laboratory-node:e2e"
 	labImage  = "cybericebox/laboratory-lab:e2e"
 
-	// pauseImage is on every Kind node already (the pause image of the sandbox), so a device needs no pull.
-	pauseImage = "registry.k8s.io/pause:3.10"
+	// pauseImage is the device image: the pause image of Kubernetes, which does nothing, from the upstream registry of the tests (the lab
+	// nodes pull it through the registry gate; the BeforeAll of each suite publishes it, utils.PublishToKindRegistry).
+	pauseImage  = utils.KindRegistryHost + "/pause:3.10"
+	pauseSource = "registry.k8s.io/pause:3.10"
 
 	labNodeLabel = "cybericebox.com/lab=true"
 
@@ -68,16 +73,18 @@ var _ = Describe(
 		BeforeAll(
 			func() {
 				By("building and loading the node and lab images")
-				_, err := utils.Run(
-					exec.Command(
-						"make", "docker-build-node", "docker-build-lab",
-						fmt.Sprintf("NODE_IMG=%s", nodeImage), fmt.Sprintf("LAB_IMG=%s", labImage),
-					),
+				_, err := utils.MiseRun(
+					[]string{"NODE_IMG=" + nodeImage, "LAB_IMG=" + labImage}, "image:build", "node", "lab",
 				)
 				Expect(err).NotTo(HaveOccurred(), "Failed to build the node and lab images")
-				for _, img := range []string{nodeImage, labImage} {
-					Expect(utils.LoadImageToKindClusterWithName(img)).To(Succeed(), "Failed to load %s into Kind", img)
-				}
+				Expect(utils.LoadImageToKindClusterWithName(nodeImage)).To(Succeed(), "Failed to load %s into Kind", nodeImage)
+				// The lab image (VPN and gateway pods) is pulled by the lab nodes through the registry gate, so it goes to the upstream registry.
+				_, err = utils.PublishToKindRegistry(nodeImage, "cybericebox/laboratory-node")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", nodeImage)
+				_, err = utils.PublishToKindRegistry(labImage, "cybericebox/laboratory-lab")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", labImage)
+				_, err = utils.PublishToKindRegistry(pauseSource, "pause")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", pauseSource)
 
 				By("waiting for the namespace of an earlier deployment to go")
 				Eventually(
@@ -91,6 +98,7 @@ var _ = Describe(
 						"helm", "upgrade", "--install", reservationRelease, "charts/laboratory",
 						"--namespace", namespace, "--create-namespace",
 						"-f", "hack/kind/e2e-values.yaml",
+						"--set", "registry.gate.address="+utils.GateAddress(),
 						"--set", "operator.image.repository="+repository,
 						"--set", "operator.image.tag="+tag,
 						"--set", fmt.Sprintf("reservations.endingNoticeSeconds=%d", int(endingNotice.Seconds())),
@@ -238,8 +246,13 @@ var _ = Describe(
 						Eventually(labPhase(ns, "gang-hold")).Should(Equal("Ready"))
 
 						By("making a deploy group of two labs that fit the empty nodes only together")
-						apply(labManifest(ns, "gang-a", "", deployGroup, "dev-a", labCPU, memory))
-						apply(labManifest(ns, "gang-b", "", deployGroup, "dev-b", labCPU, memory))
+						// One apply for both: the group is the labs the scheduler sees together. Two kubectl calls left a gap of a few hundred
+						// milliseconds in which the scheduler saw gang-a alone, found it fitting on the empty node and started it (the failure of run
+						// 43292701248: gang-a Ready one second after it was created, gang-b queued).
+						apply(
+							labManifest(ns, "gang-a", "", deployGroup, "dev-a", labCPU, memory) + "---\n" +
+								labManifest(ns, "gang-b", "", deployGroup, "dev-b", labCPU, memory),
+						)
 
 						By("checking that neither lab starts while the room is taken")
 						for _, lab := range []string{"gang-a", "gang-b"} {

@@ -47,8 +47,6 @@ type ContainerdRuntime struct {
 	log        logr.Logger
 	seq        atomic.Uint64
 	noFreezer  atomic.Bool
-	// SourceKeychain binds fallback reads to the current pod's pull credentials.
-	SourceKeychain func(context.Context, Container, PodInfo) (authn.Keychain, error)
 }
 
 // NewContainerdRuntime connects to containerd at sock; namespace is the one the
@@ -217,7 +215,12 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool, 
 					return err
 				}
 				defer func() { _ = lo.Close() }()
-				return writeUserXattrLayer(cctx, content.NewReader(ra), out, up, live, lo, pol)
+				var rep xattrReport
+				err = writeUserXattrLayerReport(cctx, content.NewReader(ra), out, up, live, lo, pol, &rep)
+				if rep.BadNames > 0 || rep.DroppedLinks > 0 {
+					r.log.Info("left out of the snapshot layer", "container", c.ID, "xattrNamesNotExportable", rep.BadNames, "hardLinksWithoutTarget", rep.DroppedLinks)
+				}
+				return err
 			})
 		})
 	}, cleanup), nil // no shared content deletion; containerd owns garbage collection
@@ -245,7 +248,8 @@ func managedDiffReader(ctx context.Context, cancel context.CancelFunc, produce f
 	stopCancellation := context.AfterFunc(ctx, func() { _ = pw.CloseWithError(ctx.Err()) })
 	go func() {
 		defer close(done)
-		producerErr = produce(pw)
+		// a panic in the producer is the stream's error (the node-state pod goes on), and the cleanup below still runs
+		safeGo("diff producer", func(err error) { producerErr = err }, func() { producerErr = produce(pw) })
 		stopCancellation()
 		cleanup()
 		_ = pw.CloseWithError(producerErr)
@@ -293,15 +297,11 @@ func (r *ContainerdRuntime) LoadImage(ctx context.Context, ref string) (v1.Image
 	return r.loadImage(ctx, ref, nil)
 }
 
-func (r *ContainerdRuntime) LoadImageForPod(ctx context.Context, c Container, p PodInfo) (v1.Image, error) {
-	if r.SourceKeychain == nil {
-		return nil, fmt.Errorf("pod-owned source image credentials are unavailable")
-	}
-	keychain, err := r.SourceKeychain(ctx, c, p)
-	if err != nil {
-		return nil, err
-	}
-	return r.loadImage(ctx, c.ImageRef, keychain)
+// LoadImageForPod is LoadImage for the source image of a device pod. A layer that the content store does not have is read through the
+// relay of the node-agent (the reference points at it) with no credentials: the gate decides by the node and the reference, and this
+// pod is on this node and names this reference.
+func (r *ContainerdRuntime) LoadImageForPod(ctx context.Context, c Container, _ PodInfo) (v1.Image, error) {
+	return r.loadImage(ctx, c.ImageRef, nil)
 }
 
 func (r *ContainerdRuntime) loadImage(ctx context.Context, ref string, keychain authn.Keychain) (v1.Image, error) {
@@ -379,7 +379,9 @@ func (s contentSource) ReadBlob(ctx context.Context, h v1.Hash) (io.ReadCloser, 
 func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 	out := make(chan string, 64)
 	filter := fmt.Sprintf(`topic=="/tasks/exit",namespace==%q`, r.namespace)
-	go func() {
+	go safeGo("container exit events", func(err error) {
+		r.log.Error(err, "the container exit subscription stopped; exit snapshots rely on the pod resync")
+	}, func() {
 		defer close(out)
 		for ctx.Err() == nil {
 			envs, errs := r.client.EventService().Subscribe(ctx, filter)
@@ -420,7 +422,7 @@ func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 			case <-time.After(2 * time.Second):
 			}
 		}
-	}()
+	})
 	return out, nil
 }
 

@@ -2,11 +2,11 @@
 # End-to-end test of the WireGuard demux on the kind cluster of up.sh, in one mode (userspace, tc or xdp), or the switch back from a
 # fast path to userspace (detach):
 #
-#   make kind-demux-e2e KIND_DEMUX_MODE=tc   # builds the proxy image, then runs hack/kind-demux/e2e.sh tc
-#   make kind-demux-e2e-all                  # builds once, then e2e.sh upgrade, userspace, tc, xdp, lbipam.sh and e2e.sh detach
+#   KIND_DEMUX_MODE=tc mise run kind-demux:e2e   # builds the proxy image, then runs hack/kind-demux/e2e.sh tc
+#   mise run kind-demux:e2e-all                  # builds once, then e2e.sh upgrade, userspace, tc, xdp and detach
 #
 # A mode run deploys the demux part of the chart (templates/wg and its network policy, rendered with helm template -s: the rest of the
-# chart needs the operator, cert-manager and the Gateway API), two groups whose VPN servers are plain kernel WireGuard pods
+# chart needs the operator and cert-manager), two groups whose VPN servers are plain kernel WireGuard pods
 # (vpn-server.yaml), one on the demux's node and one on the other worker, each with the operator's VPN pod policy (printed from
 # vpnCiliumPolicy by TestPrintVPNCiliumPolicy, not a hand copy), LabGroups whose status says the VPN is registered, and a UDP and TCP
 # echo behind a NodePort Service of its own. Two client containers on the kind docker network connect through the node port of the
@@ -24,12 +24,12 @@
 #   - tc and xdp: Cilium holds no NAT entry and no conntrack entry beyond the handshakes for the clients' tunnels, and the transport
 #     packets leave its conntrack untouched.
 #
-# A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux-e2e-all runs userspace, tc, xdp in that order).
+# A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux:e2e-all runs userspace, tc, xdp in that order).
 #
 # upgrade (on a cluster where no release laboratory exists, or one this step made) installs the chart of KIND_DEMUX_UPGRADE_FROM
 # (the last release tag) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
 # tree fails on that node port, deletes the old Service as DEPLOY.md says and upgrades again, checks the chart's default mode (userspace)
-# and policy (Cluster), runs the userspace checks and uninstalls the release.
+# and the traffic policy of the VPN Service (Local in every mode), runs the userspace checks and uninstalls the release.
 #
 # detach runs after a tc or xdp run: it switches the chart to userspace, runs `proxy-wg detach` in a one-off pod with the demux's tc
 # privileges on every worker, checks that our links and pins are gone and that both clients' tunnels work again on the slow path.
@@ -168,6 +168,7 @@ deploy_render() {
     --set proxy.wg.mode="$1" --set proxy.l7.enabled=false --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s" \
     --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}" \
     --set operator.baseDomain=demux.test --set operator.publicVPNEndpoint=vpn.demux.test --set operator.supportEmail=demux@demux.test \
+    --set registry.gate.address=registry.demux.test:5443 \
     "${show[@]}" >"$WORK/demux.yaml"
 }
 deploy() {
@@ -180,13 +181,16 @@ deploy() {
   k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
 }
 
-# The chart values of the upgrade step: everything that needs a controller kind does not have (Gateway API, cert-manager, the lab
-# scheduler) is off, the images of the other components point at a tag that does not exist (their pods only wait), and the VPN Service has
-# the fixed node port of the cloud.
+# The chart values of the upgrade step: everything that needs a controller kind does not have (cert-manager, the lab scheduler) is off, the
+# images of the other components point at a tag that does not exist (their pods only wait), and the VPN Service has the fixed node port of the
+# cloud. The chart of a release before the pools release has Gateway objects, which kind has no API for: old_values switches them off; the chart of
+# this tree has none and needs the address of the registry gate (nothing dials it here).
 UPGRADE_NODE_PORT=31820
 upgrade_values=(--set operator.baseDomain=demux.test --set operator.publicVPNEndpoint=vpn.demux.test --set operator.supportEmail=demux@demux.test
-  --set gateway.enabled=false --set certManager.enabled=false --set labScheduler.enabled=false --set scheduler.enabled=false
+  --set certManager.enabled=false --set labScheduler.enabled=false --set scheduler.enabled=false
   --set image.tag=kind-demux-absent --set proxy.wg.nodePort="$UPGRADE_NODE_PORT")
+old_values=(--set gateway.enabled=false)
+new_values=(--set registry.gate.address=registry.demux.test:5443)
 helm_k() { helm --kube-context "kind-$CLUSTER" "$@"; }
 
 # upgrade: a release of the chart of KIND_DEMUX_UPGRADE_FROM, then helm upgrade to this tree with no proxy.wg.mode. From a base that still has
@@ -209,7 +213,7 @@ upgrade() {
   # CRDs are applied by kubectl, as DEPLOY.md says (helm never updates crds/): up.sh applied the CRDs of this tree with server-side apply,
   # so put the CRDs of the old chart in their place first (forced: the field manager is kubectl either way) and tell helm to leave them.
   k apply --server-side --force-conflicts -f "$WORK/from/charts/laboratory/crds" >/dev/null
-  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace --skip-crds "${upgrade_values[@]}" >/dev/null
+  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace --skip-crds "${upgrade_values[@]}" "${old_values[@]}" >/dev/null
   # Where the old chart put the VPN Service: every release tag so far already has it in laboratory-wg (the move out of laboratory-proxy is
   # older than all of them), so a release shows no move; a base that still has it in laboratory-proxy (KIND_DEMUX_UPGRADE_FROM may name
   # one) shows the move that the documented step is about.
@@ -221,7 +225,7 @@ upgrade() {
   [[ "$np" == "$UPGRADE_NODE_PORT" ]] || fail "the old VPN Service has node port $np"
   summary "installed the chart of $from ($(git -C "$ROOT" rev-parse --short "$from")): VPN Service $old_ns/laboratory-proxy-wg on node port $np"
 
-  local up=(upgrade laboratory "$ROOT/charts/laboratory" -n "$RELEASE_NS" "${upgrade_values[@]}" --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s"
+  local up=(upgrade laboratory "$ROOT/charts/laboratory" -n "$RELEASE_NS" "${upgrade_values[@]}" "${new_values[@]}" --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s"
     --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}")
   if [[ "$old_ns" == laboratory-proxy ]]; then
     log "helm upgrade to this tree without the step"
@@ -239,8 +243,8 @@ upgrade() {
   mode="$(k -n "$WG_NS" get ds laboratory-proxy-wg -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DEMUX_MODE")].value}')"
   etp="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.externalTrafficPolicy}')"
   np="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')"
-  [[ "$mode" == userspace && "$etp" == Cluster && "$np" == "$UPGRADE_NODE_PORT" ]] ||
-    fail "after the upgrade: mode $mode, externalTrafficPolicy $etp, node port $np (want userspace, Cluster, $UPGRADE_NODE_PORT)"
+  [[ "$mode" == userspace && "$etp" == Local && "$np" == "$UPGRADE_NODE_PORT" ]] ||
+    fail "after the upgrade: mode $mode, externalTrafficPolicy $etp, node port $np (want userspace, Local, $UPGRADE_NODE_PORT)"
   ! k -n laboratory-proxy get svc laboratory-proxy-wg >/dev/null 2>&1 || fail "the old VPN Service is back"
   log "the CRDs of this tree (helm upgrade does not update crds/)"
   k apply --server-side --force-conflicts -f "$ROOT/charts/laboratory/crds" >/dev/null

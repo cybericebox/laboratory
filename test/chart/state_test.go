@@ -81,14 +81,14 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 
 	var svc corev1.Service
 	render(t, "templates/registry/service.yaml", &svc, on...)
-	if svc.Name != "laboratory-registry" || svc.Spec.Ports[0].Port != 5000 {
+	if svc.Name != "laboratory-registry" || svc.Spec.Ports[0].Port != 5443 {
 		t.Errorf("service %+v", svc.Spec)
 	}
 
 	var secret corev1.Secret
 	render(t, "templates/registry/secret.yaml", &secret, on...)
-	if secret.StringData["username"] != "writer" || len(secret.StringData["password"]) < 32 || !strings.HasPrefix(secret.StringData["htpasswd"], "writer:$2") {
-		t.Errorf("registry credentials not generated: %+v", secret.StringData)
+	if len(secret.StringData["gatePassword"]) < 32 || !strings.HasPrefix(secret.StringData["htpasswd"], "gate:$2") || secret.StringData["username"] != "" || secret.StringData["password"] != "" {
+		t.Errorf("only the gate's credentials are generated: %d entries", len(secret.StringData))
 	}
 
 	var zotConfig corev1.ConfigMap
@@ -103,10 +103,10 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 		t.Errorf("storage %v", st)
 	}
 	if _, has := zc["extensions"]; has {
-		t.Errorf("without the image cache zot runs no sync extension")
+		t.Errorf("zot runs no sync extension: the gate fills the cache")
 	}
-	if _, has := st["retention"]; has {
-		t.Errorf("without the image cache no retention policy applies")
+	if _, has := st["retention"]; !has {
+		t.Errorf("the cache is on, so its retention policy applies")
 	}
 
 	var opCfg corev1.ConfigMap
@@ -130,34 +130,52 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 
 	var op appsv1.Deployment
 	render(t, "templates/operator/deployment.yaml", &op, on...)
-	opEnv := envOf(op.Spec.Template.Spec.Containers[0])
-	for _, k := range []string{"STATE_REGISTRY_USER", "STATE_REGISTRY_PASSWORD"} {
-		if opEnv[k].ValueFrom == nil || opEnv[k].ValueFrom.SecretKeyRef.Name != "laboratory-registry" {
-			t.Errorf("operator %s must come from the registry Secret", k)
+	for _, e := range op.Spec.Template.Spec.Containers[0].Env {
+		if e.ValueFrom != nil {
+			t.Errorf("operator %s comes from a Secret or a field: the operator holds no registry password, it shows the gate its own token", e.Name)
 		}
 	}
 
-	// The registry address follows the release namespace and is passed; its relay port 5035, the cgroup root and the work directory are
-	// the images' own (optional environment variables with those defaults, not passed by the chart).
-	if opCfg.Data["STATE_REGISTRY_ADDR"] != "laboratory-registry.laboratory-system.svc:5000" {
-		t.Errorf("the operator is passed the registry address: %q", opCfg.Data["STATE_REGISTRY_ADDR"])
+	// The operator dials the gate by its Service name with its own projected token (the registry has no password); the node-agent dials the
+	// address of the internal load balancer. The relay port 5035, the cgroup root and the work directory are the images' own.
+	for k, want := range map[string]string{"STATE_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443", "STATE_REGISTRY_CA_FILE": "/etc/registry-ca/ca.crt",
+		"STATE_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token"} {
+		if opCfg.Data[k] != want {
+			t.Errorf("the operator is passed %s = %q, want %q", k, opCfg.Data[k], want)
+		}
 	}
-	if names.RegistryServiceAddr != "laboratory-registry.laboratory-system.svc:5000" || names.RegistryForwardPort != 5035 {
-		t.Errorf("the registry Service is laboratory-registry in laboratory-system on port 5000, relayed on 5035: %s %d", names.RegistryServiceAddr, names.RegistryForwardPort)
+	if names.RegistryForwardPort != 5035 {
+		t.Errorf("the registry is relayed on 5035: %d", names.RegistryForwardPort)
 	}
 	ds := nodeAgent(t, on...)
 	agent := ds.Spec.Template.Spec.Containers[0]
 	env := envOf(agent)
-	if env["STATE_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5000" {
-		t.Errorf("the node-agent is passed the registry address: %q", env["STATE_REGISTRY_ADDR"].Value)
+	if env["STATE_REGISTRY_ADDR"].Value != "registry.lab.internal:5443" {
+		t.Errorf("the node-agent is passed the address of the gate: %q", env["STATE_REGISTRY_ADDR"].Value)
 	}
 	for _, baked := range []string{"STATE_FORWARD_PORT", "CGROUP_ROOT", "STATE_WORK_DIR"} {
 		if _, set := env[baked]; set {
 			t.Errorf("%s is not passed by the chart (the relay port is a constant, the others default in the image)", baked)
 		}
 	}
-	mounts := map[string]corev1.VolumeMount{}
+	// The node-agent keeps the relay only: the snapshot engine and its privileges are node-state's.
+	for _, unwanted := range []string{"STATE_PERSISTENCE_ENABLED", "STATE_REGISTRY_USER", "STATE_REGISTRY_PASSWORD", "CONTAINERD_ROOT"} {
+		if _, set := env[unwanted]; set {
+			t.Errorf("the node-agent must not be passed %s (node-state's)", unwanted)
+		}
+	}
 	for _, m := range agent.VolumeMounts {
+		if m.Name == "containerd-root" {
+			t.Errorf("the node-agent must not mount the containerd root")
+		}
+	}
+	if caps := agent.SecurityContext.Capabilities.Add; hasCap(caps, "DAC_READ_SEARCH") {
+		t.Errorf("node-agent capabilities %v", caps)
+	}
+
+	engine := nodeState(t, on...).Spec.Template.Spec.Containers[0]
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range engine.VolumeMounts {
 		mounts[m.Name] = m
 	}
 	if m := mounts["containerd-root"]; m.MountPath != "/var/lib/k0s/containerd" || !m.ReadOnly {
@@ -166,9 +184,22 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 	if mounts["host-cgroup"].MountPath != "/host/sys/fs/cgroup" {
 		t.Errorf("host cgroup tree not mounted")
 	}
-	caps := agent.SecurityContext.Capabilities.Add
-	if !hasCap(caps, "DAC_READ_SEARCH") || !hasCap(caps, "SYS_ADMIN") {
-		t.Errorf("node-agent capabilities %v", caps)
+	if caps := engine.SecurityContext.Capabilities.Add; !hasCap(caps, "DAC_READ_SEARCH") || !hasCap(caps, "SYS_ADMIN") {
+		t.Errorf("node-state capabilities %v", caps)
+	}
+	for _, e := range engine.Env {
+		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			t.Errorf("node-state %s comes from a Secret: a node holds no registry credential", e.Name)
+		}
+	}
+	if envOf(engine)["STATE_PUSH_SOCKET"].Value != "/run/cybericebox/registry-push/push.sock" {
+		t.Errorf("node-state pushes through the unix socket of the relay: %v", envOf(engine)["STATE_PUSH_SOCKET"])
+	}
+	if m := mounts["registry-push"]; m.MountPath != "/run/cybericebox/registry-push" {
+		t.Errorf("node-state mounts the directory it shares with the node-agent: %+v", m)
+	}
+	if _, direct := envOf(engine)["STATE_REGISTRY_ADDR"]; direct {
+		t.Errorf("node-state has no direct path to the registry: it goes through the node-agent's relay")
 	}
 }
 
@@ -216,8 +247,8 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, cm.Data[k], v)
 		}
 	}
-	agent := nodeAgent(t, extra...).Spec.Template.Spec.Containers[0]
-	for _, m := range agent.VolumeMounts {
+	engine := nodeState(t, extra...).Spec.Template.Spec.Containers[0]
+	for _, m := range engine.VolumeMounts {
 		if m.Name == "containerd-root" && m.MountPath != "/var/lib/containerd" {
 			t.Errorf("containerd root mount %s", m.MountPath)
 		}
@@ -225,7 +256,7 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 }
 
 func TestRegistryNeedsNodeAgent(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "nodeAgent.enabled=false")
+	out, err := helmTemplate(t, "--set", "nodeAgent.enabled=false", "--set", "registry.cache.enabled=true")
 	if err == nil {
 		t.Fatalf("the chart must refuse a registry without the node-agent")
 	}
@@ -234,15 +265,22 @@ func TestRegistryNeedsNodeAgent(t *testing.T) {
 	}
 }
 
-func TestImageCacheOffByDefault(t *testing.T) {
+// The cache is on by default (a lab node pulls only through it); where there is no lab node and it is off, the operator hears nothing of it.
+func TestImageCacheIsOnByDefault(t *testing.T) {
+	if got := operatorConfig(t)["IMAGE_CACHE_ENABLED"]; got != "true" {
+		t.Errorf("IMAGE_CACHE_ENABLED = %q", got)
+	}
 	var cm corev1.ConfigMap
-	render(t, "templates/operator/configmap.yaml", &cm)
+	render(t, "templates/operator/configmap.yaml", &cm, noRegistry...)
 	for k := range cm.Data {
-		if strings.HasPrefix(k, "IMAGE_CACHE") {
-			t.Errorf("operator config has %s although the cache is off", k)
+		if strings.HasPrefix(k, "IMAGE_CACHE") || strings.HasPrefix(k, "REGISTRY_GATE") || k == "UPSTREAM_NAMESPACE" {
+			t.Errorf("operator config has %s although there is no registry", k)
 		}
 	}
 }
+
+// What a release with no lab node and no cache looks like: nothing of the registry.
+var noRegistry = []string{"--set", "registry.cache.enabled=false", "--set", "nodeAgent.enabled=false"}
 
 func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	cache := []string{"--set", "registry.cache.enabled=true"}
@@ -250,23 +288,8 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	var zotCfg corev1.ConfigMap
 	render(t, "templates/registry/configmap.yaml", &zotCfg, cache...)
 	var zc struct {
-		Extensions struct {
-			Sync struct {
-				Enable          bool   `json:"enable"`
-				CredentialsFile string `json:"credentialsFile"`
-				Registries      []struct {
-					URLs           []string `json:"urls"`
-					OnDemand       bool     `json:"onDemand"`
-					PreserveDigest bool     `json:"preserveDigest"`
-					Content        []struct {
-						Prefix      string `json:"prefix"`
-						Destination string `json:"destination"`
-						StripPrefix bool   `json:"stripPrefix"`
-					} `json:"content"`
-				} `json:"registries"`
-			} `json:"sync"`
-		} `json:"extensions"`
-		HTTP struct {
+		Extensions map[string]any `json:"extensions"`
+		HTTP       struct {
 			Compat []string `json:"compat"`
 		} `json:"http"`
 		Storage struct {
@@ -283,17 +306,22 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	if err := json.Unmarshal([]byte(zotCfg.Data["config.json"]), &zc); err != nil {
 		t.Fatal(err)
 	}
-	sync := zc.Extensions.Sync
-	if !sync.Enable || sync.CredentialsFile != "/etc/zot-sync/credentials.json" || len(sync.Registries) != 4 {
-		t.Fatalf("sync %+v", sync)
+	// zot only stores: the fill and the check of every pull are the gate's, so zot has no sync (no upstream list, no credentials file)
+	if _, hasSync := zc.Extensions["sync"]; hasSync {
+		t.Fatalf("zot runs no sync extension: %v", zc.Extensions)
 	}
-	want := map[string]string{"/docker.io": "https://registry-1.docker.io", "/ghcr.io": "https://ghcr.io", "/quay.io": "https://quay.io", "/registry.k8s.io": "https://registry.k8s.io"}
-	for _, r := range sync.Registries {
-		c := r.Content[0]
-		if !r.PreserveDigest || !r.OnDemand || c.Prefix != "**" || c.StripPrefix || want[c.Destination] != r.URLs[0] {
+	var gateCfg corev1.ConfigMap
+	render(t, "templates/registry/gate-configmap.yaml", &gateCfg, cache...)
+	var list []struct{ Name, URL string }
+	if err := json.Unmarshal([]byte(gateCfg.Data["registries.json"]), &list); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"docker.io": "https://registry-1.docker.io", "ghcr.io": "https://ghcr.io", "quay.io": "https://quay.io", "registry.k8s.io": "https://registry.k8s.io"}
+	for _, r := range list {
+		if want[r.Name] != r.URL {
 			t.Errorf("registry entry %+v", r)
 		}
-		delete(want, c.Destination)
+		delete(want, r.Name)
 	}
 	if len(want) != 0 {
 		t.Errorf("missing upstreams %v", want)
@@ -303,7 +331,7 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 		t.Errorf("http.compat must allow docker2s2 manifests: %v", zc.HTTP.Compat)
 	}
 	pol := zc.Storage.Retention.Policies[0]
-	if pol.KeepTags[0].PulledWithin != "48h" || len(pol.Repositories) != 4 || pol.Repositories[0] != "docker.io/**" {
+	if pol.KeepTags[0].PulledWithin != "48h" || len(pol.Repositories) != 1 || pol.Repositories[0] != "c/**" {
 		t.Errorf("retention %+v", pol)
 	}
 
@@ -313,12 +341,6 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	if dep.Spec.Template.Spec.Containers[0].Image != "ghcr.io/project-zot/zot:v2.1.21" {
 		t.Errorf("the cache needs the full zot image, got %s", dep.Spec.Template.Spec.Containers[0].Image)
 	}
-	var sec corev1.Secret
-	render(t, "templates/registry/sync-secret.yaml", &sec, cache...)
-	if sec.StringData["credentials.json"] != "{}" {
-		t.Errorf("no pull secrets, no upstream credentials: %q", sec.StringData["credentials.json"])
-	}
-
 	var opCfg corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &opCfg, cache...)
 	if opCfg.Data["IMAGE_CACHE_PIN_TTL"] != "30m" || opCfg.Data["IMAGE_CACHE_ENABLED"] != "true" || opCfg.Data["IMAGE_CACHE_PREFIX"] != "" ||
@@ -344,13 +366,14 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	}
 }
 
-func TestImageCacheCustomRegistriesAndCredentialsSecret(t *testing.T) {
+func TestImageCacheCustomRegistriesAndAnonymousFill(t *testing.T) {
 	extra := []string{
 		"--set", "registry.cache.enabled=true",
 		"--set", "registry.cache.registries={docker.io}",
+		"--set", "registry.allowedRegistries={docker.io,registry.example.com}", // the cache serves what is allowed
 		"--set", "registry.cache.extraRegistries[0].name=registry.example.com",
 		"--set", "registry.cache.extraRegistries[0].url=https://registry.example.com",
-		"--set", "registry.cache.credentialsSecret=my-sync-creds",
+		"--set", "registry.cache.anonymousFill=my-fill-login",
 		"--set", "registry.cache.unusedTTL=12h",
 		"--set", "registry.cache.pinTTL=5m",
 	}
@@ -368,18 +391,42 @@ func TestImageCacheCustomRegistriesAndCredentialsSecret(t *testing.T) {
 	render(t, "templates/registry/deployment.yaml", &dep, extra...)
 	found := false
 	for _, v := range dep.Spec.Template.Spec.Volumes {
-		if v.Name == "sync-credentials" && v.Secret.SecretName == "my-sync-creds" {
+		if v.Name == "gate-anonymous-fill" && v.Secret.SecretName == "my-fill-login" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("an own credentials Secret must be mounted")
+		t.Errorf("the anonymous-fill login must be mounted into the gate")
 	}
-	if out, err := helmTemplate(t, append(extra, "-s", "templates/registry/sync-secret.yaml")...); err == nil && strings.Contains(out, "kind: Secret") {
-		t.Errorf("no generated credentials Secret with credentialsSecret set:\n%s", out)
+	gate := containerNamed(dep.Spec.Template.Spec, "gate")
+	if envOf(*gate)["GATE_ANONYMOUS_FILL_FILE"].Value == "" {
+		t.Errorf("the gate is told where the login is")
+	}
+	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "--set", "registry.cache.credentialsSecret=old"); err == nil || !strings.Contains(out, "credentialsSecret was removed") {
+		t.Errorf("the old value is refused loudly: %v\n%s", err, out)
 	}
 	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "--set", "registry.cache.registries={nope.io}"); err == nil {
 		t.Errorf("an unknown built-in registry must be refused:\n%s", out)
+	}
+}
+
+// The tag resolver of the operator and the agent asks the registries that the chart lists with an http:// url over plain http, as the gate
+// does; none of the built-in ones.
+func TestPlainHTTPRegistriesReachTheResolvers(t *testing.T) {
+	set := []string{"--set", "registry.cache.enabled=true", "--set", "registry.cache.extraRegistries[0].name=registry.e2e.test",
+		"--set", "registry.cache.extraRegistries[0].url=http://registry.e2e.test",
+		"--set", "registry.cache.extraRegistries[1].name=reg.example.com",
+		"--set", "registry.cache.extraRegistries[1].url=https://reg.example.com"}
+	if got := operatorConfig(t, set...)["IMAGE_CACHE_PLAIN_HTTP_REGISTRIES"]; got != "registry.e2e.test" {
+		t.Errorf("operator: %q", got)
+	}
+	if got := operatorConfig(t, "--set", "registry.cache.enabled=true")["IMAGE_CACHE_PLAIN_HTTP_REGISTRIES"]; got != "" {
+		t.Errorf("the built-in registries are https: %q", got)
+	}
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, append([]string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}, set...)...)
+	if got := envOf(dep.Spec.Template.Spec.Containers[0])["IMAGE_CACHE_PLAIN_HTTP_REGISTRIES"].Value; got != "registry.e2e.test" {
+		t.Errorf("agent: %q", got)
 	}
 }
 
@@ -389,28 +436,46 @@ func TestAgentPrewarmWiring(t *testing.T) {
 	var dep appsv1.Deployment
 	render(t, "templates/agent/deployment.yaml", &dep, on...)
 	env := envOf(dep.Spec.Template.Spec.Containers[0])
-	// The agent reads the cache settings under the operator's names (IMAGE_CACHE_*, IMAGE_PULL_SECRETS); the registry address, the node prefix
-	// and the secret namespace are constants of the image.
+	// The agent reads the cache settings under the operator's names (IMAGE_CACHE_*); it holds no pull secret (the gate does the proof).
 	want := map[string]string{
 		"IMAGE_CACHE_ENABLED":       "true",
 		"IMAGE_CACHE_REGISTRIES":    "docker.io,ghcr.io,quay.io,registry.k8s.io",
-		"IMAGE_PULL_SECRETS":        "pull-one",
 		"AGENT_PREWARM_CONCURRENCY": "7",
 		"AGENT_PREWARM_TIMEOUT":     "10m",
+		// the prewarm goes through the gate's TLS port, trusting the registry's own authority only
+		"AGENT_PREWARM_GATE_ADDR":    "laboratory-registry.laboratory-system.svc:5443",
+		"AGENT_PREWARM_GATE_CA_FILE": "/registry-ca/ca.crt",
 	}
 	for k, v := range want {
 		if env[k].Value != v {
 			t.Errorf("%s = %q, want %q", k, env[k].Value, v)
 		}
 	}
-	out, err := helmTemplate(t, append(on, "-s", "templates/agent/role-pullsecrets.yaml")...)
-	if err != nil || !strings.Contains(out, "pull-one") || !strings.Contains(out, "verbs: [ get ]") && !strings.Contains(out, "- get") {
-		t.Errorf("the agent must be allowed to read exactly the pull secrets:\n%s %v", out, err)
+	mounted, caMap := false, ""
+	for _, m := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
+		mounted = mounted || m.Name == "registry-ca" && m.MountPath == "/registry-ca" && m.ReadOnly
+	}
+	for _, v := range dep.Spec.Template.Spec.Volumes {
+		if v.Name == "registry-ca" && v.ConfigMap != nil {
+			caMap = v.ConfigMap.Name
+		}
+	}
+	if !mounted || caMap != "laboratory-registry-ca" {
+		t.Errorf("the agent mounts the authority of the gate (a ConfigMap): mounted=%v configmap=%q", mounted, caMap)
+	}
+	if tlsOut, err := helmTemplate(t, append(on, "-s", "templates/registry/tls-secret.yaml")...); err != nil {
+		t.Errorf("%v\n%s", err, tlsOut)
+	} else if _, copyOnly, found := strings.Cut(tlsOut, "# The same authority for the management agent"); !found || strings.Contains(copyOnly, "private") || strings.Count(copyOnly, "BEGIN") != 1 || strings.Contains(copyOnly, "kind: Secret") {
+		t.Errorf("the agent's copy is a ConfigMap that holds the authority certificate and nothing else:\n%s", tlsOut)
+	}
+	// the agent reads no Secret for the prewarm: the credentials of a call are the call's own
+	if out, err := helmTemplate(t, append(on, "-s", "templates/agent/role-pullsecrets.yaml")...); err == nil {
+		t.Errorf("the agent has no role over the pull secrets any more:\n%s", out)
 	}
 
-	// Cache off: the agent knows nothing of it and has no extra role.
+	// No registry: the agent knows nothing of it.
 	var off appsv1.Deployment
-	render(t, "templates/agent/deployment.yaml", &off, "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com")
+	render(t, "templates/agent/deployment.yaml", &off, append([]string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}, noRegistry...)...)
 	for k := range envOf(off.Spec.Template.Spec.Containers[0]) {
 		if strings.HasPrefix(k, "IMAGE_CACHE") || strings.HasPrefix(k, "AGENT_PREWARM") {
 			t.Errorf("%s present with the cache off", k)
@@ -418,50 +483,102 @@ func TestAgentPrewarmWiring(t *testing.T) {
 	}
 }
 
-// The registry address follows the release namespace and is passed to the agent, together with the reader account.
-func TestAgentGetsTheRegistryReaderAccountForSnapshotExport(t *testing.T) {
+// The agent reaches the gate by its Service name over TLS with its own projected token: no registry account of any kind.
+func TestAgentShowsTheGateItsOwnTokenForSnapshotExport(t *testing.T) {
 	agent := []string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}
 	for name, extra := range map[string][]string{
 		"persistence": {"--set", statePath + "enabled=true"},
 		"cache":       {"--set", "registry.cache.enabled=true"},
-		"neither":     nil,
 	} {
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(agent, extra...)...)
 		env := envOf(dep.Spec.Template.Spec.Containers[0])
-		if env["AGENT_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5000" {
-			t.Errorf("%s: the registry address is passed: %q", name, env["AGENT_REGISTRY_ADDR"].Value)
-		}
-		for _, k := range []string{"AGENT_REGISTRY_USER", "AGENT_REGISTRY_PASSWORD"} {
-			if env[k].ValueFrom == nil || env[k].ValueFrom.SecretKeyRef.Name != "laboratory-registry-reader" {
-				t.Errorf("%s: %s must come from the reader Secret", name, k)
+		for k, want := range map[string]string{"AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443", "AGENT_PREWARM_GATE_CA_FILE": "/registry-ca/ca.crt",
+			"AGENT_PREWARM_GATE_ADDR": "laboratory-registry.laboratory-system.svc:5443", "AGENT_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token"} {
+			if env[k].Value != want {
+				t.Errorf("%s: %s = %q, want %q", name, k, env[k].Value, want)
 			}
+		}
+		for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+			if e.ValueFrom != nil {
+				t.Errorf("%s: %s comes from a Secret or a field", name, e.Name)
+			}
+		}
+		var token bool
+		for _, v := range dep.Spec.Template.Spec.Volumes {
+			token = token || v.Name == "registry-gate-token" && v.Projected != nil && v.Projected.Sources[0].ServiceAccountToken.Audience == "laboratory-registry-gate"
+		}
+		if !token {
+			t.Errorf("%s: no projected token for the gate", name)
 		}
 	}
 }
 
-// C-1: the registry does not depend on either switch: flipping statePersistence or the cache off never removes zot.
-func TestRegistryIsAlwaysInstalled(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/registry/deployment.yaml", "-s", "templates/registry/service.yaml", "-s", "templates/registry/pvc.yaml", "-s", "templates/registry/secret.yaml")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	for _, want := range []string{"kind: Deployment", "kind: Service", "kind: PersistentVolumeClaim", "kind: Secret"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("with both switches off the chart must still render %q", want)
+// The registry (zot) is installed only when something needs it: the image cache, state persistence or the platform images. With all three
+// off nothing of it is rendered and everything that depends on it copes: no relay on the nodes, no registry address or Secret reference in
+// the node-agent, the operator and the agent, no network policy rule.
+func TestRegistryIsInstalledOnlyWhenNeeded(t *testing.T) {
+	templates := []string{"templates/registry/deployment.yaml", "templates/registry/service.yaml", "templates/registry/pvc.yaml", "templates/registry/secret.yaml",
+		"templates/registry/configmap.yaml", "templates/netpol/registry.yaml"}
+	for _, tpl := range templates {
+		if out, err := helmTemplate(t, append(append([]string{}, noRegistry...), "-s", tpl)...); err == nil && strings.TrimSpace(out) != "" {
+			t.Errorf("both switches off: %s must render nothing:\n%s", tpl, out)
 		}
 	}
-	var na appsv1.DaemonSet
-	render(t, "templates/node-agent/daemonset.yaml", &na)
-	// The relay is on in the node-agent image whatever the switches are: nothing is passed for it (names.RegistryServiceAddr, RegistryForwardPort).
-	if _, set := envOf(na.Spec.Template.Spec.Containers[0])["STATE_PERSISTENCE_ENABLED"]; set {
+	// the whole release (agent on, to see its side too) mentions the registry nowhere
+	out, err := helmTemplate(t, append(append([]string{}, agentSet...), noRegistry...)...)
+	if err != nil {
+		t.Fatalf("a release without a registry must render: %v\n%s", err, out)
+	}
+	for _, gone := range []string{"laboratory-registry", "STATE_REGISTRY", "AGENT_REGISTRY_ADDR", "AGENT_REGISTRY_USER", "registry-gate"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("both switches off: %q must not appear anywhere", gone)
+		}
+	}
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, append(append([]string{}, agentSet...), noRegistry...)...)
+	if env := envOf(dep.Spec.Template.Spec.Containers[0]); env["AGENT_REGISTRY_ENABLED"].Value != "false" {
+		t.Errorf("the agent must be told there is no registry: %q", env["AGENT_REGISTRY_ENABLED"].Value)
+	}
+	// runtime observation reads no registry either (its settings sit in the same block as the snapshot engine)
+	out, err = helmTemplate(t, "--set", "lifecycle.runtimeObservation.enabled=true", "-s", "templates/node-agent/daemonset.yaml")
+	if err != nil || strings.Contains(out, "secretKeyRef") {
+		t.Errorf("runtime observation needs no registry Secret: %v", err)
+	}
+
+	// each one of the three brings the registry, and the nodes get their relay
+	for name, extra := range map[string][]string{
+		"cache":       {"--set", "registry.cache.enabled=true"},
+		"persistence": {"--set", statePath + "enabled=true"},
+	} {
+		out, err := helmTemplate(t, append(append([]string{}, extra...), "-s", "templates/registry/deployment.yaml", "-s", "templates/registry/service.yaml",
+			"-s", "templates/registry/pvc.yaml", "-s", "templates/registry/secret.yaml")...)
+		if err != nil {
+			t.Fatalf("%s: helm template: %v\n%s", name, err, out)
+		}
+		for _, want := range []string{"kind: Deployment", "kind: Service", "kind: PersistentVolumeClaim", "kind: Secret"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: the registry must render %q", name, want)
+			}
+		}
+		var na appsv1.DaemonSet
+		render(t, "templates/node-agent/daemonset.yaml", &na, extra...)
+		env := envOf(na.Spec.Template.Spec.Containers[0])
+		if env["STATE_REGISTRY_ADDR"].Value == "" || env["REGISTRY_ENABLED"].Value != "" {
+			t.Errorf("%s: the node-agent gets the registry address and no switch-off: %+v", name, env["REGISTRY_ENABLED"])
+		}
+	}
+	// state persistence itself does not depend on the registry being absent: it brings it, and the snapshot engine stays off without it
+	var on appsv1.DaemonSet
+	render(t, "templates/node-agent/daemonset.yaml", &on)
+	if _, set := envOf(on.Spec.Template.Spec.Containers[0])["STATE_PERSISTENCE_ENABLED"]; set {
 		t.Error("the snapshot engine stays off with state persistence off")
 	}
 }
 
 // C-19: the registry volume can be made on a StorageClass with reclaimPolicy Retain, which the chart creates on request.
 func TestRegistryRetainClass(t *testing.T) {
-	on := []string{"--set", "registry.retainClass.create=true", "--set", "registry.retainClass.provisioner=rancher.io/local-path", "--set", "registry.storageClass=ignored"}
+	on := []string{"--set", "registry.cache.enabled=true", "--set", "registry.retainClass.create=true", "--set", "registry.retainClass.provisioner=rancher.io/local-path", "--set", "registry.storageClass=ignored"}
 	out, err := helmTemplate(t, append(on, "-s", "templates/registry/storageclass.yaml", "-s", "templates/registry/pvc.yaml")...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -474,10 +591,10 @@ func TestRegistryRetainClass(t *testing.T) {
 	if strings.Contains(out, "ignored") {
 		t.Error("registry.storageClass is not used when the chart creates the Retain class")
 	}
-	if out, err := helmTemplate(t, "--set", "registry.retainClass.create=true"); err == nil || !strings.Contains(out, "provisioner") {
+	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "--set", "registry.retainClass.create=true"); err == nil || !strings.Contains(out, "provisioner") {
 		t.Errorf("a Retain class without a provisioner must be refused: %v %s", err, out)
 	}
-	if out, err := helmTemplate(t, "-s", "templates/registry/pvc.yaml"); err != nil || strings.Contains(out, "StorageClass") {
+	if out, err := helmTemplate(t, "--set", "registry.cache.enabled=true", "-s", "templates/registry/pvc.yaml"); err != nil || strings.Contains(out, "StorageClass") {
 		t.Errorf("by default the chart creates no StorageClass: %v %s", err, out)
 	}
 }
@@ -497,26 +614,31 @@ func TestNodeLossForceDeleteAfterReachesOperator(t *testing.T) {
 	}
 }
 
-func TestStatePersistenceNodeAgentAppArmor(t *testing.T) {
-	nodeAgent := func(extra ...string) corev1.Container {
+func TestStatePersistenceNodeStateAppArmor(t *testing.T) {
+	stateContainer := func(extra ...string) corev1.Container {
 		t.Helper()
 		var ds appsv1.DaemonSet
-		render(t, "templates/node-agent/daemonset.yaml", &ds, extra...)
+		render(t, "templates/node-state/daemonset.yaml", &ds, extra...)
 		for _, c := range ds.Spec.Template.Spec.Containers {
-			if c.Name == "node-agent" {
+			if c.Name == "node-state" {
 				return c
 			}
 		}
-		t.Fatal("no node-agent container")
+		t.Fatal("no node-state container")
 		return corev1.Container{}
 	}
 	// On: the default cri-containerd profile has `deny mount`, and the snapshot filter mounts read-only overlays.
-	on := nodeAgent("--set", statePath+"enabled=true")
+	on := stateContainer("--set", statePath+"enabled=true")
 	if sc := on.SecurityContext; sc == nil || sc.AppArmorProfile == nil || sc.AppArmorProfile.Type != corev1.AppArmorProfileTypeUnconfined {
-		t.Errorf("with state persistence on the node-agent must run AppArmor-unconfined, got %+v", on.SecurityContext)
+		t.Errorf("with state persistence on node-state must run AppArmor-unconfined, got %+v", on.SecurityContext)
 	}
-	// Off: nothing mounts, so the node-agent keeps the runtime default.
-	if off := nodeAgent(); off.SecurityContext != nil && off.SecurityContext.AppArmorProfile != nil {
-		t.Errorf("with state persistence off the node-agent keeps the default AppArmor profile, got %+v", off.SecurityContext.AppArmorProfile)
+	// The node-agent never does.
+	if sc := nodeAgent(t, "--set", statePath+"enabled=true").Spec.Template.Spec.Containers[0].SecurityContext; sc != nil && sc.AppArmorProfile != nil {
+		t.Errorf("the node-agent keeps the default AppArmor profile, got %+v", sc.AppArmorProfile)
+	}
+	// Observation alone: node-state runs the throttle monitor only, under the default profile and without the snapshot privileges.
+	obs := stateContainer("--set", "lifecycle.runtimeObservation.enabled=true")
+	if sc := obs.SecurityContext; sc.AppArmorProfile != nil || hasCap(sc.Capabilities.Add, "DAC_READ_SEARCH") {
+		t.Errorf("without state persistence node-state keeps the default profile and no DAC_READ_SEARCH, got %+v", sc)
 	}
 }

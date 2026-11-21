@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 )
 
 const (
@@ -38,6 +39,8 @@ type Reporter struct {
 	OnResume       func([]PairCounters)
 	OnPublish      func(context.Context, Report) error
 	BeforeShutdown func(context.Context) error
+	// Activity receives the per-address touches of each finished minute (nil: activity reports are off).
+	Activity *activity.Hub
 }
 
 // Run polls the source and publishes on the given cadences until ctx ends.
@@ -185,6 +188,7 @@ func (r *Reporter) Publish(ctx context.Context, now time.Time) error {
 	return r.publish(ctx, now)
 }
 func (r *Reporter) publish(ctx context.Context, now time.Time) error {
+	r.emitTouches(ctx, now)
 	report := r.Collector.Snapshot(now)
 	if err := PublishReport(ctx, r.Reader, r.Writer, types.NamespacedName{Namespace: r.Namespace, Name: ReportName},
 		laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: r.Instance}, ToStatus(report)); err != nil {
@@ -194,6 +198,21 @@ func (r *Reporter) publish(ctx context.Context, now time.Time) error {
 		return r.OnPublish(ctx, report)
 	}
 	return nil
+}
+
+// emitTouches hands the finished minutes of per-address bytes to the activity ring of the group namespace.
+func (r *Reporter) emitTouches(ctx context.Context, now time.Time) {
+	if r.Activity == nil {
+		return
+	}
+	for _, w := range r.Collector.TakeTouches(now) {
+		r.Activity.Add(r.Namespace, laboratoryv1alpha1.ActivityEvent{
+			AtMs: w.MinuteMs + int64(time.Minute/time.Millisecond), Kind: laboratoryv1alpha1.ActivityTouch, LabName: w.Lab, Client: w.Subject,
+			DstAddr: w.Dst, Protocol: w.Proto, BytesUp: w.BytesOut, BytesDown: w.BytesIn, FirstSeenMs: w.FirstMs, LastSeenMs: w.LastMs,
+		})
+	}
+	// A failed write keeps the ring and is tried again next minute; the hub reports it through OnError.
+	_ = r.Activity.Flush(ctx)
 }
 
 // PublishReport creates the LabTrafficReport when missing and replaces its

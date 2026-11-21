@@ -32,20 +32,15 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: ns},
 		Status:     lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"},
 	}
-	deviceLab := &lab.Lab{
-		ObjectMeta: metav1.ObjectMeta{Name: "l1", Namespace: ns},
-		Status: lab.LabStatus{Phase: lab.PhaseReady,
-			VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}},
-	}
+	deviceLab, leg := vpnLab(ns, "l1", "10.8.1.0/24", 1)
 	policy := &lab.LabGroupAccessPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: ns, Generation: 1},
 		Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{
-			Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"},
+			Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"}, GatewayNames: []string{"vpn"},
 		}}},
 	}
-	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-l1", Namespace: ns}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(peer, deviceLab, policy).
+		WithStatusSubresource(peer, deviceLab, policy, leg).
 		WithObjects(peer, deviceLab, policy, leg).Build()
 	ipt, err := vpn.NewIPTablesManager("wg0")
 	if err != nil {
@@ -60,7 +55,7 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	rule := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: vpn.AccessAllow, LabInterface: "lab1"}
+	rule := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: vpn.AccessAllow, LabInterface: "lab1", LabInitiated: true}
 	saved := nstest.Run(t, "", "iptables-save", "-c", "-t", "filter")
 	var meterRule string
 	for _, line := range strings.Split(saved, "\n") {

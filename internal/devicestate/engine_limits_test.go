@@ -3,27 +3,21 @@ package devicestate
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
-
 	"github.com/google/go-containerregistry/pkg/v1/random"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
-
-func randomImage(t *testing.T) v1.Image {
-	t.Helper()
-	img, err := random.Image(256, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return img
-}
 
 // a clock the tests move
 type testClock struct {
@@ -51,74 +45,101 @@ func push(t *testing.T, r *rig, tr *tracked, file, body string) error {
 	return tr.snapshot(context.Background(), true)
 }
 
-// R-5: one device cannot push without pause; what it pushes in an hour is bounded; the exit snapshot is never held back.
-func TestEngineRateLimitsPushesPerDevice(t *testing.T) {
-	r, clk := rigWithClock(t)
-	r.e.MinPushInterval = time.Minute
-	tr := r.track(t)
+// fakeGate plays the refusals of the registry gate in front of an ordinary registry: while a refusal is set, the push of a manifest
+// (PUT) is answered with its status, its CIB_* code and its Retry-After, as the gate answers it.
+type fakeGate struct {
+	inner http.Handler
+	mu    sync.Mutex
+	rule  *gateAnswer
+	hits  int
+}
 
-	if err := push(t, r, tr, "a", "1"); err != nil {
-		t.Fatal(err)
+type gateAnswer struct {
+	status int
+	code   string
+	retry  int // seconds, 0: no header
+	msg    string
+	huge   bool // Retry-After far beyond any duration
+}
+
+func (g *fakeGate) refuse(a *gateAnswer) { g.mu.Lock(); g.rule = a; g.mu.Unlock() }
+
+func (g *fakeGate) refusals() int { g.mu.Lock(); defer g.mu.Unlock(); return g.hits }
+
+func (g *fakeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	rule := g.rule
+	if rule != nil && r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/") {
+		g.hits++
+	} else {
+		rule = nil
 	}
-	err := push(t, r, tr, "b", "2")
-	var def *errDeferred
-	if !errors.As(err, &def) || def.after <= 0 || def.after > time.Minute {
-		t.Fatalf("a second push at once must be deferred: %v", err)
+	g.mu.Unlock()
+	if rule == nil {
+		g.inner.ServeHTTP(w, r)
+		return
 	}
-	if recs, warns, _ := r.cl.snapshot(); len(recs) != 1 || len(warns) != 0 {
-		t.Fatalf("a deferral is not a failure and not a warning: %v %v", recs, warns)
+	if rule.huge {
+		w.Header().Set("Retry-After", "99999999999999999")
+	} else if rule.retry > 0 {
+		w.Header().Set("Retry-After", fmt.Sprint(rule.retry))
 	}
-	clk.advance(61 * time.Second)
-	if err := push(t, r, tr, "b", "2"); err != nil {
-		t.Fatalf("after the interval: %v", err)
-	}
-	// the exit snapshot is exempt: it must not be lost
-	r.rt.setDiff(tarOf(map[string]string{"c": "3"}))
-	if err := tr.snapshot(context.Background(), false); err != nil {
-		t.Fatalf("exit snapshot: %v", err)
-	}
-	if recs, _, _ := r.cl.snapshot(); len(recs) != 3 {
-		t.Fatalf("records: %d", len(recs))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(rule.status)
+	_, _ = fmt.Fprintf(w, `{"errors":[{"code":%q,"message":%q}]}`, rule.code, rule.msg)
+}
+
+// 429 with Retry-After (the least interval, the push budget, the exit limit) is a deferral by the time the gate names: not a failure and not
+// a warning, and the snapshot is taken when the gate lets it.
+func TestEngineDefersWhatTheGateRateLimits(t *testing.T) {
+	for _, code := range []string{snapshot.CodePushInterval, snapshot.CodePushBudget, snapshot.CodeExitLimit} {
+		t.Run(code, func(t *testing.T) {
+			r, _ := rigWithClock(t)
+			tr := r.track(t)
+			r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: code, retry: 42, msg: "slow down"})
+			err := push(t, r, tr, "a", "1")
+			var def *errDeferred
+			if !errors.As(err, &def) || def.after != 42*time.Second || !strings.Contains(def.reason, code) {
+				t.Fatalf("the gate's Retry-After is the wait: %v", err)
+			}
+			if recs, warns, _ := r.cl.snapshot(); len(recs) != 0 || len(warns) != 0 {
+				t.Fatalf("a deferral is not a failure and not a warning: %v %v", recs, warns)
+			}
+			r.gate.refuse(nil)
+			if err := push(t, r, tr, "a", "1"); err != nil {
+				t.Fatalf("when the gate lets it: %v", err)
+			}
+			if recs, _, _ := r.cl.snapshot(); len(recs) != 1 {
+				t.Fatalf("records: %d", len(recs))
+			}
+		})
 	}
 }
 
-func TestEnginePushBudgetPerWindow(t *testing.T) {
-	r, clk := rigWithClock(t)
-	r.e.PushBudget = 1 // the first push is over it
-	r.e.PushBudgetWindow = time.Hour
+// A 429 without Retry-After waits a minute at least; a 429 with a silly one waits a second at least.
+func TestEngineDeferralHasBounds(t *testing.T) {
+	r, _ := rigWithClock(t)
 	tr := r.track(t)
-	if err := push(t, r, tr, "a", "1"); err != nil {
-		t.Fatal(err)
-	}
-	err := push(t, r, tr, "b", "2")
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushInterval, msg: "x"})
 	var def *errDeferred
-	if !errors.As(err, &def) || !strings.Contains(def.reason, "budget") {
-		t.Fatalf("the budget must defer the next push: %v", err)
-	}
-	if def.after > time.Hour || def.after < 59*time.Minute {
-		t.Fatalf("it waits until the first push leaves the window: %s", def.after)
-	}
-	clk.advance(time.Hour + time.Second)
-	if err := push(t, r, tr, "b", "2"); err != nil {
-		t.Fatalf("after the window: %v", err)
+	if err := push(t, r, tr, "a", "1"); !errors.As(err, &def) || def.after != time.Minute {
+		t.Fatalf("no Retry-After: %v", err)
 	}
 }
 
-type fullGuard struct{ err error }
-
-func (g fullGuard) Check(context.Context, int64) error { return g.err }
-
+// 507 CIB_REGISTRY_FULL: the live snapshot is retried later and the status says why; the exit snapshot is given up quietly (the last good one
+// stays); nothing is pushed while the gate refuses, and the next push after room is made goes through.
 func TestEngineRefusesToPushIntoAFullRegistry(t *testing.T) {
 	r, _ := rigWithClock(t)
-	r.e.Space = fullGuard{err: snapshot.ErrRegistryFull}
 	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusInsufficientStorage, code: snapshot.CodeRegistryFull, msg: "the snapshot registry is nearly full"})
 	err := push(t, r, tr, "a", "1")
 	var def *errDeferred
 	if !errors.As(err, &def) || def.after < time.Minute {
 		t.Fatalf("a live snapshot is retried later: %v", err)
 	}
 	recs, warns, _ := r.cl.snapshot()
-	if len(recs) != 0 || len(warns) != 1 || !strings.Contains(warns[0], "nearly full") {
+	if len(recs) != 0 || len(warns) != 1 || !strings.Contains(warns[0], "nearly full") || !strings.Contains(warns[0], snapshot.CodeRegistryFull) {
 		t.Fatalf("nothing pushed, the status says why: %v %v", recs, warns)
 	}
 	// the exit snapshot is given up quietly (the last good one stays)
@@ -130,94 +151,240 @@ func TestEngineRefusesToPushIntoAFullRegistry(t *testing.T) {
 		t.Fatal("nothing may be pushed while the registry is full")
 	}
 	// room again
-	r.e.Space = fullGuard{}
+	r.gate.refuse(nil)
 	if err := push(t, r, tr, "c", "3"); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// Each snapshot replaces the previous one in the registry: only the current manifest of the device is kept.
-func TestEngineSupersedesThePreviousSnapshot(t *testing.T) {
+// 403 CIB_TENANT_QUOTA: the layer is not offered again as it is, the status says it, and a required capture fails with the quota error.
+func TestEngineMapsTheTenantQuotaOfTheGate(t *testing.T) {
 	r, _ := rigWithClock(t)
 	tr := r.track(t)
-	ctx := context.Background()
+	r.gate.refuse(&gateAnswer{status: http.StatusForbidden, code: snapshot.CodeTenantQuota, msg: "the snapshots of the tenant would take more than its quota"})
 	if err := push(t, r, tr, "a", "1"); err != nil {
-		t.Fatal(err)
-	}
-	recs, _, _ := r.cl.snapshot()
-	firstRef := recs[0].Image
-	if err := push(t, r, tr, "b", "2"); err != nil {
-		t.Fatal(err)
-	}
-	recs, _, _ = r.cl.snapshot()
-	secondRef := recs[1].Image
-	head := func(ref string) error {
-		_, digest, _ := strings.Cut(ref, "@")
-		h, _ := v1.NewHash(digest)
-		target, _ := r.reg.Repo(r.pod.Repo)
-		_, err := remote.Head(target.Digest(h.String()), r.reg.Options(ctx)...)
-		return err
-	}
-	if err := head(firstRef); err == nil {
-		t.Fatal("the superseded snapshot must be gone from the registry")
-	}
-	if err := head(secondRef); err != nil {
-		t.Fatalf("the current one stays: %v", err)
-	}
-}
-
-func TestEngineKeepsThePreviousSnapshotForTheGrace(t *testing.T) {
-	r, _ := rigWithClock(t)
-	r.e.SupersededGrace = 150 * time.Millisecond
-	tr := r.track(t)
-	ctx := context.Background()
-	if err := push(t, r, tr, "a", "1"); err != nil {
-		t.Fatal(err)
-	}
-	recs, _, _ := r.cl.snapshot()
-	first := recs[0].Image
-	if err := push(t, r, tr, "b", "2"); err != nil {
-		t.Fatal(err)
-	}
-	_, digest, _ := strings.Cut(first, "@")
-	h, _ := v1.NewHash(digest)
-	target, _ := r.reg.Repo(r.pod.Repo)
-	has := func() bool {
-		_, err := remote.Head(target.Digest(h.String()), r.reg.Options(ctx)...)
-		return err == nil
-	}
-	if !has() {
-		t.Fatal("within the grace a pod that was just created from the old snapshot can still pull it")
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for has() {
-		if time.Now().After(deadline) {
-			t.Fatal("the superseded snapshot must be deleted after the grace")
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-// The tenant's quota counts what its retired labs still hold.
-func TestEngineQuotaCountsRetainedRepositories(t *testing.T) {
-	r, _ := rigWithClock(t)
-	r.pod.TenantQuota = 1000
-	r.pod.Tenant = "acme"
-	r.cl.pods = []PodInfo{r.pod}
-	r.e.Retained = r.reg
-	// a lab of the tenant is gone; its repository keeps 990 bytes
-	gone := snapshot.Repo("ns", "gone", "web")
-	img := snapshot.Annotated(randomImage(t), "acme", 990)
-	if _, _, err := r.reg.Push(context.Background(), gone, img, 0, ""); err != nil {
-		t.Fatal(err)
-	}
-	tr := r.track(t)
-	r.rt.setDiff(tarOf(map[string]string{"a": strings.Repeat("x", 100)}))
-	if err := tr.snapshot(context.Background(), true); err != nil {
-		t.Fatal(err)
+		t.Fatalf("a quota refusal is a warning, not an error: %v", err)
 	}
 	recs, warns, _ := r.cl.snapshot()
 	if len(recs) != 0 || len(warns) != 1 || !strings.Contains(warns[0], "quota") {
-		t.Fatalf("the retained 990 bytes plus this snapshot pass 1000: %v %v", recs, warns)
+		t.Fatalf("%v %v", recs, warns)
+	}
+	hits := r.gate.refusals()
+	if err := tr.snapshot(context.Background(), true); err != nil || r.gate.refusals() != hits {
+		t.Fatalf("the same layer must not be pushed again: %v (%d requests)", err, r.gate.refusals()-hits)
+	}
+	// a required capture gets the error
+	r.rt.setDiff(tarOf(map[string]string{"b": "2"}))
+	err := tr.snapshot(context.Background(), false)
+	if err != nil {
+		t.Fatalf("the exit snapshot of a pod over its quota is a warning too: %v", err)
+	}
+}
+
+// Another failure of a push is still a failure, with the retry the engine has always had.
+func TestEngineKeepsFailuresThatAreNotTheGatesRules(t *testing.T) {
+	r, _ := rigWithClock(t)
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusInternalServerError, code: "UNKNOWN", msg: "boom"})
+	err := push(t, r, tr, "a", "1")
+	var def *errDeferred
+	if err == nil || errors.As(err, &def) || !strings.Contains(err.Error(), "push snapshot") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// 503 with Retry-After (the gate's view of the cluster is not in contact) is waited out by the time the gate names, and the codes that ask to
+// start the push again (a cancelled upload session, a blob that is not there yet) defer it by a few seconds: neither fails the device.
+func TestEngineHonoursUnavailableAndRestartAnswers(t *testing.T) {
+	cases := map[string]struct {
+		answer gateAnswer
+		after  time.Duration
+	}{
+		"503 with Retry-After": {gateAnswer{status: http.StatusServiceUnavailable, code: "UNAVAILABLE", retry: 30, msg: "the cluster view is not available"}, 30 * time.Second},
+		"503 without":          {gateAnswer{status: http.StatusServiceUnavailable, code: "UNAVAILABLE", msg: "x"}, unavailableWait},
+		"upload unknown":       {gateAnswer{status: http.StatusNotFound, code: snapshot.CodeBlobUploadUnknown, msg: "unknown upload session"}, restartWait},
+		"manifest blob":        {gateAnswer{status: http.StatusBadRequest, code: snapshot.CodeManifestBlobUnknown, msg: "a blob is missing"}, restartWait},
+		"upload limit":         {gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodeUploadLimit, retry: 5, msg: "too many uploads"}, 5 * time.Second},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, _ := rigWithClock(t)
+			tr := r.track(t)
+			a := c.answer
+			r.gate.refuse(&a)
+			err := push(t, r, tr, "a", "1")
+			var def *errDeferred
+			if !errors.As(err, &def) || def.after != c.after {
+				t.Fatalf("%v", err)
+			}
+			if recs, warns, _ := r.cl.snapshot(); len(recs) != 0 || len(warns) != 0 {
+				t.Fatalf("a deferral is not a failure and not a warning: %v %v", recs, warns)
+			}
+		})
+	}
+}
+
+// A blob without a live grant (404 BLOB_UNKNOWN) makes the read ask for the manifest, which makes the grant, and then ask for the blob again;
+// a read that still does not go through is a deferral, and a 503 with Retry-After is one by the gate's time.
+func TestPackedLayerReadRestartsAfterBlobUnknown(t *testing.T) {
+	img := randomImageForGate(t)
+	layers, _ := img.Layers()
+	ld, _ := layers[0].Digest()
+	md, _ := img.Digest()
+	var mu sync.Mutex
+	granted, manifestAsked, blobAsked := false, 0, 0
+	mode := "grant"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			manifestAsked++
+			granted = true
+			raw, _ := img.RawManifest()
+			w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+			w.Header().Set("Docker-Content-Digest", md.String())
+			_, _ = w.Write(raw)
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			blobAsked++
+			switch {
+			case mode == "unavailable":
+				w.Header().Set("Retry-After", "17")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"errors":[{"code":"UNAVAILABLE","message":"not in contact"}]}`)
+			case mode == "never" || !granted:
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"errors":[{"code":"BLOB_UNKNOWN","message":"ask for the manifest first"}]}`)
+			default:
+				rc, _ := layers[0].Compressed()
+				_, _ = io.Copy(w, rc)
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	repo, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/c/acme/docker.io/library/app", name.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := readPackedLayer(context.Background(), repo, md, nil, http.DefaultTransport, ld)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, rc)
+	_ = rc.Close()
+	mu.Lock()
+	if manifestAsked != 1 || blobAsked != 2 {
+		t.Errorf("the manifest is asked once and the blob twice: %d %d", manifestAsked, blobAsked)
+	}
+	granted, mode = false, "never"
+	mu.Unlock()
+	_, err = readPackedLayer(context.Background(), repo, md, nil, http.DefaultTransport, ld)
+	var def *errDeferred
+	if !errors.As(err, &def) || def.after != restartWait {
+		t.Fatalf("a read that still does not go through is deferred: %v", err)
+	}
+	mu.Lock()
+	mode = "unavailable"
+	mu.Unlock()
+	_, err = readPackedLayer(context.Background(), repo, md, nil, http.DefaultTransport, ld)
+	if !errors.As(err, &def) || def.after != 17*time.Second {
+		t.Fatalf("503 is waited out by the gate's time: %v", err)
+	}
+}
+
+func randomImageForGate(t *testing.T) v1.Image {
+	t.Helper()
+	img, err := random.Image(256, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+func fastGateRetry(t *testing.T) {
+	t.Helper()
+	old := minGateRetry
+	minGateRetry = 20 * time.Millisecond
+	t.Cleanup(func() { minGateRetry = old })
+}
+
+// The exit snapshot is not lost to a short wait of the gate: it waits the Retry-After and tries again, within the exit deadline.
+func TestExitSnapshotWaitsOutTheGateAndIsSaved(t *testing.T) {
+	fastGateRetry(t)
+	for name, a := range map[string]gateAnswer{
+		"429":             {status: http.StatusTooManyRequests, code: snapshot.CodeUploadLimit, retry: 1, msg: "too many uploads"},
+		"503 Retry-After": {status: http.StatusServiceUnavailable, code: "UNAVAILABLE", retry: 1, msg: "not in contact"},
+		"upload unknown":  {status: http.StatusNotFound, code: snapshot.CodeBlobUploadUnknown, msg: "gone"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _ := rigWithClock(t)
+			tr := r.track(t)
+			ans := a
+			r.gate.refuse(&ans)
+			go func() {
+				for r.gate.refusals() < 1 { // the gate lets the device push again once it has refused the first attempt
+					time.Sleep(5 * time.Millisecond)
+				}
+				r.gate.refuse(nil)
+			}()
+			r.rt.setDiff(tarOf(map[string]string{"x": "exit state"}))
+			r.e.finish(context.Background(), tr)
+			recs, warns, exits := r.cl.snapshot()
+			if len(recs) != 1 || len(warns) != 0 || len(exits) != 1 {
+				t.Fatalf("saved after the wait: %v %v %v", recs, warns, exits)
+			}
+			if r.gate.refusals() < 1 {
+				t.Fatal("the gate never refused")
+			}
+		})
+	}
+}
+
+// When the gate's time is longer than what is left (the hourly limit of exit snapshots), the exit state is given up at once, the status says so,
+// and the exit is still marked.
+func TestExitSnapshotGivesUpWhenTheGateWaitIsTooLong(t *testing.T) {
+	r, _ := rigWithClock(t)
+	r.e.ExitTimeout = 2 * time.Second
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodeExitLimit, retry: 1800, msg: "this device has used its exit snapshots for the hour"})
+	r.rt.setDiff(tarOf(map[string]string{"x": "exit state"}))
+	started := time.Now()
+	r.e.finish(context.Background(), tr)
+	recs, warns, exits := r.cl.snapshot()
+	if len(recs) != 0 || len(exits) != 1 || len(warns) != 1 || !strings.Contains(warns[0], "exit was not saved") || !strings.Contains(warns[0], snapshot.CodeExitLimit) {
+		t.Fatalf("%v %v %v", recs, warns, exits)
+	}
+	if time.Since(started) > time.Second || r.gate.refusals() != 1 {
+		t.Fatalf("no waiting for what cannot fit: %s, %d refusals", time.Since(started), r.gate.refusals())
+	}
+}
+
+// A gate that keeps asking to wait is tried a bounded number of times.
+func TestExitSnapshotAttemptsAreBounded(t *testing.T) {
+	fastGateRetry(t)
+	r, _ := rigWithClock(t)
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushBudget, retry: 1, msg: "budget"})
+	r.rt.setDiff(tarOf(map[string]string{"x": "exit state"}))
+	r.e.finish(context.Background(), tr)
+	recs, warns, exits := r.cl.snapshot()
+	if len(recs) != 0 || len(exits) != 1 || len(warns) != 1 || r.gate.refusals() != maxExitAttempts {
+		t.Fatalf("%v %v %v %d", recs, warns, exits, r.gate.refusals())
+	}
+}
+
+// The wait is bounded below and above, and a huge Retry-After does not overflow.
+func TestRetryAfterIsClamped(t *testing.T) {
+	if clampRetry(0) != minGateRetry || clampRetry(time.Second) != minGateRetry || clampRetry(1000*time.Hour) != maxGateRetry || clampRetry(30*time.Second) != 30*time.Second {
+		t.Fatal("clamp")
+	}
+	r, _ := rigWithClock(t)
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushInterval, msg: "x", huge: true})
+	var def *errDeferred
+	if err := push(t, r, tr, "a", "1"); !errors.As(err, &def) || def.after != maxGateRetry {
+		t.Fatalf("%v", err)
 	}
 }

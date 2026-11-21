@@ -1,5 +1,6 @@
 {{- if and .Values.proxy.enabled .Values.proxy.l7.enabled }}
-# ClusterIP: receives TLS passthrough traffic from Cilium Gateway
+# The entry of the L7 proxy: a NodePort Service that keeps the client's address (externalTrafficPolicy Local). The load balancer outside the
+# cluster (infrastructure) sends TCP 443 to the node port of the nodes that run a proxy pod; the proxy terminates TLS itself with proxy-tls.
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,8 +9,13 @@ metadata:
   labels:
     app: laboratory-proxy
     {{- include "laboratory.labels" . | nindent 4 }}
+  {{- with .Values.proxy.l7.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: NodePort
+  externalTrafficPolicy: Local
   selector:
     app: laboratory-proxy-l7
   ports:
@@ -17,4 +23,7 @@ spec:
       port: 443
       targetPort: {{ include "laboratory.l7Port" . }}
       protocol: TCP
+      {{- with .Values.proxy.l7.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
 {{- end }}

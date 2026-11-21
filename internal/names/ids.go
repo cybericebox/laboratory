@@ -127,30 +127,27 @@ const TenantsNamespace = "laboratory-tenants"
 // able to read.
 const AccessKeysNamespace = "laboratory-access-keys"
 
-// ImagesNamespace holds what the node-agents read to pull images for the scheduler: the
-// credentials of an ImagePull request. The node-agent's role covers this namespace only.
-const ImagesNamespace = "laboratory-images"
-
-// TenantPullSecret is the name of the Secret, in every group namespace of a tenant whose spec
-// has images.pullSecret, that holds the tenant's registry credentials (a copy of the Secret
-// of TenantsNamespace). Device pods reference it; the platform's own pull secrets are
-// never given to them.
-const TenantPullSecret = "tenant-registry"
-
 // AnnotationRegenerateEnrollment on a Tenant asks the operator for a new enrollment token; the
 // operator removes it once done.
 const AnnotationRegenerateEnrollment = LabelPrefix + "regenerate-enrollment-token"
 
-// LabRegistrySecret is the dockerconfigjson Secret, in the lab's namespace, with the pull
-// credentials the platform sent for the lab (CR name lab): "<lab>-registry". Like the other
-// derived names it stays a DNS label of at most 63 characters: a longer name, and the lab
-// "tenant" (whose name would be TenantPullSecret), use the hash of the lab name instead.
-func LabRegistrySecret(lab string) string {
-	const suffix = "-registry"
-	if name := lab + suffix; len(name) <= 63 && name != TenantPullSecret {
-		return name
+// AccessKeysConfigMap is the ConfigMap, in the namespace of the device access service, that mirrors the access public keys of every tenant
+// (public data): one entry per key, named <tenant>.<key id>, the PEM public key as its value. The operator writes it from the Secrets of
+// AccessKeysNamespace; the service reads it as files and verifies console grants with it, so it holds no key of its own and needs no API
+// access.
+const AccessKeysConfigMap = "laboratory-access-keys"
+
+// AccessKeysConfigMapKey is the entry of AccessKeysConfigMap for a tenant's key. A tenant name has no dot, so the first dot splits it.
+func AccessKeysConfigMapKey(tenant, keyID string) string { return tenant + "." + keyID }
+
+// AccessKeysSecretTenant is the inverse of AccessKeysSecret: the tenant of a Secret name of AccessKeysNamespace, and false for a name that
+// is not one.
+func AccessKeysSecretTenant(secret string) (string, bool) {
+	const prefix, suffix = "tenant-", "-access-keys"
+	if len(secret) <= len(prefix)+len(suffix) || secret[:len(prefix)] != prefix || secret[len(secret)-len(suffix):] != suffix {
+		return "", false
 	}
-	return hashKey(lab) + suffix
+	return secret[len(prefix) : len(secret)-len(suffix)], true
 }
 
 // AccessKeysSecret is the Secret (in AccessKeysNamespace) that holds the access public keys of a

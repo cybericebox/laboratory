@@ -4,6 +4,7 @@ package nodeagent
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -280,4 +281,15 @@ func (l *pausingLedger) Note(vni uint) error {
 		<-l.release
 	})
 	return nil
+}
+
+func TestVNINumberRefusesWhatDoesNotFit(t *testing.T) {
+	if v, ok := vniNumber(0xFFFFFF); !ok || v != 0xFFFFFF {
+		t.Fatalf("a 24-bit VNI: %d %v", v, ok)
+	}
+	for _, big := range []uint64{1 << 32, 1<<32 + 5, math.MaxUint64} {
+		if v, ok := vniNumber(big); ok {
+			t.Fatalf("%d became %d instead of being left alone", big, v)
+		}
+	}
 }

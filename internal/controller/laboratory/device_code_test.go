@@ -2,8 +2,11 @@ package laboratory
 
 import (
 	"context"
+	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cybericebox/laboratory/internal/devices"
@@ -22,7 +25,7 @@ import (
 func codeLab(name, uid string) *laboratoryv1alpha1.Lab {
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-alpha", UID: types.UID(uid)}}
 	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{
-		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Exposure: &laboratoryv1alpha1.ExposureSpec{Web: &laboratoryv1alpha1.WebExposure{Port: 80}}},
+		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Access: []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessHTTP, Port: 80}}},
 		{Name: "db", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}
 	return lab
@@ -93,7 +96,7 @@ func TestDeviceCodesAreUniquePerNamespace(t *testing.T) {
 	for _, svc := range svcs.Items {
 		lab := svc.Labels[names.LabelLab]
 		d := devs[devices.Name(lab, "web")]
-		if svc.Name != workloadName(&d) {
+		if svc.Name != workloadName(&d)+"w" {
 			t.Fatalf("service %s, web workload %s", svc.Name, workloadName(&d))
 		}
 	}
@@ -127,7 +130,7 @@ func TestDeviceCodeSkipsTakenNames(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "other-db", Namespace: "team-alpha"},
 		Spec:       laboratoryv1alpha1.DeviceSpec{Name: "db", Code: "aaa", LabRef: "other", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "db-bbb", Namespace: "team-alpha"}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "db-bbbw", Namespace: "team-alpha"}}
 	r, _ := codeReconciler(t, taken, svc)
 	draw, lens := scriptedCodes("aaa", "bbb", "ccc")
 	r.newWebCode = draw
@@ -196,5 +199,43 @@ func TestApplyUserLabelsAddsUpdatesAndRemoves(t *testing.T) {
 	applyUserLabels(other, nil)
 	if other.Labels["mine"] != "keep" {
 		t.Fatal("a foreign label was removed")
+	}
+}
+
+// Workers run the labs of one namespace at the same time: the codes still come out different. The codes are drawn from a tiny
+// space so that two labs reading the namespace together would very likely draw the same one.
+func TestDeviceCodesAreUniqueWhenLabsRunTogether(t *testing.T) {
+	r, c := codeReconciler(t)
+	var mu sync.Mutex
+	rnd := rand.New(rand.NewPCG(1, 2))
+	r.newWebCode = func(n int) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return fmt.Sprintf("a%02d", rnd.IntN(60))[:n], nil
+	}
+	ctx := context.Background()
+	const labsN = 16
+	var wg sync.WaitGroup
+	for i := range labsN {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lab := codeLab(fmt.Sprintf("lab-%d", i), fmt.Sprintf("u%d", i))
+			if err := r.materializeDevices(ctx, lab, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	seen := map[string]bool{}
+	for _, d := range devicesOf(t, c) {
+		w := workloadName(&d)
+		if seen[w] {
+			t.Fatalf("two devices share the workload name %s", w)
+		}
+		seen[w] = true
+	}
+	if len(seen) != labsN*2 {
+		t.Fatalf("%d devices, want %d", len(seen), labsN*2)
 	}
 }

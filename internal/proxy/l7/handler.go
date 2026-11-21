@@ -3,16 +3,19 @@ package l7
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/bandwidth"
+	"github.com/cybericebox/laboratory/internal/grant"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,15 +35,19 @@ type Attribution func(task, groupID string) (lab string, ok bool)
 type Authorizer func(groupID, client, lab string) bool
 
 type Handler struct {
-	// keys verifies the tenants' handoff tokens; secret signs and verifies the
-	// proxy's own session cookie.
+	// keys verifies the access grants the tenants' platforms sign; the proxy signs nothing.
 	keys        KeyLookup
 	groupTenant GroupTenant
-	secret      []byte
 	baseDomain  string
-	cookieName  string
-	resolver    BackendResolver
-	transport   http.RoundTripper
+	// cookieName is the cookie a web host keeps its grant in (chart proxy.l7.grantCookieName).
+	cookieName string
+	// grantMax bounds exp - iat of a grant (chart proxy.l7.grantMaxTTL); origins are the platform pages that may post a grant (see
+	// session.go); grants remembers verified cookies for a short time (see auth.go).
+	grantMax  time.Duration
+	origins   *EmbedMatcher
+	grants    *grantCache
+	resolver  BackendResolver
+	transport http.RoundTripper
 
 	access    *AccessReader
 	prepare   func(context.Context, string) error
@@ -48,17 +55,19 @@ type Handler struct {
 	attribute Attribution
 	authorize Authorizer
 	now       func() time.Time
-	// handoffMax bounds exp - iat of a handoff token. The session is sliding: it expires sessionIdle after the last
-	// request, is renewed when less than sessionRenew of it remains, and ends at sessionMax at the latest.
-	handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration
 	// live holds the requests in flight so a lost access can cut them (see live.go); liveMax caps their lifetime.
 	live    *liveSet
 	liveMax time.Duration
 	// caps bound the requests in flight (see LiveCaps); authLimit limits the handoff path.
-	caps      LiveCaps
-	authLimit *bucketSet
+	caps                       LiveCaps
+	authLimit                  *bucketSet
+	activity                   *activity.Hub // console sessions are handed to it (nil: activity reports are off)
+	preAuthFine, preAuthCoarse *bucketSet    // per address, then per network, before anything is verified
+	verifySem                  chan struct{} // handoff verifications in flight (a cap, not a bucket)
 	// accessLog, when set, writes a line per proxied request (see accesslog.go).
 	accessLog *accessLog
+	// terminal, when set, serves the console on a host of its own per device (see terminal.go).
+	terminal *terminalState
 	// throttle paces each participant to its fair share of the bandwidth class of this proxy (see pace.go); no limits until set.
 	throttle *bandwidth.Throttle[string]
 }
@@ -78,25 +87,32 @@ var upstreamTransport = &http.Transport{
 	IdleConnTimeout:     90 * time.Second,
 }
 
-func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(keys KeyLookup, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
 		keys:       keys,
-		secret:     secret,
 		baseDomain: baseDomain,
 		cookieName: cookieName,
 		resolver:   resolver,
 		transport:  upstreamTransport,
 		now:        time.Now,
+		verifySem:  make(chan struct{}, 2*runtime.GOMAXPROCS(0)),
 		live:       newLiveSet(),
 		throttle:   bandwidth.NewThrottle[string](5 * time.Second),
-		handoffMax: DefaultHandoffLifetime, sessionIdle: DefaultSessionIdleTTL, sessionRenew: DefaultSessionRenewBefore, sessionMax: DefaultSessionMaxTTL,
+		grantMax:   grant.DefaultMaxTTL,
+		grants:     newGrantCache(),
 	}
 }
 
-// WithLimits sets the longest accepted handoff token (exp - iat) and the sliding session: its idle lifetime, the
-// remaining time under which the cookie is renewed, and the absolute maximum.
-func (h *Handler) WithLimits(handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration) *Handler {
-	h.handoffMax, h.sessionIdle, h.sessionRenew, h.sessionMax = handoffMax, sessionIdle, sessionRenew, sessionMax
+// WithGrantMaxTTL sets the longest accepted grant lifetime (exp - iat).
+func (h *Handler) WithGrantMaxTTL(d time.Duration) *Handler {
+	h.grantMax = d
+	return h
+}
+
+// WithPlatformOrigins sets the pages that may post a grant: a post whose Origin is not matched is refused. Without it (or with an empty
+// list) every post is refused.
+func (h *Handler) WithPlatformOrigins(m *EmbedMatcher) *Handler {
+	h.origins = m
 	return h
 }
 
@@ -107,11 +123,17 @@ func (h *Handler) WithAccounting(meter *Meter, attribute Attribution) *Handler {
 	return h
 }
 
-// WithGroupTenant tells the owner of a group. A handoff whose issuer is not the tenant of its group
-// is refused, and so is a session cookie whose tenant no longer owns the group. Without it no
-// handoff is accepted.
+// WithGroupTenant tells the owner of a group. A grant whose issuer is not the tenant of its group
+// is refused, and so is a session whose tenant no longer owns the group. Without it no
+// grant is accepted.
 func (h *Handler) WithGroupTenant(g GroupTenant) *Handler {
 	h.groupTenant = g
+	return h
+}
+
+// WithActivity keeps the facts of the console sessions in the ring of the hub (nil: activity reports are off).
+func (h *Handler) WithActivity(hub *activity.Hub) *Handler {
+	h.activity = hub
 	return h
 }
 
@@ -131,21 +153,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusBadRequest, pageGone, "bad request")
 		return
 	}
-	if r.URL.Path == AuthPath {
-		if !h.authLimit.allow(h.authKey(r, task)) {
-			w.Header().Set("Retry-After", "5")
-			fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
-			return
-		}
-		h.handoff(w, r, task)
+	if h.serveOwnAuthKind(w, r, task) {
 		return
 	}
-	claims, err := validateCookie(r, h.secret, h.cookieName, h.now)
+	// Only a web host is served from here on (a console host has been served above, when the console is on): a host of another kind (vnc, rdp,
+	// a reserved letter), and a console host while the console is off, answer like a host that does not exist, whatever a request carries.
+	if kind, _ := kindOfHost(task); kind != grant.KindWeb {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return
+	}
+	if r.URL.Path == AuthPath {
+		if !h.throttlePreAuth(w, r) {
+			return
+		}
+		h.authenticate(w, r, task)
+		return
+	}
+	// The grant is verified for this very host (a cookie of another device host, or one that names none, fails here).
+	claims, err := h.cookieGrant(r, task)
 	if err != nil {
 		h.expired(w, r)
 		return
 	}
-
 	client := claims.client()
 	if client == "" {
 		h.expired(w, r)
@@ -154,51 +183,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	namespace := ""
 	var group AccessGroup
 	if h.access != nil {
-		group, err = h.access.Group(r.Context(), claims.GroupID)
-		if err != nil || group.Tenant != claims.Tenant {
+		group, err = h.access.Group(r.Context(), claims.Group)
+		if err != nil || group.Tenant != claims.Tenant() {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
 		namespace = group.Namespace
 	} else {
 		if h.groupTenant != nil {
-			if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
+			if owner, ok := h.groupTenant(claims.Group); !ok || owner != claims.Tenant() {
 				fail(w, r, http.StatusNotFound, pageGone, "not found")
 				return
 			}
 		}
-		namespace = ns(claims.GroupID)
+		namespace = ns(claims.Group)
 	}
-	h.renewSession(w, claims)
-	var backendURL, lab string
-	if h.access != nil {
-		route, routeErr := h.access.Route(r.Context(), task, namespace)
-		if routeErr != nil {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-		backendURL, lab = route.URL, route.Lab
-		if !h.access.Allowed(r.Context(), namespace, client, lab) {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-	} else {
-		backendURL, err = h.resolver(task, claims.GroupID)
-		if err != nil {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-		if h.attribute != nil {
-			lab, _ = h.attribute(task, claims.GroupID)
-			if lab == "" {
-				fail(w, r, http.StatusNotFound, pageGone, "not found")
-				return
-			}
-		}
-		if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
+	backendURL, lab, ok := h.route(w, r, task, namespace, claims.Group, client, claims.Lab, claims.Dev)
+	if !ok {
+		return
 	}
 	target, err := url.Parse(backendURL)
 	if err != nil {
@@ -217,22 +219,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Strip challenge cookie before forwarding.
 	r = r.Clone(r.Context())
-	var kept []string
-	for _, c := range r.Cookies() {
-		if c.Name != h.cookieName {
-			kept = append(kept, c.Name+"="+c.Value)
-		}
-	}
-	r.Header.Set("Cookie", strings.Join(kept, "; "))
+	stripCookie(r, h.cookieName)
 	stripClientAddress(r.Header)
-	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-Proto", schemeHTTPS)
 
 	// Track the request: when the client loses access, CheckLive cancels it or closes its upgraded connection.
 	clientCtx := r.Context()
 	ctx, cancel := context.WithCancel(clientCtx)
 	defer cancel()
 	r = r.WithContext(ctx)
-	entry := &liveEntry{group: claims.GroupID, client: client, lab: lab, tenant: claims.Tenant, deadline: h.liveDeadline(claims.Abs), cancel: cancel}
+	entry := &liveEntry{group: claims.Group, client: client, lab: lab, tenant: claims.Tenant(), deadline: h.liveDeadline(claims.End()), cancel: cancel}
 	if !h.live.tryAdd(entry, h.caps) {
 		w.Header().Set("Retry-After", "5")
 		fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
@@ -343,23 +339,6 @@ func (b *countingBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// ServiceResolver builds a BackendResolver that determines backend URL from Service named port.
-// getServiceProtocol(task, namespace) returns the Service's first port name ("http" or "https").
-func ServiceResolver(getServiceProtocol func(task, namespace string) (string, error)) BackendResolver {
-	return func(task, groupID string) (string, error) {
-		ns := GroupNamespace(groupID)
-		proto, err := getServiceProtocol(task, ns)
-		if err != nil {
-			return "", err
-		}
-		port := 80
-		if proto == "https" {
-			port = 443
-		}
-		return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", proto, task, ns, port), nil
-	}
-}
-
 // stripSessionCookie removes the Set-Cookie headers that name the proxy's session cookie, whatever their attributes
 // (domain, path, expiry): the cookie is the proxy's, never the device's to set, replace or clear.
 func stripSessionCookie(hdr http.Header, name string) {
@@ -380,7 +359,8 @@ func filterSetCookies(hdr http.Header, keep func(name, domain string) bool) {
 		for _, attr := range parts[1:] {
 			k, val, _ := strings.Cut(strings.TrimSpace(attr), "=")
 			if strings.EqualFold(k, "domain") {
-				domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), "."))
+				// a trailing dot names the same host (Domain=example.test. is Domain=example.test): compare without it
+				domain = strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), ".")), ".")
 			}
 		}
 		if keep(strings.TrimSpace(cookieName), domain) {
@@ -478,4 +458,84 @@ func stripClientAddress(h http.Header) {
 		h.Del(name)
 	}
 	h["X-Forwarded-For"] = nil
+}
+
+// serveOwnAuthKind serves the kind that does not use the session cookie: the console (its own handoff, token and WebSocket, see terminal_console.go). It reports whether the host was one of them.
+func (h *Handler) serveOwnAuthKind(w http.ResponseWriter, r *http.Request, task string) bool {
+	switch _, _, kind := names.ParseAccessHost(task); {
+	case kind == names.AccessKindTerminal && h.terminal != nil && h.access != nil:
+		h.serveConsoleHost(w, r, task)
+		return true
+	}
+	return false
+}
+
+// serveAccessKind answers a host that is the access of a kind other than http to a device and reports whether it did. The last character
+// of the first label says which access the host is: a host of another kind is never the Service of a device. Only the console is served;
+// vnc, rdp and the reserved characters answer like a host that does not exist.
+func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task string) bool {
+	_, _, kind := names.ParseAccessHost(task)
+	if kind == "" || kind == names.AccessKindHTTP {
+		return false
+	}
+	// the console is served before the cookie is looked at; nothing else is served
+	fail(w, r, http.StatusNotFound, pageGone, "not found")
+	return true
+}
+
+// route finds the backend and the lab of the task and checks that the client may use it. When it cannot it has answered the client itself:
+// the starting page for a device without an address yet, "not found" for everything else (the same answer for an unknown host, a removed
+// lab and a refused client).
+// The grant is for one device (lab and dev): the host binding already says so, and the route the host resolves to must agree with it, which
+// protects against a mistake in parsing a host. claimLab and claimDev are what the grant names.
+func (h *Handler) route(w http.ResponseWriter, r *http.Request, task, namespace, groupID, client, claimLab, claimDev string) (backendURL, lab string, ok bool) {
+	if h.access == nil {
+		if backendURL, lab, ok = h.legacyRoute(task, groupID, client); !ok {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+		}
+		return backendURL, lab, ok
+	}
+	if h.serveAccessKind(w, r, task) {
+		return "", "", false
+	}
+	route, err := h.access.Route(r.Context(), task, namespace)
+	if errors.Is(err, ErrRouteNotReady) {
+		// the device has no usable address yet: the lab is starting, nothing is connected to
+		fail(w, r, http.StatusServiceUnavailable, pageStarting, "lab is starting")
+		return "", "", false
+	}
+	if err != nil || route.Lab != claimLab || route.Device != claimDev || !h.access.Allowed(r.Context(), namespace, client, route.Lab) {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return "", "", false
+	}
+	return route.URL, route.Lab, true
+}
+
+// legacyRoute is the route of a task without the access reader: the backend the resolver names, the lab the attribution gives and the
+// authorization of the client for it. ok is false for any refusal.
+func (h *Handler) legacyRoute(task, groupID, client string) (backendURL, lab string, ok bool) {
+	backendURL, err := h.resolver(task, groupID)
+	if err != nil {
+		return "", "", false
+	}
+	if h.attribute != nil {
+		if lab, _ = h.attribute(task, groupID); lab == "" {
+			return "", "", false
+		}
+	}
+	if h.authorize != nil && !h.authorize(groupID, client, lab) {
+		return "", "", false
+	}
+	return backendURL, lab, true
+}
+
+// stripCookie removes the cookies of one name from the request, whatever number of Cookie headers carried them.
+func stripCookie(r *http.Request, name string) {
+	var kept []string
+	for _, c := range r.Cookies() {
+		if c.Name != name {
+			kept = append(kept, c.Name+"="+c.Value)
+		}
+	}
+	r.Header.Set("Cookie", strings.Join(kept, "; "))
 }

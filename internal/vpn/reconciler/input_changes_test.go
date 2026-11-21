@@ -59,16 +59,16 @@ func TestClientConfigurationEventsExcludeTelemetry(t *testing.T) {
 }
 
 func TestLabAccessEventsRetainReadinessAndAllocationChanges(t *testing.T) {
-	before := &lab.Lab{Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
+	before, _ := vpnLab("g", "a", "10.8.1.0/24", 1)
 	cases := []struct {
 		name   string
 		change func(*lab.Lab)
 		want   bool
 	}{
 		{"metadata", func(l *lab.Lab) { l.ResourceVersion = "2" }, false},
-		{"interface not ready", func(l *lab.Lab) { l.Status.VPN.Ready = false }, true},
+		{"interface not ready", func(l *lab.Lab) { l.Status.Gateways[0].Ready = false }, true},
 		{"phase not ready", func(l *lab.Lab) { l.Status.Phase = lab.PhasePending }, true},
-		{"new subnet", func(l *lab.Lab) { l.Status.VPN.CIDR = "10.8.2.0/24" }, true},
+		{"new subnet", func(l *lab.Lab) { l.Status.Gateways[0].CIDR = "10.8.2.0/24" }, true},
 		{"deleting", func(l *lab.Lab) { now := metav1.Now(); l.DeletionTimestamp = &now }, true},
 		{"identical", func(*lab.Lab) {}, false},
 	}
@@ -84,10 +84,10 @@ func TestLabAccessEventsRetainReadinessAndAllocationChanges(t *testing.T) {
 }
 
 func TestStoppedIntentClosesAccessWithoutStatusOrPolicyChange(t *testing.T) {
-	old := &lab.Lab{Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
+	old, _ := vpnLab("g", "a", "10.8.1.0/24", 1)
 	next := old.DeepCopy()
 	next.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Required"}
-	if labAccessReady(next) {
+	if labAccessReady(next, "vpn") {
 		t.Fatal("stopped intent remained access ready")
 	}
 	if !labAccessInputsChanged(old, next) {

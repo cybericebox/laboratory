@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Build the proxy image once and run the demux e2e: upgrade from develop, userspace, tc, xdp, detach back to userspace. Env: KIND_DEMUX_IMG (default cybericebox/laboratory-proxy:kind-demux)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+export KIND_DEMUX_IMG="${KIND_DEMUX_IMG:-cybericebox/laboratory-proxy:kind-demux}"
+PROXY_IMG="$KIND_DEMUX_IMG" mise-tasks/image/build proxy
+summary="$(mktemp)"
+trap 'rm -f "$summary"' EXIT
+for mode in upgrade userspace tc xdp detach; do
+  KIND_DEMUX_SUMMARY="$summary" hack/kind-demux/e2e.sh "$mode" || { cat "$summary"; exit 1; }
+done
+printf '\n== summary\n'
+cat "$summary"

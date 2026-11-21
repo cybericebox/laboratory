@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="CRDs and RBAC from the kubebuilder markers (config/crd/bases, config/rbac) and the chart's copy of the CRDs (charts/laboratory/crds)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+heavy -- go tool controller-gen rbac:roleName=manager-role paths="./internal/controller/...;./internal/admissioncheck/..." output:rbac:artifacts:config=config/rbac
+rm -f config/crd/bases/*.yaml
+heavy -- go tool controller-gen crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+rm -f charts/laboratory/crds/*.yaml
+cp config/crd/bases/*.yaml charts/laboratory/crds/

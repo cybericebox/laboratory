@@ -11,12 +11,16 @@ import (
 func referenceLab() *laboratoryv1alpha1.Lab {
 	return &laboratoryv1alpha1.Lab{
 		Spec: laboratoryv1alpha1.LabSpec{
-			VPN:      laboratoryv1alpha1.LabNetworkSpec{Enabled: true},
-			Internet: laboratoryv1alpha1.LabNetworkSpec{Enabled: true},
+			Gateways: []laboratoryv1alpha1.GatewayTemplate{
+				{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN},
+				{Name: "internet", Kind: laboratoryv1alpha1.GatewayKindInternet},
+			},
 		},
 		Status: laboratoryv1alpha1.LabStatus{
-			VPN:      laboratoryv1alpha1.LabNetworkStatus{CIDR: "10.128.7.0/24"},
-			Internet: laboratoryv1alpha1.LabNetworkStatus{CIDR: "10.192.9.0/24"},
+			Gateways: []laboratoryv1alpha1.GatewayStatus{
+				{Name: "vpn", Kind: laboratoryv1alpha1.GatewayKindVPN, CIDR: "10.128.7.0/24", NetworkIndex: 7},
+				{Name: "internet", Kind: laboratoryv1alpha1.GatewayKindInternet, CIDR: "10.128.9.0/24", NetworkIndex: 9},
+			},
 		},
 	}
 }
@@ -27,11 +31,11 @@ func TestResolveDeviceInterfaces(t *testing.T) {
 		Name: "eth0",
 		Addr: &laboratoryv1alpha1.AddrSpec{
 			Type:       laboratoryv1alpha1.AddrTypeStatic,
-			AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10},
-			GatewayRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 1},
+			AddressRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 10},
+			GatewayRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 1},
 			Routes: []laboratoryv1alpha1.Route{{
-				DstRef: &laboratoryv1alpha1.NetworkSubnetRef{Network: "internet"},
-				ViaRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 1},
+				DstRef: &laboratoryv1alpha1.NetworkSubnetRef{Gateway: "internet"},
+				ViaRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 1},
 			}},
 		},
 	}}}
@@ -43,7 +47,7 @@ func TestResolveDeviceInterfaces(t *testing.T) {
 	if len(got) != 1 || got[0].Addr.IP != "10.128.7.10/24" || got[0].Addr.Gateway != "10.128.7.1" {
 		t.Fatalf("unexpected resolved address and gateway: %+v", got)
 	}
-	if len(got[0].Addr.Routes) != 1 || got[0].Addr.Routes[0].Dst != "10.192.9.0/24" || got[0].Addr.Routes[0].Via != "10.128.7.1" {
+	if len(got[0].Addr.Routes) != 1 || got[0].Addr.Routes[0].Dst != "10.128.9.0/24" || got[0].Addr.Routes[0].Via != "10.128.7.1" {
 		t.Fatalf("unexpected resolved route: %+v", got[0].Addr.Routes)
 	}
 	if got[0].Addr.AddressRef != nil || got[0].Addr.GatewayRef != nil || got[0].Addr.Routes[0].DstRef != nil || got[0].Addr.Routes[0].ViaRef != nil {
@@ -52,15 +56,15 @@ func TestResolveDeviceInterfaces(t *testing.T) {
 	if tmpl.Interfaces[0].Addr.AddressRef == nil || tmpl.Interfaces[0].Addr.Routes[0].DstRef == nil {
 		t.Fatal("resolver mutated the lab template")
 	}
-	lab.Spec.VPN.DHCPServer = &laboratoryv1alpha1.DHCPServer{Enabled: true}
+	lab.Spec.Gateways[0].DHCPServer = &laboratoryv1alpha1.DHCPServer{Enabled: true}
 	if _, err := resolveDeviceInterfaces(tmpl, lab); err != nil {
 		t.Fatalf("static address must remain valid with DHCP enabled: %v", err)
 	}
 
-	lab.Status.VPN.CIDR = "10.128.44.0/24"
-	lab.Status.Internet.CIDR = "10.192.55.0/24"
+	lab.Status.Gateways[0].CIDR = "10.128.44.0/24"
+	lab.Status.Gateways[1].CIDR = "10.128.55.0/24"
 	again, err := resolveDeviceInterfaces(tmpl, lab)
-	if err != nil || again[0].Addr.IP != "10.128.44.10/24" || again[0].Addr.Routes[0].Dst != "10.192.55.0/24" {
+	if err != nil || again[0].Addr.IP != "10.128.44.10/24" || again[0].Addr.Routes[0].Dst != "10.128.55.0/24" {
 		t.Fatalf("second lab allocation not reflected: %+v, %v", again, err)
 	}
 }
@@ -86,21 +90,23 @@ func TestResolveDeviceInterfacesRejectsInvalidReferences(t *testing.T) {
 	}{
 		{"gateway host as interface address", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) { a.AddressRef.Host = 1 }},
 		{"broadcast host", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) { a.AddressRef.Host = 255 }},
-		{"disabled source", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Spec.VPN.Enabled = false }},
-		{"missing allocation", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Status.VPN.CIDR = "" }},
-		{"not a /24", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Status.VPN.CIDR = "10.128.0.0/16" }},
+		{"disabled source", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Spec.Gateways = l.Spec.Gateways[1:] }},
+		{"missing allocation", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Status.Gateways[0].CIDR = "" }},
+		{"not a /24", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) {
+			l.Status.Gateways[0].CIDR = "10.128.0.0/16"
+		}},
 		{"literal and reference", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) { a.IP = "10.128.7.10/24" }},
 		{"bad gateway host", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) {
-			a.GatewayRef = &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 0}
+			a.GatewayRef = &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 0}
 		}},
 		{"mixed route family", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) {
-			a.Routes = []laboratoryv1alpha1.Route{{Dst: "2001:db8::/64", ViaRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 1}}}
+			a.Routes = []laboratoryv1alpha1.Route{{Dst: "2001:db8::/64", ViaRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 1}}}
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lab := referenceLab()
-			addr := laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10}}
+			addr := laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, AddressRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 10}}
 			tt.edit(lab, &addr)
 			_, err := resolveDeviceInterfaces(laboratoryv1alpha1.DeviceTemplate{Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: &addr}}}, lab)
 			if err == nil {
@@ -116,12 +122,12 @@ func TestResolveLabDeviceInterfacesRejectsDuplicateBeforeMaterialization(t *test
 		{Name: "first", Interfaces: []laboratoryv1alpha1.InterfaceSpec{{
 			Name: "eth0",
 			Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic,
-				AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10}},
+				AddressRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 10}},
 		}}},
 		{Name: "second", Interfaces: []laboratoryv1alpha1.InterfaceSpec{{
 			Name: "eth0",
 			Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic,
-				AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10}},
+				AddressRef: &laboratoryv1alpha1.NetworkIPRef{Gateway: "vpn", Host: 10}},
 		}}},
 	}
 	got, err := resolveLabDeviceInterfaces(lab)

@@ -1,5 +1,7 @@
 syntax = "proto3";
 package labmanager;
+
+import "google/protobuf/duration.proto";
 option go_package = "github.com/cybericebox/laboratory/pkg/agent/protobuf";
 
 service LabManager {
@@ -144,6 +146,14 @@ service LabManager {
   // configuration that makes the service crash.
   rpc RescueDevices(RescueDevicesRequest) returns (BatchResult) {}
 
+  // RunChecks asks for a manual run of checks of labs (contract 1.5). Explicit (lab_group, lab) items; each lists the check ids to run
+  // or none for every check that allows a manual run. The answer is acceptance per lab only (ITEM_STATE_UPDATED: the request was
+  // recorded for the checker), never a result: results come in Monitoring (LabStatus.checks). FAILED: the lab has no checks, an id
+  // is unknown or does not allow a manual run. The call answers FAILED_PRECONDITION as a whole when the laboratory has the checks
+  // option off (features.checks.enabled is false). The request is recorded as the annotation
+  // laboratory.cybericebox.com/run-checks on the Lab with a token that grows by one per accepted request.
+  rpc RunChecks(RunChecksRequest) returns (BatchResult) {}
+
   // ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
   // archive: the files that differ from the device's base image (the layers of the snapshot
   // chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
@@ -152,6 +162,14 @@ service LabManager {
   // FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
   // snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
   rpc ExportDeviceSnapshot(DeviceSnapshotRequest) returns (stream SnapshotChunk) {}
+
+  // GetLabGroupActivity (contract 2.5) hands the platform the RAW activity facts of one lab group since a cursor: internet egress of the
+  // labs, console sessions, and the lab addresses the VPN clients reached. The laboratory aggregates and stores nothing beyond a short
+  // ring (FeaturesResponse.activity: at most max_events events and ring_minutes minutes per writer); the platform pulls about once a
+  // minute and aggregates. These are data handed only to your own platform through this call; the laboratory sends nothing anywhere by
+  // itself. FailedPrecondition "activity reports disabled": the cluster runs without them (FeaturesResponse.activity.enabled is false).
+  // NotFound: no such group, or it belongs to another tenant. InvalidArgument: a cursor that this agent did not give.
+  rpc GetLabGroupActivity(GetLabGroupActivityRequest) returns (GetLabGroupActivityResponse) {}
 }
 
 message Empty {}
@@ -185,12 +203,16 @@ message ItemResult {
   // LabGroup namespace is not ready yet).
   bool retryable = 4;
   // A machine code for a FAILED item, when the failure has one: RESERVATION_REQUIRED | RESERVATION_NOT_FOUND |
-  // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA. Empty otherwise (error is the text).
+  // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA | COOLDOWN. Empty otherwise (error is the text).
   string reason = 5;
   // Set by CreateLabGroups for an item that was created or exists: the sizes assigned to the group's own pods (from expected_users /
   // expected_labs, the defaults, or the sizes sent), so the caller sees what the counts became.
   PodSize vpn_size = 6;
   PodSize gateway_size = 7;
+  // The least time to wait before the same call can succeed, for a FAILED item whose failure is a wait (reason COOLDOWN: RunChecks inside the
+  // cooldown between manual runs of a lab). The same value is the retry_delay of a google.rpc.RetryInfo detail of the status the call raised
+  // inside the agent, so a caller reads a number and parses no text. Unset otherwise.
+  google.protobuf.Duration retry_after = 8;
 }
 
 message BatchResult {repeated ItemResult results = 1;}
@@ -249,8 +271,18 @@ message LabGroupItem {
   string deploy_group = 3;
   repeated string deploy_after = 4;
   bool suspended = 5;
+  // The old VPN switch (true = no VPN server). Deprecated: send vpn_enabled. Still honoured: true means vpn_enabled false (and sending
+  // vpn_disabled true together with vpn_enabled true is InvalidArgument); false means nothing.
   bool vpn_disabled = 6;
   bool probe_while_suspended = 7;
+  // The switches of the group's two servers (contract 2.7). The pod of a server exists only while its switch is on, so a group that needs
+  // no VPN and no internet costs neither pod. A lab with a VPN gateway, and a LabGroupClient, are refused (reason GROUP_VPN_OFF) in a group
+  // whose VPN is off; a lab with an Internet gateway is refused (GROUP_INTERNET_OFF) in a group whose internet is off. An item that sets
+  // NEITHER field is the old shape (a caller made before contract 2.7): the VPN follows vpn_disabled (on unless true) and the gateway is
+  // on. An item that sets EITHER field gets the explicit meaning: the one left unset is OFF, so a platform that always sends both decides
+  // what a group costs. A group made before these fields keeps both servers (an absent switch on the object means on) and reports them on.
+  optional bool vpn_enabled = 13;
+  optional bool internet_enabled = 14;
   // The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group
   // may have, the gateway for the labs of the group that use the internet). The pods are created Guaranteed at exactly that size
   // and never resized. Unset = the chart's default size. A set size must have both values positive and be within the maximum
@@ -282,8 +314,14 @@ message CreateLabGroupsRequest {
 message LabGroupChanges {
   LabelChanges labels = 1;
   optional bool suspended = 2;
+  // The old VPN switch; see LabGroupItem.vpn_disabled. vpn_enabled wins when both are sent.
   optional bool vpn_disabled = 3;
   optional bool probe_while_suspended = 4;
+  // The switches of the group's servers (contract 2.7). Turning one OFF while a lab of the group uses it (a lab with a VPN gateway for
+  // the VPN, an Internet gateway for the internet) is refused with GROUP_SERVER_IN_USE and nothing changes; turning one on makes its
+  // pod. Turning the VPN off does not delete the group's clients (they stay, unserved, and the VPN comes back with the switch).
+  optional bool vpn_enabled = 6;
+  optional bool internet_enabled = 7;
   // Attach only: puts a group that runs under no reservation under this one (same tenant, not ended). No fit check
   // (running work is never refused) and only the label changes. Another id on a group that has one is
   // RESERVATION_MISMATCH; the same id is a no-op.
@@ -306,6 +344,8 @@ message LabGroupClientItem {
   string lab_group = 1;
   string name = 2;
   map<string, string> labels = 3;
+  reserved 4;   // was access_only (a client with no WireGuard peer, removed again before any release: the driven device is not a lab client)
+  reserved "access_only";
 }
 message CreateLabGroupClientsRequest {
   map<string, string> labels = 1;
@@ -345,13 +385,18 @@ message SetLabGroupAccessRequest {
 // creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 message LabVariant {
   string variant_id = 1;
-  bytes spec_json = 2;            // Lab.spec serialized; the agent passes it through
+  bytes spec_json = 2;            // Lab.spec serialized; the agent passes it through (contract 2.2: devices[].internet, allow|deny)
   repeated DeviceEnv env = 3;     // variables common to every lab of the variant
   // Pull credentials for the variant's private images (at most 8, one per registry host).
   // The agent stores them in a per-lab dockerconfigjson Secret and sets
   // Lab.spec.imagePullSecret to it; any imagePullSecret in spec_json is ignored. They
   // are write-only: never returned, logged or put in a status.
   repeated RegistryCredential registry_credentials = 4;
+  // Bootstrap lists of the devices, common to every lab of the variant (contract 1.5). Secret material, like env: stored in the
+  // per-device Secret <device>-bootstrap, never in the CR spec and never returned.
+  repeated DeviceBootstrap bootstrap = 5;
+  // The checks of the lab, common to every lab of the variant. Presence matters: an item's own `checks` replaces the variant's.
+  LabChecks checks = 6;
 }
 message LabItem {
   string lab_group = 1;
@@ -366,6 +411,10 @@ message LabItem {
   string expected_group_uid = 8;
   // The reservation the lab runs under; required, and independent of its LabGroup's (see LabGroupItem.reservation_id).
   string reservation_id = 9;
+  // This lab's own bootstrap lists; they replace the variant's list of the same device.
+  repeated DeviceBootstrap bootstrap = 10;
+  // This lab's own checks; when present they replace the variant's checks as a whole.
+  LabChecks checks = 11;
 }
 message CreateLabsRequest {
   map<string, string> labels = 1;
@@ -381,6 +430,13 @@ message LabChanges {
   repeated DeviceEnv env = 2;
   // Attach only, as LabGroupChanges.reservation_id: the lab's spec and pods are untouched.
   optional string reservation_id = 3;
+  // Rewrite the bootstrap Secret of every listed device with exactly this list (an empty list removes it). Only a device that
+  // had a bootstrap at creation (spec.devices[].bootstrap.enabled) can have one rewritten.
+  repeated DeviceBootstrap bootstrap = 4;
+  // Rewrite the checks Secret of the lab with exactly these checks (the whole set). Only a lab that had checks at creation can be
+  // rewritten, and the ids, devices and manual_run flags must stay the same (the CR spec does not change); the expected values,
+  // parts, mode, schedule and time limit may change.
+  LabChecks checks = 5;
 }
 message UpdateLabItem {
   string lab_group = 1;
@@ -498,6 +554,11 @@ message LabGroup {
   PodSize gateway_size = 17;
   // The reservation the group runs under, as given; empty = unreserved.
   string reservation_id = 19;
+  // The switches of the group's servers as they are now (contract 2.7; a group that predates them reports both on): a server that is off
+  // has no pod, no entry in status.pods, and for the VPN no vpn_registered and no current_vpn_boot_*. The group is Ready (status.phase)
+  // without a VPN server when its VPN is off.
+  bool vpn_enabled = 20;
+  bool internet_enabled = 21;
 }
 message LabGroupStatus {
   string phase = 1;
@@ -545,14 +606,175 @@ message DeviceEnv {
   string device = 1;
   map<string, string> vars = 2;
 }
+
+// ---- Device bootstrap and lab checks (contract 1.5; docs/specs/lab-checks-bootstrap-contract.md) -------------------------------
+
+// DeviceBootstrap is the bootstrap list of one device with the values already filled in. Secret material: it travels like
+// DeviceEnv, is stored in the Secret <device>-bootstrap (key bootstrap.json) and is never put on a CR or returned. A list with no
+// script and no files removes the Secret. The device must be a container device of the lab.
+message DeviceBootstrap {
+  string device = 1;
+  string script = 2;                   // text; at most 64 KiB
+  string interpreter = 3;              // absolute path to run the script with; empty = /bin/sh
+  repeated BootstrapFile files = 4;    // at most 32; script and file contents together at most 512 KiB
+  int32 time_limit_seconds = 5;        // per attempt, 1..3600; 0 = 300
+}
+message BootstrapFile {
+  string path = 1;      // absolute, clean
+  bytes content = 2;    // at most 256 KiB
+  string owner = 3;     // name or numeric id; empty = root
+  string group = 4;
+  uint32 mode = 5;      // permission bits (0644 is 420); 0 = 0644
+}
+
+// LabChecks is the complete set of checks of a lab. Secret material (it holds expected values): stored in the Secret <lab>-checks
+// (key checks.json), never put on a CR or returned. The CR spec only lists the ids, devices and manual-run flags.
+message LabChecks {repeated Check items = 1;}
+enum CheckMode {
+  CHECK_MODE_UNSPECIFIED = 0;   // refused
+  CHECK_MODE_ONCE = 1;          // stops after the first pass
+  CHECK_MODE_CONTINUOUS = 2;    // the current state matters
+}
+message Check {
+  string id = 1;                    // 1..64 characters, unique in the lab
+  string device = 2;                // a container device of the lab
+  CheckMode mode = 3;
+  int32 schedule_seconds = 4;       // 0 = no schedule (manual only); at most 86400, not below the time limit
+  bool manual_run = 5;              // RunChecks may run it
+  int32 time_limit_seconds = 6;     // 1..600; 0 = 30
+  repeated CheckPart parts = 7;     // 1..8, all must hold in the same run
+}
+message CheckPart {
+  oneof observation {
+    FileObservation file = 1;
+    CustomObservation custom = 2;
+    // The built-in observations: the in-device program reads the state itself and executes nothing of the device. Expected values
+    // never go to the device; they are compared by the checker.
+    DirectoryObservation directory = 3;
+    ProcessObservation process = 4;
+    PortObservation port = 5;
+    KernelParamObservation kernel_param = 6;
+    RequestObservation request = 7;
+    PermissionObservation permission = 8;
+  }
+}
+// FileObservation reads a file of the device; every expectation is optional, at least one is required.
+message FileObservation {
+  string path = 1;                       // absolute, clean
+  optional bool exists = 2;              // true: exists; false: absent (then no other expectation)
+  optional string content_contains = 3;
+  optional string content_matches = 4;   // RE2 regular expression
+  optional uint32 mode = 5;              // permission bits
+  optional string owner = 6;
+  optional string group = 7;
+  optional string type = 8;              // file | directory | symlink (what the path itself is)
+  optional string checksum = 9;          // sha256 of the content, 64 lower-case hex characters; a regular file of at most 256 KiB
+}
+// DirectoryObservation: exists (default true), mode, owner, group, names that must be directly in the directory and names that must not.
+message DirectoryObservation {
+  string path = 1;                       // absolute, clean
+  optional bool exists = 2;
+  optional uint32 mode = 3;
+  optional string owner = 4;
+  optional string group = 5;
+  repeated string has_entries = 6;       // at most 64 names
+  repeated string lacks_entries = 7;     // at most 64 names
+}
+// ProcessObservation: a process by name (the command without its directory) or by a regular expression on the command line; at
+// least one of name and matches.
+message ProcessObservation {
+  optional string name = 1;
+  optional string matches = 2;           // RE2 regular expression on the command line
+  optional string user = 3;
+  optional bool running = 4;             // default true; false: no such process may run
+}
+// PortObservation: whether something listens on a port of the device.
+message PortObservation {
+  int32 port = 1;                        // 1..65535
+  string protocol = 2;                   // tcp (default) | udp
+  optional bool listening = 3;           // default true
+  optional string address = 4;           // an IP address; a listener on the wildcard also counts
+  optional string process = 5;           // the listener belongs to a process of this name
+}
+// KernelParamObservation: the value of a sysctl; at least one of equals and matches.
+message KernelParamObservation {
+  string name = 1;                       // with dots, e.g. net.ipv4.ip_forward
+  optional string equals = 2;
+  optional string matches = 3;           // RE2 regular expression
+}
+// RequestObservation: a connection made from inside the device by the in-device program. tcp: passed when the connection opens.
+// http and https: GET or HEAD with the expected status and body rules; a redirect is not followed; https is not verified.
+message RequestObservation {
+  string protocol = 1;                   // tcp | http | https
+  string host = 2;                       // empty = 127.0.0.1
+  int32 port = 3;                        // 1..65535
+  string method = 4;                     // http(s): GET (default) | HEAD
+  string path = 5;                       // http(s): starts with /, default /
+  optional int32 status = 6;             // http(s): expected status, default 200
+  optional string body_contains = 7;     // GET only
+  optional string body_matches = 8;      // RE2 regular expression; GET only
+}
+// PermissionObservation: whether a user may read, write or execute a path. Tested without changing anything. Each given boolean must
+// equal the real answer; at least one is required.
+message PermissionObservation {
+  string user = 1;
+  string path = 2;                       // absolute, clean
+  optional bool read = 3;
+  optional bool write = 4;
+  optional bool execute = 5;
+}
+// CustomObservation runs a command or a script in the device; exit code 0 is "passed".
+message CustomObservation {
+  repeated string command = 1;           // exactly one of command and script
+  string script = 2;
+  string interpreter = 3;                // for a script; empty = /bin/sh
+  string user = 4;                       // empty = nobody; any other user, root included, is the author's explicit choice
+  optional string output_contains = 5;
+  optional string output_matches = 6;    // RE2 regular expression
+}
+
+enum CheckState {
+  CHECK_STATE_UNKNOWN = 0;      // no result yet
+  CHECK_STATE_PASSED = 1;
+  CHECK_STATE_NOT_PASSED = 2;
+  CHECK_STATE_ERROR = 3;        // could not be made (device not ready, command did not start or ran over its limit); the consumer keeps the previous state
+}
+// CheckResult is the last published result of one check. Only CHANGES are published: the entry changes when the state, value
+// or detail changes, so a Monitoring delta carries it once. Never show detail to a participant.
+message CheckResult {
+  string id = 1;
+  CheckState state = 2;
+  int64 first_passed_unix_ms = 3;   // 0 = never passed
+  int64 changed_unix_ms = 4;        // when the state last changed
+  string value = 5;                 // optional, at most 256 bytes
+  string detail = 6;                // for the author or the teacher, at most 2048 bytes
+}
+
+enum BootstrapPhase {
+  BOOTSTRAP_PHASE_NONE = 0;      // no bootstrap, or nothing observed yet
+  BOOTSTRAP_PHASE_PENDING = 1;
+  BOOTSTRAP_PHASE_DONE = 2;
+  BOOTSTRAP_PHASE_FAILED = 3;    // the attempts are used up
+}
+// BootstrapStatus holds no secret: the reason is a short text for the author.
+message BootstrapStatus {
+  BootstrapPhase phase = 1;
+  int32 attempts = 2;
+  string reason = 3;             // at most 256 bytes
+}
+
+message RunChecksItem {
+  string lab_group = 1;
+  string lab = 2;
+  repeated string check_ids = 3;   // none = every check that allows a manual run
+}
+message RunChecksRequest {repeated RunChecksItem items = 1;}
 message LabStatus {
   string phase = 1;
-  string vpn_cidr = 2;
-  string internet_cidr = 3;
+  reserved 2, 3, 6, 7, 46;   // were vpn_cidr, internet_cidr, vpn_ready, internet_ready, vpn_lab_initiated_blocked (contract 2.0: see gateways)
+  reserved "vpn_cidr", "internet_cidr", "vpn_ready", "internet_ready", "vpn_lab_initiated_blocked";
   bool ready = 4;
   repeated string access_urls = 5;          // flat list of exposed URLs (kept for convenience)
-  bool vpn_ready = 6;
-  bool internet_ready = 7;
   repeated LabDeviceStatus devices = 8;      // per-device readiness
   repeated LabConnectionStatus connections = 9;  // per-connection readiness
   repeated LabAccessEntry access = 10;       // structured web-exposure entries
@@ -565,6 +787,23 @@ message LabStatus {
   LabLifecycleStatus lifecycle = 41;
   ResourceAllocation resources = 42;
   RetirementStatus retirement = 43;
+  // The results of the lab checks (contract 1.5), one entry per check that has a result.
+  repeated CheckResult checks = 44;
+  // The RunChecks token the checker has taken (the annotation token it has seen).
+  int64 checks_run_ack = 45;
+  // The gateways of the lab (contract 2.0), one entry per entry of spec.gateways, in spec order.
+  repeated LabGatewayStatus gateways = 47;
+}
+// LabGatewayStatus is the state of one gateway of a lab: a VPN entry or an Internet exit.
+message LabGatewayStatus {
+  string name = 1;
+  string kind = 2;      // "vpn" or "internet"
+  string cidr = 3;      // the /24 of the gateway; empty until it has one
+  bool ready = 4;
+  // vpn gateways only: true only when the VPN gateway of the lab's group has confirmed that it blocks connections the lab's devices start
+  // towards VPN clients (reverse_connections of the gateway is false and the gateway program enforces it). False in every other case: the
+  // switch is on, or the group's VPN pod still runs an older program or has not applied the gateway yet.
+  bool lab_initiated_blocked = 5;
 }
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
 // refreshes it at a limited rate, so position can lag by seconds.
@@ -652,6 +891,8 @@ message LabDeviceStatus {
 	DeviceSnapshotStatus snapshot = 30;
 	// Scheduler state of the device pod; absent when the scheduler does not track it.
 	PodScheduling scheduling = 31;
+	// The bootstrap of the device (contract 1.5); absent for a device without one.
+	BootstrapStatus bootstrap = 32;
 }
 // DeviceSnapshotStatus is the state of a device's writable-layer snapshots.
 message DeviceSnapshotStatus {
@@ -665,11 +906,17 @@ message LabConnectionStatus {
   string name = 1;
   bool ready = 2;
 }
+// protocol is http or https for a web port. protocol "terminal" (contract 1.5) is the browser terminal of the device: port 0, and url is
+// the host of its console, https://<device>-<code>t.<endpoints.labs_domain>. Every access host is one label <device>-<code><kind>; the
+// last character is the kind of access (w web, t console, v vnc, r rdp), which is the lab's private encoding: a caller never parses the host, it
+// takes the link and its kind from this entry (protocol + url). url is empty until the device has its code; no link is built by the caller.
 message LabAccessEntry {
   string device = 1;
   int32 port = 2;
   string protocol = 3;
   string url = 4;
+  reserved 5;   // was files (file transfer through the console was removed)
+  reserved "files";
 }
 message LabList {repeated Lab items = 1;}
 
@@ -729,8 +976,19 @@ message LabGroupAccessRule {
   LabGroupAccessAction action = 1;
   // Empty means every VPN client in the LabGroup.
   repeated string client_names = 2;
-  // Empty means every Lab in the LabGroup.
+  // Empty means every Lab in the LabGroup (a deny rule only: an allow rule must name its laboratories).
   repeated string lab_names = 3;
+  // The VPN gateways (connectors) of those laboratories, by the name in the lab's spec.gateways (contract 2.4). An allow rule must name them: access is per
+  // client and per connector, never per whole laboratory. A deny rule with none means every VPN gateway.
+  repeated string gateway_names = 4;
+  // Allow only: narrows the access to these subnets of each named gateway's /24 (the union). Empty means the whole /24.
+  repeated AccessInclude include = 5;
+}
+// A subnet of a gateway's /24, <the /24>.host/prefix: prefix 24..32, host the first address of the subnet (a multiple of its size, 0..255). It is
+// relative to the gateway because the operator allocates the /24; it always lies inside it.
+message AccessInclude {
+  int32 host = 1;
+  int32 prefix = 2;
 }
 
 message LabGroupAccessPolicyStatus {
@@ -750,6 +1008,8 @@ message LabGroupAccessRuleStatistics {
 	int64 packets = 4;
 	int64 bytes = 5;
 	bool counter_reset = 6;
+	// The connectors of the lab the row covers (contract 2.4); the counters are the client's in the lab, over all of them.
+	repeated string gateway_names = 7;
 }
 
 message MonitoringRequest {
@@ -934,6 +1194,107 @@ message FeaturesResponse {
   // below the one the caller was built against, means every call of the caller exists. Empty = an agent older than the field.
   string contract_version = 15;
   GroupLimitsFeature group_limits = 16;
+  // Optional parts of the laboratory (contract 1.5). A lab with checks is refused when checks.enabled is false, a lab with a terminal
+  // device when terminal.enabled is false. Absent = an agent older than the fields (nothing of it).
+  ChecksFeature checks = 17;
+  reserved 18;                     // was terminal (TerminalFeature): replaced by access
+  reserved "terminal";
+  BootstrapFeature bootstrap = 19;
+  // How the VPN gateway treats connections started by a lab (contract 1.5). Absent = an agent older than the field: it does not
+  // enforce the default, so a daemon must not send spec.vpn.reverseConnections to it and must not promise the participant that
+  // the lab cannot connect to the participant's machine.
+  VPNFeature vpn = 20;
+  // Which device access kinds this laboratory serves (contract 1.5; docs/specs/2026-11-12-device-access-and-checks.md). Absent = an
+  // agent older than the field: only http.
+  AccessFeature access = 21;
+  // Activity reports (contract 2.5), off by default. Absent = an agent older than the field.
+  ActivityFeature activity = 22;
+  // The internet gateway (contract 2.8).
+  InternetFeature internet = 23;
+  // The registries the laboratory pulls lab images from (chart registry.allowedRegistries; contract 2.8). An image from another registry
+  // is refused (PermissionDenied, ErrorInfo reason REGISTRY_NOT_ALLOWED). Absent = an agent older than the field: no list is enforced.
+  AllowedRegistriesFeature allowed_registries = 24;
+}
+
+// The list of allowed registries. any is true when every registry is allowed (the chart list holds "*"); registries is then empty.
+message AllowedRegistriesFeature {
+  bool any = 1;
+  // Canonical hosts ("docker.io", "ghcr.io", "registry.example.com:5000"), the platform's own image registries included.
+  repeated string registries = 2;
+}
+
+// ActivityFeature: enabled is true when the cluster keeps raw activity facts for GetLabGroupActivity (the chart value
+// activityReports.enabled). max_events and ring_minutes bound what the laboratory keeps per writer; a platform that pulls less often than
+// every ring_minutes may lose events (the response says so in gap). console_max_lifetime_s (contract 2.6) is the longest a console session
+// lives (terminal.limits.maxLifetime; 0 when the console is off): a console_session still open longer than that after its opening event ended
+// without a closing event (its proxy replica died). device_touch (contract 2.6) is true only when this cluster produces device_touch events:
+// activity reports are on and the VPN firewall keeps connection tracking (iptables); with nft there are none, so a platform reports "not
+// reported" (null) for the devices-touched figure and not zero.
+message ActivityFeature {
+  bool enabled = 1;
+  int32 max_events = 2;
+  int32 ring_minutes = 3;
+  int32 console_max_lifetime_s = 4;
+  bool device_touch = 5;
+}
+
+// VPNFeature: reverse_connections is true when this agent and the VPN pods it makes block, by default, connections that a device of
+// a lab starts towards a VPN client (only replies to connections the client started pass from the lab to the client), and accept
+// the per-gateway switch reverseConnections that allows them (fixed at creation, like the rest of the lab spec). The switch is refused
+// on an Internet gateway. max_gateways is the most gateways (VPN and Internet together) one lab may have; a lab with more is refused.
+message VPNFeature {
+  bool reverse_connections = 1;
+  int32 max_gateways = 2;
+  // The laboratory runs a VPN (chart vpn.enabled; contract 2.8). Absent = an agent older than the field: it runs one. When false there is
+  // no WireGuard demultiplexer and no VPN pod, and a lab with a VPN gateway, a LabGroupClient, a LabGroupAccessPolicy and a group's
+  // vpn_enabled true are refused (reason VPN_UNAVAILABLE).
+  optional bool enabled = 3;
+}
+// The internet gateway of the laboratory (chart inetGateway.enabled; contract 2.8). When enabled is false there is no gateway pod, and a
+// lab with an Internet gateway and a group's internet_enabled true are refused (reason INTERNET_UNAVAILABLE). Absent (the whole message)
+// = an agent older than the field: it runs one.
+message InternetFeature {
+  bool enabled = 1;
+}
+
+message ChecksFeature {
+  bool enabled = 1;
+  int32 max_checks_per_lab = 2;
+  int32 max_parts_per_check = 3;
+  int32 max_time_limit_seconds = 4;
+  int32 max_schedule_seconds = 5;
+  int32 max_detail_bytes = 6;
+  // The kinds of observation this laboratory's checker runs: file, custom, and the built-in ones (directory, process, port,
+  // kernel_param, request, permission). A check with a kind that is not listed is refused.
+  repeated string observations = 7;
+}
+// AccessFeature: http is always served (the L7 proxy). terminal is true only when its option is on AND the component that serves
+// it is there. vnc and rdp are accepted in a device spec and stored, and nothing serves them: always false in this version.
+// The address of a kind of access to a device is a host name alone, never a path or a query: the link is LabAccessEntry.url of the entry
+// of that kind, and the daemon takes it from there, as it does for http.
+// Which accesses of a device the laboratory serves. http needs the L7 proxy and is served whenever it runs (proxy.enabled); terminal also
+// needs terminal.enabled; vnc and rdp need proxy.vnc.enabled / proxy.rdp.enabled (nothing serves them yet, so they are false). A lab with a
+// device that asks for an access that is not served is refused (reason ACCESS_UNAVAILABLE, contract 2.8; terminal had its own refusal before).
+message AccessFeature {
+  reserved 5;   // was terminal_host (the console had one host for all devices)
+  reserved "terminal_host";
+  bool http = 1;
+  bool terminal = 2;
+  bool vnc = 3;
+  bool rdp = 4;
+  reserved 6;   // was terminal_files (file transfer through the console was removed)
+  reserved "terminal_files";
+  reserved 7;   // was grpc (the gRPC access kind, withdrawn before any release)
+  reserved "grpc";
+}
+// The limits of a device bootstrap; bootstrap itself is always available.
+message BootstrapFeature {
+  int32 max_script_bytes = 1;
+  int32 max_files = 2;
+  int32 max_file_bytes = 3;
+  int32 max_total_bytes = 4;
+  int32 max_time_limit_seconds = 5;
+  int32 max_attempts = 6;
 }
 
 // The limits on the groups of this cluster (the chart's groupLimits): the most users and labs a group may be made for, and the
@@ -1028,13 +1389,14 @@ message TenantLimits {
 
 // Limits the L7 proxy enforces on lab access.
 message ProxyFeature {
-  // The longest exp - iat of an access token (handoff link) the proxy accepts; a longer one is refused.
-  int64 access_token_max_ttl_seconds = 1;
-  // The proxy's session is sliding: it expires after this much inactivity (the cookie is renewed while the
-  // user is active) ...
-  int64 session_idle_ttl_seconds = 3;
-  // ... and never lives longer than this from the handoff, nor past the link's own session end.
-  int64 session_max_ttl_seconds = 2;
+  // The longest exp - iat of an access grant (the JWS the platform signs for one device host) that the L7 proxy and the
+  // device-access service accept; a longer one is refused. The backend caps the exp of a grant with it. There is no
+  // session on the proxy side: the grant itself is the session, so no idle or sliding limit exists.
+  int64 grant_max_ttl_seconds = 1;
+  // Fields 2 and 3 were the proxy's own session limits (session_max_ttl_seconds, session_idle_ttl_seconds); the proxy
+  // has no session of its own any more.
+  reserved 2, 3;
+  reserved "session_max_ttl_seconds", "session_idle_ttl_seconds", "access_token_max_ttl_seconds";
 }
 
 // Device state persistence for this tenant.
@@ -1067,7 +1429,7 @@ message StatePersistenceFeature {
 // The platform image cache (PrewarmImages works only when it is enabled).
 message ImageCacheFeature {
   bool enabled = 1;
-  // Upstream registries the cache serves; images of other registries are pulled directly.
+  // Upstream registries the cache serves; an image of another registry is refused (there is no direct pull).
   repeated string registries = 2;
 }
 
@@ -1162,7 +1524,7 @@ enum PrewarmState {
   PREWARM_STATE_WARMING = 2;  // the cache is fetching it
   PREWARM_STATE_DONE = 3;     // the manifest and every blob are stored in the cache
   PREWARM_STATE_FAILED = 4;   // see error; a repeated call retries
-  PREWARM_STATE_SKIPPED = 5;  // the image's registry is not served by the cache: nodes pull it directly
+  PREWARM_STATE_SKIPPED = 5;  // nothing to prewarm: a platform image is in the platform registry already
 }
 
 message PrewarmImageStatus {
@@ -1442,4 +1804,84 @@ message RegistryCredential {
   string registry = 1;  // registry host, optionally with a port ("index.docker.io", "ghcr.io"); no scheme, no path
   string username = 2;
   string password = 3;  // a password or token; required
+}
+
+// ---- activity reports (contract 2.5) -------------------------------------------------
+
+enum ActivityKind {
+  ACTIVITY_KIND_UNSPECIFIED = 0;
+  // Internet egress of a lab: one event per minute, source address and destination address and port. Deltas of that minute.
+  ACTIVITY_KIND_INTERNET_EGRESS = 1;
+  // A console session of a client on a device: an event when it opens and another when it ends, with the same session_id.
+  ACTIVITY_KIND_CONSOLE_SESSION = 2;
+  // The bytes one VPN client exchanged with one lab address in one minute. Deltas of that minute. Needs the iptables VPN firewall.
+  ACTIVITY_KIND_DEVICE_TOUCH = 3;
+}
+
+message GetLabGroupActivityRequest {
+  string lab_group_name = 1;
+  // Empty: from the oldest event the laboratory still keeps. Otherwise next_cursor of an earlier response, unchanged.
+  string cursor = 2;
+  // At most this many events (default 1000, at most 5000).
+  int32 limit = 3;
+  // Only these kinds (empty: all).
+  repeated ActivityKind kinds = 4;
+}
+
+message GetLabGroupActivityResponse {
+  // In time order; events of one writer keep their order.
+  repeated ActivityEvent events = 1;
+  // Pass it back to get the events after these. It is given even when events is empty.
+  string next_cursor = 2;
+  // More events are waiting: call again at once.
+  bool has_more = 3;
+  // The laboratory dropped events the cursor had not reached (a ring was full or too old): totals built from the events are a lower bound.
+  bool gap = 4;
+}
+
+// ActivityEvent is one raw fact. egress and touch are deltas of the minute that ends at at_ms (sum them); console is a point.
+message ActivityEvent {
+  int64 at_ms = 1;
+  string lab_name = 2;
+  oneof fact {
+    InternetEgress egress = 10;
+    ConsoleSession console = 11;
+    DeviceTouch touch = 12;
+  }
+}
+
+// InternetEgress: the traffic of a lab to the internet through its internet gateway (the TCP the gateway proxy carries). source_address is
+// the address the lab used. Which device owns it is for the platform to say: attribution inside a lab is best effort, because an author may
+// set any addresses, a DHCP server may run inside the lab and routing may be complex. The fact that a lab used the internet is reliable.
+message InternetEgress {
+  reserved 1;                 // was device (no lookup of the source device is made)
+  reserved "device";
+  string source_address = 2;
+  string dst_address = 3;
+  int32 dst_port = 4;
+  string protocol = 5;        // tcp
+  int64 bytes_up = 6;         // from the lab
+  int64 bytes_down = 7;       // to the lab
+  int64 first_seen_ms = 8;
+  int64 last_seen_ms = 9;
+  int64 connections = 10;
+}
+
+message ConsoleSession {
+  string session_id = 1;
+  string device = 2;
+  string client = 3;          // the LabGroupClient of the participant
+  int64 opened_at_ms = 4;
+  int64 closed_at_ms = 5;     // 0 on the opening event
+}
+
+// DeviceTouch: what one VPN client exchanged with one lab address (the address is of a lab device, or any address of the lab's network).
+message DeviceTouch {
+  string client = 1;
+  string dst_address = 2;
+  string protocol = 3;
+  int64 bytes_out = 4;        // from the client
+  int64 bytes_in = 5;         // from the lab
+  int64 first_seen_ms = 6;
+  int64 last_seen_ms = 7;
 }

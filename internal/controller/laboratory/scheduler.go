@@ -109,8 +109,6 @@ type Scheduler struct {
 	// Mirror rewrites image references of labs that use the image cache, so the
 	// prepull warms the cache through the path the lab pods will use.
 	Mirror imagecache.Rewriter
-	// ImagesNamespace holds the credentials of a prepull request; empty means names.ImagesNamespace.
-	ImagesNamespace string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// ReservationCRD asks the API server, past any cache, whether it serves the Reservation kind and the UID of the CRD that
@@ -200,14 +198,6 @@ func (s *Scheduler) now() time.Time {
 	return time.Now()
 }
 
-// imagesNamespace holds the credentials of the ImagePull requests.
-func (s *Scheduler) imagesNamespace() string {
-	if s.ImagesNamespace != "" {
-		return s.ImagesNamespace
-	}
-	return names.ImagesNamespace
-}
-
 func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" + device }
 
 // groupPodNeed is what a pod of the group requests: the size its spec carries, else the chart's group pod resources; nil for an
@@ -266,7 +256,7 @@ func classImages(labs []*laboratoryv1alpha1.Lab, mirror imagecache.Rewriter) []s
 		for _, d := range l.Spec.Devices {
 			img := d.Image
 			if cached {
-				img = mirror.RewritePinned(img, l.Status.ImageDigests[d.Image])
+				img = mirror.For(names.TenantOf(l.Labels)).RewritePinned(img, l.Status.ImageDigests[d.Image])
 			}
 			if d.Type != laboratoryv1alpha1.DeviceTypeContainer || img == "" || seen[img] {
 				continue
@@ -295,8 +285,9 @@ type clusterView struct {
 	reservations []laboratoryv1alpha1.Reservation
 }
 
-// load reads the cluster view of a pass: the labs past the cache, the rest from it; live reads all of it past the cache (the
-// check before an eviction).
+// load reads the cluster view of a pass from the cache; live reads all of it past the cache (the check before an eviction). The
+// labs of a normal pass come from the cache too: a lab that is stopped or not yet started is fenced again, with a read past the
+// cache, at the moment a pod of it is dispatched (tick), so a stale list can only delay a dispatch, never let a stopped lab start.
 func (s *Scheduler) load(ctx context.Context, live bool) (*clusterView, error) {
 	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}, tenants: map[string]*laboratoryv1alpha1.Tenant{}}
 	var r client.Reader = s.Client
@@ -304,7 +295,7 @@ func (s *Scheduler) load(ctx context.Context, live bool) (*clusterView, error) {
 		r = s.directReader()
 	}
 	var labs laboratoryv1alpha1.LabList
-	if err := s.directReader().List(ctx, &labs); err != nil {
+	if err := r.List(ctx, &labs); err != nil {
 		return nil, fmt.Errorf("list labs: %w", err)
 	}
 	for i := range labs.Items {
@@ -464,6 +455,17 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		}
 		if ps.State == laboratoryv1alpha1.PodFailed && s.Recorder != nil {
 			s.Recorder.Eventf(d, corev1.EventTypeWarning, "PodStartFailed", "%s: %s", ps.Failure.Reason, ps.Failure.Message)
+		}
+		if cur.State == laboratoryv1alpha1.PodStarting && ps.State == laboratoryv1alpha1.PodStarted {
+			// once per device: the Starting -> Started edge
+			var queued, dispatched *time.Time
+			if cur.QueuedAt != nil {
+				queued = &cur.QueuedAt.Time
+			}
+			if cur.DispatchedAt != nil {
+				dispatched = &cur.DispatchedAt.Time
+			}
+			observeLaunch(queued, dispatched, newestPod(snap.podsOf[key]), now)
 		}
 	}
 	for _, g := range snap.groups {
@@ -738,6 +740,8 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 
 // tick runs one scheduling pass.
 func (s *Scheduler) tick(ctx context.Context) error {
+	started := time.Now()
+	defer func() { schedulerTickSeconds.Observe(time.Since(started).Seconds()) }()
 	logger := log.FromContext(ctx).WithName("scheduler")
 	if s.prepared == nil {
 		s.prepared = map[string]struct{}{}
@@ -800,13 +804,25 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	}
 
 	stamp := metav1.NewTime(now)
+	// The fence before a dispatch (the lab is not stopped and its start is prepared) is a read past the cache, once per lab and
+	// pass however many of its pods go out together: the cache may still show a lab as it was before a stop.
+	fenced := map[client.ObjectKey]bool{}
+	labMayStart := func(key client.ObjectKey) bool {
+		if ok, done := fenced[key]; done {
+			return ok
+		}
+		var currentLab laboratoryv1alpha1.Lab
+		ok := s.directReader().Get(ctx, key, &currentLab) == nil && !currentLab.Spec.Lifecycle.IsStopped() && labStartPrepared(&currentLab)
+		fenced[key] = ok
+		return ok
+	}
+	sent := 0
 	for _, p := range plan.dispatch {
 		var err error
 		switch p.kind {
 		case kindDevicePod:
 			d := p.ref.(*laboratoryv1alpha1.Device)
-			var currentLab laboratoryv1alpha1.Lab
-			if getErr := s.directReader().Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &currentLab); getErr != nil || currentLab.Spec.Lifecycle.IsStopped() || !labStartPrepared(&currentLab) {
+			if !labMayStart(client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}) {
 				continue
 			}
 			q := d.Status.Scheduling.DeepCopy()
@@ -823,7 +839,10 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			continue
 		}
 		s.recent[p.key] = now
+		schedulerDispatched.Inc()
+		sent++
 	}
+	s.publishQueue(objs, plan, flight, sent)
 	for _, f := range plan.failed {
 		if f.pod.kind == kindGroupPod {
 			if err := s.failGroupPod(ctx, snap, f, stamp); err != nil && !errors.IsNotFound(err) {
@@ -1434,9 +1453,7 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key, tenantName string, 
 			return false, err
 		}
 		want := buildImagePull(key, tenantName, images, nodes)
-		want.Spec.PullSecret = s.writePullSecret(ctx, want, tenantName)
 		if err := s.Create(ctx, want); err != nil && !errors.IsAlreadyExists(err) {
-			s.deletePullSecret(ctx, want.Spec.PullSecret)
 			return false, err
 		}
 		s.preparing[prepullKey(key)] = true
@@ -1485,54 +1502,7 @@ func (s *Scheduler) prepullNodes(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// writePullSecret copies the tenant's registry credentials (the Secret its spec names, in
-// the tenants namespace) into the images namespace, where the node-agents read them, and
-// returns the copy's name; "" when the tenant has none. A tenant whose Secret cannot be read
-// is pulled for anonymously: the pods that need the credentials fail on their own.
-// The platform's own pull secrets are never used here.
-func (s *Scheduler) writePullSecret(ctx context.Context, ip *laboratoryv1alpha1.ImagePull, tenantName string) string {
-	logger := log.FromContext(ctx).WithName("scheduler")
-	secret, err := tenantPullSecret(ctx, s, tenantName)
-	if err != nil || secret == "" {
-		if err != nil {
-			logger.Error(err, "read the tenant", "tenant", tenantName)
-		}
-		return ""
-	}
-	var src corev1.Secret
-	if err := s.Get(ctx, types.NamespacedName{Namespace: names.TenantsNamespace, Name: secret}, &src); err != nil || src.Type != corev1.SecretTypeDockerConfigJson {
-		logger.Error(err, "the tenant's image pull secret is missing or not a registry secret; pulling anonymously", "tenant", tenantName, "secret", secret)
-		return ""
-	}
-	dst := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ip.Name, Namespace: s.imagesNamespace(),
-			Labels: map[string]string{managedByLabel: managedByValue, prepullLabel: ip.Labels[prepullLabel]},
-		},
-		Type: src.Type,
-		Data: map[string][]byte{corev1.DockerConfigJsonKey: src.Data[corev1.DockerConfigJsonKey]},
-	}
-	if err := s.Create(ctx, dst); err != nil {
-		if !errors.IsAlreadyExists(err) {
-			logger.Error(err, "write the image pull credentials for the prepull", "tenant", tenantName)
-			return ""
-		}
-		if err := s.Update(ctx, dst); err != nil {
-			logger.Error(err, "refresh the image pull credentials for the prepull", "tenant", tenantName)
-			return ""
-		}
-	}
-	return dst.Name
-}
-
-func (s *Scheduler) deletePullSecret(ctx context.Context, name string) {
-	if name == "" {
-		return
-	}
-	_ = s.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.imagesNamespace()}})
-}
-
-// gcPrepull deletes every ImagePull, and its credentials, except the ones still in progress.
+// gcPrepull deletes every ImagePull except the ones still in progress.
 func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 	var list laboratoryv1alpha1.ImagePullList
 	if err := s.List(ctx, &list, client.HasLabels{prepullLabel}); err != nil {
@@ -1544,19 +1514,6 @@ func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 			continue
 		}
 		if err := s.Delete(ctx, ip); client.IgnoreNotFound(err) != nil {
-			return err
-		}
-	}
-	var secrets corev1.SecretList
-	if err := s.List(ctx, &secrets, client.InNamespace(s.imagesNamespace()), client.HasLabels{prepullLabel}); err != nil {
-		return err
-	}
-	for i := range secrets.Items {
-		sec := &secrets.Items[i]
-		if keep[sec.Labels[prepullLabel]] || !sec.DeletionTimestamp.IsZero() {
-			continue
-		}
-		if err := s.Delete(ctx, sec); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}
@@ -1598,4 +1555,33 @@ func (s *Scheduler) directReader() client.Reader {
 func (s *Scheduler) recentDispatchPending(key string, state laboratoryv1alpha1.PodScheduleState, now time.Time) bool {
 	at, ok := s.recent[key]
 	return ok && state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL
+}
+
+// publishQueue sets the queue gauges of a pass.
+// flight pods held a slot before the pass and sent were dispatched by it.
+func (s *Scheduler) publishQueue(objs []*schedObject, plan schedPlan, flight, sent int) {
+	schedulerSlotsMax.Set(float64(s.Config.MaxPods))
+	schedulerSlotsUsed.Set(float64(flight + sent))
+	queued := 0
+	groups := map[string]bool{}
+	going := make(map[string]bool, len(plan.dispatch))
+	for _, p := range plan.dispatch {
+		going[p.key] = true
+	}
+	for _, o := range objs {
+		waiting := false
+		for _, p := range o.pods {
+			if p.state == laboratoryv1alpha1.PodQueued && !going[p.key] {
+				queued++
+				waiting = true
+			}
+		}
+		if waiting && o.group != "" {
+			groups[o.group] = true
+		}
+	}
+	schedulerQueuedPods.Set(float64(queued))
+	schedulerQueuedObjects.Set(float64(len(plan.status)))
+	schedulerQueuedGroups.Set(float64(len(groups)))
+	schedulerPrepulling.Set(float64(len(s.preparing)))
 }

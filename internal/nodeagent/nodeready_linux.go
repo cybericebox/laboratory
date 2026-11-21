@@ -8,10 +8,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// NewNodeLabeler is the labeler of this node with the result of the start-up check as the annotations it keeps asserting. The retry of a
-// failed check shares it (SetAnnotation), so a later result is not put back to the start-up one.
+// NewNodeLabeler is the labeler of this node with the result of the start-up check (runtime observation) as the annotations it keeps
+// asserting.
 func NewNodeLabeler(mgr ctrl.Manager, cfg *Config, pre PreflightResult) *NodeLabeler {
-	return &NodeLabeler{Client: mgr.GetClient(), NodeName: cfg.NodeName, Annotations: pre.Annotations(), Recorder: mgr.GetEventRecorderFor("node-agent-preflight")}
+	// The state-persistence annotation is the node-state DaemonSet's (it owns the snapshot engine it describes).
+	return &NodeLabeler{Client: mgr.GetClient(), NodeName: cfg.NodeName, Annotations: withoutStatePersistence(pre.Annotations()), Recorder: mgr.GetEventRecorderFor("node-agent-preflight")}
 }
 
 // SetupNodeReadiness adds the two things that make this node usable for labs, in order: the label that lab pods require, then the

@@ -1,6 +1,10 @@
 package operator
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cybericebox/laboratory/internal/names"
+)
 
 func TestStateConfigDefaults(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
@@ -80,7 +84,7 @@ func TestCacheConfig(t *testing.T) {
 	if rw.Prefix != "localhost:5035" || len(rw.Registries) != 2 {
 		t.Fatalf("%+v", rw)
 	}
-	if got := rw.Rewrite("nginx"); got != "localhost:5035/docker.io/library/nginx:latest" {
+	if got := rw.RewriteFor("", "nginx"); got != "localhost:5035/c/"+names.TenantSegment("")+"/docker.io/library/nginx:latest" {
 		t.Fatal(got)
 	}
 }

@@ -22,7 +22,13 @@ type DeviceSpec struct {
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
+	// +listType=map
+	// +listMapKey=kind
+	// +kubebuilder:validation:MaxItems=4
+	// +optional
+	Access []DeviceAccess `json:"access,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
@@ -54,6 +60,12 @@ type DeviceSpec struct {
 	// WaitReadyFile: the device is Ready only once /run/ready exists inside the container (see DeviceTemplate).
 	// +optional
 	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
+	// Service is the service command of a container device (see DeviceTemplate).
+	// +optional
+	Service *DeviceService `json:"service,omitempty"`
+	// Bootstrap says the device has a bootstrap list in the Secret <device>-bootstrap (see DeviceTemplate).
+	// +optional
+	Bootstrap *DeviceBootstrapSpec `json:"bootstrap,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
@@ -208,6 +220,9 @@ type DeviceStatus struct {
 	// not throttled (or no data yet).
 	// +optional
 	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
+	// Bootstrap is the observed bootstrap of the device; absent for a device without one. Written by the launcher side (not yet built).
+	// +optional
+	Bootstrap *DeviceBootstrapStatus `json:"bootstrap,omitempty"`
 }
 
 // DeviceCPUThrottle is the share of the CFS periods in which the device container was throttled (it used up its CPU limit

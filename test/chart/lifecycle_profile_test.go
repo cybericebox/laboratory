@@ -14,27 +14,44 @@ func TestLifecycleProfileFullSwitchesOnWhatTheLifecycleNeeds(t *testing.T) {
 		}
 	}
 	on := operatorConfig(t, "--set", "lifecycle.profile=full")
+	onAgent := agentConfig(t, "--set", "lifecycle.profile=full")
 	for k, want := range map[string]string{
 		"LIFECYCLE_PER_LAB_STOP_AVAILABLE": "true", "LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE": "true", "LIFECYCLE_RETAINED_RESTART_AVAILABLE": "true",
 		"LIFECYCLE_FULL_GROUP_STOP_AVAILABLE": "true", "RUNTIME_OBSERVATION_ENABLED": "true", "STATE_PERSISTENCE_ENABLED": "true",
 		"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE": "true", "REQUIRED_SNAPSHOT_AVAILABLE": "true",
 	} {
-		if on[k] != want {
-			t.Errorf("profile full: %s = %q, want %q", k, on[k], want)
+		got := on[k]
+		if strings.HasPrefix(k, "LIFECYCLE_") {
+			got = onAgent[k] // only the management agent reads the capabilities
+		}
+		if got != want {
+			t.Errorf("profile full: %s = %q, want %q", k, got, want)
 		}
 	}
 }
 
-// The node-agent gets the same: persistence and observation on, the containerd root to check, and a hostPath without the Directory type
-// check, so a wrong path reaches the node-agent's own start-up check instead of leaving the pod waiting for its volume.
+// The node-agent gets the observation; node-state gets persistence, the containerd root to check, and a hostPath without the Directory
+// type check, so a wrong path reaches node-state's own start-up check instead of leaving the pod waiting for its volume.
 func TestLifecycleProfileFullConfiguresTheNodeAgent(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "lifecycle.profile=full", "--set", "devices.statePersistence.containerdRoot=/var/lib/containerd", "-s", "templates/node-agent/daemonset.yaml")
+	agent, err := helmTemplate(t, "--set", "lifecycle.profile=full", "-s", "templates/node-agent/daemonset.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, agent)
+	}
+	if !strings.Contains(agent, "name: RUNTIME_OBSERVATION_ENABLED\n              value: \"true\"") {
+		t.Errorf("the node-agent lacks the runtime observation")
+	}
+	for _, unwanted := range []string{"STATE_PERSISTENCE_ENABLED", "CONTAINERD_ROOT", "containerd-root", "Unconfined", "DAC_READ_SEARCH"} {
+		if strings.Contains(agent, unwanted) {
+			t.Errorf("the node-agent must not carry %q any more: it is node-state's", unwanted)
+		}
+	}
+	out, err := helmTemplate(t, "--set", "lifecycle.profile=full", "--set", "devices.statePersistence.containerdRoot=/var/lib/containerd", "-s", "templates/node-state/daemonset.yaml")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, want := range []string{"name: CONTAINERD_ROOT\n              value: \"/var/lib/containerd\"", "name: RUNTIME_OBSERVATION_ENABLED\n              value: \"true\"", "name: STATE_PERSISTENCE_ENABLED\n              value: \"true\""} {
+	for _, want := range []string{"name: CONTAINERD_ROOT\n              value: \"/var/lib/containerd\"", "name: STATE_PERSISTENCE_ENABLED\n              value: \"true\""} {
 		if !strings.Contains(out, want) {
-			t.Errorf("the node-agent lacks %q", want)
+			t.Errorf("node-state lacks %q", want)
 		}
 	}
 	i := strings.Index(out, "name: containerd-root\n          hostPath:")

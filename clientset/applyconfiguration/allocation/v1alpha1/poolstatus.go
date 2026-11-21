@@ -24,10 +24,11 @@ package v1alpha1
 type PoolStatusApplyConfiguration struct {
 	// Lease owners and bitmap change in the same resourceVersion CAS.
 	Leases map[string]PoolLeaseApplyConfiguration `json:"leases,omitempty"`
-	// Retired are the slots waiting out their quarantine.
+	// Retired are the slots whose owner is done with them: the bit stays set (the slot is not given out) until the quarantine has
+	// passed, then the sweep clears the bits of many slots in one update. Keyed like Leases.
 	Retired             map[string]PoolRetiredApplyConfiguration `json:"retired,omitempty"`
 	NextLeaseGeneration *int64                                   `json:"nextLeaseGeneration,omitempty"`
-	// Cursor is where a forward-only allocator hands out next.
+	// Cursor is where a forward-only allocator hands out next (see pkg/api/pool ForwardAllocator).
 	Cursor *uint `json:"cursor,omitempty"`
 	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
 	Free *uint `json:"free,omitempty"`
@@ -55,11 +56,33 @@ func (b *PoolStatusApplyConfiguration) WithLeases(entries map[string]PoolLeaseAp
 	return b
 }
 
+// WithRetired puts the entries into the Retired field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Retired field,
+// overwriting an existing map entries in Retired field with the same key.
+func (b *PoolStatusApplyConfiguration) WithRetired(entries map[string]PoolRetiredApplyConfiguration) *PoolStatusApplyConfiguration {
+	if b.Retired == nil && len(entries) > 0 {
+		b.Retired = make(map[string]PoolRetiredApplyConfiguration, len(entries))
+	}
+	for k, v := range entries {
+		b.Retired[k] = v
+	}
+	return b
+}
+
 // WithNextLeaseGeneration sets the NextLeaseGeneration field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the NextLeaseGeneration field is set to the value of the last call.
 func (b *PoolStatusApplyConfiguration) WithNextLeaseGeneration(value int64) *PoolStatusApplyConfiguration {
 	b.NextLeaseGeneration = &value
+	return b
+}
+
+// WithCursor sets the Cursor field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Cursor field is set to the value of the last call.
+func (b *PoolStatusApplyConfiguration) WithCursor(value uint) *PoolStatusApplyConfiguration {
+	b.Cursor = &value
 	return b
 }
 
@@ -76,27 +99,5 @@ func (b *PoolStatusApplyConfiguration) WithFree(value uint) *PoolStatusApplyConf
 // If called multiple times, the BitMap field is set to the value of the last call.
 func (b *PoolStatusApplyConfiguration) WithBitMap(value string) *PoolStatusApplyConfiguration {
 	b.BitMap = &value
-	return b
-}
-
-// WithRetired puts the entries into the Retired field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, the entries provided by each call will be put on the Retired field,
-// overwriting an existing map entries in Retired field with the same key.
-func (b *PoolStatusApplyConfiguration) WithRetired(entries map[string]PoolRetiredApplyConfiguration) *PoolStatusApplyConfiguration {
-	if b.Retired == nil && len(entries) > 0 {
-		b.Retired = make(map[string]PoolRetiredApplyConfiguration, len(entries))
-	}
-	for k, v := range entries {
-		b.Retired[k] = v
-	}
-	return b
-}
-
-// WithCursor sets the Cursor field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Cursor field is set to the value of the last call.
-func (b *PoolStatusApplyConfiguration) WithCursor(value uint) *PoolStatusApplyConfiguration {
-	b.Cursor = &value
 	return b
 }

@@ -46,7 +46,7 @@ func TestLoadConfig_TuningKnobs(t *testing.T) {
 		cfg.ImagePullConcurrency != 2 || cfg.ImagePullTimeout != 5*time.Minute {
 		t.Errorf("defaults: %+v", cfg)
 	}
-	if cfg.StateForwardPort != 5035 || cfg.StateRegistryAddr != "laboratory-registry.laboratory-system.svc:5000" {
+	if cfg.StateForwardPort != 5035 || cfg.StateRegistryAddr != "laboratory-registry.laboratory-system.svc:5443" {
 		t.Errorf("registry: relay port %d, address %q", cfg.StateForwardPort, cfg.StateRegistryAddr)
 	}
 	t.Setenv("TUN_CHECK_PATH", "/x/tun")
@@ -66,5 +66,27 @@ func TestLoadConfig_TuningKnobs(t *testing.T) {
 	}
 	if cfg.StateForwardPort != 5035 {
 		t.Errorf("the relay port is a constant, not an input: %d", cfg.StateForwardPort)
+	}
+}
+
+// With no platform registry in the chart (REGISTRY_ENABLED=false) the node-agent has no registry address, so SetupDeviceState starts
+// no relay; state persistence cannot be on without one.
+func TestLoadConfig_NoRegistry(t *testing.T) {
+	t.Setenv("NODE_NAME", "worker-1")
+	t.Setenv("REGISTRY_ENABLED", "false")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StateRegistryAddr != "" || cfg.RegistryEnabled {
+		t.Errorf("no registry: address %q, enabled %v", cfg.StateRegistryAddr, cfg.RegistryEnabled)
+	}
+	t.Setenv("STATE_REGISTRY_ADDR", "reg.example:5000")
+	if cfg, err = LoadConfig(); err != nil || cfg.StateRegistryAddr != "" {
+		t.Errorf("an address is ignored without a registry: %q, %v", cfg.StateRegistryAddr, err)
+	}
+	t.Setenv("STATE_PERSISTENCE_ENABLED", "true")
+	if _, err = LoadConfig(); err == nil {
+		t.Error("state persistence without a registry must be refused")
 	}
 }

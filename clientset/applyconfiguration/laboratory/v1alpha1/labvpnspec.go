@@ -24,8 +24,10 @@ package v1alpha1
 type LabVPNSpecApplyConfiguration struct {
 	// LabName is the name of the parent Lab.
 	LabName *string `json:"labName,omitempty"`
-	// NetworkIndex is the subnet index N from the lab-subnets pool.
-	// VPN CIDR is derived as 10.8.N.0/24. Immutable after FinalizerController is set.
+	// Device is the name of the gateway of the lab this object serves (spec.gateways[].name).
+	Device *string `json:"device,omitempty"`
+	// NetworkIndex is the number of the gateway's leg (interface lab<N>), from the lab-subnets pool. The CIDR is not derived from
+	// it: it is in the parent Lab status (status.gateways). Immutable after FinalizerController is set.
 	NetworkIndex *uint `json:"networkIndex,omitempty"`
 }
 
@@ -40,6 +42,14 @@ func LabVPNSpec() *LabVPNSpecApplyConfiguration {
 // If called multiple times, the LabName field is set to the value of the last call.
 func (b *LabVPNSpecApplyConfiguration) WithLabName(value string) *LabVPNSpecApplyConfiguration {
 	b.LabName = &value
+	return b
+}
+
+// WithDevice sets the Device field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Device field is set to the value of the last call.
+func (b *LabVPNSpecApplyConfiguration) WithDevice(value string) *LabVPNSpecApplyConfiguration {
+	b.Device = &value
 	return b
 }
 

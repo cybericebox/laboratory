@@ -39,6 +39,31 @@ func TestComputeMatchesTheDesignTable(t *testing.T) {
 	}
 }
 
+func TestFairShareFloor(t *testing.T) {
+	cases := []struct {
+		name              string
+		class, cap, floor int64
+		active            int
+		want              int64
+	}{
+		{"floor below share", 681000, 20000, 1000, 16, 20000},
+		{"floor below share, no cap hit", 681000, 50000, 1000, 16, 42562},
+		{"floor above share", 681000, 20000, 1000, 1000, 1000},
+		{"floor above cap: cap wins", 681000, 500, 1000, 1000, 500},
+		{"floor above cap, class 0", 0, 500, 1000, 5, 500},
+		{"floor 0 keeps today", 681000, 20000, 0, 10000000, 1},
+		{"class 0 and cap: the cap", 0, 20000, 1000, 100, 20000},
+		{"class 0 and cap 0: unlimited", 0, 0, 1000, 100, 0},
+		{"tiny class", 10, 20000, 1000, 1000, 1000},
+		{"no cap, floor", 681000, 0, 1000, 5000, 1000},
+	}
+	for _, tc := range cases {
+		if got := FairShareFloor(tc.class, tc.cap, tc.floor, tc.active); got != tc.want {
+			t.Errorf("%s: FairShareFloor(%d,%d,%d,%d) = %d, want %d", tc.name, tc.class, tc.cap, tc.floor, tc.active, got, tc.want)
+		}
+	}
+}
+
 func TestFairShare(t *testing.T) {
 	cases := []struct {
 		class, cap int64

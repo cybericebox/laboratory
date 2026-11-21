@@ -195,7 +195,7 @@ func TestRetirementHistoricalScopesRejectChangedCurrentAuthority(t *testing.T) {
 			l.Spec.Lifecycle.SnapshotMode = "Required"
 			l.Status.Lifecycle.SnapshotComplete = false
 		},
-		"access-unfenced": func(l *lab.Lab) { l.Spec.VPN.Enabled = true },
+		"access-unfenced": func(l *lab.Lab) { l.Spec.Gateways = []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}} },
 	}
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {

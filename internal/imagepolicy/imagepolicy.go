@@ -4,6 +4,7 @@
 package imagepolicy
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -21,7 +22,91 @@ type Policy struct {
 	// tenant names the original image; the operator routes it through the cache, so a
 	// reference that already points at the cache would reach what it holds for other users.
 	CachePrefixes []string
+	// Registries is the list of registries this laboratory pulls from (the chart's registry.allowedRegistries): an image from another
+	// registry is refused with ErrRegistryNotAllowed, whatever the tenant's own list says. Empty or containing "*": every registry.
+	Registries []string
 }
+
+// CanonicalRegistry is a registry host in the form Check compares: lowercase, no trailing dot or default port, Docker Hub as docker.io.
+func CanonicalRegistry(host string) string {
+	full, _ := canonicalHost(host)
+	return full
+}
+
+// ReasonRegistryNotAllowed is the stable reason of a refusal for a registry that is not allowed (pkg/agent/client has the same constant).
+const ReasonRegistryNotAllowed = "REGISTRY_NOT_ALLOWED"
+
+// ErrRegistryNotAllowed is what Check wraps when the registry of the image is not on the laboratory's list of allowed registries.
+var ErrRegistryNotAllowed = errors.New("registry is not allowed")
+
+// AnyRegistry is the entry of Registries that allows every registry.
+const AnyRegistry = "*"
+
+// RegistryAllowed says whether the registry of an image reference ("host[:port]" in its canonical form, Docker Hub spelled in any
+// way) is on the list. An empty list and "*" allow everything. A platform: reference is refused by Check before this is asked.
+func RegistryAllowed(registries []string, ref string) error {
+	if len(registries) == 0 {
+		return nil
+	}
+	for _, r := range registries {
+		if strings.TrimSpace(r) == AnyRegistry {
+			return nil
+		}
+	}
+	repo, _, err := normalize(ref)
+	if err != nil {
+		return err
+	}
+	host := repo
+	if k := strings.Index(repo, "/"); k >= 0 {
+		host = repo[:k]
+	}
+	for _, r := range registries {
+		if full, _ := canonicalHost(r); full != "" && full == host {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: image %q comes from %s, which is not on this laboratory's list of allowed registries", ErrRegistryNotAllowed, ref, host)
+}
+
+// ServedOnly is the list of allowed registries for a laboratory whose image cache is on: the cache serves only the registries it knows,
+// so an image from any other is refused, never pulled directly. An empty list or "*" becomes the served registries; otherwise the
+// entries that are served stay, in the order given. The chart refuses a list with a registry the cache does not serve; this is the same
+// rule where the agent reads its configuration.
+func ServedOnly(allowed, served []string) []string {
+	any := len(allowed) == 0
+	for _, a := range allowed {
+		if strings.TrimSpace(a) == AnyRegistry {
+			any = true
+		}
+	}
+	var out []string
+	if any {
+		for _, s := range served {
+			if full, _ := canonicalHost(s); full != "" {
+				out = append(out, full)
+			}
+		}
+		return out
+	}
+	for _, a := range allowed {
+		full, _ := canonicalHost(a)
+		for _, s := range served {
+			if sf, _ := canonicalHost(s); sf == full && full != "" {
+				out = append(out, full)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ErrNotPlatform is what Check wraps for a platform reference (platform:<name>@sha256:<hex>): the laboratory no longer serves images of a
+// registry of its own, and nothing sends such a reference any more. The stable reason is ReasonImageNotPlatform.
+var ErrNotPlatform = errors.New("platform images are not served: name the image on a public registry")
+
+// platformScheme opened the reference of an image of the platform's own registry.
+const platformScheme = "platform:"
 
 // dockerHubHosts are the spellings of Docker Hub a reference may use; all of them are docker.io.
 var dockerHubHosts = map[string]bool{
@@ -171,14 +256,21 @@ func under(repo, entry string) bool {
 	return entry != "" && (repo == entry || strings.HasPrefix(repo, entry+"/"))
 }
 
-// Check returns an error when the tenant may not use the image.
+// Check returns an error when the tenant may not use the image. A platform reference (platform:...) is refused with ErrNotPlatform, so it is
+// never read as a Docker Hub image.
 func (p Policy) Check(ref string) error {
+	if strings.HasPrefix(ref, platformScheme) {
+		return fmt.Errorf("%w: %q", ErrNotPlatform, ref)
+	}
 	repo, bare, err := normalize(ref)
 	if err != nil {
 		return err
 	}
 	if why := refusedHost(bare); why != "" {
 		return fmt.Errorf("image %q %s: name the original image on a public registry", ref, why)
+	}
+	if err := RegistryAllowed(p.Registries, ref); err != nil {
+		return err
 	}
 	// The platform's own registry and cache, in any spelling: by host, whatever the port.
 	for _, c := range p.CachePrefixes {

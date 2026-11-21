@@ -982,9 +982,9 @@ func TestSchedulerSlowPrepullDoesNotBlockOtherGroups(t *testing.T) {
 	}
 }
 
-// The prepull pulls with the tenant's own credentials, never the platform's: they are
-// copied for the node-agents into the images namespace and go with the request.
-func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
+// The prepull request names the tenant and carries no credential: the registry gate reads the tenant's own credentials (never the
+// platform's) for it, and the operator copies nothing for the node-agents.
+func TestSchedulerPrepullNamesTheTenantAndCarriesNoCredentials(t *testing.T) {
 	f := newSchedFixture(t, prepullSchedCfg())
 	f.s.LabNodeSelector = map[string]string{"pool": "labs"}
 	f.addLabNode("n1")
@@ -1006,40 +1006,17 @@ func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
 	if err := f.c.Get(context.Background(), types.NamespacedName{Name: prepullName(prepClass("acme", "g/g1"))}, &ip); err != nil {
 		t.Fatal(err)
 	}
-	if ip.Spec.PullSecret == "" || ip.Spec.Tenant != "acme" {
+	if ip.Spec.Tenant != "acme" {
 		t.Fatalf("spec %+v", ip.Spec)
 	}
-	var sec corev1.Secret
-	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.ImagesNamespace, Name: ip.Spec.PullSecret}, &sec); err != nil {
+	var secrets corev1.SecretList
+	if err := f.c.List(context.Background(), &secrets); err != nil {
 		t.Fatal(err)
 	}
-	if string(sec.Data[corev1.DockerConfigJsonKey]) != `{"auths":{"reg":{"auth":"dGVuYW50"}}}` {
-		t.Fatalf("the tenant's credentials are copied: %s", sec.Data[corev1.DockerConfigJsonKey])
-	}
-
-	// The credentials go with the request.
-	f.stampIP(&ip)
-	f.report(&ip, "n1", true)
-	f.tick()
-	f.tick()
-	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.ImagesNamespace, Name: ip.Spec.PullSecret}, &sec); err == nil {
-		t.Fatal("the credentials must be removed with the request")
-	}
-
-	// A tenant without credentials: anonymous, no Secret.
-	f2 := newSchedFixture(t, prepullSchedCfg())
-	f2.s.LabNodeSelector = map[string]string{"pool": "labs"}
-	f2.addLabNode("n1")
-	f2.createPlain(regSecret("platform-cred", corev1.SecretTypeDockerConfigJson, `{"auths":{}}`))
-	f2.addLab("a", "g1", nil, "web")
-	f2.tick()
-	got := f2.imagePull("g/g1")
-	if got == nil || got.Spec.PullSecret != "" {
-		t.Fatalf("anonymous: %+v", got)
-	}
-	var secrets corev1.SecretList
-	if err := f2.c.List(context.Background(), &secrets, client.InNamespace(names.ImagesNamespace)); err != nil || len(secrets.Items) != 0 {
-		t.Fatalf("no credentials copied: %v %v", secrets.Items, err)
+	for _, s := range secrets.Items {
+		if s.Namespace != names.TenantsNamespace && s.Name != "platform-cred" {
+			t.Errorf("the operator wrote a Secret for the prepull: %s/%s", s.Namespace, s.Name)
+		}
 	}
 }
 
@@ -1105,4 +1082,66 @@ func setDeviceResources(t *testing.T, f *schedFixture, lab string, r *laboratory
 	if err := f.c.Update(context.Background(), l); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// labReader counts the reads of Labs that go past the cache and can show a lab as stopped, the way the API server would after the
+// cache has gone stale.
+type labReader struct {
+	client.Reader
+	gets, lists int
+	stopped     map[string]bool
+}
+
+func (r *labReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	err := r.Reader.Get(ctx, key, obj, opts...)
+	if l, ok := obj.(*laboratoryv1alpha1.Lab); ok {
+		r.gets++
+		if err == nil && r.stopped[key.Name] {
+			l.Spec.Lifecycle = &laboratoryv1alpha1.LabLifecycleSpec{DesiredState: "Stopped"}
+		}
+	}
+	return err
+}
+
+func (r *labReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*laboratoryv1alpha1.LabList); ok {
+		r.lists++
+	}
+	return r.Reader.List(ctx, list, opts...)
+}
+
+// A pass lists the labs from the cache; the stop fence before a dispatch is one read past the cache per lab, not one per pod.
+func TestSchedulerListsLabsFromTheCacheAndFencesOncePerLab(t *testing.T) {
+	cfg := schedCfg()
+	cfg.MaxPods = 10
+	f := newSchedFixture(t, cfg)
+	rd := &labReader{Reader: f.c}
+	f.s.Reader = rd
+	f.addLab("a", "", nil, "web", "db", "cache")
+	f.addLab("b", "", nil, "web", "db")
+	f.tick()
+	f.wantStates("a/cache=S a/db=S a/web=S b/db=S b/web=S")
+	if rd.lists != 0 {
+		t.Fatalf("%d lists of the labs past the cache", rd.lists)
+	}
+	if rd.gets != 2 {
+		t.Fatalf("%d fence reads for 2 labs with 5 pods dispatched", rd.gets)
+	}
+	before := rd.gets
+	f.tick() // nothing to dispatch: nothing is read past the cache
+	if rd.gets != before || rd.lists != 0 {
+		t.Fatalf("an idle pass read past the cache: %d gets, %d lists", rd.gets-before, rd.lists)
+	}
+}
+
+// The cache still shows the lab running; the API server says it is stopped: no pod of it is dispatched, the others are.
+func TestSchedulerFenceCatchesAStopTheCacheHasNotSeen(t *testing.T) {
+	cfg := schedCfg()
+	cfg.MaxPods = 10
+	f := newSchedFixture(t, cfg)
+	f.s.Reader = &labReader{Reader: f.c, stopped: map[string]bool{"a": true}}
+	f.addLab("a", "", nil, "web", "db")
+	f.addLab("b", "", nil, "web")
+	f.tick()
+	f.wantStates("a/db=Q a/web=Q b/web=S")
 }

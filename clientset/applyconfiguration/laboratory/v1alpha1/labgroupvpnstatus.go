@@ -33,6 +33,9 @@ type LabGroupVPNStatusApplyConfiguration struct {
 	// Registered is true when the VPN deployment has at least one ready replica,
 	// including while Lab devices are suspended.
 	Registered *bool `json:"registered,omitempty"`
+	// Backend is "<pod IP>:<port>", the UDP address of the ready VPN pod of the group, written by the operator on every change of that pod;
+	// the demux sends the group's handshakes there and uses no name. Empty while no VPN pod is ready: the demux then drops them.
+	Backend *string `json:"backend,omitempty"`
 }
 
 // LabGroupVPNStatusApplyConfiguration constructs a declarative configuration of the LabGroupVPNStatus type for use with
@@ -78,5 +81,13 @@ func (b *LabGroupVPNStatusApplyConfiguration) WithSecretRef(value string) *LabGr
 // If called multiple times, the Registered field is set to the value of the last call.
 func (b *LabGroupVPNStatusApplyConfiguration) WithRegistered(value bool) *LabGroupVPNStatusApplyConfiguration {
 	b.Registered = &value
+	return b
+}
+
+// WithBackend sets the Backend field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Backend field is set to the value of the last call.
+func (b *LabGroupVPNStatusApplyConfiguration) WithBackend(value string) *LabGroupVPNStatusApplyConfiguration {
+	b.Backend = &value
 	return b
 }

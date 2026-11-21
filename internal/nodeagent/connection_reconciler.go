@@ -30,8 +30,16 @@ import (
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
-// virtualEndpoint says an endpoint of a Connection is not a Device: the VPN and the internet gateway are served by the pods of the group.
-func virtualEndpoint(name string) bool { return name == "vpn" || name == "internet" }
+// gatewayOf says an endpoint of a Connection is not a Device but a gateway of the Lab (a VPN entry or an Internet exit, served by the VPN or
+// the gateway pod of the group), and of which kind. A Lab that is gone has no gateways.
+func (r *ConnectionReconciler) gatewayOf(ctx context.Context, conn *laboratoryv1alpha1.Connection, name string) (laboratoryv1alpha1.GatewayKind, bool, error) {
+	var l laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &l); err != nil {
+		return "", false, client.IgnoreNotFound(err)
+	}
+	g, ok := l.Spec.Gateway(name)
+	return g.Kind, ok, nil
+}
 
 // ConnectionReconciler programs br-ovs based on Connection CRDs.
 //
@@ -71,6 +79,8 @@ type epInfo struct {
 	device    laboratoryv1alpha1.Device
 	isSwitch  bool
 	nodeReady bool
+	// gateway is the kind of the gateway the endpoint is, "" for a device.
+	gateway laboratoryv1alpha1.GatewayKind
 }
 
 func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -654,12 +664,15 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 	needsRequeue := false
 
 	for _, ep := range conn.Spec.Endpoints {
-		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
-		if virtualEndpoint(ep.Device) {
-			// The "internet" endpoint is served by the gateway Deployment,
-			// whose pods carry the gateway component label.
-			component := ep.Device
-			if ep.Device == "internet" {
+		kind, isGateway, err := r.gatewayOf(ctx, conn, ep.Device)
+		if err != nil {
+			return nil, false, err
+		}
+		// A gateway has no Device CRD — synthesize. A VPN gateway is served by the VPN Deployment, an Internet gateway by the gateway
+		// Deployment; their pods carry the component label.
+		if isGateway {
+			component := names.ComponentVPN
+			if kind == laboratoryv1alpha1.GatewayKindInternet {
 				component = names.ComponentGateway
 			}
 			var pods corev1.PodList
@@ -688,7 +701,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			}
 			if len(pods.Items) == 0 || pods.Items[0].Spec.NodeName == "" {
 				needsRequeue = true
-				eps = append(eps, epInfo{ep, laboratoryv1alpha1.Device{}, false, false})
+				eps = append(eps, epInfo{ep, laboratoryv1alpha1.Device{}, false, false, kind})
 				continue
 			}
 			pod := pods.Items[0]
@@ -698,7 +711,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			synth.Status.NodeName = pod.Spec.NodeName
 			synth.Status.NodeAddress = r.nodeAddressForNode(ctx, pod.Spec.NodeName)
 			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-			eps = append(eps, epInfo{ep, synth, false, true})
+			eps = append(eps, epInfo{ep, synth, false, true, kind})
 			continue
 		}
 
@@ -713,7 +726,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 		if !nodeReady {
 			needsRequeue = true
 		}
-		eps = append(eps, epInfo{ep, dev, isSwitch, nodeReady})
+		eps = append(eps, epInfo{ep, dev, isSwitch, nodeReady, ""})
 	}
 
 	return eps, needsRequeue, nil
@@ -731,12 +744,12 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 	conn *laboratoryv1alpha1.Connection,
 	ep epInfo,
 ) (pKey string, waitFor string, err error) {
-	switch ep.endpoint.Device {
-	case "vpn":
+	switch ep.gateway {
+	case laboratoryv1alpha1.GatewayKindVPN:
 		var labvpn laboratoryv1alpha1.LabVPN
 		if err := r.Get(
 			ctx, types.NamespacedName{
-				Name:      names.LabVPNObjectName(conn.Spec.LabRef),
+				Name:      names.LabVPNObjectName(conn.Spec.LabRef, ep.endpoint.Device),
 				Namespace: conn.Namespace,
 			}, &labvpn,
 		); err != nil {
@@ -749,11 +762,11 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 			return "", WaitInvalidNetworkIdx, nil
 		}
 		return names.VPNHostPortKey(conn.Namespace, labvpn.Spec.NetworkIndex), "", nil
-	case "internet":
+	case laboratoryv1alpha1.GatewayKindInternet:
 		var labgw laboratoryv1alpha1.LabGateway
 		if err := r.Get(
 			ctx, types.NamespacedName{
-				Name:      names.LabGatewayObjectName(conn.Spec.LabRef),
+				Name:      names.LabGatewayObjectName(conn.Spec.LabRef, ep.endpoint.Device),
 				Namespace: conn.Namespace,
 			}, &labgw,
 		); err != nil {
@@ -956,7 +969,9 @@ func (r *ConnectionReconciler) connectionVNIBinding(ctx context.Context, conn *l
 func (r *ConnectionReconciler) retireSwitchEndpoints(ctx context.Context, conn *laboratoryv1alpha1.Connection) error {
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
-		if virtualEndpoint(ep.Device) {
+		if _, isGateway, err := r.gatewayOf(ctx, conn, ep.Device); err != nil {
+			return err
+		} else if isGateway {
 			continue
 		}
 		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
@@ -980,8 +995,10 @@ func (r *ConnectionReconciler) retireSwitchEndpoints(ctx context.Context, conn *
 			if peerName == ep.Device {
 				peerName = conn.Spec.Endpoints[0].Device
 			}
-			// The virtual endpoints (the VPN, the internet gateway) are not Devices and not switches: there is no patch pair with them.
-			if !virtualEndpoint(peerName) {
+			// A gateway is not a Device and not a switch: there is no patch pair with it.
+			if _, peerIsGateway, err := r.gatewayOf(ctx, conn, peerName); err != nil {
+				return err
+			} else if !peerIsGateway {
 				peer, err := devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, peerName)
 				// A peer that is gone may have been the other half of a patch pair: this side's port, owned by this Connection, is removed.
 				if err != nil && !apierrors.IsNotFound(err) {

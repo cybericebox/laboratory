@@ -1,0 +1,34 @@
+{{- if and .Values.agent.enabled .Values.checks.enabled }}
+{{- /*
+GetFeatures reports checks as available only while the checker component is there: the agent reads whether the DaemonSet laboratory-checker
+exists (one GET by name, cached for 30 s). Read only, that one object, this namespace only.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-agent-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ apps ]
+    resources: [ daemonsets ]
+    resourceNames: [ laboratory-checker ]
+    verbs: [ get ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-agent-checker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-agent-checker
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-agent
+    namespace: {{ $.Values.agent.namespace }}
+{{- end }}

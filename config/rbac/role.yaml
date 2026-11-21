@@ -127,6 +127,7 @@ rules:
   resources:
   - connections
   - devices
+  - labactivityreports
   - labgateways
   - labgroupclients
   - labgroups
@@ -157,6 +158,7 @@ rules:
   resources:
   - connections/status
   - devices/status
+  - labactivityreports/status
   - labgateways/status
   - labgroupclients/status
   - labgroups/status
@@ -181,6 +183,18 @@ rules:
 - apiGroups:
   - laboratory.cybericebox.com
   resources:
+  - labegressreports
+  - tenants
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - labgroupaccesspolicies
   - labtrafficreports
   verbs:
   - get
@@ -194,16 +208,6 @@ rules:
   - delete
   - get
   - list
-  - watch
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - tenants
-  verbs:
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - networking.k8s.io

@@ -167,3 +167,22 @@ func TestProxyReportsBindingIsMadeInTheGroupNamespace(t *testing.T) {
 		t.Fatalf("%+v", rb)
 	}
 }
+
+// The namespace-wide RoleBinding of the earlier design is removed from the group namespace.
+func TestLegacyCheckerSecretsBindingIsRemoved(t *testing.T) {
+	ctx := context.Background()
+	s := systemScheme(t)
+	_ = rbacv1.AddToScheme(s)
+	legacy := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: "g"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(legacy).Build()
+	r := &LabGroupReconciler{Client: c}
+	for i := 0; i < 2; i++ { // and nothing to do the second time
+		if err := r.removeLegacyCheckerSecretsBinding(ctx, "g"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rb rbacv1.RoleBinding
+	if err := c.Get(ctx, types.NamespacedName{Name: names.CheckerSecretsBindingName, Namespace: "g"}, &rb); err == nil {
+		t.Fatal("the namespace-wide binding stayed")
+	}
+}

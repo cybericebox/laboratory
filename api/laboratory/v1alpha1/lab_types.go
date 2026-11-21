@@ -10,24 +10,74 @@ type LabSpec struct {
 	// Lifecycle is absent for legacy running laboratories.
 	// +optional
 	Lifecycle *LabLifecycleSpec `json:"lifecycle,omitempty"`
-	VPN       LabNetworkSpec    `json:"vpn,omitempty"`
-	Internet  LabNetworkSpec    `json:"internet,omitempty"`
+	// Gateways are the VPN entries and Internet exits of the lab. Each one is a device of its own kind with one port, eth0, attached to a
+	// lab network by an ordinary connection (endpoint device = the gateway name); it has its own /24, its DHCP settings and, on a VPN
+	// gateway, its own reverse-connections switch. The names share one space with the devices. The chart value operator.maxLabGateways
+	// (default 10) limits their number; the agent checks it at creation and the operator again.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	Gateways []GatewayTemplate `json:"gateways,omitempty"`
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
-	// ImagePullSecret names a kubernetes.io/dockerconfigjson Secret in the lab's namespace with
-	// the pull credentials of this lab's private images. Only the management agent sets it,
-	// from the credentials the platform sends with the deploy; a value in a client's spec is
+	// ImagePullSecret says that this lab brought pull credentials for its private images. The Secret
+	// (kubernetes.io/dockerconfigjson) is in the namespace laboratory-upstream, where only the registry gate reads it, and
+	// its name is computed from the namespace and the name of the lab; no pod references it. Only the management
+	// agent sets the field, from the credentials the platform sends with the deploy; a value in a client's spec is
 	// ignored.
 	// +optional
 	ImagePullSecret string `json:"imagePullSecret,omitempty"`
+	// Checks lists the checks of the lab without their definitions (those are in the Secret <lab>-checks). Only the
+	// management agent sets it; a value in a client's spec is ignored.
+	// +optional
+	Checks *LabChecksSpec `json:"checks,omitempty"`
 }
 
-// LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
-type LabNetworkSpec struct {
-	Enabled    bool        `json:"enabled,omitempty"`
+// GatewayKind is the kind of a gateway: a VPN entry or an Internet exit.
+// +kubebuilder:validation:Enum=vpn;internet
+type GatewayKind string
+
+const (
+	GatewayKindVPN      GatewayKind = "vpn"
+	GatewayKindInternet GatewayKind = "internet"
+)
+
+// GatewayTemplate declares one VPN entry or Internet exit of a lab.
+// +kubebuilder:validation:XValidation:rule="!has(self.reverseConnections) || !self.reverseConnections || self.kind == 'vpn'",message="reverseConnections belongs to a vpn gateway only"
+type GatewayTemplate struct {
+	// Name is a DNS label of at most 35 characters (names.MaxDeviceNameLen), unique among the devices and gateways of the lab. It is
+	// part of the names of the gateway's objects.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=35
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	Name string `json:"name"`
+	// +kubebuilder:validation:Required
+	Kind GatewayKind `json:"kind"`
+	// DHCPServer is the embedded DHCP server of the gateway's /24 (DNS only on an internet gateway).
+	// +optional
 	DHCPServer *DHCPServer `json:"dhcpServer,omitempty"`
+	// ReverseConnections (vpn gateway only) allows a device of the lab to START connections towards a VPN client; see the VPN client rules of the lab.
+	// +optional
+	ReverseConnections bool `json:"reverseConnections,omitempty"`
+}
+
+// GatewayStatus is the observed state of one gateway of a lab.
+type GatewayStatus struct {
+	Name string      `json:"name"`
+	Kind GatewayKind `json:"kind"`
+	// CIDR is the /24 of the gateway, taken once from the one lab address pool of the group and kept for the life of the lab.
+	CIDR string `json:"cidr,omitempty"`
+	// NetworkIndex is the number of the gateway's leg (interface lab<N> in the VPN or gateway pod, and its port): the position of the
+	// /24 in the lab base network.
+	NetworkIndex uint `json:"networkIndex,omitempty"`
+	Ready        bool `json:"ready,omitempty"`
+	// LabInitiatedBlocked (vpn gateway only): the VPN gateway confirmed that it blocks connections started by the lab's devices towards VPN clients. False while the group's VPN pod runs an older program or has not applied the lab yet.
+	// +optional
+	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`
 }
 
 // DHCPServer enables the embedded DHCP server for a network segment.
@@ -74,7 +124,20 @@ type DeviceTemplate struct {
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
+	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+	// and rdp. At most one entry per kind.
+	// +listType=map
+	// +listMapKey=kind
+	// +kubebuilder:validation:MaxItems=4
+	// +optional
+	Access []DeviceAccess `json:"access,omitempty"`
+	// Internet is the device's reach to the public internet: allow (the default when empty; the device uses an Internet gateway when it
+	// shares a broadcast domain with one) or deny. A device with deny must not share a broadcast domain with an Internet gateway: the lab
+	// is refused otherwise (InternetDeniedDeviceOnInternetNetwork), so the guarantee never depends on an address or a firewall rule. It is
+	// meant for the devices of AI opponents and other devices that the platform drives out-of-band (EDA), which need no network egress. The
+	// devices of a student and of a grader are left as they are (symmetric: both allow, or both deny).
+	// +optional
+	Internet InternetPolicy `json:"internet,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
@@ -83,10 +146,27 @@ type DeviceTemplate struct {
 	// +optional
 	Persistence *DevicePersistence `json:"persistence,omitempty"`
 	// WaitReadyFile makes the device Ready only once the application has created /run/ready inside the container.
-	// A port published through the web exposure is checked in any case, whatever this says. Container devices only.
+	// A port published through the http access is checked in any case, whatever this says. Container devices only.
 	// +optional
 	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
+	// Service is the service command of a container device, set by the platform from the image configuration. Empty fields
+	// mean "not provided": the image decides.
+	// +optional
+	Service *DeviceService `json:"service,omitempty"`
+	// Bootstrap is set by the management agent when it received a bootstrap list for the device; a value sent in the spec is
+	// replaced. The list is in the Secret <device>-bootstrap, never here.
+	// +optional
+	Bootstrap *DeviceBootstrapSpec `json:"bootstrap,omitempty"`
 }
+
+// InternetPolicy is whether a device may use an Internet gateway of its lab.
+// +kubebuilder:validation:Enum=allow;deny
+type InternetPolicy string
+
+const (
+	InternetAllow InternetPolicy = "allow"
+	InternetDeny  InternetPolicy = "deny"
+)
 
 // DevicePersistence is the per-device state-persistence request of a topology.
 type DevicePersistence struct {
@@ -115,13 +195,20 @@ type LabStatus struct {
 	// +optional
 	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`
 	// +optional
-	Resources   *RuntimeAllocation `json:"resources,omitempty"`
-	Phase       Phase              `json:"phase,omitempty"`
-	VPN         LabNetworkStatus   `json:"vpn,omitempty"`
-	Internet    LabNetworkStatus   `json:"internet,omitempty"`
-	Devices     []DeviceRef        `json:"devices,omitempty"`
-	Connections []ConnectionRef    `json:"connections,omitempty"`
-	Access      []AccessEntry      `json:"access,omitempty"`
+	Resources *RuntimeAllocation `json:"resources,omitempty"`
+	Phase     Phase              `json:"phase,omitempty"`
+	// Gateways is the state of every gateway of the lab.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Gateways []GatewayStatus `json:"gateways,omitempty"`
+	Devices  []DeviceRef     `json:"devices,omitempty"`
+	// DeviceNodes are the nodes the devices of the lab run on now (the sorted, distinct Device.status.nodeName). Written by the operator
+	// only: the admission policy lets the lab checker of a node write the results of a lab only when its own node is listed here.
+	// +optional
+	DeviceNodes []string        `json:"deviceNodes,omitempty"`
+	Connections []ConnectionRef `json:"connections,omitempty"`
+	Access      []AccessEntry   `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
 	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
@@ -146,12 +233,14 @@ type LabStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
-}
-
-// LabNetworkStatus reports the allocated CIDR for a network segment.
-type LabNetworkStatus struct {
-	Ready bool   `json:"ready,omitempty"`
-	CIDR  string `json:"cidr,omitempty"`
+	// Checks are the results of the lab checks, one entry per check that has a result; the checker writes only changes.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Checks []CheckResult `json:"checks,omitempty"`
+	// ChecksRunAck is the RunChecks request token the checker has taken (see the annotation names.AnnotationRunChecks).
+	// +optional
+	ChecksRunAck int64 `json:"checksRunAck,omitempty"`
 }
 
 // DeviceRef summarises a materialised Device's readiness.
@@ -167,6 +256,9 @@ type DeviceRef struct {
 	// CPUThrottle is the device's CPU throttling (see DeviceStatus.CPUThrottle); absent means none.
 	// +optional
 	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
+	// Bootstrap is the bootstrap state of the device (see DeviceStatus.Bootstrap); absent without a bootstrap.
+	// +optional
+	Bootstrap *DeviceBootstrapStatus `json:"bootstrap,omitempty"`
 }
 
 // DeviceStateInfo is the organizer-facing view of a device's snapshots.
@@ -188,10 +280,13 @@ type ConnectionRef struct {
 
 // AccessEntry describes a single externally reachable endpoint.
 type AccessEntry struct {
-	Device   string `json:"device"`
-	Port     int32  `json:"port"`
+	Device string `json:"device"`
+	Port   int32  `json:"port"`
+	// Protocol is http or https for a web port, and "terminal" for the browser terminal of the device.
 	Protocol string `json:"protocol"`
-	URL      string `json:"url"`
+	// URL is the address of a web port, and of the console of a terminal entry (https://<device>-<code>t.<labs domain>; the last character of the first label is the kind of access). It is empty
+	// until the device has its code.
+	URL string `json:"url,omitempty"`
 }
 
 // +genclient

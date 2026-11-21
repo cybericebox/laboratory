@@ -58,8 +58,7 @@ func (h *Handler) RetireLabs(ctx context.Context, in *protobuf.RetireLabsRequest
 		if ref.GetLabGroup() == "" || ref.GetName() == "" || ref.GetLab() != "" {
 			return failedResult(ref, fmt.Errorf("stop target requires lab_group and name"))
 		}
-		h.lifecycleAdmissionMu.Lock()
-		defer h.lifecycleAdmissionMu.Unlock()
+		defer h.groupLock(ref.GetLabGroup())()
 		ns, err := resolver.namespace(ctx, ref.GetLabGroup())
 		if err != nil {
 			return failedResult(ref, err)
@@ -119,8 +118,7 @@ func (h *Handler) RetireLabGroups(ctx context.Context, in *protobuf.RetireLabGro
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		item := in.Items[i]
 		target := item.GetStopTarget()
-		h.lifecycleAdmissionMu.Lock()
-		defer h.lifecycleAdmissionMu.Unlock()
+		defer h.groupLock(target.GetGroup())()
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			cur, err := h.getGroup(ctx, target.GetGroup())
 			if err != nil {

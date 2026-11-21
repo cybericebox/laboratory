@@ -1,159 +1,181 @@
 package l7
 
 import (
-	"crypto/ed25519"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/cybericebox/laboratory/internal/grant"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// DefaultHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
-// link, never a session. Mirrors the chart (proxy.l7.accessTokenMaxTTL): a link is replayable for its lifetime, so it is short.
-const DefaultHandoffLifetime = 60 * time.Second
-
-// The proxy's own session is sliding: the cookie expires DefaultSessionIdleTTL after the last request, it is
-// re-issued only when less than DefaultSessionRenewBefore of it remains (so an active user costs about one
-// Set-Cookie per hour), and it never lives past DefaultSessionMaxTTL from the handoff or past the link's sess.
-// Mirror the chart (proxy.l7.sessionIdleTTL, sessionRenewBefore, sessionMaxTTL).
-const (
-	DefaultSessionIdleTTL     = 24 * time.Hour
-	DefaultSessionRenewBefore = time.Hour
-	DefaultSessionMaxTTL      = 168 * time.Hour
-)
-
-// jwtClaims is the proxy's own session cookie (HS256). It carries only what the
-// operator knows: the LabGroup and a LabGroupClient of that group.
-type jwtClaims struct {
-	GroupID string `json:"group_id"`
-	// Client is the LabGroupClient of the group the session acts as: the same
-	// object that is the participant's VPN peer.
-	Client string `json:"client,omitempty"`
-	// Tenant is the tenant that issued the handoff; it must stay the owner of the group.
-	Tenant string `json:"tenant,omitempty"`
-	// Abs is the unix time the session ends at the latest, whatever renewals do (the handoff's start plus the
-	// session maximum, never past the link's sess). Absent in older cookies: they are not renewed.
-	Abs int64 `json:"abs,omitempty"`
-	jwt.RegisteredClaims
-}
-
-func (c jwtClaims) client() string { return c.Client }
-
-// HandoffAudience is the aud a handoff token must carry.
-const HandoffAudience = "laboratory-proxy"
-
-// handoffClaims is the token in the /_auth link, signed by a tenant's platform. The standard claims
-// are: iss = the tenant (its name), the header kid = the id of the access key that signed it, aud =
-// HandoffAudience, sub = the LabGroupClient the session acts as, and iat, nbf and exp (the lifetime
-// of the link: about a minute, five at most). The rest is what the operator knows.
-type handoffClaims struct {
-	GroupID string `json:"group_id"`
-	// Host is the device host label (<device>-<code>) the link was issued for.
-	Host string `json:"host"`
-	// Session is the unix time the proxy cookie expires.
-	Session int64 `json:"sess"`
-	jwt.RegisteredClaims
-}
-
-// client is the LabGroupClient of the token (sub).
-func (c handoffClaims) client() string { return c.Subject }
+// The proxy has no credential of its own. What a browser holds for a device host is an access grant: a JWS the tenant's platform signed
+// for exactly that host (internal/grant). It arrives once, in a POST of the form the platform page submits (see session.go), and on a web
+// host it is then kept as the host-only cookie the proxy reads on every request. Nothing is signed by the proxy; a key it could lose does
+// not exist.
 
 // KeyLookup finds the access public key a tenant registered under a key id.
-type KeyLookup func(tenant, keyID string) (ed25519.PublicKey, bool)
+type KeyLookup = grant.KeyLookup
 
 // GroupTenant says which tenant a LabGroup (by the id the platform gave it) belongs to.
 type GroupTenant func(groupID string) (tenant string, ok bool)
 
-var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
-
-// validateCookie verifies the proxy's own session cookie.
-func validateCookie(r *http.Request, secret []byte, cookieName string, now func() time.Time) (jwtClaims, error) {
-	cookie, err := r.Cookie(cookieName)
-	if err != nil {
-		return jwtClaims{}, fmt.Errorf("no %s cookie", cookieName)
-	}
-	if len(secret) == 0 {
-		return jwtClaims{}, fmt.Errorf("no session secret")
-	}
-	var claims jwtClaims
-	token, err := jwt.ParseWithClaims(
-		cookie.Value, &claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-			}
-			return secret, nil
-		},
-		jwt.WithValidMethods([]string{"HS256"}), jwt.WithTimeFunc(now), jwt.WithExpirationRequired(),
-	)
-	if err != nil {
-		return jwtClaims{}, fmt.Errorf("invalid session: %w", err)
-	}
-	if !token.Valid {
-		return jwtClaims{}, fmt.Errorf("invalid session")
-	}
-	if claims.GroupID == "" {
-		return jwtClaims{}, fmt.Errorf("empty group_id")
-	}
-	return claims, nil
+// sessionGrant is a verified grant together with the raw token it came from (the console forwards the raw token to the device access
+// service, which verifies it again).
+type sessionGrant struct {
+	grant.Claims
+	raw string
 }
 
-var tenantNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+// client is the LabGroupClient of the grant (sub).
+func (g sessionGrant) client() string { return g.Subject }
 
-// verifyHandoff checks a tenant's handoff link: the signature against the key registered for
-// (iss, kid), aud, iat/nbf/exp and the link lifetime, that it was issued for this device host, and
-// that the LabGroup belongs to the tenant that signed it (a tenant cannot reach another's labs).
-func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host string, now func() time.Time, maxLifetime time.Duration) (handoffClaims, error) {
-	var claims handoffClaims
-	token, err := jwt.ParseWithClaims(
-		raw, &claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodEd25519); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-			}
-			kid, _ := t.Header["kid"].(string)
-			iss, _ := t.Claims.(*handoffClaims)
-			if kid == "" || iss == nil || !tenantNameRE.MatchString(iss.Issuer) || len(iss.Issuer) > 63 {
-				return nil, fmt.Errorf("no issuer or key id")
-			}
-			key, ok := keys(iss.Issuer, kid)
-			if !ok {
-				return nil, fmt.Errorf("unknown issuer or key id")
-			}
-			return key, nil
-		},
-		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithTimeFunc(now), jwt.WithExpirationRequired(), jwt.WithIssuedAt(),
-		jwt.WithAudience(HandoffAudience), jwt.WithLeeway(30*time.Second),
-	)
+var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
+
+// kindOfHost is the grant kind a request host can be the host of: a web host (no kind letter, or the web letter) takes a web grant, a
+// console host a console grant. Another kind (vnc, rdp, a reserved letter) takes none.
+func kindOfHost(task string) (string, bool) {
+	switch _, _, kind := names.ParseAccessHost(task); kind {
+	case "", names.AccessKindHTTP:
+		return grant.KindWeb, true
+	case names.AccessKindTerminal:
+		return grant.KindConsole, true
+	}
+	return "", false
+}
+
+// verifyGrant checks a grant for the host of this request: the signature against the key registered for (iss, kid), aud, iat/nbf/exp and the
+// lifetime bound, and that it was issued for exactly this host (the whole host name) and for the kind the host is. host is the full host name
+// of the request, without a port, lower case.
+func (h *Handler) verifyGrant(raw, task, host string) (sessionGrant, error) {
+	kind, ok := kindOfHost(task)
+	if !ok {
+		return sessionGrant{}, fmt.Errorf("%w: not a host a grant opens", grant.ErrInvalid)
+	}
+	claims, err := grant.Verify(raw, grant.Options{
+		Keys: h.keys, Now: h.now, MaxTTL: h.grantMax, Audience: grant.AudienceProxy, Kind: kind, Host: host,
+	})
 	if err != nil {
-		return handoffClaims{}, fmt.Errorf("invalid handoff: %w", err)
+		return sessionGrant{}, err
 	}
-	if !token.Valid {
-		return handoffClaims{}, fmt.Errorf("invalid handoff")
+	return sessionGrant{Claims: claims, raw: raw}, nil
+}
+
+// verifyLogin is verifyGrant for a grant that is being posted: it also requires that the LabGroup belongs to the tenant that signed it (a
+// tenant cannot reach another's labs). A request that carries the grant afterwards (the cookie, the console socket) is checked against the group
+// by the handler on every request, so the cache never holds an ownership.
+func (h *Handler) verifyLogin(raw, task, host string) (sessionGrant, error) {
+	g, err := h.verifyGrant(raw, task, host)
+	if err != nil {
+		return sessionGrant{}, err
 	}
-	if claims.GroupID == "" || claims.Subject == "" || claims.Host == "" {
-		return handoffClaims{}, fmt.Errorf("incomplete handoff")
+	if h.groupTenant == nil {
+		return sessionGrant{}, fmt.Errorf("%w: no way to tell the tenant of a group", grant.ErrInvalid)
 	}
-	if claims.IssuedAt == nil || claims.NotBefore == nil || claims.ExpiresAt == nil {
-		return handoffClaims{}, fmt.Errorf("handoff needs iat, nbf and exp")
+	if owner, ok := h.groupTenant(g.Group); !ok || owner != g.Issuer {
+		return sessionGrant{}, fmt.Errorf("%w: the group does not belong to the issuer", grant.ErrInvalid)
 	}
-	if claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxLifetime {
-		return handoffClaims{}, fmt.Errorf("handoff lives too long")
+	return g, nil
+}
+
+// grantCacheTTL is how long a verified cookie is trusted before it is verified again, and grantCacheMax the entries kept. An Ed25519
+// check on every request would use much of a replica's CPU at the measured request rate, the HS256 check it replaced cost almost
+// nothing. The price is that a key a tenant removed stops working after at most this long.
+const (
+	grantCacheTTL = 30 * time.Second
+	grantCacheMax = 10000
+)
+
+// grantCache remembers verified web grants by the hash of (host, raw grant), for min(grantCacheTTL, time left of the grant).
+type grantCache struct {
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]cachedGrant
+}
+
+type cachedGrant struct {
+	claims  sessionGrant
+	expires time.Time
+}
+
+func newGrantCache() *grantCache { return &grantCache{entries: map[[sha256.Size]byte]cachedGrant{}} }
+
+func grantCacheKey(host, raw string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(host + "\x00" + raw))
+}
+
+func (c *grantCache) get(key [sha256.Size]byte, now time.Time) (sessionGrant, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return sessionGrant{}, false
 	}
-	if claims.Host != host {
-		return handoffClaims{}, fmt.Errorf("handoff is for another host")
+	if !now.Before(e.expires) {
+		delete(c.entries, key)
+		return sessionGrant{}, false
 	}
-	if !now().Before(time.Unix(claims.Session, 0)) {
-		return handoffClaims{}, fmt.Errorf("session already over")
+	return e.claims, true
+}
+
+// put stores a verified grant. A full cache drops what is expired first and, when still full, stores nothing: the bound holds and the
+// request just pays for a verification.
+func (c *grantCache) put(key [sha256.Size]byte, g sessionGrant, now time.Time) {
+	expires := now.Add(grantCacheTTL)
+	if end := g.End(); end.Before(expires) {
+		expires = end
 	}
-	if groupTenant == nil {
-		return handoffClaims{}, fmt.Errorf("no way to tell the tenant of a group")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= grantCacheMax {
+		for k, e := range c.entries {
+			if !now.Before(e.expires) {
+				delete(c.entries, k)
+			}
+		}
+		if len(c.entries) >= grantCacheMax {
+			return
+		}
 	}
-	if owner, ok := groupTenant(claims.GroupID); !ok || owner != claims.Issuer {
-		return handoffClaims{}, fmt.Errorf("the group does not belong to the issuer")
+	c.entries[key] = cachedGrant{claims: g, expires: expires}
+}
+
+// cookieGrant reads the grant cookie of a request on a web host and verifies it for that host, through the cache. The group and policy
+// checks of the request still run after it.
+func (h *Handler) cookieGrant(r *http.Request, task string) (sessionGrant, error) {
+	var cookie *http.Cookie
+	for _, c := range r.Cookies() {
+		if c.Name != h.cookieName {
+			continue
+		}
+		// two cookies of the name: one of them was not set by this proxy (a sibling site, a device); which one a browser lists first is no
+		// guide, so the request carries no grant
+		if cookie != nil {
+			return sessionGrant{}, fmt.Errorf("more than one %s cookie", h.cookieName)
+		}
+		cookie = c
 	}
-	return claims, nil
+	if cookie == nil || cookie.Value == "" {
+		return sessionGrant{}, fmt.Errorf("no %s cookie", h.cookieName)
+	}
+	host := requestHost(r)
+	now := h.now()
+	key := grantCacheKey(host, cookie.Value)
+	if g, ok := h.grants.get(key, now); ok {
+		return g, nil
+	}
+	g, err := h.verifyGrant(cookie.Value, task, host)
+	if err != nil {
+		return sessionGrant{}, err
+	}
+	if g.Kind != grant.KindWeb {
+		return sessionGrant{}, fmt.Errorf("%w: not a web grant", grant.ErrInvalid)
+	}
+	h.grants.put(key, g, now)
+	return g, nil
 }
 
 func getTaskName(r *http.Request, baseDomain string) (string, error) {

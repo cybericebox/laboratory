@@ -3,15 +3,12 @@ NetworkPolicy + CiliumNetworkPolicy for the laboratory-agent Deployment
 (singleton, namespace .Values.agent.namespace, pod label
 app: laboratory-agent — see charts/laboratory/templates/agent/deployment.yaml).
 
-Ingress (TCP .Values.agent.grpcPort): admitted from Cilium's own Envoy proxy
-via the `ingress` reserved entity — same reasoning as netpol/proxy-l7.yaml:
-the Gateway's TLSRoute passthrough connection to this pod is sourced by
-Cilium's dedicated cilium-envoy DaemonSet pods, which run hostNetwork: true
-and are NOT tracked as CiliumEndpoints, so a podSelector/namespaceSelector
-peer (the original kube-system/k8s-app=cilium placeholder) can never match
-their traffic. The vanilla NetworkPolicy below only keeps an ipBlock peer
-for .Values.operator.proxySourceCIDRs, a fallback for hostNetwork proxy
-sources on non-Cilium clusters (e.g. Kind).
+Ingress (TCP .Values.agent.grpcPort): the Service is a NodePort with externalTrafficPolicy Local (templates/agent/service.yaml), so the
+connection of the platform's backend arrives from outside the cluster with its own address: the `world` entity. The port is the only one open
+to it, and mTLS decides who is let in. Whether Cilium classes a Local NodePort client as `world` (and whether `host` or `remote-node` must be
+added for the node health check) is proved on the staging cluster (docs/laboratory/specs/pools-release.md, S3). The vanilla NetworkPolicy
+below only keeps an ipBlock peer for .Values.operator.proxySourceCIDRs, a fallback for hostNetwork proxy sources on non-Cilium clusters
+(e.g. Kind).
 
 Egress is handled entirely by the CiliumNetworkPolicy below (toEntities:
 [kube-apiserver] only, mirroring vpnCiliumPolicy/gatewayCiliumPolicy in
@@ -43,6 +40,11 @@ spec:
         - protocol: TCP
           port: {{ .Values.agent.grpcPort }}
     {{- end }}
+    {{- if .Values.agent.metrics.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.agent.metrics.port }}
+    {{- end }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -57,24 +59,34 @@ spec:
       app: laboratory-agent
   ingress:
     - fromEntities:
-        - ingress
+        - world
       toPorts:
         - ports:
             - port: {{ .Values.agent.grpcPort | quote }}
               protocol: TCP
+  {{- if .Values.agent.metrics.enabled }}
+    # The metrics port (agent.metrics): scraped from inside the cluster.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: {{ .Values.agent.metrics.port | quote }}
+              protocol: TCP
+  {{- end }}
   egress:
     - toEntities:
         - kube-apiserver
 {{- if include "laboratory.registryEnabled" . }}
-    # The platform registry (zot): snapshot export, and PrewarmImages with the cache.
+    # The registry gate (TLS port only): snapshot export, and PrewarmImages with the cache.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
             {{- include "laboratory.registrySelector" . | nindent 12 }}
       toPorts:
         - ports:
-            - port: "5000"
+            - port: "5443"
               protocol: TCP
+    # DNS: the gate's Service name and the upstream registries of PrewarmImages. The agent is the one component of this entry set that needs it.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system

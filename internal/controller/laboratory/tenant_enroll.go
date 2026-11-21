@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -39,7 +40,14 @@ type TenantReconciler struct {
 	TTL time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// CacheEnabled: the image cache is on, so the credentials of images.pullSecret are kept for the registry gate (syncUpstreamTenant).
+	CacheEnabled bool
+	// Recorder says it in an event; nil: no events.
+	Recorder record.EventRecorder
 }
+
+// credentialRecheck is how often a tenant's pull Secret is read again for syncUpstreamTenant: the operator cannot watch Secrets.
+const credentialRecheck = 5 * time.Minute
 
 func (r *TenantReconciler) now() time.Time {
 	if r.Now != nil {
@@ -65,6 +73,24 @@ func HashEnrollmentToken(token string) string {
 }
 
 func (r *TenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcileEnrollment(ctx, req)
+	if err != nil {
+		return res, err
+	}
+	var t laboratoryv1alpha1.Tenant
+	if err := r.Get(ctx, req.NamespacedName, &t); err != nil || t.DeletionTimestamp != nil {
+		return res, client.IgnoreNotFound(err)
+	}
+	if err := r.syncUpstreamTenant(ctx, &t); err != nil {
+		return res, err
+	}
+	if r.CacheEnabled && t.Spec.Images.PullSecret != "" && (res.RequeueAfter == 0 || res.RequeueAfter > credentialRecheck) {
+		res.RequeueAfter = credentialRecheck
+	}
+	return res, nil
+}
+
+func (r *TenantReconciler) reconcileEnrollment(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t laboratoryv1alpha1.Tenant
 	if err := r.Get(ctx, req.NamespacedName, &t); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -182,7 +208,7 @@ func (r *TenantReconciler) deleteTenantSecrets(ctx context.Context, tenant strin
 	if client.IgnoreNotFound(err) != nil {
 		return err
 	}
-	return nil
+	return deleteUpstream(ctx, r.Client, names.UpstreamTenantSecret(tenant))
 }
 
 func (r *TenantReconciler) deleteTokenSecret(ctx context.Context, tenant string) error {

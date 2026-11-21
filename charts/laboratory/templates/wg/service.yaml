@@ -1,27 +1,21 @@
-{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+{{- if include "laboratory.wgEnabled" . }}
+# The entry of the VPN: a NodePort Service with externalTrafficPolicy Local in every demux mode, so the client's address reaches the demux
+# and a packet arrives on a node that runs a demux pod (the demux is a DaemonSet on the lab pool). The load balancer outside the cluster
+# (infrastructure) sends UDP {{ include "laboratory.wgPublicPort" . }} to the node port of those nodes and health-checks them.
 apiVersion: v1
 kind: Service
 metadata:
   name: laboratory-proxy-wg
   namespace: {{ include "laboratory.wgNamespace" . }}
-  {{- $annotations := merge (dict "lbipam.cilium.io/sharing-key" .Values.proxy.sharingKey "lbipam.cilium.io/sharing-cross-namespace" (join "," (concat (list .Release.Namespace) .Values.proxy.sharedNamespaces))) .Values.proxy.service.annotations }}
+  {{- with .Values.proxy.wg.service.annotations }}
   annotations:
-    # lbipam.cilium.io/* is the canonical Cilium LB-IPAM annotation domain
-    # (io.cilium/ works too as a legacy alias). The load-bearing part is the
-    # MUTUAL sharing-cross-namespace pair with the Gateway's generated Service
-    # (release namespace): LB-IPAM's isCompatible() refuses cross-namespace IP
-    # sharing unless both services explicitly list each other's namespace.
-    # proxy.service.annotations lets callers add extra annotations; the
-    # lbipam pair above always wins on key collision (merge: dst wins).
-    {{- toYaml $annotations | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
-  type: LoadBalancer
-  # Empty follows the mode: Cluster for userspace (as before the modes; it shares the Gateway's address), Local for tc and xdp (a packet
-  # must reach a node whose kernel holds its session). LB-IPAM shares an IP between services with an identical policy only, and with Local
-  # it also wants the same pod selector, which the Gateway's selector-less Service cannot have.
-  externalTrafficPolicy: {{ include "laboratory.wgExternalTrafficPolicy" . }}
+  type: NodePort
+  externalTrafficPolicy: Local
   selector:
     app: laboratory-proxy-wg
   ports:

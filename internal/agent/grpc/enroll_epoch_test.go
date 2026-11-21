@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -14,9 +15,13 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clienttesting "k8s.io/client-go/testing"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -304,9 +309,50 @@ func TestTokenIsFoundByLabelOnly(t *testing.T) {
 	}
 }
 
+// enforceResourceVersions makes the fake clientset refuse an update of a Tenant that was read before another update, as the API server
+// does (the fake tracker accepts any update, so two requests that read the same version would both win). The check and the write
+// are one step under a lock.
+func enforceResourceVersions(t *testing.T, cs *fake.Clientset) {
+	t.Helper()
+	var mu sync.Mutex
+	gvr := laboratoryv1alpha1.SchemeGroupVersion.WithResource("tenants")
+	cs.PrependReactor("update", "tenants", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		ua, ok := action.(clienttesting.UpdateAction)
+		if !ok {
+			return false, nil, nil
+		}
+		in, ok := ua.GetObject().(*laboratoryv1alpha1.Tenant)
+		if !ok {
+			return false, nil, nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		cur, err := cs.Tracker().Get(gvr, in.Namespace, in.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		stored := cur.(*laboratoryv1alpha1.Tenant)
+		if in.ResourceVersion != stored.ResourceVersion {
+			return true, nil, apierrors.NewConflict(gvr.GroupResource(), in.Name, nil)
+		}
+		next := in.DeepCopy()
+		next.ResourceVersion = strconv.Itoa(versionOf(stored.ResourceVersion) + 1)
+		if err := cs.Tracker().Update(gvr, next, in.Namespace); err != nil {
+			return true, nil, err
+		}
+		return true, next, nil
+	})
+}
+
+func versionOf(rv string) int {
+	n, _ := strconv.Atoi(rv)
+	return n
+}
+
 // L4: of many concurrent requests with the same unused token exactly one gets a certificate.
 func TestOneTokenGivesOneCertificateUnderConcurrency(t *testing.T) {
 	r := newEnrollRig(t)
+	enforceResourceVersions(t, r.h.cs.(*fake.Clientset))
 	pub, _ := accessKey(t)
 	const n = 16
 	var wg sync.WaitGroup

@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// The internet egress settings reach the operator, and the operator's network policy can pull the summaries of the gateways.
+// The internet egress settings reach the operator. The gateway reports its minutes in a LabEgressReport the operator reads: no port is served by
+// the gateway pod and nothing of the operator or its policy reaches a gateway pod.
 func TestInternetEgressSettingsReachTheOperator(t *testing.T) {
 	cfg := operatorConfig(t)
 	for k, want := range map[string]string{
-		"EGRESS_MONITOR_ENABLED": "true", "EGRESS_STATS_PORT": "9188", "EGRESS_LOG_RETENTION": "720h", "EGRESS_SIGNAL_HOST_LABS": "20",
+		"EGRESS_MONITOR_ENABLED": "true", "EGRESS_LOG_RETENTION": "720h", "EGRESS_SIGNAL_HOST_LABS": "20",
 		"EGRESS_SIGNAL_CAP_MINUTES": "3", "EGRESS_DNS_UPSTREAMS": "1.1.1.1,9.9.9.9", "BANDWIDTH_LAB_UPLOAD_KBPS": "2048", "BANDWIDTH_UPLOAD_TOTAL_MBIT": "100",
 	} {
 		if cfg[k] != want {
@@ -17,8 +18,8 @@ func TestInternetEgressSettingsReachTheOperator(t *testing.T) {
 		}
 	}
 	custom := operatorConfig(t, "--set", "internetEgress.log.dir=/var/egress", "--set", "internetEgress.log.retentionDays=7", "--set", "internetEgress.proxy.tunnelSuffixes=-",
-		"--set", "internetEgress.statsPort=9300", "--set", "bandwidth.caps.labUploadKbps=1024")
-	for k, want := range map[string]string{"EGRESS_LOG_DIR": "/var/egress", "EGRESS_LOG_RETENTION": "168h", "EGRESS_TUNNEL_SUFFIXES": "-", "EGRESS_STATS_PORT": "9300", "BANDWIDTH_LAB_UPLOAD_KBPS": "1024"} {
+		"--set", "bandwidth.caps.labUploadKbps=1024")
+	for k, want := range map[string]string{"EGRESS_LOG_DIR": "/var/egress", "EGRESS_LOG_RETENTION": "168h", "EGRESS_TUNNEL_SUFFIXES": "-", "BANDWIDTH_LAB_UPLOAD_KBPS": "1024"} {
 		if custom[k] != want {
 			t.Errorf("%s = %q, want %q", k, custom[k], want)
 		}
@@ -27,8 +28,11 @@ func TestInternetEgressSettingsReachTheOperator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "laboratory.cybericebox.com/component: gateway") || !strings.Contains(out, `port: "9188"`) {
-		t.Errorf("the operator's policy does not let it reach the summaries of the gateways:\n%s", out)
+	if strings.Contains(out, "component: gateway") || strings.Contains(out, "9188") {
+		t.Errorf("the operator's policy still reaches the gateway pods:\n%s", out)
+	}
+	if _, set := cfg["EGRESS_"+"STATS_PORT"]; set {
+		t.Error("the operator is still told a stats port")
 	}
 }
 

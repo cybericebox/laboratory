@@ -72,12 +72,19 @@ var _ = Describe(
 		BeforeAll(
 			func() {
 				By("building and loading the node, lab and agent images")
-				_, err := utils.Run(exec.Command("make", "docker-build-node", "docker-build-lab", "docker-build-agent",
-					fmt.Sprintf("NODE_IMG=%s", nodeImage), fmt.Sprintf("LAB_IMG=%s", labImage), fmt.Sprintf("AGENT_IMG=%s", agentImage)))
+				_, err := utils.MiseRun([]string{"NODE_IMG=" + nodeImage, "LAB_IMG=" + labImage, "AGENT_IMG=" + agentImage},
+					"image:build", "node", "lab", "agent")
 				Expect(err).NotTo(HaveOccurred(), "Failed to build the images")
-				for _, img := range []string{nodeImage, labImage, agentImage} {
+				for _, img := range []string{nodeImage, agentImage} {
 					Expect(utils.LoadImageToKindClusterWithName(img)).To(Succeed(), "Failed to load %s into Kind", img)
 				}
+				// The lab image (VPN and gateway pods) is pulled by the lab nodes through the registry gate, so it goes to the upstream registry.
+				_, err = utils.PublishToKindRegistry(nodeImage, "cybericebox/laboratory-node")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", nodeImage)
+				_, err = utils.PublishToKindRegistry(labImage, "cybericebox/laboratory-lab")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", labImage)
+				_, err = utils.PublishToKindRegistry(pauseSource, "pause")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", pauseSource)
 
 				By("waiting for the namespace of an earlier deployment to go")
 				Eventually(func() string { return kubectlJSONPath("ns", namespace, "", "{.status.phase}") }).ShouldNot(Equal("Terminating"))
@@ -92,6 +99,7 @@ var _ = Describe(
 						"helm", "upgrade", "--install", reservationRelease, "charts/laboratory",
 						"--namespace", namespace, "--create-namespace",
 						"-f", "hack/kind/e2e-values.yaml",
+						"--set", "registry.gate.address="+utils.GateAddress(),
 						"--set", "operator.image.repository="+repository, "--set", "operator.image.tag="+tag,
 						"--set", fmt.Sprintf("reservations.endingNoticeSeconds=%d", int(endingNotice.Seconds())),
 						"--set", "agent.enabled=true", "--set", "agent.replicas=1", "--set", "agent.networkPolicy.enabled=false", "--set", "agent.domain="+agentDomain,

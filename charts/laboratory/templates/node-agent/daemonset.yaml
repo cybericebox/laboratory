@@ -21,6 +21,10 @@ spec:
       maxUnavailable: 1
   template:
     metadata:
+      {{- with include "laboratory.scrapeAnnotations" (dict "metrics" .Values.nodeAgent.metrics) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
       labels:
         app: node-agent
         {{- include "laboratory.labels" . | nindent 8 }}
@@ -30,13 +34,11 @@ spec:
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
-      # The node-agent follows the configured lab placement selector and tolerations (labWorkloads). A control-plane node gets
-      # one only when labs tolerate its taint. Cilium startup and automatic DaemonSet availability tolerations keep the observer
-      # running through temporary readiness/pressure changes; these do not widen lab workload scheduling.
-      {{- with .Values.labWorkloads.nodeSelector }}
+      # The node-agent runs on the lab pool (the constant selector, the pool's tolerations). Cilium startup and automatic DaemonSet
+      # availability tolerations keep the observer running through temporary readiness/pressure changes; these do not widen lab workload
+      # scheduling. No image pull secret: a lab pod holds no registry credential.
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        node-restriction.kubernetes.io/cib-pool: lab
       tolerations:
         - key: node.cilium.io/agent-not-ready
           operator: Exists
@@ -46,13 +48,9 @@ spec:
         - key: cybericebox.com/node-starting
           operator: Exists
           effect: NoSchedule
-        {{- with .Values.labWorkloads.tolerations }}
+        {{- with .Values.pools.lab.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       initContainers:
         # Host prep: kernel modules and sysctls. Nothing is installed on the node.
         - name: host-prep
@@ -174,6 +172,11 @@ spec:
             # The probes' address: the loopback only (the node-agent is on the host network).
             - name: HEALTH_ADDR
               value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
+            {{- if .Values.nodeAgent.metrics.enabled }}
+            # The metrics endpoint (nodeAgent.metrics): on the node's address, since the node-agent is on the host network.
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (.Values.nodeAgent.metrics.port | int) | quote }}
+            {{- end }}
             {{- if .Values.bandwidth.enabled }}
             # The bandwidth protection: the Geneve traffic of the node is held to the ceilings the operator wrote for it (the ConfigMap volume).
             - name: BANDWIDTH_ENABLED
@@ -212,64 +215,34 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: TUN_SLOTS
               value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
-            # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
-            # containerd reads it as a plain-HTTP localhost registry.
+          {{- if include "laboratory.registryEnabled" . }}
+            # The lab registry (the image cache, the snapshots): the relay serves 127.0.0.1:5035 (a constant of the image), where containerd reads it
+            # as a plain-HTTP localhost registry, and dials the gate's TLS port at registry.gate.address, the internal load balancer: a node has no
+            # cluster DNS. It trusts only the registry's own authority and shows the gate the node's projected ServiceAccount token (audience
+            # laboratory-registry-gate), the only identity of the node. There is no registry password on the node.
             - name: STATE_REGISTRY_ADDR
-              value: {{ include "laboratory.registryAddr" . | quote }}
+              value: {{ .Values.registry.gate.address | quote }}
+            - name: STATE_REGISTRY_CA_FILE
+              value: /etc/registry-ca/ca.crt
+            - name: REGISTRY_TOKEN_FILE
+              value: /var/run/secrets/registry-gate/token
+            # The unix socket of the push listener, in a directory of its own (mode 0700) shared with node-state only (the snapshot engine):
+            # the directory is a subdirectory of the host directory the node-agent already mounts, and nothing else lives in it.
+            - name: STATE_PUSH_SOCKET
+              value: /run/cybericebox/registry-push/push.sock
+          {{- else }}
+            # No lab registry in this release (no cache, no state persistence): no relay on the node.
+            - name: REGISTRY_ENABLED
+              value: "false"
+          {{- end }}
           {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
-            - name: STATE_PERSISTENCE_ENABLED
-              value: {{ .Values.devices.statePersistence.enabled | quote }}
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
-            # Checked at start (the node-agent tells what its node can do on the Node and in an Event; a wrong path does not hang the pod).
-            - name: CONTAINERD_ROOT
-              value: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-            - name: STATE_MAX_WATCH_DIRS
-              value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
-            # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
-            - name: STATE_MIN_PUSH_INTERVAL
-              value: {{ .Values.devices.statePersistence.minPushInterval | quote }}
-            - name: STATE_PUSH_BUDGET
-              value: {{ .Values.devices.statePersistence.pushBudget | quote }}
-            - name: STATE_PUSH_BUDGET_WINDOW
-              value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
-            - name: STATE_SUPERSEDED_GRACE
-              value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
-            - name: STATE_REGISTRY_CAPACITY
-              value: {{ .Values.registry.size | quote }}
-            - name: STATE_REGISTRY_RESERVE
-              value: {{ .Values.devices.statePersistence.registryReserve | quote }}
-            # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image.
-            - name: STATE_REGISTRY_READER_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: readerUsername
-            - name: STATE_REGISTRY_READER_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: readerPassword
-            - name: STATE_REGISTRY_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: username
-            - name: STATE_REGISTRY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: password
           {{- end }}
           securityContext:
-            {{- if .Values.devices.statePersistence.enabled }}
-            {{- /* The snapshot filter mounts read-only overlays; the runtime's default AppArmor profile has `deny mount` (values.yaml). */}}
-            appArmorProfile:
-              type: Unconfined
-            {{- end }}
+            {{- /* No AppArmor Unconfined and no DAC_READ_SEARCH: those are node-state's (the snapshot engine). */}}
             capabilities:
-              {{- /* DAC_READ_SEARCH: the snapshot watcher reads writable layers owned by the container's own users. */}}
-              add:  [ NET_ADMIN, SYS_ADMIN{{ if .Values.devices.statePersistence.enabled }}, DAC_READ_SEARCH{{ end }} ]
+              add:  [ NET_ADMIN, SYS_ADMIN ]
               drop: [ ALL ]
           # Ready means it serves: Open vSwitch answers over both channels and the informer caches have synced. Liveness restarts a
           # node-agent whose channels to Open vSwitch hang (the watchdog covers a lost one) or whose process does not answer.
@@ -302,6 +275,15 @@ spec:
               mountPath: /etc/bandwidth
               readOnly: true
             {{- end }}
+            {{- if include "laboratory.registryEnabled" . }}
+            # The authority of the registry gate's TLS port (public data) and the node's own projected token for the gate.
+            - name: registry-ca
+              mountPath: /etc/registry-ca
+              readOnly: true
+            - name: registry-gate-token
+              mountPath: /var/run/secrets/registry-gate
+              readOnly: true
+            {{- end }}
             - name: ovs-run
               mountPath: /run/openvswitch
             - name: grpc-dir
@@ -317,14 +299,8 @@ spec:
               # host after this container starts. Without it the container sees an empty
               # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
               mountPropagation: HostToContainer
-          {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
-            # The overlayfs snapshotter's directories, at the same path as on the host:
-            # the writable layers that are snapshotted live below it.
-            - name: containerd-root
-              mountPath: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-              readOnly: true
-            # The host's cgroup v2 tree: a container is frozen through cgroup.freeze
-            # while its layer is diffed.
+          {{- if .Values.lifecycle.runtimeObservation.enabled }}
+            # The host's cgroup v2 tree and the journal of the runtime observer (the observer is the node-agent's).
             - name: host-cgroup
               mountPath: /host/sys/fs/cgroup
             - name: state-work
@@ -335,6 +311,19 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if include "laboratory.registryEnabled" . }}
+        # A ConfigMap, never the Secret that holds the server key: a node reads every Secret a pod bound to it mounts.
+        - name: registry-ca
+          configMap:
+            name: laboratory-registry-ca
+        - name: registry-gate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ include "laboratory.registryGateAudience" . }}
+                  expirationSeconds: 3600
+                  path: token
+        {{- end }}
         {{- if .Values.bandwidth.enabled }}
         # The limits of every node, written by the operator; the node-agent reads the key of its own node. Optional: the pod starts before
         # the operator has made the ConfigMap, and has no limit until it exists.
@@ -381,13 +370,7 @@ spec:
           hostPath:
             path: /run/netns
             type: DirectoryOrCreate
-        {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
-        - name: containerd-root
-          hostPath:
-            path: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-            # No type check on purpose: a wrong path must reach the node-agent's own check (which says so clearly) and not leave the pod
-            # waiting for a volume, with every other pod of the node blocked behind it.
-            type: ""
+        {{- if .Values.lifecycle.runtimeObservation.enabled }}
         - name: host-cgroup
           hostPath:
             path: /sys/fs/cgroup

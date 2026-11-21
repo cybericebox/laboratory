@@ -2,6 +2,7 @@
 //
 //	probe install DIR                            copy this program to DIR/probe (the init container)
 //	probe ready [-file F] [-port N -scheme S]    exit 0 when the container is ready (the kubelet's exec probe)
+//	probe check-exec JSON | check-file JSON      one observation of a lab check, answered as JSON (internal/probe)
 package main
 
 import (
@@ -32,6 +33,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "probe install:", err)
 			os.Exit(1)
 		}
+	case "launch":
+		launchMain(os.Args[2:])
+	case "stage":
+		stageMain(os.Args[2:])
 	case "ready":
 		fs := flag.NewFlagSet("ready", flag.ExitOnError)
 		file := fs.String("file", "", "marker file that must exist")
@@ -43,6 +48,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "not ready:", err)
 			os.Exit(1)
 		}
+	case probe.CommandCheckExec, probe.CommandCheckFile, probe.CommandCheckObserve, probe.CommandCheckPerm:
+		os.Exit(probe.RunCheckCommand(os.Args[1], os.Args[2:]))
+	case probe.CommandResolveUser:
+		os.Exit(probe.RunConsoleCommand(os.Args[1], os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)

@@ -1,0 +1,248 @@
+package l7
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/go-logr/logr"
+
+	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+)
+
+// The console. A device whose lab asks for a terminal can be opened in the browser on a host of its own under the labs' base domain,
+// <device>-<code>t.<base> (names.AccessHostLabel: the last character of the first label is the kind of access, t for the console): the page and a WebSocket for the shell live there.
+// Nothing about the device is in a path or a query; the host is the address, and the group of the session is the only namespace it is
+// looked for in. The proxy authorizes exactly as it
+// does for a web request (the session cookie, the group, the access policy that allows the lab, the lab running) and adds that the
+// device has a console. It then relays the stream to the device access service on the node of the device, which opens the shell.
+// The proxy never learns the container; it names a device (namespace, lab, device) and the service finds the container itself.
+//
+// The console has no cookie. The console grant the platform page posts to /_auth is verified on the console host itself and answered with the
+// page, which carries the grant; the page opens the WebSocket with it in Sec-WebSocket-Protocol, and the proxy forwards it to the service. The
+// proxy signs nothing. See terminal_console.go.
+
+// ErrNoConsole is returned by a DeviceLookup for a device that has no console (or does not exist; the answer is the same).
+var ErrNoConsole = errors.New("the device has no console")
+
+// DeviceInfo is what the proxy needs to open a console: the lab and device the host names, the node the device runs on and the
+// terminal settings the lab author gave.
+type DeviceInfo struct {
+	Lab     string
+	Device  string
+	Node    string
+	Command []string
+	User    string
+}
+
+// DeviceLookup finds the device with a console that a host names, in a group namespace: the device name and base code that
+// names.ParseAccessHost read from the first label of the host.
+type DeviceLookup func(ctx context.Context, namespace, device, code string) (DeviceInfo, error)
+
+// ServiceDirectory maps a node to the base URL of the device access service pod on it, e.g. "http://10.0.3.7:8080".
+type ServiceDirectory func(node string) (baseURL string, ok bool)
+
+// TerminalConfig switches the console on in a Handler.
+type TerminalConfig struct {
+	Devices  DeviceLookup
+	Services ServiceDirectory
+	Log      logr.Logger
+	// PerClient bounds the consoles one client of a group has open through this proxy. 0 is no limit.
+	PerClient int
+	// Idle closes a console that no byte crossed for that long; Lifetime closes any console at that age. 0 is no limit.
+	Idle, Lifetime time.Duration
+	// OriginScheme is the scheme of the page's origin ("https" unless a test serves it plainly).
+	OriginScheme string
+	// Embed decides which sites may show the console page in a frame (see terminal_embed.go); nil means none.
+	Embed *EmbedMatcher
+	// Dial opens the stream to a service; nil dials the base URL of the directory over a WebSocket.
+	Dial func(ctx context.Context, base string) (*websocket.Conn, error)
+}
+
+// DefaultTerminalConfig carries the chart defaults for the limits.
+func DefaultTerminalConfig() TerminalConfig {
+	return TerminalConfig{PerClient: 3, Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
+		OriginScheme: schemeHTTPS}
+}
+
+type terminalState struct {
+	cfg TerminalConfig
+
+	mu        sync.Mutex
+	open      map[*consoleSession]struct{}
+	perClient map[liveClientKey]int
+}
+
+// consoleSession is an open console.
+type consoleSession struct {
+	group, client       string
+	tenant              string
+	grant               string // the console grant, forwarded in the open request
+	namespace, lab, dev string
+	base                string
+	command             []string
+	user                string
+	entry               *liveEntry
+	// sent and acked count output bytes towards the browser and the ones it has drawn (the flow control, see relayDown).
+	sent, acked       atomic.Int64
+	ackCh             chan struct{}
+	started           time.Time
+	lastActive        atomic.Int64
+	bytesIn, bytesOut atomic.Int64
+}
+
+// WithTerminal switches the console on. It needs the access reader: without it the proxy has no groups to authorize a console by.
+func (h *Handler) WithTerminal(c TerminalConfig) *Handler {
+	if c.OriginScheme == "" {
+		c.OriginScheme = schemeHTTPS
+	}
+	h.terminal = &terminalState{cfg: c, open: map[*consoleSession]struct{}{}, perClient: map[liveClientKey]int{}}
+	return h
+}
+
+func (t *terminalState) add(s *consoleSession) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := liveClientKey{s.group, s.client}
+	if t.cfg.PerClient > 0 && t.perClient[key] >= t.cfg.PerClient {
+		return false
+	}
+	t.perClient[key]++
+	t.open[s] = struct{}{}
+	return true
+}
+
+func (t *terminalState) remove(s *consoleSession) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.open[s]; !ok {
+		return
+	}
+	delete(t.open, s)
+	key := liveClientKey{s.group, s.client}
+	if t.perClient[key]--; t.perClient[key] <= 0 {
+		delete(t.perClient, key)
+	}
+}
+
+// terminalTarget is a console request that passed authorization.
+type terminalTarget struct {
+	namespace, lab, device string
+	claims                 sessionGrant
+	client                 string
+	info                   DeviceInfo
+	base                   string
+}
+
+// authorizeTerminal is the authorization of a console request: the client may reach the lab (the same Allowed check as for a web
+// request: the client exists, the policy allows the lab, the lab is not stopped) and the device has a console. Every refusal is the
+// same card, so the answer does not tell a lab that does not exist from one the client may not use.
+func (h *Handler) authorizeTerminal(w http.ResponseWriter, r *http.Request, hostDevice, hostCode string, claims sessionGrant, client string, group AccessGroup) (terminalTarget, bool) {
+	t := h.terminal
+	if t.cfg.Devices == nil || t.cfg.Services == nil {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return terminalTarget{}, false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	// The host is looked up in the namespace of the session's own group only: a console host of another group is no device here.
+	info, err := t.cfg.Devices(ctx, group.Namespace, hostDevice, hostCode)
+	if err != nil || !plainName(info.Lab) || !plainName(info.Device) || !h.access.Allowed(ctx, group.Namespace, client, info.Lab) {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return terminalTarget{}, false
+	}
+	lab, device := info.Lab, info.Device
+	// The grant is for one device (lab and dev); the host resolved to another one only if the platform signed the wrong grant. The device
+	// access service refuses the same disagreement, this refuses it before a stream is dialled.
+	if lab != claims.Lab || device != claims.Dev {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return terminalTarget{}, false
+	}
+	svc, ok := t.cfg.Services(info.Node)
+	if !ok {
+		// The device is not placed yet, or its node has no service: not an error of the client.
+		fail(w, r, http.StatusServiceUnavailable, pageStarting, "the console is not ready")
+		return terminalTarget{}, false
+	}
+	return terminalTarget{namespace: group.Namespace, lab: lab, device: device, claims: claims, client: client, info: info, base: svc}, true
+}
+
+// plainName accepts a name that can be a lab or device: bounded, printable, no separator or control character.
+func plainName(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, c := range s {
+		if c < 0x21 || c > 0x7e || c == '/' || c == '\\' || c == '"' || c == '<' || c == '>' || c == '&' {
+			return false
+		}
+	}
+	return true
+}
+
+// setTerminalHeaders are the headers of every answer of the console host. The page may run its own scripts and styles and open a
+// WebSocket to its own host, and nothing else: no frame, no form, no base tag, no external host. The stylesheet needs 'unsafe-inline'
+// because the terminal library writes style elements; scripts stay strict.
+func setTerminalHeaders(w http.ResponseWriter, r *http.Request, ancestor string) {
+	host := r.Host
+	hd := w.Header()
+	hd.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://"+host+
+		"; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors "+ancestor)
+	// No X-Frame-Options: it cannot name an origin, and the CSP above is the one rule (an absent or unmatched ancestor is 'none').
+	hd.Set("X-Content-Type-Options", "nosniff")
+	hd.Set("Referrer-Policy", "no-referrer")
+	hd.Set("Cache-Control", "no-store")
+	hd.Set("Cross-Origin-Opener-Policy", "same-origin")
+	hd.Set("Cross-Origin-Resource-Policy", "same-origin")
+}
+
+// originAllowed says whether the Origin of a console WebSocket handshake may drive a console: the console host's own origin, or an origin
+// the embedding lists allow to frame the console (the same match as frame-ancestors). A request without Origin is not (a browser always sends
+// one on a WebSocket handshake). The console is authenticated by its token, not by a cookie, so this is the second lock: a page of a device
+// or of any other site cannot open it even with a token it got hold of.
+func (t *terminalState) originAllowed(r *http.Request) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return false
+	}
+	if strings.EqualFold(o, t.cfg.OriginScheme+"://"+r.Host) {
+		return true
+	}
+	return t.cfg.Embed.Ancestor(o) != ancestorNone
+}
+
+// defaultDial opens the stream to a service.
+func defaultDial(ctx context.Context, base string) (*websocket.Conn, error) {
+	url := "ws" + strings.TrimPrefix(base, "http") + wire.StreamPath
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{CompressionMode: websocket.CompressionDisabled})
+	return c, err
+}
+
+func (t *terminalState) dial(ctx context.Context, base string) (*websocket.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	dial := t.cfg.Dial
+	if dial == nil {
+		dial = defaultDial
+	}
+	c, err := dial(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	c.SetReadLimit(wire.MaxFrame)
+	return c, nil
+}
+
+// openMessage encodes an open request. It carries the grant of the session unchanged; the proxy signs nothing.
+func (t *terminalState) openMessage(req wire.OpenRequest) ([]byte, error) {
+	if req.Grant == "" {
+		return nil, errors.New("no grant to forward")
+	}
+	return json.Marshal(req)
+}

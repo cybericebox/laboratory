@@ -1,0 +1,78 @@
+{{- if include "laboratory.registryEnabled" . }}
+{{- /*
+The rights of the registry gate. It checks the tokens of its callers (TokenReview), reads the cluster objects it decides from, and reads the
+upstream credentials; it writes nothing in the cluster. One namespaced rule in the namespace laboratory-upstream is the only access to
+credentials, so no node, no pod of a lab and no other component can reach what the gate reads, and the gate cannot read anything of this kind
+anywhere else.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: laboratory-registry-gate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-registry-gate
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  # The check of a caller's token (audience laboratory-registry-gate).
+  - apiGroups: [ authentication.k8s.io ]
+    resources: [ tokenreviews ]
+    verbs: [ create ]
+  # The schedule: the pods bound to each node (the node a token belongs to is learned from its pod) and the nodes' addresses (source binding).
+  - apiGroups: [ "" ]
+    resources: [ pods, nodes ]
+    verbs: [ get, list, watch ]
+  # What a pull or a push is checked against: the devices of the schedule, the prepull requests, the tenants and their groups.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ devices, imagepulls, tenants, labgroups ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: laboratory-registry-gate
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: laboratory-registry-gate
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-registry-gate
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-registry-gate-upstream
+  namespace: {{ include "laboratory.upstreamNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ secrets ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-registry-gate-upstream
+  namespace: {{ include "laboratory.upstreamNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-registry-gate-upstream
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-registry-gate
+    namespace: {{ .Release.Namespace }}
+{{- end }}

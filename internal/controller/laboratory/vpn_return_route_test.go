@@ -91,7 +91,7 @@ func TestVPNReturnRouteNeedsVPNAndClientSubnet(t *testing.T) {
 	if len(r["direct"][0].Addr.Routes) != 0 {
 		t.Error("route added without a client subnet")
 	}
-	lab.Spec.VPN.Enabled = false
+	lab.Spec.Gateways = nil
 	addVPNReturnRoutes(lab, r, netip.MustParsePrefix("10.128.0.0/24"))
 	if len(r["direct"][0].Addr.Routes) != 0 {
 		t.Error("route added in a lab without VPN")

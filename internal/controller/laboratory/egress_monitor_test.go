@@ -2,10 +2,6 @@ package laboratory
 
 import (
 	"context"
-	"encoding/json"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,8 +10,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,17 +22,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/egressproxy"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
 type monitorFixture struct {
-	m       *EgressMonitor
-	c       client.Client
-	gateway *httptest.Server
-	clock   *time.Time
-	minutes *[]egressproxy.Minute
-	events  *record.FakeRecorder
+	m      *EgressMonitor
+	c      client.Client
+	clock  *time.Time
+	events *record.FakeRecorder
 }
 
 func newMonitorFixture(t *testing.T, labs ...string) *monitorFixture {
@@ -44,35 +39,47 @@ func newMonitorFixture(t *testing.T, labs ...string) *monitorFixture {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = laboratoryv1alpha1.AddToScheme(s)
-	var minutes []egressproxy.Minute
-	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		since, _ := time.Parse(time.RFC3339, r.URL.Query().Get("since"))
-		out := egressproxy.Summaries{Gateway: "gw"}
-		for _, m := range minutes {
-			if m.Start.After(since) {
-				out.Minutes = append(out.Minutes, m)
-			}
-		}
-		_ = json.NewEncoder(w).Encode(out)
-	}))
-	t.Cleanup(gw.Close)
-	host, port, _ := net.SplitHostPort(strings.TrimPrefix(gw.URL, "http://"))
-	yes := true
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lg-a", Labels: map[string]string{names.LabelGroup: "g"}}}
-	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "gateway-abc", Namespace: "lg-a", UID: "rs-uid", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: names.ComponentGateway, Controller: &yes}}}}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gateway-x", Namespace: "lg-a", UID: "gw-uid", Labels: map[string]string{labelApp: names.ComponentGateway, names.LabelComponent: names.ComponentGateway},
-		OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}}},
-		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: host}}
-	objs := []client.Object{ns, rs, pod}
+	objs := []client.Object{ns}
 	for _, l := range labs {
 		objs = append(objs, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: l, Namespace: "lg-a"}})
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).WithStatusSubresource(&laboratoryv1alpha1.Lab{}).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabEgressReport{}).Build()
 	now := time.Date(2026, 11, 1, 12, 0, 30, 0, time.UTC)
-	p, _ := strconv.Atoi(port)
 	rec := record.NewFakeRecorder(100)
-	m := &EgressMonitor{Client: c, Reader: c, Recorder: rec, Log: logr.Discard(), Port: p, HostLabsThreshold: 3, CapMinutes: 2, Window: 10 * time.Minute, Now: func() time.Time { return now }}
-	return &monitorFixture{m: m, c: c, gateway: gw, clock: &now, minutes: &minutes, events: rec}
+	m := &EgressMonitor{Client: c, Reader: c, Recorder: rec, Log: logr.Discard(), HostLabsThreshold: 3, CapMinutes: 2, Window: 10 * time.Minute, Now: func() time.Time { return now }}
+	return &monitorFixture{m: m, c: c, clock: &now, events: rec}
+}
+
+// setMinutes is what the gateway of namespace ns has in its report: exactly these minutes (the status is replaced).
+func (f *monitorFixture) setMinutes(t *testing.T, ns, name string, minutes ...egressproxy.Minute) {
+	t.Helper()
+	r := &laboratoryv1alpha1.LabEgressReport{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	err := f.c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, r)
+	if apierrors.IsNotFound(err) {
+		if err := f.c.Create(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	r.Status.Instance = "gateway-x"
+	r.Status.Minutes = nil
+	for _, m := range minutes {
+		r.Status.Minutes = append(r.Status.Minutes, egressproxy.ReportMinute(m))
+	}
+	if err := f.c.Status().Update(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *monitorFixture) report(t *testing.T, ns string) *laboratoryv1alpha1.LabEgressReport {
+	t.Helper()
+	var r laboratoryv1alpha1.LabEgressReport
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "gateway"}, &r); err != nil {
+		t.Fatal(err)
+	}
+	return &r
 }
 
 func (f *monitorFixture) flagged(t *testing.T, lab string) *metav1.Condition {
@@ -95,10 +102,10 @@ func TestEgressMonitorFlagsManyLabsOnOneHostAndKeepsTheLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	min := time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC)
-	*f.minutes = []egressproxy.Minute{{Start: min, Rows: []egressproxy.Row{
+	f.setMinutes(t, "lg-a", "gateway", egressproxy.Minute{Start: min, Rows: []egressproxy.Row{
 		{Lab: "l1", Host: "victim.example", Conns: 4, Up: 10, Down: 20}, {Lab: "l2", Host: "victim.example", Conns: 9},
 		{Lab: "l3", Host: "victim.example", Conns: 1}, {Lab: "quiet", Host: "pypi.org", Conns: 2},
-	}}}
+	}})
 	if err := f.m.Pull(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -141,10 +148,10 @@ func TestEgressMonitorFlagsManyLabsOnOneHostAndKeepsTheLog(t *testing.T) {
 func TestEgressMonitorFlagsALabAtItsCaps(t *testing.T) {
 	f := newMonitorFixture(t, "busy")
 	base := time.Date(2026, 11, 1, 11, 57, 0, 0, time.UTC)
-	*f.minutes = []egressproxy.Minute{
-		{Start: base, Caps: []egressproxy.CapHit{{Lab: "busy", Reason: "lab-rate", Hits: 5}}},
-		{Start: base.Add(time.Minute), Caps: []egressproxy.CapHit{{Lab: "busy", Reason: "dns-rate", Hits: 2}}},
-	}
+	f.setMinutes(t, "lg-a", "gateway",
+		egressproxy.Minute{Start: base, Caps: []egressproxy.CapHit{{Lab: "busy", Reason: "lab-rate", Hits: 5}}},
+		egressproxy.Minute{Start: base.Add(time.Minute), Caps: []egressproxy.CapHit{{Lab: "busy", Reason: "dns-rate", Hits: 2}}},
+	)
 	if err := f.m.Pull(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -170,53 +177,47 @@ func TestEgressMonitorClearsAFlagItDidNotSetInThisRun(t *testing.T) {
 	}
 }
 
-// Only the pods of the gateway Deployments that the operator made, in the namespaces of its groups, are asked; and what they answer is bounded.
-func TestEgressMonitorAsksOnlyItsOwnGateways(t *testing.T) {
+// Only the report named "gateway" in a namespace that carries the group label is read; the others are passed over and counted.
+func TestEgressMonitorReadsOnlyTheGatewayReportOfAGroupNamespace(t *testing.T) {
 	f := newMonitorFixture(t, "l1")
-	yes := true
-	host, _, _ := net.SplitHostPort(strings.TrimPrefix(f.gateway.URL, "http://"))
-	mk := func(name, ns string, labels map[string]string, owners []metav1.OwnerReference) *corev1.Pod {
-		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID(name), Labels: labels, OwnerReferences: owners},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: host}}
-	}
-	gw := map[string]string{labelApp: names.ComponentGateway, names.LabelComponent: names.ComponentGateway}
-	foreign := []client.Object{
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "not-a-group"}},
-		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "other-rs", Namespace: "lg-a", UID: "other-uid", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "something-else", Controller: &yes}}}},
-		mk("no-owner", "lg-a", gw, nil),
-		mk("outside-groups", "not-a-group", gw, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}}),
-		mk("other-deployment", "lg-a", gw, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "other-rs", UID: "other-uid", Controller: &yes}}),
-		mk("wrong-rs-uid", "lg-a", gw, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "forged", Controller: &yes}}),
-	}
-	for _, o := range foreign {
-		if err := f.c.Create(context.Background(), o); err != nil {
+	min := time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC)
+	mine := egressproxy.Minute{Start: min, Rows: []egressproxy.Row{{Lab: "l1", Host: "mine.test", Conns: 1}}}
+	foreign := egressproxy.Minute{Start: min, Rows: []egressproxy.Row{{Lab: "l1", Host: "forged.test", Conns: 1}}}
+	for _, ns := range []string{"not-a-group", "lg-b-unlabelled"} {
+		if err := f.c.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	pods, err := f.m.gatewayPods(context.Background())
-	if err != nil || len(pods) != 1 || pods[0].Name != "gateway-x" {
-		t.Fatalf("only the operator's own gateway is asked: %v %v", names2(pods), err)
+	f.setMinutes(t, "lg-a", "gateway", mine)
+	f.setMinutes(t, "lg-a", "somebody-else", foreign)
+	f.setMinutes(t, "not-a-group", "gateway", foreign)
+	f.setMinutes(t, "lg-b-unlabelled", "gateway", foreign)
+	f.setMinutes(t, "lg-nonexistent", "gateway", foreign)
+	reports, skipped, err := f.m.groupReports(context.Background())
+	if err != nil || len(reports) != 1 || reports[0].Namespace != "lg-a" || reports[0].Name != "gateway" {
+		t.Fatalf("only lg-a/gateway is read: %+v %v", reports, err)
 	}
-	// a gateway pod made before the component label existed is still the operator's own
-	old := mk("gateway-old", "lg-a", map[string]string{labelApp: names.ComponentGateway}, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}})
-	if err := f.c.Create(context.Background(), old); err != nil {
+	if skipped["not-a-group-namespace"] != 3 || skipped["not-named-gateway"] != 1 {
+		t.Fatalf("the monitor must say why it passed reports over: %v", skipped)
+	}
+	dir := t.TempDir()
+	f.m.LogDir = dir
+	if err := f.m.Pull(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if pods, err = f.m.gatewayPods(context.Background()); err != nil || len(pods) != 2 {
-		t.Fatalf("a gateway pod without the component label is asked too: %v %v", names2(pods), err)
+	b, _ := os.ReadFile(filepath.Join(dir, "egress-2026-11-01.jsonl"))
+	if !strings.Contains(string(b), "mine.test") || strings.Contains(string(b), "forged.test") {
+		t.Fatalf("what a foreign report says is not believed: %q", b)
 	}
-	_, skipped, err := f.m.selectGatewayPods(context.Background())
-	if err != nil || skipped["no-replicaset-owner"] != 1 || skipped["not-a-group-namespace"] != 1 || skipped["not-the-gateway-deployment"] != 2 {
-		t.Fatalf("the monitor must say why it passed pods over: %v %v", skipped, err)
+	for _, other := range []struct{ ns, name string }{{"lg-a", "somebody-else"}, {"not-a-group", "gateway"}} {
+		var r laboratoryv1alpha1.LabEgressReport
+		if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: other.ns, Name: other.name}, &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Spec.AckedThrough != nil {
+			t.Errorf("%s/%s is not acknowledged: the monitor does not touch a report it does not believe", other.ns, other.name)
+		}
 	}
-}
-
-func names2(pods []corev1.Pod) []string {
-	var out []string
-	for _, p := range pods {
-		out = append(out, p.Name)
-	}
-	return out
 }
 
 func TestEgressMonitorBoundsWhatAGatewayTells(t *testing.T) {
@@ -250,43 +251,51 @@ func TestEgressMonitorBoundsWhatAGatewayTells(t *testing.T) {
 	}
 }
 
-// A gateway that answers with more than the bound is not believed; the table of minutes does not grow past its cap.
-func TestEgressMonitorBodyAndTableAreBounded(t *testing.T) {
+// The table of minutes the signals are computed from does not grow past its cap.
+func TestEgressMonitorTableIsBounded(t *testing.T) {
 	f := newMonitorFixture(t, "l1")
-	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"minutes":[{"start":"2026-11-01T11:59:00Z","rows":[{"lab":"l1","host":"`))
-		chunk := []byte(strings.Repeat("a", 1<<20))
-		for i := 0; i < 8; i++ { // 8 MB in one string
-			_, _ = w.Write(chunk)
-		}
-		_, _ = w.Write([]byte(`","conns":1}]}]}`))
-	}))
-	defer big.Close()
-	host, port, _ := net.SplitHostPort(strings.TrimPrefix(big.URL, "http://"))
-	p, _ := strconv.Atoi(port)
-	goodPort := f.m.Port
-	f.m.Port = p
-	var pod corev1.Pod
-	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "lg-a", Name: "gateway-x"}, &pod); err != nil {
-		t.Fatal(err)
-	}
-	pod.Status.PodIP = host
-	if err := f.c.Status().Update(context.Background(), &pod); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.m.fetch(context.Background(), &pod, time.Time{}); err == nil {
-		t.Fatal("a body over the bound was accepted")
-	}
 	for i := 0; i < maxKeptMinutes+50; i++ {
 		f.m.minutes = append(f.m.minutes, monitorMinute{start: f.m.now().Add(-time.Second)})
 	}
-	*f.minutes = []egressproxy.Minute{{Start: time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC), Rows: []egressproxy.Row{{Lab: "l1", Host: "x.test", Conns: 1}}}}
-	pod.Status.PodIP, f.m.Port = strings.Split(strings.TrimPrefix(f.gateway.URL, "http://"), ":")[0], goodPort
-	if err := f.c.Status().Update(context.Background(), &pod); err != nil {
-		t.Fatal(err)
-	}
+	f.setMinutes(t, "lg-a", "gateway", egressproxy.Minute{Start: time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC), Rows: []egressproxy.Row{{Lab: "l1", Host: "x.test", Conns: 1}}})
 	_ = f.m.Pull(context.Background())
 	if len(f.m.minutes) > maxKeptMinutes+1 {
 		t.Fatalf("the table of minutes grew to %d", len(f.m.minutes))
+	}
+}
+
+// With activity reports on, the gateways' per-address rows become raw facts in the ring of the group namespace; the connection log of the
+// administrator is the same as before (no address in it). With them off nothing is kept.
+func TestEgressMonitorHandsFlowRowsToTheActivityRing(t *testing.T) {
+	f := newMonitorFixture(t, "l1")
+	f.m.Activity = activity.New(f.c, "egress")
+	f.m.Activity.Now = f.m.now
+	min := time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC)
+	f.setMinutes(t, "lg-a", "gateway", egressproxy.Minute{Start: min,
+		Rows:  []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 2, Up: 10, Down: 20}},
+		Flows: []egressproxy.FlowRow{{Lab: "l1", Source: "10.9.1.5", Dest: "151.101.0.223", Port: 443, Conns: 2, Up: 10, Down: 20, FirstMs: 1, LastMs: 2}, {Lab: "l1", Source: "x", Dest: "y", Port: 70000}}})
+	if err := f.m.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.m.Activity.Events("lg-a")
+	if len(got) != 1 {
+		t.Fatalf("events = %+v (a row with an impossible port is dropped)", got)
+	}
+	e := got[0]
+	if e.Kind != laboratoryv1alpha1.ActivityEgress || e.LabName != "l1" || e.SourceAddr != "10.9.1.5" || e.DstAddr != "151.101.0.223" || e.DstPort != 443 ||
+		e.BytesUp != 10 || e.BytesDown != 20 || e.Connections != 2 || e.AtMs != min.Add(time.Minute).UnixMilli() {
+		t.Fatalf("event = %+v", e)
+	}
+}
+
+func TestEgressMonitorKeepsNoActivityWhenOff(t *testing.T) {
+	f := newMonitorFixture(t, "l1")
+	min := time.Date(2026, 11, 1, 11, 59, 0, 0, time.UTC)
+	f.setMinutes(t, "lg-a", "gateway", egressproxy.Minute{Start: min, Flows: []egressproxy.FlowRow{{Lab: "l1", Source: "10.9.1.5", Dest: "1.2.3.4", Port: 443, Conns: 1}}})
+	if err := f.m.Pull(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.m.Activity != nil {
+		t.Fatal("the hub must be off by default")
 	}
 }

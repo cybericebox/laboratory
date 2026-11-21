@@ -24,7 +24,7 @@ func TestNewWebCode(t *testing.T) {
 }
 
 func TestWebHostLabelIsAValidDNSLabel(t *testing.T) {
-	if got := WebHostLabel("web", "k3x"); got != "web-k3x" {
+	if got := WebHostLabel("web", "k3x"); got != "web-k3xw" {
 		t.Fatalf("label = %q", got)
 	}
 	valid := regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
@@ -39,7 +39,7 @@ func TestMaxDeviceNameLenFitsOneDNSLabel(t *testing.T) {
 		t.Fatalf("MaxDeviceNameLen = %d", MaxDeviceNameLen)
 	}
 	host := WebHostLabel(strings.Repeat("d", MaxDeviceNameLen), strings.Repeat("z", WebCodeMaxLen))
-	if len(host) != 40 {
+	if len(host) != 41 {
 		t.Fatalf("len = %d", len(host))
 	}
 }

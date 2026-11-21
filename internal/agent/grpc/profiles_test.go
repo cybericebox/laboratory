@@ -18,7 +18,7 @@ import (
 
 func profileRequest(profile laboratoryv1alpha1.DeviceProfile) *protobuf.CreateLabsRequest {
 	spec := laboratoryv1alpha1.LabSpec{}
-	spec.VPN.Enabled = true
+	spec.Gateways = []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}
 	spec.Devices = []laboratoryv1alpha1.DeviceTemplate{{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx", Profile: profile}}
 	raw, _ := json.Marshal(spec)
 	return &protobuf.CreateLabsRequest{

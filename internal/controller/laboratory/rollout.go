@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -83,12 +84,6 @@ func (g *rolloutGuard) release(ns string) {
 	}
 }
 
-// pullPolicyFor is the image pull policy of the images the platform runs in a group: every one has an exact tag or a digest (the
-// operator refuses to start otherwise), so a node pulls it only when it does not have it.
-func pullPolicyFor(string) corev1.PullPolicy {
-	return corev1.PullIfNotPresent
-}
-
 // convergeGroupPod brings the container of an existing VPN or gateway Deployment to the configured image and pull policy, and to nothing
 // else: the size of a group's pods is the one it was created with (the platform chose it for that group and never resizes it), and the
 // command is the one of its image's day. A difference is a rolling update of the group's pod, so it is applied only when the group has
@@ -106,15 +101,22 @@ func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d 
 	if image == "" { // not configured (tests): nothing to converge to
 		return false
 	}
-	want := r.cachedImage(ctx, ns, image)
-	policy := pullPolicyFor(want)
-	if c.Image == want && c.ImagePullPolicy == policy {
+	want, err := r.cachedImage(ctx, ns, image)
+	if err != nil {
+		log.FromContext(ctx).Info("group image left as it is: it cannot be pulled through the image cache", "image", image, "err", err.Error())
+		return false
+	}
+	policy := pullPolicyFor(want, r.Mirror.Prefix)
+	// A pod has no image pull secret: a Deployment made by an earlier version still has some, and is rolled to lose them.
+	secretsOK := len(d.Spec.Template.Spec.ImagePullSecrets) == 0
+	if c.Image == want && c.ImagePullPolicy == policy && secretsOK {
 		return false
 	}
 	if !r.rollout.try(ns) {
 		return false
 	}
 	c.Image, c.ImagePullPolicy = want, policy
+	d.Spec.Template.Spec.ImagePullSecrets = nil
 	return true
 }
 

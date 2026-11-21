@@ -65,13 +65,11 @@ var _ = Describe(
 				Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
 				By("installing CRDs")
-				cmd = exec.Command("make", "install")
-				_, err = utils.Run(cmd)
+				_, err = utils.MiseRun(nil, "kustomize:install")
 				Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 				By("deploying the controller-manager")
-				cmd = exec.Command("make", "deploy", fmt.Sprintf("CONTROLLER_IMG=%s", projectImage))
-				_, err = utils.Run(cmd)
+				_, err = utils.MiseRun([]string{"CONTROLLER_IMG=" + projectImage}, "kustomize:deploy")
 				Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
 				// The operator refuses to start without these (the manifest ConfigMap keeps them empty on purpose:
@@ -98,12 +96,10 @@ var _ = Describe(
 				_, _ = utils.Run(cmd)
 
 				By("undeploying the controller-manager")
-				cmd = exec.Command("make", "undeploy")
-				_, _ = utils.Run(cmd)
+				_, _ = utils.MiseRun(nil, "kustomize:undeploy")
 
 				By("uninstalling CRDs")
-				cmd = exec.Command("make", "uninstall")
-				_, _ = utils.Run(cmd)
+				_, _ = utils.MiseRun(nil, "kustomize:uninstall")
 
 				By("removing manager namespace")
 				cmd = exec.Command("kubectl", "delete", "ns", namespace)
@@ -229,7 +225,23 @@ var _ = Describe(
 
 						By("verifying that the controller manager is serving the metrics server")
 						verifyMetricsServerStarted := func(g Gomega) {
-							cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+							// The pod found by the first test can be the one the "set env" rollout replaced (it cannot start without
+							// its settings): read the log of the newest pod that is not going away.
+							cmd := exec.Command(
+								"kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+								"--sort-by=.metadata.creationTimestamp",
+								"-o", "go-template={{ range .items }}"+
+									"{{ if not .metadata.deletionTimestamp }}"+
+									"{{ .metadata.name }}"+
+									"{{ \"\\n\" }}{{ end }}{{ end }}",
+								"-n", namespace,
+							)
+							podOutput, err := utils.Run(cmd)
+							g.Expect(err).NotTo(HaveOccurred())
+							podNames := utils.GetNonEmptyLines(podOutput)
+							g.Expect(podNames).NotTo(BeEmpty())
+							controllerPodName = podNames[len(podNames)-1]
+							cmd = exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 							output, err := utils.Run(cmd)
 							g.Expect(err).NotTo(HaveOccurred())
 							// The operator logs JSON (not the console format of the scaffold), so the logger and the message are fields.

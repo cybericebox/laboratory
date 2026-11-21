@@ -1,0 +1,14 @@
+{{- if include "laboratory.deviceAccess.enabled" . }}
+{{- /*
+The device access service has a namespace of its own. The pod mounts the runtime socket and a host directory, which only the privileged Pod
+Security level admits, and the L7 proxy reads the EndpointSlices of the service there (one Role): nothing else lives here, so neither is wider
+than the service. The pod holds no image pull secret.
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "laboratory.deviceAccess.namespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: privileged
+{{- end }}

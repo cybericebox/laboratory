@@ -5,13 +5,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/authn"
+	"crypto/tls"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
@@ -26,6 +27,8 @@ type Handler struct {
 	protobuf.UnimplementedLabManagerServer
 	cs  versioned.Interface
 	k8s kubernetes.Interface
+	// checker remembers whether the checker DaemonSet exists (see checksAvailable).
+	checker checkerPresence
 	// metrics is optional: nil when metrics-server is not installed. Live
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
@@ -40,9 +43,8 @@ type Handler struct {
 	usageAll            map[string]map[usageKey]deviceUsage
 	usageAt             time.Time
 	agentID             string
-	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
-	// Multi-agent/API admission remains a native capability gate.
-	lifecycleAdmissionMu sync.Mutex
+	// Group lifecycle and child admission of one group exclude each other in this agent (groupLock); groups do not wait for
+	// one another. Multi-agent/API admission remains a native capability gate.
 
 	// monitor is the shared poller and journal behind every Monitoring stream.
 	monOnce sync.Once
@@ -110,10 +112,13 @@ type Handler struct {
 	// are the addresses of the platform registry and cache (tenants may not name them).
 	imageDeny  []string
 	imageCache []string
+	// allowedRegistries are the registries lab images may come from (empty or "*": every one).
+	allowedRegistries []string
 
-	// registryAddr is the platform registry (host:port) snapshot export reads from.
-	registryAddr string
-	registryAuth authn.Authenticator
+	// registryAddr is the registry gate (host:port) snapshot export reads from; registryTLS and registryToken are how the agent speaks to it.
+	registryAddr  string
+	registryTLS   *tls.Config
+	registryToken *imagecache.TokenFile
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain
@@ -144,6 +149,10 @@ func (h *Handler) SetImagePolicy(deny []string, cacheAddrs ...string) {
 	h.imageDeny = deny
 	h.imageCache = cacheAddrs
 }
+
+// SetAllowedRegistries sets the registries lab images may come from; an image from another registry is refused with
+// REGISTRY_NOT_ALLOWED. Empty, or a list with "*", allows every registry.
+func (h *Handler) SetAllowedRegistries(registries []string) { h.allowedRegistries = registries }
 
 func isNotFound(err error) bool { return apierrors.IsNotFound(err) }
 

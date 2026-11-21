@@ -81,7 +81,7 @@ alive() {
  test "$state" != Z
 }
 ready() {
- for i in $(seq 1 100); do
+ for _ in $(seq 1 100); do
   if ovs-vsctl --timeout=1 --no-wait show >/dev/null 2>&1 && ovs-appctl -t ovs-vswitchd version >/dev/null 2>&1; then return 0; fi
   sleep .1
  done
@@ -98,7 +98,7 @@ fi
 ovs-appctl -t ovs-vswitchd version
 dbpid=$(cat /run/openvswitch/ovsdb-server.pid)
 ovs-appctl -t ovs-vswitchd exit
-for i in $(seq 1 100); do alive "$sup" || break; sleep .1; done
+for _ in $(seq 1 100); do alive "$sup" || break; sleep .1; done
 if alive "$sup"; then echo SUPERVISOR_DID_NOT_EXIT; exit 1; fi
 wait "$sup"
 if alive "$dbpid"; then echo DATABASE_ORPHANED; exit 1; fi
@@ -111,7 +111,7 @@ kill -TERM "$sup"
 code=0
 wait "$sup" || code=$?
 test "$code" = 143
-for i in $(seq 1 100); do
+for _ in $(seq 1 100); do
  if ! alive "$dbpid" && ! alive "$vpid"; then echo TERM_SUPERVISION_PASS; exit 0; fi
  sleep .1
 done

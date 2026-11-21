@@ -30,6 +30,8 @@ type LaboratoryV1alpha1Interface interface {
 	ConnectionsGetter
 	DevicesGetter
 	LabsGetter
+	LabActivityReportsGetter
+	LabEgressReportsGetter
 	LabGatewaysGetter
 	LabGroupsGetter
 	LabGroupAccessPoliciesGetter
@@ -56,6 +58,14 @@ func (c *LaboratoryV1alpha1Client) Devices(namespace string) DeviceInterface {
 
 func (c *LaboratoryV1alpha1Client) Labs(namespace string) LabInterface {
 	return newLabs(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) LabActivityReports(namespace string) LabActivityReportInterface {
+	return newLabActivityReports(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) LabEgressReports(namespace string) LabEgressReportInterface {
+	return newLabEgressReports(c, namespace)
 }
 
 func (c *LaboratoryV1alpha1Client) LabGateways(namespace string) LabGatewayInterface {

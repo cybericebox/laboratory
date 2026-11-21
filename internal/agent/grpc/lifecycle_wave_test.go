@@ -13,10 +13,10 @@ import (
 )
 
 func TestLifecycleWaveAcceptedStartMasksOldReadyAndAccess(t *testing.T) {
-	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{UID: "lab", Generation: 4}, Spec: lab.LabSpec{Lifecycle: &lab.LabLifecycleSpec{DesiredState: "Running", OperationID: "start2", Revision: 2}}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true}, Internet: lab.LabNetworkStatus{Ready: true}, Devices: []lab.DeviceRef{{Name: "device", Ready: true}}, Access: []lab.AccessEntry{{URL: "old-access"}}, Lifecycle: &lab.LabLifecycleStatus{LabUID: "lab", OperationID: "stop1", Revision: 1, ObservedGeneration: 3, ObservedState: "Stopped"}}}
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{UID: "lab", Generation: 4}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "vpn", Kind: lab.GatewayKindVPN}, {Name: "internet", Kind: lab.GatewayKindInternet}}, Lifecycle: &lab.LabLifecycleSpec{DesiredState: "Running", OperationID: "start2", Revision: 2}}, Status: lab.LabStatus{Phase: lab.PhaseReady, Gateways: []lab.GatewayStatus{{Name: "vpn", Kind: lab.GatewayKindVPN, Ready: true}, {Name: "internet", Kind: lab.GatewayKindInternet, Ready: true}}, Devices: []lab.DeviceRef{{Name: "device", Ready: true}}, Access: []lab.AccessEntry{{URL: "old-access"}}, Lifecycle: &lab.LabLifecycleStatus{LabUID: "lab", OperationID: "stop1", Revision: 1, ObservedGeneration: 3, ObservedState: "Stopped"}}}
 	for _, project := range []func(*lab.Lab) *protobuf.Lab{func(l *lab.Lab) *protobuf.Lab { return labToProto(l) }, func(l *lab.Lab) *protobuf.Lab { return labProjection(l, false) }} {
 		p := project(l).GetStatus()
-		if p.GetReady() || p.GetVpnReady() || p.GetInternetReady() || len(p.GetAccess()) != 0 || p.GetDevices()[0].GetReady() {
+		if p.GetReady() || gatewayReady(p) || len(p.GetAccess()) != 0 || p.GetDevices()[0].GetReady() {
 			t.Fatal("accepted Start exposed stale readiness/access", p)
 		}
 	}

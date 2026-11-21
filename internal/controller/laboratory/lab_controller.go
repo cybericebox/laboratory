@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -23,31 +26,36 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
+	"github.com/cybericebox/laboratory/internal/keylock"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
+	"github.com/cybericebox/laboratory/internal/switches"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
-	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
 // LabReconciler reconciles a Lab object.
 type LabReconciler struct {
 	client.Client
+	// CheckerEnabled gates the Role that lets the lab checker read the checks Secret of a lab with checks (the chart's checks.enabled).
+	CheckerEnabled bool
 	// VNI batches the retirement of VNIs (nil: each one is retired at once).
 	VNI      *VNIRetirer
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
 	// e.g. "challenges.cybericebox.com". An exposed device named "web" inside a
-	// lab is reachable as https://web-<code>.<BaseDomain> (names.WebHostLabel; code is 3-4 random
+	// lab is reachable as https://web-<code>w.<BaseDomain> (names.WebHostLabel; code is 3-4 random
 	// base36 chars fixed by the name of the device's Service). Written to
 	// Lab.Status.Access on Ready.
 	BaseDomain string
@@ -58,10 +66,14 @@ type LabReconciler struct {
 	// newWebCode draws the random code of a web host label; nil means
 	// names.NewWebCode. A field so tests can force collisions.
 	newWebCode func(n int) (string, error)
-	// VPNBaseNetwork is the base address space for per-lab VPN subnets (e.g. "10.8.0.0/16").
-	VPNBaseNetwork string
-	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
-	InetBaseNetwork string
+	// LabBaseNetwork is the one address space of the lab networks (e.g. "10.128.0.0/9"): /24 number 0 is the VPN clients, every
+	// other /24 goes to a gateway of a lab, VPN or Internet, first free number.
+	LabBaseNetwork string
+	// MaxLabGateways is the most gateways one lab may have (0 = 10). The agent refuses more at creation; this is the second check.
+	MaxLabGateways int
+	// Switches is what the laboratory serves (the chart's vpn.enabled, inetGateway.enabled, proxy.enabled and its accesses, checks.enabled):
+	// a Lab that asks for what is off is refused (Failed, ValidationFailed) whoever made it. Nil: nothing is checked.
+	Switches *switches.Cluster
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would hand out a device code twice.
 	Reader client.Reader
@@ -79,12 +91,29 @@ type LabReconciler struct {
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
 	Mirror imagecache.Rewriter
-	// Resolver pins image tags to digests for a lab created with the image
-	// cache on; nil pins nothing.
-	Resolver imagecache.Resolver
+	// Pinner resolves image tags to digests, in the background, for a lab created with the image cache on; nil pins nothing. A lab
+	// whose digests are not all there yet waits (it is woken through PinEvents).
+	Pinner *imagecache.AsyncResolver
+	// RequireDigest refuses a lab whose image tags cannot be pinned to a digest (the registry gate runs with GATE_REQUIRE_DIGEST, on by
+	// default, and would refuse the pull by tag anyway); off, such a lab pulls by tag and says so in Status.ImageWarning.
+	RequireDigest bool
+	// CredentialResolver builds the resolver of a lab's own credentials (a keychain made of the lab's and its tenant's pull documents
+	// only): the Pinner keeps one per credential fingerprint. Nil: a lab with credentials is not pinned (its tags stay tags).
+	CredentialResolver func(kc authn.Keychain) imagecache.Resolver
+	// PinEvents wakes a lab when a resolution it waited for is done (the Pinner's Notify sends the lab's key here); nil: the lab looks
+	// again after pinningRecheck.
+	PinEvents <-chan event.TypedGenericEvent[*laboratoryv1alpha1.Lab]
+	// AllowedRegistries are the registries lab images may come from (empty or "*": every one); the agent refuses the same at creation.
+	AllowedRegistries []string
 	// NetConfigImage is the image of the device netconfig init-container, pinned
 	// together with the device images.
 	NetConfigImage string
+	// Workers is how many labs are reconciled at once (0 = 1). A lab is never reconciled by two workers at once; what the
+	// reconciles of different labs share (the codes of one namespace, the pools) is guarded, see device_code.go.
+	Workers int
+	// codeLocks makes the labs of one namespace take their device codes one after another: the check that a code is free reads
+	// the namespace, and the Device or Service that makes the code taken is written after it.
+	codeLocks keylock.Set
 }
 
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
@@ -107,7 +136,7 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	var lab laboratoryv1alpha1.Lab
 	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, r.labGone(ctx, req, err)
 	}
 
 	if err := r.releaseRecordedVNIs(ctx, &lab); err != nil {
@@ -119,11 +148,23 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return r.reconcileDelete(ctx, &lab)
 	}
 
+	// Fail closed first, on the raw spec: whatever else is wrong with it (or whatever returns early below), a device that must not reach the
+	// internet is cut off from an Internet gateway's network.
+	if conflicts := lab.Spec.InternetConflicts(); len(conflicts) > 0 {
+		if err := r.cutInternetDenied(ctx, &lab, conflicts); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if !controllerutil.ContainsFinalizer(&lab, names.FinalizerLab) {
 		controllerutil.AddFinalizer(&lab, names.FinalizerLab)
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if err := r.ensureCheckerSecretAccess(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if lab.Annotations[names.AnnotationLifecycleRetirement] != "" {
@@ -147,45 +188,41 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// references the lab will pull. The status write leaves the answer of the API server in lab; it is not read again,
 	// because the cache may still hold the object without the modes, and the devices
 	// created below would run in the wrong mode.
-	if _, err := r.ensureModes(ctx, &lab); err != nil {
-		return ctrl.Result{}, err
+	if refused, res, err := r.modesOrRefuse(ctx, &lab); refused || err != nil {
+		return res, err
 	}
 
-	// Like the modes, the subnets stay in lab as the status write answered them (a read
-	// from the cache could return the object without them).
-	if _, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
+	// What the lab declares as gateways is checked before anything is taken from the address pool for them.
+	// A lab also needs the servers of its group: the VPN server for a VPN gateway, the gateway for an Internet gateway.
+	validationErr, serverOff, err := r.validateGatewaysAndServers(ctx, &lab)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if validationErr == nil {
+		// Like the modes, the subnets stay in lab as the status write answered them (a read
+		// from the cache could return the object without them).
+		if _, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if err := r.ensureLabNetworkObjects(ctx, &lab); err != nil {
-		return ctrl.Result{}, err
+		if err := r.ensureLabNetworkObjects(ctx, &lab); err != nil {
+			return ctrl.Result{}, err
+		}
+		validationErr = r.validateGraph(&lab)
 	}
-
-	validationErr := r.validateGraph(&lab)
 	var resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec
 	if validationErr == nil {
 		resolvedInterfaces, validationErr = resolveLabDeviceInterfaces(&lab)
 	}
 	if validationErr == nil {
-		clients, err := vpnClientSubnet(r.VPNBaseNetwork)
+		clients, err := vpnClientSubnet(r.LabBaseNetwork)
 		if err != nil {
 			validationErr = fmt.Errorf("derive VPN client subnet: %w", err)
 		}
 		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
 	}
 	if validationErr != nil {
-		// Surface the specific validation reason — it was previously discarded,
-		// leaving the Lab in Failed with no user-visible cause.
-		lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
-		labstatus.SetReady(
-			&lab.Status.Conditions, lab.Generation, false,
-			labstatus.ReasonValidationFailed, validationErr.Error(),
-		)
-		r.Recorder.Event(&lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, validationErr.Error())
-		if statusErr := r.Status().Update(ctx, &lab); statusErr != nil {
-			logger.Error(statusErr, "update status after graph validation failure")
-		}
-		return ctrl.Result{}, nil
+		return r.refuseLab(ctx, &lab, validationErr, serverOff)
 	}
 
 	// After validation: the web host label relies on validated device names.
@@ -242,11 +279,11 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 		deviceIfaces[d.Name] = ifaces
 	}
 
-	// Lab interface names must not shadow the reserved access-port name:
+	// Lab interface names must not shadow the reserved EDA name:
 	// SetupNetworks would delete/replace the delegated interface on a CNI retry.
 	for _, d := range lab.Spec.Devices {
 		for _, iface := range d.Interfaces {
-			if iface.Name == names.AccessPortIface {
+			if names.IsEDAIface(iface.Name) {
 				return fmt.Errorf(
 					"ReservedInterfaceName: device %q uses reserved interface name %q",
 					d.Name,
@@ -267,8 +304,8 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	usedGateways := map[string]bool{}
 	for _, conn := range lab.Spec.Connections {
 		for _, ep := range conn.Endpoints {
-			if ep.Device == names.ComponentVPN || ep.Device == "internet" {
-				// Each singleton exposes exactly one logical port: eth0.
+			if _, isGateway := gatewayEndpoint(lab, ep); isGateway {
+				// A gateway exposes exactly one logical port: eth0.
 				if ep.Interface != "eth0" {
 					return fmt.Errorf("InvalidGatewayPort: %s has no port %q", ep.Device, ep.Interface)
 				}
@@ -276,7 +313,7 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 					return fmt.Errorf("DuplicateGatewayPort: %s eth0 is used by more than one connection", ep.Device)
 				}
 				usedGateways[ep.Device] = true
-				continue // virtual singletons have no Device template
+				continue // a gateway has no Device template
 			}
 			ifaces, ok := deviceIfaces[ep.Device]
 			if !ok {
@@ -346,6 +383,9 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 			}
 		}
 	}
+	if conflicts := lab.Spec.InternetConflicts(); len(conflicts) > 0 {
+		return &internetDeniedError{conflicts: conflicts}
+	}
 	return r.validateBroadcastDomains(lab, switchDevices)
 }
 
@@ -360,7 +400,7 @@ func validForwardingPort(name string) bool {
 
 // validateBroadcastDomains groups Connections into broadcast components
 // (transitively merged through shared switch/hub endpoints) and rejects:
-//   - REQ-OP-026: same domain contains both VPN and Internet singletons.
+//   - REQ-OP-026: same domain contains more than one gateway (each gateway is attached to a network of its own).
 //   - REQ-OP-027: same domain has more than one DHCP source.
 //
 // A non-switch device (container) does not propagate the domain — it sits
@@ -406,8 +446,8 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 
 	// Per-component flags.
 	type domainFlags struct {
-		hasVPN, hasInternet bool
-		dhcpSources         int
+		gateways    int
+		dhcpSources int
 	}
 	domains := map[int]*domainFlags{}
 	for ci, conn := range lab.Spec.Connections {
@@ -418,15 +458,9 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 			domains[root] = d
 		}
 		for _, ep := range conn.Endpoints {
-			switch ep.Device {
-			case names.ComponentVPN:
-				d.hasVPN = true
-				if lab.Spec.VPN.DHCPServer != nil && lab.Spec.VPN.DHCPServer.Enabled {
-					d.dhcpSources++
-				}
-			case "internet":
-				d.hasInternet = true
-				if lab.Spec.Internet.DHCPServer != nil && lab.Spec.Internet.DHCPServer.Enabled {
+			if g, ok := gatewayEndpoint(lab, ep); ok {
+				d.gateways++
+				if g.DHCPServer != nil && g.DHCPServer.Enabled {
 					d.dhcpSources++
 				}
 			}
@@ -434,8 +468,8 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	}
 
 	for _, d := range domains {
-		if d.hasVPN && d.hasInternet {
-			return fmt.Errorf("BroadcastDomainSpansVPNAndInternet: VPN and Internet singletons must live in separate broadcast domains")
+		if d.gateways > 1 {
+			return fmt.Errorf("BroadcastDomainHasSeveralGateways: a broadcast domain holds at most one gateway, VPN or Internet (found %d)", d.gateways)
 		}
 		if d.dhcpSources > 1 {
 			return fmt.Errorf(
@@ -449,6 +483,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec, snapshots ...*labServiceSnapshot) error {
 	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	defer r.codeLocks.Lock(lab.Namespace)()
 	codes := r.newCodeAllocator(lab, snapshots...)
 	wantLabels := userLabels(lab.Labels)
 	ten, err := r.tenantOf(ctx, lab)
@@ -522,9 +557,11 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Profile:        tmpl.Profile,
 				SecurityPreset: tmpl.SecurityPreset,
 				Interfaces:     resolvedInterfaces[tmpl.Name],
-				Exposure:       tmpl.Exposure,
+				Access:         tmpl.Access,
 				Resources:      tmpl.Resources,
 				WaitReadyFile:  tmpl.WaitReadyFile,
+				Service:        tmpl.Service,
+				Bootstrap:      tmpl.Bootstrap,
 				State:          r.deviceStateSpec(ten, tmpl),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
 				ImageDigests:   r.deviceDigests(lab, tmpl),
@@ -694,21 +731,26 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if !r.RuntimeObservation && c.Status.VNI != nil {
-			if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
-				return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
-			}
-			c.Status.VNI = nil
-			c.Status.VNILease = nil
-			if err := r.Status().Update(ctx, c); err != nil {
-				return err
-			}
-		}
-		if err := r.Delete(ctx, c); client.IgnoreNotFound(err) != nil {
+		if err := r.deleteConnection(ctx, c); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// deleteConnection releases the VNI of a Connection and deletes it.
+func (r *LabReconciler) deleteConnection(ctx context.Context, c *laboratoryv1alpha1.Connection) error {
+	if !r.RuntimeObservation && c.Status.VNI != nil {
+		if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
+			return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
+		}
+		c.Status.VNI = nil
+		c.Status.VNILease = nil
+		if err := r.Status().Update(ctx, c); err != nil {
+			return err
+		}
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, c))
 }
 
 // pruneDevices deletes Device CRs owned by the lab whose names are no longer in
@@ -813,6 +855,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	var refs []laboratoryv1alpha1.DeviceRef
+	deviceNodes := nodesOfDevices(deviceList.Items)
 	allReady := len(deviceList.Items) > 0 || len(lab.Spec.Devices) == 0 && len(lab.Spec.Connections) == 0
 	pods, queuedPods := 0, 0
 	for _, d := range deviceList.Items {
@@ -820,7 +863,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
 			failure = sc.Failure
 		}
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure, CPUThrottle: d.Status.CPUThrottle})
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure, CPUThrottle: d.Status.CPUThrottle, Bootstrap: d.Status.Bootstrap})
 		ready := d.Status.Ready
 		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
 			ready = false
@@ -881,18 +924,14 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 
-	// The VPN and Internet segments are ready once their LabVPN / LabGateway
-	// report Ready. The VPN pod admits client traffic to a lab only while
-	// Status.VPN.Ready is true, so this must be kept in sync.
-	vpnReady, err := r.segmentReady(ctx, lab.Namespace, lab.Spec.VPN.Enabled, names.LabVPNObjectName(lab.Name), &laboratoryv1alpha1.LabVPN{})
+	// A gateway is ready once its LabVPN / LabGateway reports Ready. The VPN pod admits client traffic to a gateway only while
+	// its status.gateways entry is ready, so this must be kept in sync.
+	gateways, err := r.readGatewayReadiness(ctx, lab)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	inetReady, err := r.segmentReady(ctx, lab.Namespace, lab.Spec.Internet.Enabled, names.LabGatewayObjectName(lab.Name), &laboratoryv1alpha1.LabGateway{})
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if (lab.Spec.VPN.Enabled && !vpnReady) || (lab.Spec.Internet.Enabled && !inetReady) {
+	publishLabInitiatedDropped(lab.Namespace, lab.Name, gateways.Dropped, gateways.Blocked)
+	if !gateways.AllReady {
 		allReady = false
 	}
 
@@ -908,6 +947,10 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	// Reflect readiness as a condition; on the Ready edge emit a Normal event.
 	wasReady := labstatus.IsReady(lab.Status.Conditions)
+	var provisioningSince time.Time
+	if c := meta.FindStatusCondition(lab.Status.Conditions, labstatus.ConditionReady); c != nil && c.Status == metav1.ConditionFalse {
+		provisioningSince = c.LastTransitionTime.Time
+	}
 	if allReady {
 		labstatus.SetReady(
 			&lab.Status.Conditions,
@@ -942,9 +985,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 	if !lifecycleChanged && reflect.DeepEqual(resources, lab.Status.Resources) && newPhase == lab.Status.Phase &&
-		vpnReady == lab.Status.VPN.Ready &&
-		inetReady == lab.Status.Internet.Ready &&
+		reflect.DeepEqual(gateways.Status, lab.Status.Gateways) &&
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
+		slices.Equal(deviceNodes, lab.Status.DeviceNodes) &&
 		sameRefsByName(connRefs, lab.Status.Connections, func(ref laboratoryv1alpha1.ConnectionRef) string { return ref.Name }) &&
 		reflect.DeepEqual(access, lab.Status.Access) &&
 		wasReady == allReady {
@@ -958,9 +1001,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	lab.Status.Resources = resources
-	lab.Status.VPN.Ready = vpnReady
-	lab.Status.Internet.Ready = inetReady
+	lab.Status.Gateways = gateways.Status
 	lab.Status.Devices = refs
+	lab.Status.DeviceNodes = deviceNodes
 	lab.Status.Connections = connRefs
 	lab.Status.Phase = newPhase
 	lab.Status.Access = access
@@ -968,48 +1011,60 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return ctrl.Result{}, err
 	}
+	if allReady && !wasReady && !provisioningSince.IsZero() {
+		labReadySeconds.Observe(max(time.Since(provisioningSince), 0).Seconds())
+	}
 	if newPhase != laboratoryv1alpha1.PhaseReady {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return runningAllocationRequeue(lab), nil
 }
 
-// segmentReady reports whether the lab's LabVPN / LabGateway object is Ready.
-// A disabled segment is never ready; a missing object is not ready yet.
-func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled bool, name string, obj client.Object) (bool, error) {
-	if !enabled {
-		return false, nil
-	}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, obj); err != nil {
-		if errors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	switch o := obj.(type) {
-	case *laboratoryv1alpha1.LabVPN:
-		return labstatus.IsReady(o.Status.Conditions), nil
-	case *laboratoryv1alpha1.LabGateway:
-		return labstatus.IsReady(o.Status.Conditions), nil
-	}
-	return false, nil
+// buildAccessEntries returns the externally-visible URL for each web-exposed
+// device in the lab (none if BaseDomain is unset), then one entry with protocol
+// "terminal" for each device that enables the browser terminal. A terminal entry
+// has no port; its URL is the console host of the device (names.AccessHostLabel:
+// <device>-<code>t, the web host's <device>-<code>w with the kind character t),
+// empty until the device has its code.
+// The host of a web port is the name of the device's existing web Service, never
+// recomputed; a device whose Service does not exist yet is skipped.
+func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
+	return append(r.buildWebAccessEntries(ctx, lab, snapshots...), r.terminalAccessEntries(ctx, lab)...)
 }
 
-// buildAccessEntries returns the externally-visible URL for each web-exposed
-// device in the lab. Empty if BaseDomain is unset.
-// The host is the name of the device's existing web Service, never recomputed;
-// a device whose Service does not exist yet is skipped.
-func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
+// terminalAccessEntries is one entry per device with a terminal access.
+func (r *LabReconciler) terminalAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+	var out []laboratoryv1alpha1.AccessEntry
+	for _, d := range lab.Spec.Devices {
+		term := laboratoryv1alpha1.AccessOf(d.Access, laboratoryv1alpha1.AccessTerminal)
+		if term == nil {
+			continue
+		}
+		entry := laboratoryv1alpha1.AccessEntry{Device: d.Name, Protocol: "terminal"}
+		if r.BaseDomain != "" {
+			if dev, err := devices.Get(ctx, r.reader(), lab.Namespace, lab.Name, d.Name); err == nil && dev.Spec.Code != "" {
+				if label, ok := names.AccessHostLabel(d.Name, dev.Spec.Code, names.AccessKindTerminal); ok {
+					entry.URL = fmt.Sprintf("https://%s.%s", label, r.BaseDomain)
+				}
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func (r *LabReconciler) buildWebAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
 	if r.BaseDomain == "" {
 		return nil
 	}
 	var out []laboratoryv1alpha1.AccessEntry
 	services := r.serviceSnapshot(lab, snapshots...)
 	for _, d := range lab.Spec.Devices {
-		if d.Exposure == nil || d.Exposure.Web == nil {
+		web := laboratoryv1alpha1.HTTPAccess(d.Access)
+		if web == nil {
 			continue
 		}
-		proto := d.Exposure.Web.Protocol
+		proto := web.Protocol
 		if proto == "" {
 			proto = "http"
 		}
@@ -1020,7 +1075,7 @@ func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv
 		out = append(
 			out, laboratoryv1alpha1.AccessEntry{
 				Device:   d.Name,
-				Port:     d.Exposure.Web.Port,
+				Port:     web.Port,
 				Protocol: proto,
 				URL:      fmt.Sprintf("https://%s.%s", svc.Name, r.BaseDomain),
 			},
@@ -1100,15 +1155,8 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Delete LabVPN and wait for VPN binary to complete cleanup.
-	if done, err := r.ensureLabVPNDeleted(ctx, lab); err != nil {
-		return ctrl.Result{}, err
-	} else if !done {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
-
-	// Delete LabGateway and wait for gateway binary to complete cleanup.
-	if done, err := r.ensureLabGatewayDeleted(ctx, lab); err != nil {
+	// Delete every LabVPN and LabGateway of the lab and wait for the VPN and gateway programs to complete their cleanup.
+	if done, err := r.ensureGatewaysDeleted(ctx, lab); err != nil {
 		return ctrl.Result{}, err
 	} else if !done {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -1120,211 +1168,47 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	return ctrl.Result{}, r.Update(ctx, lab)
 }
 
-// ensureSubnetAllocation allocates a /24 index N from the lab-subnets pool,
-// writes Status.VPN.CIDR and/or Status.Internet.CIDR, and updates status.
-// VPN and Internet share the same N for a given Lab.
-func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laboratoryv1alpha1.Lab) (
-	updated bool,
-	err error,
-) {
-	needsVPN := lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR == ""
-	needsInet := lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR == ""
-	if !needsVPN && !needsInet {
-		return false, nil
+// labGone answers the failure to read a Lab: any error but "not found" is returned; for a Lab that does not exist (any more) its
+// credentials Secret of the upstream namespace, which the Lab could not own, goes.
+func (r *LabReconciler) labGone(ctx context.Context, req ctrl.Request, err error) error {
+	if !errors.IsNotFound(err) {
+		return err
 	}
-
-	subnetAllocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolLabSubnets, Namespace: lab.Namespace, Size: 254, InUse: r.subnetsInUse(lab.Namespace)}
-	n, err := subnetAllocator.AllocateIndex(ctx)
-	if err != nil {
-		return false, fmt.Errorf("allocate lab subnet: %w", err)
-	}
-	if needsVPN {
-		cidr, err := netutil.SubnetForIndex(r.VPNBaseNetwork, 24, n)
-		if err != nil {
-			return false, fmt.Errorf("compute VPN subnet: %w", err)
-		}
-		lab.Status.VPN.CIDR = cidr
-	}
-	if needsInet {
-		cidr, err := netutil.SubnetForIndex(r.InetBaseNetwork, 24, n)
-		if err != nil {
-			return false, fmt.Errorf("compute inet subnet: %w", err)
-		}
-		lab.Status.Internet.CIDR = cidr
-	}
-	return true, r.Status().Update(ctx, lab)
+	publishLabInitiatedDropped(req.Namespace, req.Name, 0, false)
+	return deleteUpstreamLab(ctx, r.Client, req.Namespace, req.Name)
 }
 
-// indexFromCIDR extracts the subnet index N from a CIDR like "10.X.N.0/24".
-func indexFromCIDR(cidr string) (uint, bool) {
-	parts := strings.Split(cidr, ".")
-	if len(parts) < 3 {
-		return 0, false
+// modesOrRefuse is ensureModes that turns the refusal of a lab whose tags cannot be pinned (digests are required) into the failure of the
+// lab, looked at again later: the registry may answer next time.
+func (r *LabReconciler) modesOrRefuse(ctx context.Context, lab *laboratoryv1alpha1.Lab) (refused bool, res ctrl.Result, err error) {
+	if _, err := r.ensureModes(ctx, lab); err != nil {
+		var required *digestRequiredError
+		if stderrors.As(err, &required) {
+			res, err = r.refuseLab(ctx, lab, err, true)
+			return true, res, err
+		}
+		return false, ctrl.Result{}, err
 	}
-	var n uint
-	_, err := fmt.Sscanf(parts[2], "%d", &n)
-	return n, err == nil
+	return false, ctrl.Result{}, nil
 }
 
-// ensureLabNetworkObjects creates LabVPN and/or LabGateway CRDs once the subnet
-// index is known. The FinalizerController on each object signals VPN/gateway
-// binaries that the spec is complete and they may start reconciling.
-func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
-		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
-		if !ok {
-			return fmt.Errorf("invalid VPN CIDR %q", lab.Status.VPN.CIDR)
-		}
-		if err := r.ensureLabVPN(ctx, lab, n); err != nil {
-			return err
-		}
-		if err := r.ensureDHCPPool(ctx, lab, "dhcp-vpn"); err != nil {
-			return err
-		}
+// refuseLab fails the lab with the reason of its validation, as a condition and an event. A lab refused for a server its group has
+// switched off is looked at again later (the switch may be turned on), any other refusal waits for a change of the lab.
+func (r *LabReconciler) refuseLab(ctx context.Context, lab *laboratoryv1alpha1.Lab, validationErr error, serverOff bool) (ctrl.Result, error) {
+	// Surface the specific validation reason — it was previously discarded, leaving the Lab in Failed with no user-visible cause.
+	lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
+	labstatus.SetReady(
+		&lab.Status.Conditions, lab.Generation, false,
+		labstatus.ReasonValidationFailed, validationErr.Error(),
+	)
+	r.Recorder.Event(lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, validationErr.Error())
+	if statusErr := r.Status().Update(ctx, lab); statusErr != nil {
+		log.FromContext(ctx).Error(statusErr, "update status after graph validation failure")
 	}
-	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
-		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
-		if !ok {
-			return fmt.Errorf("invalid Internet CIDR %q", lab.Status.Internet.CIDR)
-		}
-		if err := r.ensureLabGateway(ctx, lab, n); err != nil {
-			return err
-		}
-		if err := r.ensureDHCPPool(ctx, lab, "dhcp-inet"); err != nil {
-			return err
-		}
+	if serverOff {
+		return ctrl.Result{RequeueAfter: groupServerRecheck}, nil
 	}
-	return nil
-}
-
-// ensureDHCPPool creates the per-lab DHCP Pool that the VPN/gateway binaries
-// use as the enable-signal (and future lease allocator) for their embedded
-// DHCP server. Without this Pool the binaries silently never start DHCP.
-// prefix is "dhcp-vpn" or "dhcp-inet"; the segment's DHCPServer.Enabled
-// gates creation. Owner reference ties the Pool's lifecycle to the Lab.
-func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alpha1.Lab, prefix string) error {
-	var dhcpSpec *laboratoryv1alpha1.DHCPServer
-	switch prefix {
-	case "dhcp-vpn":
-		dhcpSpec = lab.Spec.VPN.DHCPServer
-	case "dhcp-inet":
-		dhcpSpec = lab.Spec.Internet.DHCPServer
-	}
-	if dhcpSpec == nil || !dhcpSpec.Enabled {
-		return nil
-	}
-
-	poolName := fmt.Sprintf("%s-%s-0", prefix, lab.Name)
-	var existing allocationv1alpha1.Pool
-	if err := r.Get(ctx, types.NamespacedName{Name: poolName, Namespace: lab.Namespace}, &existing); err == nil {
-		return nil
-	} else if !errors.IsNotFound(err) {
-		return err
-	}
-
-	// Leases live in hosts .2‥.254 of the lab /24 — .1 is the gateway/VPN leg.
-	const dhcpPoolOffset, dhcpPoolSize = 2, 253
-	bitmapStr, free := poolpkg.InitBitmap(dhcpPoolSize, dhcpPoolOffset)
-	p := &allocationv1alpha1.Pool{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      poolName,
-			Namespace: lab.Namespace,
-			Labels: map[string]string{
-				poolpkg.PoolTypeLabel:   prefix,
-				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
-				poolpkg.PoolGroupLabel:  fmt.Sprintf("%s-%s", prefix, lab.Name),
-				poolpkg.LatestPoolLabel: valueTrue,
-			},
-		},
-		Spec: allocationv1alpha1.PoolSpec{Size: dhcpPoolSize, Offset: dhcpPoolOffset},
-	}
-	if err := controllerutil.SetOwnerReference(lab, p, r.Scheme); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, p); err != nil {
-		return err
-	}
-	p.Status = allocationv1alpha1.PoolStatus{Free: free, BitMap: bitmapStr}
-	return r.Status().Update(ctx, p)
-}
-
-func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
-	name := names.LabVPNObjectName(lab.Name)
-	var existing laboratoryv1alpha1.LabVPN
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
-		return nil
-	} else if !errors.IsNotFound(err) {
-		return err
-	}
-	obj := &laboratoryv1alpha1.LabVPN{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       name,
-			Namespace:  lab.Namespace,
-			Finalizers: []string{names.FinalizerController},
-		},
-		Spec: laboratoryv1alpha1.LabVPNSpec{
-			LabName:      lab.Name,
-			NetworkIndex: n,
-		},
-	}
-	if err := controllerutil.SetOwnerReference(lab, obj, r.Scheme); err != nil {
-		return err
-	}
-	return r.Create(ctx, obj)
-}
-
-func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
-	name := names.LabGatewayObjectName(lab.Name)
-	var existing laboratoryv1alpha1.LabGateway
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
-		return nil
-	} else if !errors.IsNotFound(err) {
-		return err
-	}
-	obj := &laboratoryv1alpha1.LabGateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       name,
-			Namespace:  lab.Namespace,
-			Finalizers: []string{names.FinalizerController},
-		},
-		Spec: laboratoryv1alpha1.LabGatewaySpec{
-			LabName:      lab.Name,
-			NetworkIndex: n,
-		},
-	}
-	if err := controllerutil.SetOwnerReference(lab, obj, r.Scheme); err != nil {
-		return err
-	}
-	return r.Create(ctx, obj)
-}
-
-// ensureLabVPNDeleted triggers deletion of the LabVPN object and, once the VPN
-// binary has removed its own finalizer (leaving only FinalizerController), removes
-// FinalizerController so the object can be garbage-collected.
-// Returns true when the object no longer exists.
-func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
-	if !lab.Spec.VPN.Enabled {
-		return true, nil
-	}
-	name := names.LabVPNObjectName(lab.Name)
-	var obj laboratoryv1alpha1.LabVPN
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &obj); err != nil {
-		return true, client.IgnoreNotFound(err)
-	}
-	if obj.DeletionTimestamp.IsZero() {
-		return false, r.Delete(ctx, &obj)
-	}
-	// The VPN binary removes its own finalizer after in-pod cleanup, leaving
-	// only FinalizerController for us to strip. The VPN pod is a Deployment, so
-	// if it crashes a new one comes up and processes this — the only way it
-	// never runs is a group teardown, which LabGroup.reconcileDelete prevents by
-	// draining Labs before the namespace (and its VPN Deployment) is deleted.
-	f := obj.GetFinalizers()
-	if len(f) == 1 && f[0] == names.FinalizerController {
-		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
-		return false, r.Update(ctx, &obj)
-	}
-	return r.releaseFinalizerOfAbsentGroupPod(ctx, &obj, names.FinalizerVPN, names.ComponentVPN)
+	return ctrl.Result{}, nil
 }
 
 // releaseFinalizerOfAbsentGroupPod strips the finalizer of the group pod's binary (it cleans inside the pod: DHCP, firewall rules, the lab
@@ -1359,27 +1243,6 @@ func groupPodAbsent(ctx context.Context, reader client.Reader, namespace, compon
 		return false, err
 	}
 	return len(pods.Items) == 0, nil
-}
-
-// ensureLabGatewayDeleted is ensureLabVPNDeleted's counterpart for LabGateway.
-func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
-	if !lab.Spec.Internet.Enabled {
-		return true, nil
-	}
-	name := names.LabGatewayObjectName(lab.Name)
-	var obj laboratoryv1alpha1.LabGateway
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &obj); err != nil {
-		return true, client.IgnoreNotFound(err)
-	}
-	if obj.DeletionTimestamp.IsZero() {
-		return false, r.Delete(ctx, &obj)
-	}
-	f := obj.GetFinalizers()
-	if len(f) == 1 && f[0] == names.FinalizerController {
-		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
-		return false, r.Update(ctx, &obj)
-	}
-	return r.releaseFinalizerOfAbsentGroupPod(ctx, &obj, names.FinalizerGateway, names.ComponentGateway)
 }
 
 func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
@@ -1428,12 +1291,13 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) error {
 	services := r.serviceSnapshot(lab, snapshots...)
+	defer r.codeLocks.Lock(lab.Namespace)()
 	codes := r.newCodeAllocator(lab, services)
 	for _, d := range lab.Spec.Devices {
-		if d.Exposure == nil || d.Exposure.Web == nil {
+		web := laboratoryv1alpha1.HTTPAccess(d.Access)
+		if web == nil {
 			continue
 		}
-		web := d.Exposure.Web
 		// The Service name is the host label <device>-<code>. The labels let the
 		// proxy attribute a request to the lab and the device.
 		fill := func(svc *corev1.Service) error {
@@ -1562,7 +1426,7 @@ func labOwnerHandler(scheme *runtime.Scheme, mapper meta.RESTMapper) handler.Eve
 }
 
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Lab{}).
 		Watches(&laboratoryv1alpha1.Device{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.Connection{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
@@ -1570,30 +1434,13 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
-		Complete(reconcileutil.Quiet(r))
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)})
+	if r.PinEvents != nil {
+		b = b.WatchesRawSource(source.Channel(r.PinEvents, &handler.TypedEnqueueRequestForObject[*laboratoryv1alpha1.Lab]{}))
+	}
+	return b.Complete(reconcileutil.Quiet(r))
 }
 
 func deviceTypeIsSwitch(deviceType laboratoryv1alpha1.DeviceType) bool {
 	return deviceType == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || deviceType == laboratoryv1alpha1.DeviceTypeHub
-}
-
-// subnetsInUse is the subnet indexes the labs of a namespace refer to, read straight from the API server (the insurance of the
-// forward-only pool: see poolpkg.ForwardAllocator).
-func (r *LabReconciler) subnetsInUse(namespace string) func(context.Context) (map[uint]bool, error) {
-	return func(ctx context.Context) (map[uint]bool, error) {
-		reader := r.lifecycleReader()
-		var labs laboratoryv1alpha1.LabList
-		if err := reader.List(ctx, &labs, client.InNamespace(namespace)); err != nil {
-			return nil, err
-		}
-		used := map[uint]bool{}
-		for i := range labs.Items {
-			for _, cidr := range []string{labs.Items[i].Status.VPN.CIDR, labs.Items[i].Status.Internet.CIDR} {
-				if n, ok := indexFromCIDR(cidr); ok && cidr != "" {
-					used[n] = true
-				}
-			}
-		}
-		return used, nil
-	}
 }

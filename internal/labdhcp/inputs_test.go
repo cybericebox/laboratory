@@ -7,6 +7,7 @@ import (
 
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,17 +18,22 @@ import (
 func TestDHCPInputsAndOwnedPoolMapping(t *testing.T) {
 	before := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "a-uid"}}
 	after := before.DeepCopy()
-	after.Spec.Internet.DHCPServer = &lab.DHCPServer{Enabled: true, DNS: "1.1.1.1", Ranges: []lab.DHCPRange{{Start: 2, End: 4}}}
-	if !InputsChanged(before, after, "internet") || InputsChanged(before, after, "vpn") {
+	after.Spec.Gateways = []lab.GatewayTemplate{{Name: "out", Kind: lab.GatewayKindInternet, DHCPServer: &lab.DHCPServer{Enabled: true, DNS: "1.1.1.1", Ranges: []lab.DHCPRange{{Start: 2, End: 4}}}}}
+	if !InputsChanged(before, after) || InputsChanged(before, before.DeepCopy()) {
 		t.Fatal("wrong DHCP inputs")
 	}
-	p := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Namespace: "g", Name: "dhcp-inet-a-0", OwnerReferences: []metav1.OwnerReference{{APIVersion: "laboratory.cybericebox.com/v1alpha1", Kind: "Lab", Name: "a", UID: "a-uid"}}}}
-	if name := PoolLabName(p, "internet"); name != "a" {
-		t.Fatal("owned pool not mapped")
+	p := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Namespace: "g", Name: names.DHCPPoolName("a", "out"), OwnerReferences: []metav1.OwnerReference{{APIVersion: "laboratory.cybericebox.com/v1alpha1", Kind: "Lab", Name: "a", UID: "a-uid"}}}}
+	if owner, gateway := PoolOwner(p); owner != "a" || gateway != "out" {
+		t.Fatalf("owned pool not mapped: %q %q", owner, gateway)
 	}
-	p.Name = "dhcp-inet-b-0"
-	if PoolLabName(p, "internet") != "" {
+	p.Name = names.DHCPPoolName("b", "out")
+	if owner, _ := PoolOwner(p); owner != "" {
 		t.Fatal("foreign name/owner mapped")
+	}
+	// A lab whose name is the start of another lab's name does not own that lab's pool.
+	p.Name = names.DHCPPoolName("a-b", "out")
+	if owner, _ := PoolOwner(p); owner != "" {
+		t.Fatal("pool of lab a-b mapped to lab a")
 	}
 }
 
@@ -43,31 +49,69 @@ func TestDHCPDesiredDistinguishesMissingFromReadFailure(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = lab.AddToScheme(scheme)
 	_ = allocation.AddToScheme(scheme)
-	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}, Spec: lab.LabSpec{Internet: lab.LabNetworkSpec{Enabled: true, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 3}}}}}}
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "out", Kind: lab.GatewayKindInternet, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 3}}}}}}}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(l).Build()
-	if enabled, _, _, err := Desired(context.Background(), c, "g", "a", "internet"); err != nil || enabled {
+	if enabled, _, _, err := Desired(context.Background(), c, "g", "a", "out"); err != nil || enabled {
 		t.Fatalf("missing optional pool %v %v", enabled, err)
 	}
-	if _, _, _, err := Desired(context.Background(), failedReader{c, errors.New("forbidden")}, "g", "a", "internet"); err == nil {
+	if _, _, _, err := Desired(context.Background(), failedReader{c, errors.New("forbidden")}, "g", "a", "out"); err == nil {
 		t.Fatal("API failure masked as disabled")
 	}
 }
 
-func TestStoppedIntentDisablesDHCPAndWakesBothNetworks(t *testing.T) {
-	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "uid"}, Spec: lab.LabSpec{VPN: lab.LabNetworkSpec{Enabled: true, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 3}}}}}}
+func TestStoppedIntentDisablesDHCPAndWakesTheGateways(t *testing.T) {
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "uid"}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{{Name: "attack", Kind: lab.GatewayKindVPN, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 3}}}}}}}
 	old := l.DeepCopy()
 	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
-	if !InputsChanged(old, l, "vpn") || !InputsChanged(old, l, "internet") {
+	if !InputsChanged(old, l) {
 		t.Fatal("stop did not wake network owners")
 	}
 	scheme := runtime.NewScheme()
 	_ = lab.AddToScheme(scheme)
 	_ = allocation.AddToScheme(scheme)
-	pool := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: "dhcp-vpn-a-0", Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: "a", UID: l.UID}}}}
+	pool := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: names.DHCPPoolName("a", "attack"), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: "a", UID: l.UID}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(l, pool).Build()
-	enabled, _, _, err := Desired(context.Background(), c, "g", "a", "vpn")
+	enabled, _, _, err := Desired(context.Background(), c, "g", "a", "attack")
 	if err != nil || enabled {
 		t.Fatal("stopped DHCP still enabled", err)
+	}
+}
+
+// Two gateways of one lab each get their own DHCP: the settings of that gateway, the pool of that gateway; a gateway whose DHCP is off gets
+// none even when a pool of its name exists.
+func TestEachGatewayOfALabGetsItsOwnDHCP(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = lab.AddToScheme(scheme)
+	_ = allocation.AddToScheme(scheme)
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "uid"}, Spec: lab.LabSpec{Gateways: []lab.GatewayTemplate{
+		{Name: "attack", Kind: lab.GatewayKindVPN, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 10}}}},
+		{Name: "user", Kind: lab.GatewayKindVPN, DHCPServer: &lab.DHCPServer{Enabled: false, Ranges: []lab.DHCPRange{{Start: 20, End: 30}}}},
+		{Name: "out", Kind: lab.GatewayKindInternet, DHCPServer: &lab.DHCPServer{Enabled: true, DNS: "9.9.9.9", Ranges: []lab.DHCPRange{{Start: 50, End: 60}}}},
+		{Name: "plain", Kind: lab.GatewayKindVPN},
+	}}}
+	pool := func(gateway string) *allocation.Pool {
+		return &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: names.DHCPPoolName("a", gateway), Namespace: "g",
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: "a", UID: l.UID}}}}
+	}
+	// a pool for "user" exists although its DHCP is off; "plain" has no pool
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(l, pool("attack"), pool("user"), pool("out")).Build()
+	ctx := context.Background()
+
+	on, ranges, dns, err := Desired(ctx, c, "g", "a", "attack")
+	if err != nil || !on || len(ranges) != 1 || ranges[0].Start != 2 || ranges[0].End != 10 || dns != "" {
+		t.Fatalf("attack: %v %v %q %v", on, ranges, dns, err)
+	}
+	on, ranges, dns, err = Desired(ctx, c, "g", "a", "out")
+	if err != nil || !on || len(ranges) != 1 || ranges[0].Start != 50 || dns != "9.9.9.9" {
+		t.Fatalf("out: %v %v %q %v", on, ranges, dns, err)
+	}
+	for _, gateway := range []string{"user", "plain", "missing"} {
+		if on, _, _, err := Desired(ctx, c, "g", "a", gateway); err != nil || on {
+			t.Fatalf("%s must have no DHCP: %v %v", gateway, on, err)
+		}
+	}
+	if pool("attack").Name == pool("out").Name {
+		t.Fatal("two gateways share a pool")
 	}
 }

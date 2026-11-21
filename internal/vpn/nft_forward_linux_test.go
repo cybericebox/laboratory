@@ -105,7 +105,7 @@ func TestNFTPlanIsOneTransactionWithoutConntrack(t *testing.T) {
 		t.Fatalf("one transaction expected, got %d", len(f.scripts))
 	}
 	s := f.scripts[0]
-	for _, want := range []string{"flush set ip cicevpn allow_fwd", "add element ip cicevpn allow_fwd { \"lab1\" . 10.8.0.5 . 10.9.3.0/24 }", "add element ip cicevpn allow_rev { \"lab1\" . 10.9.3.0/24 . 10.8.0.5 }", "labnets { 10.9.3.0/24 }", "clients { 10.8.0.5 }"} {
+	for _, want := range []string{"flush set ip cicevpn allow_fwd", "add element ip cicevpn allow_fwd { \"lab1\" . 10.8.0.5 . 10.9.3.0/24 }", "add element ip cicevpn reply_rev { \"lab1\" . 10.9.3.0/24 . 10.8.0.5 }"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the transaction lacks %q:\n%s", want, s)
 		}
@@ -113,12 +113,13 @@ func TestNFTPlanIsOneTransactionWithoutConntrack(t *testing.T) {
 	if strings.Count(s, "counter comment \"cibacct:"+rule.BindingID+":") != 4 {
 		t.Errorf("a new pair gets its four accounting elements:\n%s", s)
 	}
-	if strings.Contains(s, "ct state") || strings.Contains(s, "conntrack") {
-		t.Errorf("no connection tracking in the gate:\n%s", s)
+	// the default lab may not start connections: its traffic is tracked (no notrack element) and only replies pass
+	if strings.Contains(s, "allow_rev {") || strings.Contains(s, "labnets {") || strings.Contains(s, "open_clients {") {
+		t.Errorf("a lab that may not start connections must not be in the stateless sets:\n%s", s)
 	}
-	// the base script marks the pair traffic notrack and closes the gate by policy
-	base := m.nftBaseScript()
-	for _, want := range []string{"notrack", "policy drop", "iifname \"wg0\" oifname \"wg0\" drop", "jump count_fwd", "jump count_rev"} {
+	// the base script marks the traffic of the open labs notrack and closes the gate by policy
+	base := nftBaseScript("wg0")
+	for _, want := range []string{"notrack", "policy drop", "ct state established,related ct direction reply", "iifname \"wg0\" oifname \"wg0\" drop", "jump count_fwd", "jump count_rev"} {
 		if !strings.Contains(base, want) {
 			t.Errorf("the base ruleset lacks %q", want)
 		}
@@ -136,5 +137,41 @@ func TestNFTPlanIsOneTransactionWithoutConntrack(t *testing.T) {
 	last := f.scripts[len(f.scripts)-1]
 	if strings.Count(last, "delete element ip cicevpn") != 4 {
 		t.Errorf("the four elements of the retired pair are deleted:\n%s", last)
+	}
+}
+
+func TestParseNFTDropsReadsTheElementCounters(t *testing.T) {
+	elem := func(iface string, packets uint64) string {
+		return fmt.Sprintf(`{"elem":{"val":%q,"counter":{"packets":%d,"bytes":1}}}`, iface, packets)
+	}
+	doc := `{"nftables":[` + nftSetJSON("blocked_labs", elem("lab1", 4), elem("lab2", 9)) + `,` + nftSetJSON("allow_fwd") + `]}`
+	got, err := parseNFTDrops([]byte(doc))
+	if err != nil || len(got) != 2 || got["lab1"] != 4 || got["lab2"] != 9 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if got, err := parseNFTDrops(nil); err != nil || len(got) != 0 {
+		t.Fatalf("no table: %v %v", got, err)
+	}
+}
+
+// The counters start again when the rules are rewritten; the total keeps what was dropped before.
+func TestDropCountsSurviveARewriteOfTheRules(t *testing.T) {
+	commands := &recordingRuleCommand{saved: []byte("*filter\n[10:600] -A GATE -i lab1 -o wg0 -m comment --comment cibblk:lab1 -j DROP\nCOMMIT\n")}
+	m := &IPTablesManager{wgIface: "wg0", commands: commands}
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
+		map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, allowLabs("a", "b", "l1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands.restores[0]), "cibblk:lab1 -j DROP") {
+		t.Fatalf("no counting rule:\n%s", commands.restores[0])
+	}
+	commands.saved = []byte("*filter\n[4:240] -A GATE -i lab1 -o wg0 -m comment --comment cibblk:lab1 -j DROP\nCOMMIT\n")
+	got, err := m.LabDropCounts(context.Background())
+	if err != nil || got["lab1"] != 14 {
+		t.Fatalf("total %v %v, want 10 before the rewrite plus 4 after", got, err)
 	}
 }

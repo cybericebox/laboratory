@@ -15,8 +15,15 @@ import (
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
+	"github.com/cybericebox/laboratory/internal/switches"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
+
+// MaxReconcileWorkers is the most workers one controller may be given: more than that only queues behind the client rate limit.
+const MaxReconcileWorkers = 64
+
+// MaxAPIQPS is the largest client rate limit the operator may be given: the API server and etcd are shared with the node-agents.
+const MaxAPIQPS = 2000
 
 type Config struct {
 	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the operator writes the bandwidth ceilings onto the
@@ -25,7 +32,29 @@ type Config struct {
 	// BandwidthEntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy: each gets the ConfigMap with the entry
 	// limits of every node (BANDWIDTH_ENTRY_NAMESPACES, comma separated).
 	BandwidthEntryNamespaces []string `env:"BANDWIDTH_ENTRY_NAMESPACES" envSeparator:","`
-	RuntimeObservation       bool     `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// DeviceAccessNamespace is the namespace of the device access service (DEVICE_ACCESS_NAMESPACE): the operator mirrors the tenants'
+	// access public keys into the ConfigMap names.AccessKeysConfigMap there, which the service verifies console grants with. Empty: no
+	// mirror (the console is off).
+	DeviceAccessNamespace string `env:"DEVICE_ACCESS_NAMESPACE"`
+	RuntimeObservation    bool   `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled (the same two the management agent reads):
+	// the options of lab checks and the browser terminal. Nothing in the operator acts on them yet; the checker and the terminal
+	// components will.
+	ChecksEnabled bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	// ActivityReports is the chart's activityReports.enabled: the VPN and gateway pods made from now on keep the raw activity facts (the
+	// operator itself reads the same variable for the egress facts).
+	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
+	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// The feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled, proxy.enabled with proxy.rdp.enabled and
+	// proxy.vnc.enabled): what a Lab may ask for. The VPN and the internet are on by default, RDP and VNC are not (nothing serves them).
+	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
+	InternetEnabled bool `env:"INTERNET_ENABLED" envDefault:"true"`
+	ProxyL7Enabled  bool `env:"PROXY_L7_ENABLED" envDefault:"true"`
+	// AllowedRegistries are the registries lab images may come from (chart registry.allowedRegistries plus those of the platform's own
+	// images); "*" allows every registry. A Lab with an image from another registry is Failed with REGISTRY_NOT_ALLOWED.
+	AllowedRegistries []string `env:"ALLOWED_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	ProxyRDPEnabled   bool     `env:"PROXY_RDP_ENABLED" envDefault:"false"`
+	ProxyVNCEnabled   bool     `env:"PROXY_VNC_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).
 	GatewayMaxConnectionsPerLab          int `env:"GATEWAY_MAX_CONNECTIONS_PER_LAB" envDefault:"0"`
@@ -40,7 +69,20 @@ type Config struct {
 	VNISweepInterval time.Duration `env:"VNI_SWEEP_INTERVAL" envDefault:"5m"`
 	VNIRetireFlush   time.Duration `env:"VNI_RETIRE_FLUSH" envDefault:"2s"`
 
-	// The egress monitor pulls the per-minute summaries of the gateways (EGRESS_MONITOR_ENABLED), on their summaries port (EGRESS_STATS_PORT),
+	// LabWorkers, DeviceWorkers and ConnectionWorkers are how many objects of that kind are reconciled at the same time
+	// (LAB_RECONCILE_WORKERS, DEVICE_RECONCILE_WORKERS, CONNECTION_RECONCILE_WORKERS; chart operator.workers). One object is never
+	// worked on twice at once. The LabGroup controller always has one worker: its duplicate-key check depends on it.
+	LabWorkers        int `env:"LAB_RECONCILE_WORKERS" envDefault:"8"`
+	DeviceWorkers     int `env:"DEVICE_RECONCILE_WORKERS" envDefault:"16"`
+	ConnectionWorkers int `env:"CONNECTION_RECONCILE_WORKERS" envDefault:"8"`
+
+	// APIQPS and APIBurst are the client-side rate limit of the operator's Kubernetes API client, shared by every controller and the
+	// scheduler (API_QPS, API_BURST; chart operator.api). The client-go default of 20 and 30 would make the workers wait for one
+	// another.
+	APIQPS   float32 `env:"API_QPS" envDefault:"200"`
+	APIBurst int     `env:"API_BURST" envDefault:"400"`
+
+	// The egress monitor reads the per-minute summaries that the gateways write to their LabEgressReports (EGRESS_MONITOR_ENABLED),
 	// keeps the connection log in the operator log and, with EGRESS_LOG_DIR, in daily files for EGRESS_LOG_RETENTION, and flags a lab when
 	// EGRESS_SIGNAL_HOST_LABS labs hit one host name or it sat at its caps for EGRESS_SIGNAL_CAP_MINUTES minutes of ten.
 	// The egress settings a NEW gateway pod gets (empty = the default of the gateway): EGRESS_DNS_UPSTREAMS (comma separated),
@@ -54,7 +96,6 @@ type Config struct {
 	EgressTunnelSuffixes          string        `env:"EGRESS_TUNNEL_SUFFIXES"`
 	EgressICMPPerSecond           string        `env:"EGRESS_ICMP_PER_SECOND"`
 	EgressMonitorEnabled          bool          `env:"EGRESS_MONITOR_ENABLED" envDefault:"true"`
-	EgressStatsPort               int           `env:"EGRESS_STATS_PORT" envDefault:"9188"`
 	EgressLogDir                  string        `env:"EGRESS_LOG_DIR"`
 	EgressLogRetention            time.Duration `env:"EGRESS_LOG_RETENTION" envDefault:"720h"`
 	EgressSignalHostLabs          int           `env:"EGRESS_SIGNAL_HOST_LABS" envDefault:"20"`
@@ -76,11 +117,12 @@ type Config struct {
 	// WGDemuxMode is the mode of the WireGuard demux (userspace, tc or xdp; the chart value proxy.wg.mode). In tc and xdp the demux runs on the
 	// host network, so its packets reach the VPN pods with a node address, and the VPN pods' policy admits the nodes on the WireGuard port.
 	WGDemuxMode string `env:"WG_DEMUX_MODE" envDefault:"userspace"`
-	// VPNBaseNetwork is the base address space for per-lab VPN subnets, VPN half of 10.128.0.0/9 (e.g. "10.128.0.0/10").
-	// Each lab is assigned a /24 child subnet by adding its index to the base address.
-	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.128.0.0/10"`
-	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets, internet half (e.g. "10.192.0.0/10").
-	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.192.0.0/10"`
+	// LabBaseNetwork is the one address space of the lab networks (LAB_BASE_NETWORK, default 10.128.0.0/9): /24 number 0 is the VPN
+	// clients, every other /24 goes to a gateway of a lab, VPN or Internet, first free number.
+	LabBaseNetwork string `env:"LAB_BASE_NETWORK"`
+	// MaxLabGateways is the most gateways (VPN entries and Internet exits together) one lab may have
+	// (MAX_LAB_GATEWAYS, chart operator.maxLabGateways). The agent refuses a lab with more when it is created; the operator checks again.
+	MaxLabGateways int `env:"MAX_LAB_GATEWAYS" envDefault:"10"`
 	// VPNImage is the container image for per-LabGroup VPN pods. Required, no default: the chart passes
 	// repository:tag (the tag is the release tag: image.tag, else the chart appVersion).
 	VPNImage string `env:"VPN_IMAGE,notEmpty"`
@@ -238,12 +280,20 @@ type CacheConfig struct {
 	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
 	// Prefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); empty = names.RegistryNodePrefix.
 	Prefix string `env:"IMAGE_CACHE_PREFIX"`
-	// Registries are the upstream registries the cache serves; references to any
-	// other registry are pulled directly.
+	// Registries are the upstream registries the cache serves; with the cache on a reference to
+	// any other registry is refused, never pulled directly.
 	// PinTTL is how long a resolved image digest is remembered, so labs created in
 	// the same wave run the same image even when the upstream tag moves.
-	PinTTL     time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
-	Registries []string      `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	PinTTL time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
+	// PinConcurrency is how many image tags are resolved at once, in the background, for new labs (IMAGE_CACHE_PIN_CONCURRENCY).
+	PinConcurrency int `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
+	// RequireDigest (IMAGE_CACHE_REQUIRE_DIGEST, the chart's registry.cache.requireDigest, like GATE_REQUIRE_DIGEST of the gate; on by
+	// default): a tag that cannot be resolved to a digest fails the creation of the lab. Off, it is pulled by its tag.
+	RequireDigest bool     `env:"IMAGE_CACHE_REQUIRE_DIGEST" envDefault:"true"`
+	Registries    []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	// PlainHTTPRegistries are the served registries the chart lists with an http:// url (IMAGE_CACHE_PLAIN_HTTP_REGISTRIES): the tag resolver
+	// asks them over plain http, as the registry gate does.
+	PlainHTTPRegistries []string `env:"IMAGE_CACHE_PLAIN_HTTP_REGISTRIES" envSeparator:","`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)
@@ -260,11 +310,16 @@ func (c CacheConfig) Rewriter() imagecache.Rewriter {
 // snapshot registry.
 type StateConfig struct {
 	Enabled bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
-	// RegistryAddr is host:port of the snapshot registry Service, used by the operator to drop snapshots (device reset, retention);
-	// empty = names.RegistryServiceAddr (the chart always installs the registry there).
-	RegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
-	RegistryUser     string `env:"STATE_REGISTRY_USER"`
-	RegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
+	// RegistryAddr is host:port of the registry gate's TLS port, used by the operator to drop snapshots (device reset, retention);
+	// empty = names.RegistryGateAddr. The operator is known to the gate by its own projected ServiceAccount token (RegistryTokenFile,
+	// audience laboratory-registry-gate) and trusts the certificate authority in RegistryCAFile (the chart mounts the ConfigMap
+	// laboratory-registry-ca); it has no registry account. Without a CA file the operator speaks plain http (a development setup).
+	RegistryAddr      string `env:"STATE_REGISTRY_ADDR"`
+	RegistryCAFile    string `env:"STATE_REGISTRY_CA_FILE"`
+	RegistryTokenFile string `env:"STATE_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// RegistryInsecureDev (STATE_REGISTRY_INSECURE_DEV): plain http and no token, for development. Without a CA file and without it the
+	// operator refuses to talk to the registry: its token never travels in the clear.
+	RegistryInsecureDev bool `env:"STATE_REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// Debounce is how long a device's writable layer must stay quiet before a snapshot.
 	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
 	// ExcludePaths are never snapshotted (comma-separated absolute paths).
@@ -329,12 +384,37 @@ func (cfg *Config) applyDefaults() {
 		&cfg.OperatorServiceAccount: names.OperatorServiceAccount,
 		&cfg.OperatorNamespace:      names.SystemNamespace,
 		&cfg.Cache.Prefix:           names.RegistryNodePrefix,
-		&cfg.State.RegistryAddr:     names.RegistryServiceAddr,
+		&cfg.State.RegistryAddr:     names.RegistryGateAddr,
 	} {
 		if *dst == "" {
 			*dst = def
 		}
 	}
+}
+
+// validateQuantities checks that the quotas of the state persistence settings are quantities.
+func (c StateConfig) validateQuantities() error {
+	if _, err := c.TenantQuotaBytes(); err != nil {
+		return err
+	}
+	if _, err := c.WriteQuotaBytes(); err != nil {
+		return err
+	}
+	_, err := c.MaxFileBytes()
+	return err
+}
+
+// resolveLabNetwork settles the one lab base network and checks the limit of gateways per lab.
+func (cfg *Config) resolveLabNetwork() error {
+	base, err := ResolveLabBaseNetwork(cfg.LabBaseNetwork)
+	if err != nil {
+		return err
+	}
+	cfg.LabBaseNetwork = base
+	if cfg.MaxLabGateways < 1 || cfg.MaxLabGateways > 64 {
+		return fmt.Errorf("MAX_LAB_GATEWAYS must be between 1 and 64")
+	}
+	return nil
 }
 
 func LoadConfig() (*Config, error) {
@@ -349,10 +429,16 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("WG_DEMUX_MODE %q is not userspace, tc or xdp", cfg.WGDemuxMode)
 	}
 	cfg.applyDefaults()
+	if err := cfg.resolveLabNetwork(); err != nil {
+		return nil, err
+	}
 	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
 		if err := checkExactImage(image); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", name, image, err)
 		}
+	}
+	if err := validateThroughput(cfg); err != nil {
+		return nil, err
 	}
 	if cfg.SchedulerMaxPods < 0 {
 		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")
@@ -398,16 +484,10 @@ func LoadConfig() (*Config, error) {
 	if cfg.State.MaxEntries <= 0 {
 		return nil, fmt.Errorf("STATE_MAX_ENTRIES must be positive")
 	}
-	if _, err := cfg.State.TenantQuotaBytes(); err != nil {
+	if err := cfg.State.validateQuantities(); err != nil {
 		return nil, err
 	}
 	if err := cfg.GroupPods.Validate(); err != nil {
-		return nil, err
-	}
-	if _, err := cfg.State.WriteQuotaBytes(); err != nil {
-		return nil, err
-	}
-	if _, err := cfg.State.MaxFileBytes(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -472,4 +552,26 @@ func validateRoom(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// validateThroughput checks the settings that set how much the operator does at once: the reconcile workers, the client rate limit
+// and the background digest resolutions.
+func validateThroughput(cfg *Config) error {
+	for name, v := range map[string]int{"LAB_RECONCILE_WORKERS": cfg.LabWorkers, "DEVICE_RECONCILE_WORKERS": cfg.DeviceWorkers, "CONNECTION_RECONCILE_WORKERS": cfg.ConnectionWorkers} {
+		if v < 1 || v > MaxReconcileWorkers {
+			return fmt.Errorf("%s must be between 1 and %d (got %d)", name, MaxReconcileWorkers, v)
+		}
+	}
+	if cfg.APIQPS < 1 || cfg.APIQPS > MaxAPIQPS || cfg.APIBurst < int(cfg.APIQPS) || cfg.APIBurst > 2*MaxAPIQPS {
+		return fmt.Errorf("API_QPS must be between 1 and %d and API_BURST between API_QPS and %d (got %v and %d)", MaxAPIQPS, 2*MaxAPIQPS, cfg.APIQPS, cfg.APIBurst)
+	}
+	if cfg.Cache.PinConcurrency < 1 || cfg.Cache.PinConcurrency > 64 {
+		return fmt.Errorf("IMAGE_CACHE_PIN_CONCURRENCY must be between 1 and 64 (got %d)", cfg.Cache.PinConcurrency)
+	}
+	return nil
+}
+
+// Switches is what the laboratory serves, from the chart: the rule that says what a Lab may ask for (package switches).
+func (c *Config) Switches() switches.Cluster {
+	return switches.Cluster{VPN: c.VPNEnabled, Internet: c.InternetEnabled, L7: c.ProxyL7Enabled, Terminal: c.TerminalEnabled, RDP: c.ProxyRDPEnabled, VNC: c.ProxyVNCEnabled, Checks: c.ChecksEnabled}
 }

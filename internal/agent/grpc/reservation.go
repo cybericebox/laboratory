@@ -76,6 +76,16 @@ func (h *Handler) keyLock(key string) (unlock func()) {
 	}
 }
 
+// groupLock serializes group lifecycle (stop, start, retirement) with the admission of child labs of ONE group inside this agent: they
+// all compare-and-set the same LabGroup, one admission slot per group. Labs of different groups are created in parallel. A call that
+// also holds reservation locks (lockReservations) takes them first, so the order is always reservation, then group.
+func (h *Handler) groupLock(group string) (unlock func()) {
+	started := time.Now()
+	unlock = h.keyLock("group/" + crName(group))
+	groupLockWaitSeconds.Observe(sinceSeconds(started))
+	return unlock
+}
+
 // keyLocks are the mutexes of keyLock, by key, with how many hold or wait for each.
 type keyLocks struct {
 	mu sync.Mutex

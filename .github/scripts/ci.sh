@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
-# CI helpers, the same file in every repository that publishes images. Used by the workflows in .github/workflows.
-#   ci.sh sha-tag SHA                         sha-<7 hex>
-#   ci.sh exists IMAGE TAG                    exit 0 when IMAGE:TAG exists in the registry
-#   ci.sh next-version                        BUMP=auto|major, VERSION=X.Y.Z (optional override, above the last release); writes skip, version, tag to GITHUB_OUTPUT
-#   ci.sh hub-tags IMAGE                      every tag of a Docker Hub repository, one per line
-#   ci.sh hub-delete IMAGE TAG                delete one tag (Docker Hub API)
-#   ci.sh delete-rc VERSION IMAGE...          delete every VERSION-rc.* tag of the images
-#   ci.sh rc-source IMAGE...                  "retag sha-<7>" or "build <reason>": how the rc image of HEAD (a main merge) is made
-#   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> dev tags whose commit is an ancestor of RELEASE_SHA,
-#                                             plus the buildcache-develop and buildcache cache tags
-# Docker Hub calls use DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (org secrets, Read/Write/Delete); GitHub calls use GH_TOKEN.
+# CI helpers of the release workflows (.github/workflows). Docker Hub calls use DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (Read/Write/Delete).
+#   ci.sh sha-tag SHA                          sha-<7 hex>
+#   ci.sh exists IMAGE TAG                     exit 0 when IMAGE:TAG exists in the registry
+#   ci.sh retry CMD...                         run CMD again after a Docker Hub rate limit (429)
+#   ci.sh image-state IMAGE TAG SHA            missing | same | different: whether the immutable tag exists, and whether it was built from SHA
+#                                              (the org.opencontainers.image.revision label); exit 1 for "different"
+#   ci.sh retag IMAGE SRC DST                  DST becomes another name of SRC (no rebuild). A version tag is immutable: when it exists
+#                                              it must be the same digest (nothing happens), otherwise exit 1. Any other tag (latest) moves.
+#   ci.sh chart CHART_DIR VERSION APP_VERSION OUT   package the Helm chart and push it to oci://registry-1.docker.io/cybericebox (the tgz goes
+#                                              to OUT, as pulled back from the registry). A version that exists must hold the same chart (nothing happens), otherwise exit 1.
+#   ci.sh hub-tags IMAGE                       every tag of a Docker Hub repository, one per line
+#   ci.sh hub-delete IMAGE TAG                 delete one tag
+#   ci.sh delete-matching DRY_RUN REGEX IMAGE...  delete the tags that match the whole REGEX (ERE) in every repository
+#   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> tags whose commit is an ancestor of RELEASE_SHA, and the buildcache tags
+#   hub-delete, delete-matching and cleanup go on after a refused deletion (an immutable tag may be refused), list the refusals in hub_failed and exit 1 at the end
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
+
+VERSION_TAG='^v?[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' # what the registry keeps immutable
+REVISION_LABEL=org.opencontainers.image.revision
 
 hub_jwt=""
 hub_login() {
   [[ -n "$hub_jwt" ]] && return 0
   [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]] || die "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are required"
   hub_jwt=$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' |
-    curl -fsS -X POST -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -r .token)
+    curl -fsS -X POST -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -r .token) || die "Docker Hub login failed"
   [[ -n "$hub_jwt" && "$hub_jwt" != null ]] || die "Docker Hub login failed"
 }
 
@@ -28,16 +35,28 @@ hub_tags() {
   local url="https://hub.docker.com/v2/repositories/$1/tags?page_size=100"
   while [[ -n "$url" && "$url" != null ]]; do
     local page
-    page=$(curl -fsS -H "Authorization: JWT $hub_jwt" "$url")
-    jq -r '.results[].name' <<<"$page"
-    url=$(jq -r '.next // empty' <<<"$page")
+    # Explicit checks: this runs inside $(...) and < <(...), where set -e does not apply, so a failed page would be read as "no more tags".
+    page=$(curl -fsS -H "Authorization: JWT $hub_jwt" "$url") || die "Docker Hub: the list of tags of $1 failed ($url)"
+    jq -r '.results[].name' <<<"$page" || die "Docker Hub: the list of tags of $1 is not JSON"
+    url=$(jq -r '.next // empty' <<<"$page") || die "Docker Hub: no next page in the list of tags of $1"
   done
 }
 
+# Deletions that the registry refused or that failed: "IMAGE:TAG (HTTP code)", for the caller to report. An immutable tag may be refused.
+hub_failed=()
 hub_delete() {
+  local code
   hub_login
-  curl -fsS -o /dev/null -X DELETE -H "Authorization: JWT $hub_jwt" "https://hub.docker.com/v2/repositories/$1/tags/$2/"
-  echo "deleted $1:$2"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: JWT $hub_jwt" "https://hub.docker.com/v2/repositories/$1/tags/$2/") || code=000
+  case "$code" in
+    2??) echo "deleted $1:$2" ;;
+    404) echo "$1:$2 is already gone" ;;
+    *)
+      hub_failed+=("$1:$2 (HTTP $code)")
+      echo "::warning::could not delete $1:$2 (HTTP $code)" >&2
+      return 1
+      ;;
+  esac
 }
 
 # retry CMD...: runs the command; when it fails with a Docker Hub rate limit (429 Too Many Requests) it is run again after
@@ -56,128 +75,113 @@ retry() {
   done
 }
 
-# true when the image $1:$2 exists on Docker Hub (a rate limit is retried, so it is not read as "missing")
-image_exists() { retry docker buildx imagetools inspect "$1:$2" >/dev/null 2>&1; }
-
-# true when $1 is a higher version than $2 (sort -V)
-ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }
-
-# vX.Y or vX.Y.Z -> vX.Y.Z
-norm_ver() {
-  [[ "$1" =~ ^v[0-9]+\.[0-9]+$ ]] && echo "$1.0" || echo "$1"
+# true when the image $1:$2 exists on Docker Hub, false when the registry says it does not (a rate limit is retried). Any other failure
+# (network, authentication, 5xx) stops the script: it is never read as "missing", which would let a push or a retag go on blindly.
+image_exists() {
+  local out
+  if out=$(retry docker buildx imagetools inspect "$1:$2" 2>&1); then return 0; fi
+  if grep -qiE 'not found|manifest unknown|name unknown|\b404\b' <<<"$out"; then return 1; fi
+  die "cannot tell whether $1:$2 exists: $(head -c 300 <<<"$out")"
 }
 
-# bump_ver vX.Y.Z major|minor|patch
-bump_ver() {
-  local x y z
-  IFS=. read -r x y z <<<"${1#v}"
-  case "$2" in
-    major) x=$((x + 1)); y=0; z=0 ;;
-    minor) y=$((y + 1)); z=0 ;;
-    *) z=$((z + 1)) ;;
-  esac
-  echo "v$x.$y.$z"
-}
+# the digest of the manifest (list) behind $1:$2
+image_digest() { retry docker buildx imagetools inspect "$1:$2" --format '{{json .Manifest}}' | jq -r .digest; }
 
-# "<tag> <normalised version>" of the last release (tags are vX.Y.Z or vX.Y); "none v0.0.0" when there is none
-last_release() {
-  local t best="" best_n=v0.0.0
-  while read -r t; do
-    [[ -n "$t" ]] || continue
-    local n
-    n=$(norm_ver "$t")
-    if ver_gt "$n" "$best_n"; then best=$t best_n=$n; fi
-  done < <(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' || true)
-  echo "${best:-none} $best_n"
-}
-
-next_version() {
-  local last rcs latest_rc="" n bump=patch since count
-  local last_ref
-  last=$(last_release)
-  last_ref=${last%% *}
-  last=${last##* }
-  [[ "$last_ref" == none ]] && last_ref=""
-
-  # rc tags of versions above the last release (older ones are leftovers)
-  rcs=""
-  while read -r t; do
-    [[ -n "$t" ]] || continue
-    if ver_gt "${t%-rc.*}" "$last"; then rcs+="$t"$'\n'; fi
-  done < <(git tag --list 'v*-rc.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' || true)
-  [[ -n "$rcs" ]] && latest_rc=$(printf '%s' "$rcs" | sort -V | tail -n 1)
-
-  # skip when the tree is the one of the last rc (or of the last release)
-  local tree
-  tree=$(git rev-parse 'HEAD^{tree}')
-  if [[ -n "$latest_rc" && "$(git rev-parse "$latest_rc^{tree}")" == "$tree" && -z "${VERSION:-}" ]]; then
-    echo "the tree is unchanged since $latest_rc: no new rc"
-    echo "skip=true" >>"${GITHUB_OUTPUT:-/dev/stdout}"
-    return 0
-  fi
-  if [[ -n "$last_ref" && "$(git rev-parse "$last_ref^{tree}")" == "$tree" && -z "${VERSION:-}" ]]; then
-    echo "the tree is unchanged since the release $last: no new rc"
-    echo "skip=true" >>"${GITHUB_OUTPUT:-/dev/stdout}"
-    return 0
-  fi
-
-  local version=""
-  if [[ -n "${VERSION:-}" ]]; then
-    # an explicit version (manual run): X.Y.Z, above the last release
-    [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version $VERSION is not X.Y.Z"
-    version="v${VERSION#v}"
-    ver_gt "$version" "$last" || die "version $version is not above the last release $last"
-    bump=explicit
-  elif [[ "${BUMP:-auto}" == major ]]; then
-    bump=major
+# the revision label of $1:$2, read from its linux image (an index has no labels of its own); empty when it has none
+image_revision() {
+  local raw digest
+  raw=$(retry docker buildx imagetools inspect "$1:$2" --raw)
+  digest=$(jq -r '(if .manifests then [.manifests[] | select(.platform.os == "linux")][0].digest else empty end) // empty' <<<"$raw")
+  if [[ -n "$digest" ]]; then
+    retry docker buildx imagetools inspect "$1@$digest" --format '{{json .Image}}'
   else
-    since=1970-01-01T00:00:00Z
-    if [[ -n "$last_ref" ]]; then
-      since=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$last_ref^{commit}")
-    fi
-    # The date only narrows the search: a PR merged in the same second as the release commit is
-    # already in it, so a PR counts only when its merge commit is not in the last release.
-    count=0
-    while read -r sha; do
-      [[ -n "$sha" ]] || continue
-      if [[ -n "$last_ref" ]] && git merge-base --is-ancestor "$sha" "$last_ref" 2>/dev/null; then continue; fi
-      count=$((count + 1))
-    done < <(gh pr list -R "$GITHUB_REPOSITORY" --state merged --label minor --search "merged:>=$since" -L 200 --json mergeCommit --jq '.[].mergeCommit.oid')
-    [[ "$count" -gt 0 ]] && bump=minor
-    echo "last release $last ($since), merged PRs labelled minor since: $count"
-  fi
-
-  if [[ -z "$version" ]]; then
-    version=$(bump_ver "$last" "$bump")
-    # an rc of a higher version (an earlier major run) keeps its version
-    if [[ -n "$latest_rc" ]] && ver_gt "${latest_rc%-rc.*}" "$version"; then
-      version=${latest_rc%-rc.*}
-    fi
-  fi
-  n=0
-  if [[ -n "$rcs" ]]; then
-    while read -r t; do
-      if [[ "${t%-rc.*}" == "$version" ]]; then n=$((${t##*-rc.} > n ? ${t##*-rc.} : n)); fi
-    done <<<"$rcs"
-  fi
-  {
-    echo "skip=false"
-    echo "version=$version"
-    echo "tag=$version-rc.$((n + 1))"
-  } >>"${GITHUB_OUTPUT:-/dev/stdout}"
-  echo "next: $version-rc.$((n + 1)) ($bump)"
+    retry docker buildx imagetools inspect "$1:$2" --format '{{json .Image}}'
+  fi | jq -r --arg l "$REVISION_LABEL" '(.config.Labels // .Config.Labels // {})[$l] // empty'
 }
 
+# image_state IMAGE TAG SHA: missing | same | different (exit 1)
+image_state() {
+  local rev
+  if ! image_exists "$1" "$2"; then
+    echo missing
+    return 0
+  fi
+  rev=$(image_revision "$1" "$2")
+  if [[ "$rev" == "$3" ]]; then
+    echo same
+  else
+    echo different
+    echo "::error::$1:$2 exists but was built from '${rev:-unknown}', not from $3: a version tag is never pushed twice" >&2
+    return 1
+  fi
+}
+
+# retag IMAGE SRC DST
+retag() {
+  local image=$1 src=$2 dst=$3 a b
+  if [[ "$dst" =~ $VERSION_TAG ]] && image_exists "$image" "$dst"; then
+    a=$(image_digest "$image" "$src")
+    b=$(image_digest "$image" "$dst")
+    [[ -n "$a" && "$a" == "$b" ]] || die "$image:$dst exists and is not $image:$src ($b, not $a): a version tag is never pushed twice"
+    echo "$image:$dst is already $image:$src"
+    return 0
+  fi
+  retry docker buildx imagetools create -t "$image:$dst" "$image:$src"
+  echo "$image:$dst is now $image:$src"
+}
+
+# chart CHART_DIR VERSION APP_VERSION OUT
+chart() {
+  local dir=$1 version=$2 app=$3 out=$4 oci=oci://registry-1.docker.io/cybericebox tmp
+  tmp=$(mktemp -d)
+  mkdir -p "$out"
+  helm package "$dir" --version "$version" --app-version "$app" --destination "$out" >/dev/null
+  if helm pull "$oci/laboratory" --version "$version" --untar --untardir "$tmp/remote" >/dev/null 2>&1; then
+    mkdir -p "$tmp/local"
+    tar -xzf "$out/laboratory-$version.tgz" -C "$tmp/local"
+    if diff -r "$tmp/local/laboratory" "$tmp/remote/laboratory" >/dev/null; then
+      echo "chart $version is already in the registry and identical"
+    else
+      rm -rf "$tmp"
+      die "chart $version exists in the registry and differs from this one: a version tag is never pushed twice"
+    fi
+  else
+    retry helm push "$out/laboratory-$version.tgz" "$oci"
+  fi
+  # The file of OUT is the registry's own copy, byte for byte: packaging twice does not give the same bytes, and the release asset must
+  # be the very chart that the registry holds (publish_release compares them by digest on a re-run).
+  retry helm pull "$oci/laboratory" --version "$version" --destination "$tmp/pulled" >/dev/null
+  cp "$tmp/pulled/laboratory-$version.tgz" "$out/laboratory-$version.tgz"
+  rm -rf "$tmp"
+}
+
+# delete_matching DRY_RUN REGEX IMAGE...
+delete_matching() {
+  local dry=$1 re=$2 image tag tags failed=0
+  shift 2
+  for image in "$@"; do
+    tags=$(hub_tags "$image") || return 1 # not inside < <(...): a failed listing must stop, not look like an empty repository
+    while read -r tag; do
+      [[ -n "$tag" ]] || continue
+      if [[ "$tag" =~ ^($re)$ ]]; then
+        if [[ "$dry" == true ]]; then echo "would delete $image:$tag"; else hub_delete "$image" "$tag" || failed=1; fi
+      fi
+    done <<<"$tags"
+  done
+  return "$failed"
+}
+
+# cleanup RELEASE_SHA DRY_RUN IMAGE...: the dev images of builds that are part of a release, and the registry layer caches
 cleanup() {
   local release_sha=$1 dry=$2
   shift 2
-  local image tag full
+  local image tag full tags failed=0
   for image in "$@"; do
     echo "== $image"
     local doomed=()
+    tags=$(hub_tags "$image") || return 1
     while read -r tag; do
-      # the registry layer caches (rebuilt cold by the next PR); the old name "buildcache" goes too
-      if [[ "$tag" == buildcache-develop || "$tag" == buildcache ]]; then
+      if [[ "$tag" == buildcache-develop || "$tag" == buildcache-release || "$tag" == buildcache ]]; then
         doomed+=("$tag")
         continue
       fi
@@ -192,53 +196,16 @@ cleanup() {
       else
         echo "keep $tag (not an ancestor of the release commit)"
       fi
-    done < <(hub_tags "$image")
+    done <<<"$tags"
     echo "to delete from $image: ${#doomed[@]}"
     printf '  %s\n' "${doomed[@]}"
     [[ "$dry" == true ]] && continue
     for tag in "${doomed[@]}"; do
-      hub_delete "$image" "$tag"
+      hub_delete "$image" "$tag" || failed=1
     done
   done
   [[ "$dry" == true ]] && echo "dry run: nothing deleted"
-  return 0
-}
-
-# rc_source image... : how the pre-release image of HEAD (the merge of develop into main) is made. Prints one line:
-#   retag sha-<7>   the main tree equals the tree of the develop head (the second parent), and that head has an image
-#                   sha-<7> for every image: the rc is a retag of it, no build
-#   build <reason>  anything else: a real build
-rc_source() {
-  local head parent tag image
-  head=$(git rev-parse HEAD)
-  parent=$(git rev-parse -q --verify "$head^2" 2>/dev/null || true)
-  if [[ -z "$parent" ]]; then
-    echo "build: HEAD is not a merge commit"
-    return 0
-  fi
-  if [[ "$(git rev-parse "$head^{tree}")" != "$(git rev-parse "$parent^{tree}")" ]]; then
-    echo "build: the tree of main differs from the develop head ${parent:0:7}"
-    return 0
-  fi
-  tag="sha-${parent:0:7}"
-  for image in "$@"; do
-    if ! image_exists "$image" "$tag"; then
-      echo "build: $image:$tag does not exist"
-      return 0
-    fi
-  done
-  echo "retag $tag"
-}
-
-# delete_rc vX.Y.Z image... : delete the rc tags of that version
-delete_rc() {
-  local version=$1 image tag
-  shift
-  for image in "$@"; do
-    while read -r tag; do
-      if [[ "$tag" =~ ^${version//./\\.}-rc\.[0-9]+$ ]]; then hub_delete "$image" "$tag"; fi
-    done < <(hub_tags "$image")
-  done
+  return "$failed"
 }
 
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0 2>/dev/null
@@ -248,11 +215,12 @@ case "$cmd" in
   sha-tag) echo "sha-$(printf '%s' "$1" | cut -c1-7)" ;;
   exists) image_exists "$1" "$2" ;;
   retry) retry "$@" ;;
-  rc-source) rc_source "$@" ;;
-  next-version) next_version ;;
+  image-state) image_state "$1" "$2" "$3" ;;
+  retag) retag "$1" "$2" "$3" ;;
+  chart) chart "$1" "$2" "$3" "$4" ;;
   hub-tags) hub_tags "$1" ;;
   hub-delete) hub_delete "$1" "$2" ;;
-  delete-rc) delete_rc "$@" ;;
+  delete-matching) delete_matching "$@" ;;
   cleanup) cleanup "$@" ;;
-  *) die "usage: ci.sh sha-tag|exists|retry|next-version|hub-tags|hub-delete|delete-rc|rc-source|cleanup" ;;
+  *) die "usage: ci.sh sha-tag|exists|retry|image-state|retag|chart|hub-tags|hub-delete|delete-matching|cleanup" ;;
 esac

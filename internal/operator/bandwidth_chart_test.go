@@ -22,7 +22,7 @@ func renderAll(t *testing.T, extra ...string) map[string]map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"template", "bandwidth-contract", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test"}
+	args := []string{"template", "bandwidth-contract", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test", "--set", "registry.gate.address=registry.lab.internal:5443"}
 	data, err := exec.Command(helm, append(args, extra...)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("render: %v %s", err, data)
@@ -123,7 +123,7 @@ func has(list []string, s string) bool {
 }
 
 func TestChartBandwidthOffChangesNoPod(t *testing.T) {
-	objs := renderAll(t)
+	objs := renderAll(t, "--set", "bandwidth.enabled=false")
 	if objs["ConfigMap/laboratory-config"]["data"].(map[string]any)["BANDWIDTH_ENABLED"] != "false" {
 		t.Fatal("the operator is told the protection is off")
 	}
@@ -147,9 +147,10 @@ func TestChartBandwidthOffChangesNoPod(t *testing.T) {
 }
 
 func TestChartBandwidthOn(t *testing.T) {
-	objs := renderAll(t, "--set", "bandwidth.enabled=true", "--set", "bandwidth.caps.participantMbit=30")
+	// the image cache brings the registry (it is installed only when a feature needs it)
+	objs := renderAll(t, "--set", "bandwidth.enabled=true", "--set", "bandwidth.caps.participantMbit=30", "--set", "bandwidth.caps.participantMinKbps=500", "--set", "registry.cache.enabled=true")
 	cm := objs["ConfigMap/laboratory-config"]["data"].(map[string]any)
-	if cm["BANDWIDTH_ENABLED"] != "true" || cm["BANDWIDTH_PARTICIPANT_CAP_MBIT"] != "30" || cm["BANDWIDTH_ENTRY_NAMESPACES"] != "laboratory-system,laboratory-proxy,laboratory-wg" {
+	if cm["BANDWIDTH_ENABLED"] != "true" || cm["BANDWIDTH_PARTICIPANT_CAP_MBIT"] != "30" || cm["BANDWIDTH_PARTICIPANT_MIN_KBPS"] != "500" || cm["BANDWIDTH_ENTRY_NAMESPACES"] != "laboratory-system,laboratory-proxy,laboratory-wg" {
 		t.Fatalf("operator settings: %v", cm)
 	}
 	na := podSpec(objs["DaemonSet/laboratory-node-agent"])

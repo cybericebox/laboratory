@@ -30,6 +30,8 @@ type DeviceRefApplyConfiguration struct {
 	Failure *PodFailureApplyConfiguration `json:"failure,omitempty"`
 	// CPUThrottle is the device's CPU throttling (see DeviceStatus.CPUThrottle); absent means none.
 	CPUThrottle *DeviceCPUThrottleApplyConfiguration `json:"cpuThrottle,omitempty"`
+	// Bootstrap is the bootstrap state of the device (see DeviceStatus.Bootstrap); absent without a bootstrap.
+	Bootstrap *DeviceBootstrapStatusApplyConfiguration `json:"bootstrap,omitempty"`
 }
 
 // DeviceRefApplyConfiguration constructs a declarative configuration of the DeviceRef type for use with
@@ -75,5 +77,13 @@ func (b *DeviceRefApplyConfiguration) WithFailure(value *PodFailureApplyConfigur
 // If called multiple times, the CPUThrottle field is set to the value of the last call.
 func (b *DeviceRefApplyConfiguration) WithCPUThrottle(value *DeviceCPUThrottleApplyConfiguration) *DeviceRefApplyConfiguration {
 	b.CPUThrottle = value
+	return b
+}
+
+// WithBootstrap sets the Bootstrap field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Bootstrap field is set to the value of the last call.
+func (b *DeviceRefApplyConfiguration) WithBootstrap(value *DeviceBootstrapStatusApplyConfiguration) *DeviceRefApplyConfiguration {
+	b.Bootstrap = value
 	return b
 }

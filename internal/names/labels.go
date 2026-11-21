@@ -1,6 +1,9 @@
 package names
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 
 	pubnames "github.com/cybericebox/laboratory/pkg/names"
@@ -16,11 +19,28 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+	// LabelGroupVPN and LabelGroupInternet are the switches of a LabGroup's servers (spec.vpn.enabled, spec.gateway.enabled), copied by the
+	// operator onto the group's namespace as "true" or "false": the admission policies read them there (a policy cannot read the LabGroup).
+	// Only the operator may set them (policy laboratory-group-namespace-label).
+	LabelGroupVPN      = "laboratory.cybericebox.com/vpn-enabled"
+	LabelGroupInternet = "laboratory.cybericebox.com/internet-enabled"
 	// LabelLabUID and LabelDeviceUID mark the pod of a device with the UIDs of its Lab and its Device. The node-agent reads them
 	// from the runtime to attribute containers; they replace the environment variables the containers used to carry (a participant
 	// sees the environment, never the labels).
 	LabelLabUID    = LabelPrefix + "lab-uid"
 	LabelDeviceUID = LabelPrefix + "device-uid"
+	// LabelGroupName is the name of the LabGroup (the CR name, names.EncodeName of the platform's group id) on the pod of a device. The
+	// device access service requires it to equal the group of a console grant: lab and device names repeat across groups, so this binds a
+	// grant to the namespace it is for. It is operator-internal (LabelPrefix): a participant cannot set it on a pod.
+	LabelGroupName = LabelPrefix + "group-name"
+	// LabelTerminal is "true" on the pod of a device whose lab asks for a console. The device access service reads it from the sandbox
+	// of the pod in the container runtime and refuses every device without it, so the proxy is not the only place that knows which
+	// devices have a console.
+	LabelTerminal = LabelPrefix + "terminal"
+	// LabelTerminalSpec is the digest (TerminalSpecHash) of the terminal command and user the lab author set, stamped by the operator next to
+	// LabelTerminal. The device access service runs only the command and user whose digest equals it, so a compromised proxy that holds a
+	// valid grant cannot choose a program or a user: it can only repeat what the Device says. Pod labels cannot carry a list, hence a digest.
+	LabelTerminalSpec = LabelPrefix + "terminal-spec"
 	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
@@ -40,8 +60,8 @@ const (
 	LabelProfileMicroVM   = "cybericebox.com/profile-microvm"
 	LabelRuntimeKataCLH   = "cybericebox.com/runtime-kata-clh"
 
-	// AnnotationStatePersistence and AnnotationRuntimeObservation are set on a node by its node-agent with the result of the check it made at
-	// start: "ready", "disabled" (not asked for) or "unavailable: <reason>". The management agent reports what the cluster really
+	// AnnotationStatePersistence and AnnotationRuntimeObservation are set on a node with the result of the check made at
+	// start (state persistence by its node-state, runtime observation by its node-agent): "ready", "disabled" (not asked for) or "unavailable: <reason>". The management agent reports what the cluster really
 	// supports from them, not from the chart values.
 	AnnotationStatePersistence   = "cybericebox.com/state-persistence"
 	AnnotationRuntimeObservation = "cybericebox.com/runtime-observation"
@@ -71,6 +91,11 @@ const (
 	// creates; the operator ignores it.
 	AnnotationSpecHash = LabelPrefix + "spec-hash"
 
+	// AnnotationRunChecks is written on a Lab by the management agent's RunChecks call: JSON {"token":N,"ids":[...]} where
+	// token grows by one with every accepted request and ids are the check ids to run (empty = all manual-run checks). The
+	// checker takes the request and writes N into status.checksRunAck.
+	AnnotationRunChecks = LabelPrefix + "run-checks"
+
 	// AnnotationUserLabels lists the user labels copied onto an object from its
 	// Lab or LabGroup, so a label removed there is removed here too.
 	AnnotationUserLabels = LabelPrefix + "user-labels"
@@ -83,7 +108,7 @@ const (
 	// AnnotationDefaultNetwork controls how cni-gate handles the default k8s network.
 	// Missing: regular pod — delegate eth0 to k8s CNI as normal.
 	// Empty "": no default network — cni-gate returns stub eth0 only.
-	// Non-empty: interface name to wire via k8s CNI (e.g. "accessport").
+	// Non-empty: interface name to wire via k8s CNI (e.g. "eda").
 	AnnotationDefaultNetwork = "network.cybericebox.com/default-network"
 
 	// AnnotationConntrackAccounting on a pod asks the node-agent to switch on conntrack byte accounting and flow
@@ -115,19 +140,24 @@ const (
 	// DefaultEth0 is the standard container ethernet interface name.
 	DefaultEth0 = "eth0"
 
-	// AccessPortIface is the reserved in-pod interface name that carries the
+	// EDAIface is the reserved in-pod interface name that carries the
 	// delegated Kubernetes network for web-exposed device pods. Lab interface
 	// names must not collide with it: SetupNetworks would delete/replace the
 	// delegated interface on a kubelet CNI retry.
-	AccessPortIface = "accessport"
+	EDAIface = "eda"
 
-	// AccessPortRouteTable is the routing table that holds every route of the access port inside the pod. The rule
-	// "from <access port address> lookup <table>" sends the replies back out of the port; the main table, where the lab
-	// interfaces and their default gateway live, never holds a route through it (see package accessroute).
-	AccessPortRouteTable = 100
-	// AccessPortRulePriority is the priority of that rule: above the main table (32766), so the replies never reach
+	// LegacyAccessPortIface is the name EDAIface had before the rename. Pods created earlier still carry it (the
+	// default-network annotation and the interface inside the pod); they keep working until they are recreated. It stays
+	// reserved as a lab interface name, and nothing new is created with it.
+	LegacyAccessPortIface = "accessport"
+
+	// EDARouteTable is the routing table that holds every route of the EDA interface inside the pod. The rule
+	// "from <EDA interface address> lookup <table>" sends the replies back out of the port; the main table, where the lab
+	// interfaces and their default gateway live, never holds a route through it (see package edaroute).
+	EDARouteTable = 100
+	// EDARulePriority is the priority of that rule: above the main table (32766), so the replies never reach
 	// the lab's default route.
-	AccessPortRulePriority = 1000
+	EDARulePriority = 1000
 )
 
 // The readiness probe of a device (see package internal/probe). A static program is copied by an init container into an
@@ -170,6 +200,10 @@ var ReservedDeviceNames = pubnames.ReservedDeviceNames
 // from the old "proxy").
 const ProxyL7App = "laboratory-proxy-l7"
 
+// DeviceAccessApp is the `app` label value on the pods of the device access service (one per lab node). The network policy of
+// the L7 proxy and the one of the service itself select it.
+const DeviceAccessApp = "laboratory-device-access"
+
 // WGDemuxApp is the `app` label value on the WireGuard demux pods (namespace WGNamespace); the VPN pods admit WireGuard from them.
 const WGDemuxApp = "laboratory-proxy-wg"
 
@@ -187,6 +221,14 @@ const (
 	// ProxyReportsBindingName is the RoleBinding that grants it there. The proxy has no such right cluster-wide.
 	RoleProxyReportsName    = "laboratory-proxy-reports"
 	ProxyReportsBindingName = "laboratory-proxy-reports-binding"
+
+	// The lab checker reads one Secret of a lab, `<lab>-checks`, and nothing else: the operator makes a Role (get, that one name) and a
+	// RoleBinding to the checker's ServiceAccount, both named CheckerLabRoleName(lab), for each lab with checks, owned by the Lab.
+	// CheckerSecretsBindingName is the namespace-wide RoleBinding of the earlier design (a ClusterRole of the same name, now gone);
+	// the operator only removes it.
+	CheckerSecretsBindingName = "laboratory-checker-secrets"
+	// CheckerServiceAccount is the ServiceAccount of the lab checker, in SystemNamespace.
+	CheckerServiceAccount = "laboratory-checker"
 
 	// AgentRoleBindingName is the RoleBinding created in each LabGroup namespace
 	// that grants the management-agent ServiceAccount access via RoleAgentName,
@@ -241,4 +283,25 @@ func UserLabels(in map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// CheckerLabRoleName is the name of the Role and the RoleBinding that let the lab checker read the checks Secret of one lab.
+func CheckerLabRoleName(lab string) string { return "checker-checks-" + lab }
+
+// IsEDAIface is true for the interface name of the EDA channel in a pod: EDAIface, and for pods created before the rename
+// LegacyAccessPortIface.
+func IsEDAIface(name string) bool { return name == EDAIface || name == LegacyAccessPortIface }
+
+// TerminalSpecHash is the label value (LabelTerminalSpec) of a terminal command and user: the first 32 hex characters of the SHA-256 of
+// their JSON, an absent command being the empty list.
+func TerminalSpecHash(command []string, user string) string {
+	if command == nil {
+		command = []string{}
+	}
+	raw, _ := json.Marshal(struct {
+		C []string `json:"c"`
+		U string   `json:"u"`
+	}{command, user})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:16])
 }

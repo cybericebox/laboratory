@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/names"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -41,6 +42,14 @@ func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Confi
 	reader, cached := mgr.GetAPIReader(), mgr.GetClient()
 	collector := flowacct.New(dump, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
 	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings, BeforeShutdown: ipt.Quiesce}
+	if activity.Enabled() && source != nil {
+		// The per-address facts need the connection tracking of the iptables forwarding.
+		collector.EnableTouches()
+		hub := activity.New(cached, "vpn")
+		hub.Reader = reader
+		hub.OnError = func(err error) { ctrl.Log.WithName("activity").Error(err, "write activity report") }
+		reporter.Activity = hub
+	}
 	reporter.OnPublish = func(ctx context.Context, report flowacct.Report) error {
 		return publishAccessTotals(ctx, cached, cfg.Namespace, report)
 	}
@@ -99,20 +108,23 @@ func buildTopology(ctx context.Context, c client.Client, namespace string) flowa
 		}
 	}
 	var legs laboratoryv1alpha1.LabVPNList
-	indices := map[string]uint16{}
 	if c.List(ctx, &legs, client.InNamespace(namespace)) == nil {
-		for _, leg := range legs.Items {
-			indices[leg.Spec.LabName] = uint16(leg.Spec.NetworkIndex)
+		var labs laboratoryv1alpha1.LabList
+		cidrs := map[string]string{}
+		if c.List(ctx, &labs, client.InNamespace(namespace)) == nil {
+			for i := range labs.Items {
+				for _, g := range labs.Items[i].Status.Gateways {
+					cidrs[labs.Items[i].Name+"/"+g.Name] = g.CIDR
+				}
+			}
 		}
-	}
-	var labs laboratoryv1alpha1.LabList
-	if c.List(ctx, &labs, client.InNamespace(namespace)) == nil {
-		for i := range labs.Items {
-			prefix, err := netip.ParsePrefix(labs.Items[i].Status.VPN.CIDR)
+		// One network per VPN gateway of a lab; the traffic of a client to any of them counts as access to the lab.
+		for _, leg := range legs.Items {
+			prefix, err := netip.ParsePrefix(cidrs[leg.Spec.LabName+"/"+leg.Spec.Device])
 			if err != nil {
 				continue
 			}
-			topo.Labs = append(topo.Labs, flowacct.LabNet{Name: labs.Items[i].Name, Prefix: prefix, Index: indices[labs.Items[i].Name]})
+			topo.Labs = append(topo.Labs, flowacct.LabNet{Name: leg.Spec.LabName, Prefix: prefix, Index: uint16(leg.Spec.NetworkIndex)})
 		}
 	}
 	return topo

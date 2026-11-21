@@ -7,9 +7,10 @@ import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -29,6 +30,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/activity"
 	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/egressproxy"
 	"github.com/cybericebox/laboratory/internal/gateway"
@@ -93,7 +95,8 @@ func Run() {
 	defer dhcpMgr.Close()
 	labs := egressproxy.NewLabMap()
 	// The listeners stand before the reconciler exists: it installs the redirects of a lab's 80/443/53 only after this returns.
-	if err := startEgress(cfg, labs, log); err != nil {
+	stats, err := startEgress(cfg, labs, log)
+	if err != nil {
 		log.Error(err, "start the egress services")
 		os.Exit(1)
 	}
@@ -119,6 +122,15 @@ func Run() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// The per-minute egress summaries go to the LabEgressReport of the namespace (no port is served): the operator logs them and
+	// acknowledges them, and this pod then forgets them.
+	pod, _ := os.Hostname()
+	reporter := &egressproxy.ReportWriter{
+		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Namespace: cfg.Namespace, Instance: pod, BootID: newBootID(),
+		Collector: stats, Log: log.WithName("egress-report"),
+	}
+	go reporter.Run(ctx)
 
 	go func() {
 		err := bandwidth.Watch(ctx, bandwidth.AnnotationsFile,
@@ -148,12 +160,22 @@ func Run() {
 	}
 }
 
-// startEgress starts the web proxy, the DNS answerer and the summaries page of the gateway. They run for the life of the process.
-func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger) error {
+// newBootID names this run of the pod in the egress report.
+func newBootID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// startEgress starts the web proxy and the DNS answerer of the gateway and returns the collector of their per-minute summaries. They run
+// for the life of the process.
+func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger) (*egressproxy.Collector, error) {
 	upstreams := splitList(cfg.EgressDNSUpstreams)
 	resolver, err := egressproxy.NewResolver(upstreams)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	suffixes := egressproxy.DefaultTunnelSuffixes
 	switch cfg.EgressTunnelSuffixes {
@@ -166,6 +188,7 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 	deny := egressproxy.NewDenylist(suffixes)
 	pod, _ := os.Hostname()
 	stats := egressproxy.NewCollector(pod)
+	stats.Detail = activity.Enabled() // the per-address rows are kept only when activity reports are on
 	proxy := &egressproxy.Proxy{
 		Labs: labs, Resolver: resolver, Deny: deny, Stats: stats, Log: log.WithName("egress-proxy"),
 		MaxConnAge:       time.Duration(cfg.EgressMaxConnSeconds) * time.Second,
@@ -177,32 +200,25 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 	ctx := context.Background()
 	httpL, err := egressproxy.Listen(cfg.EgressHTTPPort)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tlsL, err := egressproxy.Listen(cfg.EgressTLSPort)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dnsTCP, err := egressproxy.Listen(cfg.EgressDNSPort)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dnsUDP, err := net.ListenPacket("udp4", ":"+strconv.Itoa(cfg.EgressDNSPort))
 	if err != nil {
-		return err
-	}
-	statsL, err := egressproxy.Listen(cfg.EgressStatsPort)
-	if err != nil {
-		return err
+		return nil, err
 	}
 	for name, f := range map[string]func() error{
 		"web proxy (80)":  func() error { return proxy.Serve(ctx, httpL, false) },
 		"web proxy (443)": func() error { return proxy.Serve(ctx, tlsL, true) },
 		"dns (tcp)":       func() error { return dns.ServeTCP(ctx, dnsTCP) },
 		"dns (udp)":       func() error { return dns.ServeUDP(ctx, dnsUDP) },
-		"summaries": func() error {
-			return (&http.Server{Handler: stats.Handler(), ReadHeaderTimeout: 5 * time.Second}).Serve(statsL)
-		},
 	} {
 		go func() {
 			if err := f(); err != nil {
@@ -212,8 +228,8 @@ func startEgress(cfg *gateway.Config, labs *egressproxy.LabMap, log logr.Logger)
 			}
 		}()
 	}
-	log.Info("egress services started", "http", cfg.EgressHTTPPort, "tls", cfg.EgressTLSPort, "dns", cfg.EgressDNSPort, "summaries", cfg.EgressStatsPort, "upstreams", upstreams)
-	return nil
+	log.Info("egress services started", "http", cfg.EgressHTTPPort, "tls", cfg.EgressTLSPort, "dns", cfg.EgressDNSPort, "upstreams", upstreams)
+	return stats, nil
 }
 
 func splitList(s string) []string {

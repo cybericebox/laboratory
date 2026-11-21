@@ -14,7 +14,7 @@ import (
 )
 
 // The shaper on a real lab interface in a network namespace: the egress is a token bucket filter at the ceiling, the ingress has a
-// police, a change of the ceiling changes both, and Forget leaves the interface bare. (Run by make test-netns.)
+// police, a change of the ceiling changes both, and Forget leaves the interface bare. (Run by mise run test-netns.)
 func TestNetnsShaperKeepsALabInterfaceToItsCeiling(t *testing.T) {
 	nstest.Require(t)
 	nstest.NS(t, "lab")
@@ -83,7 +83,7 @@ func TestNetnsShaperKeepsALabInterfaceToItsCeiling(t *testing.T) {
 }
 
 // Real traffic through a shaped lab interface: TCP between the pod and a lab, in both directions, comes out near the ceiling, and
-// unshaped it is far above it. Needs iperf3 (the CI image of make test-netns has it).
+// unshaped it is far above it. Needs iperf3 (the CI image of mise run test-netns has it).
 func TestNetnsShaperHoldsTrafficToTheCeiling(t *testing.T) {
 	nstest.Require(t)
 	if _, err := exec.LookPath("iperf3"); err != nil {

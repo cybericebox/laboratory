@@ -2,10 +2,14 @@ package grpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +23,8 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
+	"github.com/cybericebox/laboratory/internal/imagecache"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -45,6 +51,8 @@ type fakeZot struct {
 	blobs     map[string]bool // "<repo>/<digest>"
 	manifests map[string]int  // manifest requests per "<repo>@<digest>"
 	blobsToo  bool            // false: only the manifest is stored (a broken sync)
+	segments  map[string]bool // the tenant segments the cache paths carried
+	tokens    map[string]bool // the X-Cib-Node-Token values the requests carried
 	gate      chan struct{}   // when set, manifest requests wait for it
 	inflight  int
 	maxFlight int
@@ -53,7 +61,7 @@ type fakeZot struct {
 
 func newFakeZot(t *testing.T) *fakeZot {
 	z := &fakeZot{upstream: map[string]v1.Image{}, indexes: map[string]v1.ImageIndex{}, synced: map[string]bool{},
-		blobs: map[string]bool{}, manifests: map[string]int{}, blobsToo: true}
+		blobs: map[string]bool{}, manifests: map[string]int{}, blobsToo: true, segments: map[string]bool{}, tokens: map[string]bool{}}
 	z.srv = httptest.NewServer(z)
 	t.Cleanup(z.srv.Close)
 	return z
@@ -111,7 +119,16 @@ func (z *fakeZot) addIndex(t *testing.T, repo string) v1.Hash {
 }
 
 func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// the cache lives under c/<tenant segment>/ (the gate's path); the fixtures name the repositories without them
 	p := strings.TrimPrefix(r.URL.Path, "/v2/")
+	if rest, ok := strings.CutPrefix(p, "c/"); ok {
+		seg, repo, _ := strings.Cut(rest, "/")
+		z.mu.Lock()
+		z.segments[seg] = true
+		z.tokens[r.Header.Get(imagecache.HeaderNodeToken)] = true
+		z.mu.Unlock()
+		p = repo
+	}
 	if p == "" {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -125,6 +142,7 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ok := z.blobs[p[:i]+"/"+p[i+len("/blobs/"):]]
 		z.mu.Unlock()
 		if ok {
+			w.Header().Set(imagecache.HeaderGateCache, imagecache.GateCacheHit)
 			w.WriteHeader(http.StatusOK)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
@@ -135,6 +153,14 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (z *fakeZot) manifest(w http.ResponseWriter, repo, ref string) {
+	if !strings.HasPrefix(ref, "sha256:") {
+		// a tag: the gate proves the image is readable (here: public) and answers its digest; nothing is fetched or counted
+		w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("0", 64))
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.Header().Set("Content-Length", "2")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	key := repo + "@" + ref
 	z.mu.Lock()
 	z.manifests[key]++
@@ -288,12 +314,12 @@ func TestPrewarmFailsWhenOnlyTheManifestWasStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := waitState(t, h, "ghcr.io/o/half:1", protobuf.PrewarmState_PREWARM_STATE_FAILED)
-	if !strings.Contains(st.Error, "not stored in the cache") {
+	if !strings.Contains(st.Error, "blob sha256:") || !strings.Contains(st.Error, "cache") {
 		t.Fatalf("the error must say that a blob is missing: %q", st.Error)
 	}
 }
 
-func TestPrewarmSkipsRegistriesTheCacheDoesNotServe(t *testing.T) {
+func TestPrewarmRefusesRegistriesTheCacheDoesNotServe(t *testing.T) {
 	z := newFakeZot(t)
 	h := prewarmHandler(t, z, &fakeResolver{}, PrewarmConfig{})
 	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"registry.example.com/team/app:1", "localhost:5035/lab/x/y/z@sha256:" + strings.Repeat("a", 64)}})
@@ -301,12 +327,9 @@ func TestPrewarmSkipsRegistriesTheCacheDoesNotServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range r.Images {
-		want := protobuf.PrewarmState_PREWARM_STATE_SKIPPED
-		if strings.HasPrefix(s.Image, "localhost") {
-			want = protobuf.PrewarmState_PREWARM_STATE_FAILED // a loopback registry is refused by the image policy
-		}
-		if s.State != want {
-			t.Fatalf("%s: %v, want %v", s.Image, s.State, want)
+		// with the cache on there is no direct pull: an image it cannot serve is refused (a loopback registry by the image policy)
+		if s.State != protobuf.PrewarmState_PREWARM_STATE_FAILED {
+			t.Fatalf("%s: %v, want FAILED", s.Image, s.State)
 		}
 	}
 	if z.count("registry.example.com/team/app@")+len(z.manifestsCopy()) != 0 {
@@ -483,18 +506,17 @@ func TestPrewarmAppliesTheTenantImagePolicy(t *testing.T) {
 	}
 }
 
-func TestPrewarmSkipsTenantsWithTheirOwnCredentials(t *testing.T) {
+// A tenant with registry credentials of its own is no different here: its public images are warmed anonymously like everyone's, and the
+// gate (not the agent) says no to one that needs credentials the call does not bring.
+func TestPrewarmDoesNotSkipTenantsWithTheirOwnCredentials(t *testing.T) {
 	z := newFakeZot(t)
-	h := tenantPolicyHandler(t, z, &fakeResolver{}, &laboratoryv1alpha1.Tenant{
+	d := z.addImage(t, "ghcr.io/acme/app")
+	h := tenantPolicyHandler(t, z, &fakeResolver{digests: map[string]string{"ghcr.io/acme/app:1": d.String()}}, &laboratoryv1alpha1.Tenant{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec:       laboratoryv1alpha1.TenantSpec{Images: laboratoryv1alpha1.TenantImages{PullSecret: "mine"}},
 	}, nil)
-	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"ghcr.io/acme/app:1"}})
-	if err != nil || r.Images[0].State != protobuf.PrewarmState_PREWARM_STATE_SKIPPED {
-		t.Fatalf("%+v %v", r, err)
-	}
-	if z.manifestFetches("ghcr.io/acme/app") != 0 {
-		t.Error("the shared cache must not fetch it")
+	if st := waitState(t, h, "ghcr.io/acme/app:1", protobuf.PrewarmState_PREWARM_STATE_DONE); st.Digest != d.String() {
+		t.Fatalf("%+v", st)
 	}
 }
 
@@ -529,5 +551,119 @@ func TestPrewarmEvictsOldestFinishedEntry(t *testing.T) {
 	p.entries["c"].state = protobuf.PrewarmState_PREWARM_STATE_QUEUED
 	if p.evictFinishedLocked() {
 		t.Fatal("nothing finished to forget")
+	}
+}
+
+// A platform: reference is no longer served: a prewarm of it fails with the refusal's message, and a malformed one fails too.
+func TestPrewarmRefusesPlatformImages(t *testing.T) {
+	z := newFakeZot(t)
+	ten := &laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	h := tenantPolicyHandler(t, z, &fakeResolver{}, ten, nil)
+	const dig = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"platform:tools@" + dig, "platform:tools:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range r.Images {
+		if st.State != protobuf.PrewarmState_PREWARM_STATE_FAILED || !strings.Contains(st.Error, "platform images are not served") {
+			t.Errorf("%+v", st)
+		}
+	}
+}
+
+// The credential of a call reaches the gate as the call's own login (the tenant is in the path, not in the name), only for images whose
+// registry it names.
+func TestCredentialedImagesCarryTheCallsOwnLogin(t *testing.T) {
+	creds := []*protobuf.RegistryCredential{{Registry: "ghcr.io", Username: "bot", Password: "s3"}, {Registry: "quay.io", Username: "", Password: "x"}}
+	got := credentialedImages([]string{"ghcr.io/o/a:1", " ghcr.io/o/a:1 ", "nginx", "quay.io/o/b:2", "not a ref"}, creds)
+	if len(got) != 1 {
+		t.Fatalf("only ghcr.io/o/a:1 has a usable credential (the other has no username): %+v", got)
+	}
+	a := got["ghcr.io/o/a:1"]
+	if a == nil || a.user != "bot" || a.pass != "s3" || a.id == "" || strings.Contains(a.id, "s3") {
+		t.Fatalf("%+v", a)
+	}
+	if credentialedImages([]string{"ghcr.io/o/a:1"}, nil) != nil {
+		t.Error("no credentials, none")
+	}
+}
+
+// What was warmed with someone's credentials is theirs: it is not in the listing, and a call with other credentials has an entry of its own.
+func TestPrewarmKeepsCredentialedEntriesApart(t *testing.T) {
+	z := newFakeZot(t)
+	d := z.addImage(t, "ghcr.io/o/priv")
+	h := prewarmHandler(t, z, &fakeResolver{}, PrewarmConfig{})
+	call := func(user string) *protobuf.PrewarmImageStatus {
+		res, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{
+			Images:              []string{"ghcr.io/o/priv@" + d.String()},
+			RegistryCredentials: []*protobuf.RegistryCredential{{Registry: "ghcr.io", Username: user, Password: "pw"}},
+		})
+		if err != nil || len(res.Images) != 1 {
+			t.Fatalf("%v %+v", err, res)
+		}
+		return res.Images[0]
+	}
+	for i := 0; i < 200 && call("alice").State != protobuf.PrewarmState_PREWARM_STATE_DONE; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st := call("alice"); st.State != protobuf.PrewarmState_PREWARM_STATE_DONE || st.Digest != d.String() {
+		t.Fatalf("%+v", st)
+	}
+	if st := call("bob"); st.State == protobuf.PrewarmState_PREWARM_STATE_DONE && st.UpdatedUnixMs == call("alice").UpdatedUnixMs {
+		t.Error("another credential must not see the first one's result as its own")
+	}
+	all, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{})
+	if err != nil || len(all.Images) != 0 {
+		t.Fatalf("the listing shows nothing that was warmed with credentials: %+v %v", all, err)
+	}
+}
+
+// Every request of a prewarm goes to the gate on the cache path of the caller's tenant, with the agent's own token and no other platform
+// header.
+func TestPrewarmUsesTheTenantSegmentAndTheAgentsToken(t *testing.T) {
+	z := newFakeZot(t)
+	d := z.addImage(t, "ghcr.io/o/app")
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("agent-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := prewarmHandler(t, z, &fakeResolver{}, PrewarmConfig{Token: imagecache.NewTokenFile(tokenFile)})
+	ref := "ghcr.io/o/app@" + d.String()
+	for i := 0; i < 200; i++ {
+		res, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{ref}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Images[0].State == protobuf.PrewarmState_PREWARM_STATE_DONE {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	if len(z.segments) != 1 || !z.segments[names.TenantSegment("default")] {
+		t.Errorf("the path carries the segment of the caller's tenant: %v", z.segments)
+	}
+	if len(z.tokens) != 1 || !z.tokens["agent-token"] {
+		t.Errorf("every request carries the agent's token: %v", z.tokens)
+	}
+}
+
+func TestCredentialIDTellsLoginsApartWithoutShowingThem(t *testing.T) {
+	a := credentialID("reg.example", "bot", "s3cret")
+	if a != credentialID("reg.example", "bot", "s3cret") {
+		t.Fatal("the same login must give the same id")
+	}
+	for _, other := range []string{
+		credentialID("reg.example", "bot", "s3cret2"), credentialID("reg.example", "bo", "ts3cret"),
+		credentialID("reg2.example", "bot", "s3cret"),
+	} {
+		if other == a {
+			t.Fatal("another login gave the same id")
+		}
+	}
+	plain := sha256.Sum256([]byte("reg.example\x00bot\x00s3cret"))
+	if a == hex.EncodeToString(plain[:8]) {
+		t.Fatal("the id is a bare hash of the secret, open to guessing offline")
 	}
 }

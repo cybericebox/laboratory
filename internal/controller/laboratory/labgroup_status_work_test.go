@@ -55,7 +55,7 @@ func groupStatusFixture(t *testing.T) (*LabGroupReconciler, *groupStatusCounter,
 	_ = allocation.AddToScheme(scheme)
 	group := &api.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "status-transitions"}}
 	c := &groupStatusCounter{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(group).WithStatusSubresource(&api.LabGroup{}, &allocation.Pool{}, &appsv1.Deployment{}).Build()}
-	r := &LabGroupReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(100), VPNBaseNetwork: "10.128.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SupportEmail: "help@example.com"}
+	r := &LabGroupReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(100), LabBaseNetwork: "10.128.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SupportEmail: "help@example.com"}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(group)}); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestLabGroupUnchangedReadyAndSuspendedStatusDoesNotWrite(t *testing.T) {
 			group := &api.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "status-work"}, Spec: api.LabGroupSpec{Suspended: suspended}}
 			group.Spec.VPN.Disabled = true
 			c := &groupStatusCounter{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(group).WithStatusSubresource(&api.LabGroup{}, &allocation.Pool{}).Build()}
-			r := &LabGroupReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(100), VPNBaseNetwork: "10.128.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SupportEmail: "help@example.com"}
+			r := &LabGroupReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(100), LabBaseNetwork: "10.128.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SupportEmail: "help@example.com"}
 			req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(group)}
 			if _, err := r.Reconcile(context.Background(), req); err != nil {
 				t.Fatal(err)

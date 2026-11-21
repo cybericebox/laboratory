@@ -39,8 +39,8 @@ func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace,
 	}
 	var scopes []lab.OwnedRuntimeIdentity
 	for _, node := range nodes.Items {
-		linux := node.Status.NodeInfo.OperatingSystem == "linux" || node.Labels[corev1.LabelOSStable] == "linux" || node.Labels[names.LabelNodeAgentReady] == "true"
-		eligible := required[node.Name] || linux && (configuredNativePlacement(&node, policy) || node.Labels[names.LabelNodeAgentReady] == "true")
+		linux := node.Status.NodeInfo.OperatingSystem == "linux" || node.Labels[corev1.LabelOSStable] == "linux" || node.Labels[names.LabelNodeAgentReady] == valueTrue
+		eligible := required[node.Name] || linux && (configuredNativePlacement(&node, policy) || node.Labels[names.LabelNodeAgentReady] == valueTrue)
 		if !eligible {
 			continue
 		}

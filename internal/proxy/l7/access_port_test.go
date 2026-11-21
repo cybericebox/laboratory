@@ -21,7 +21,7 @@ import (
 )
 
 func exposedPortService(protocol string, port int32) *corev1.Service {
-	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc123", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: protocol, Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP}}}}
+	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: protocol, Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP}}}}
 }
 
 func TestAccessDeclaredPortRealHandlerDestination(t *testing.T) {
@@ -46,11 +46,11 @@ func TestAccessDeclaredPortRealHandlerDestination(t *testing.T) {
 			member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 			policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
 			svc := exposedPortService(tc.scheme, tc.port)
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, member, policy, svc, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, member, policy, svc, readyDevice("legacy", "lab", "web", testPodIP), &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
 			reader := &accessCountingReader{Reader: c, gets: map[string]int{}}
 			h, _, _, cookie := liveFixture(t, http.NotFoundHandler())
 			h.WithAccessReader(&AccessReader{Reader: reader})
-			want := fmt.Sprintf("web-abc123.legacy.svc.cluster.local:%d", tc.port)
+			want := net.JoinHostPort(testPodIP, fmt.Sprint(tc.port))
 			transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				if address != want {
 					return nil, fmt.Errorf("handler selected %s instead of declared %s", address, want)
@@ -59,7 +59,7 @@ func TestAccessDeclaredPortRealHandlerDestination(t *testing.T) {
 			}}
 			defer transport.CloseIdleConnections()
 			h.transport = transport
-			req := httptest.NewRequest(http.MethodGet, "http://web-abc123.challenges.example.com/", nil)
+			req := httptest.NewRequest(http.MethodGet, "http://web-abc12w.challenges.example.com/", nil)
 			req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -105,16 +105,21 @@ func TestAccessDeclaredPortCompactDefaultsAndInvalid(t *testing.T) {
 			if copied.Spec.Ports[0].Port != tc.port || copied.Spec.Ports[0].Protocol != tc.transport {
 				t.Fatal("compact cache discarded routing port")
 			}
+			compactDevice, err := CompactCacheObject(readyDevice(svc.Namespace, "lab", "web", testPodIP))
+			if err != nil {
+				t.Fatal(err)
+			}
 			scheme := runtime.NewScheme()
 			_ = corev1.AddToScheme(scheme)
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(copied).Build()
+			_ = lab.AddToScheme(scheme)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(copied, compactDevice.(*lab.Device)).Build()
 			route, err := (&AccessReader{Reader: c}).Route(context.Background(), svc.Name, svc.Namespace)
 			if tc.valid {
 				protocol := tc.protocol
 				if protocol == "" {
 					protocol = "http"
 				}
-				want := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, svc.Name, svc.Namespace, tc.port)
+				want := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(testPodIP, fmt.Sprint(tc.port)))
 				if err != nil || route.URL != want {
 					t.Fatalf("declared compact route: %v %v want=%s", route, err, want)
 				}

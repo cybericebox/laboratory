@@ -31,6 +31,12 @@ type GroupPodSize struct {
 
 // LabGroupGatewaySpec holds the internet gateway configuration.
 type LabGroupGatewaySpec struct {
+	// Enabled is the switch of the group's internet gateway pod: the pod exists only while it is on. A lab with an Internet gateway
+	// (spec.gateways, kind internet) is refused while it is off, and it cannot be turned off while a lab of the group has one. Absent
+	// (a group made before the field) means on, so existing groups keep their gateway pod. The agent writes it explicitly, off unless the
+	// caller asks for it.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
 	// Size is the size of the gateway pod; absent = the chart's default. Fixed once set.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the size of a group's pod is fixed"
 	// +optional
@@ -39,7 +45,14 @@ type LabGroupGatewaySpec struct {
 
 // LabGroupVPNSpec holds VPN server configuration.
 type LabGroupVPNSpec struct {
-	// Disabled stops only the VPN server; internet gateway and Labs remain running.
+	// Enabled is the switch of the group's VPN server pod: the pod exists only while it is on. A lab with a VPN gateway (spec.gateways,
+	// kind vpn) and a LabGroupClient are refused while it is off, and it cannot be turned off while a lab of the group has a VPN
+	// gateway. Absent (a group made before the field) it follows Disabled, so existing groups keep their VPN pod unless they disabled it.
+	// The agent writes it explicitly (and keeps Disabled equal to its opposite), off unless the caller asks for it.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// Disabled is the old switch, kept so a group made before Enabled means the same: true stops the VPN server (no pod). Enabled wins
+	// when it is set. New code reads VPNEnabled(), not this field.
 	Disabled bool `json:"disabled,omitempty"`
 	// Deprecated: suspension now always keeps WireGuard and the internet
 	// gateway running while stopping only task devices.
@@ -105,6 +118,9 @@ type LabGroupVPNStatus struct {
 	// Registered is true when the VPN deployment has at least one ready replica,
 	// including while Lab devices are suspended.
 	Registered bool `json:"registered,omitempty"`
+	// Backend is "<pod IP>:<port>", the UDP address of the ready VPN pod of the group, written by the operator on every change of that pod;
+	// the demux sends the group's handshakes there and uses no name. Empty while no VPN pod is ready: the demux then drops them.
+	Backend string `json:"backend,omitempty"`
 }
 
 // +genclient
@@ -134,4 +150,18 @@ type LabGroupList struct {
 
 func init() {
 	SchemeBuilder.Register(&LabGroup{}, &LabGroupList{})
+}
+
+// VPNEnabled says whether the group runs its VPN server: spec.vpn.enabled when set, else the opposite of the old spec.vpn.disabled.
+func (g *LabGroup) VPNEnabled() bool {
+	if g.Spec.VPN.Enabled != nil {
+		return *g.Spec.VPN.Enabled
+	}
+	return !g.Spec.VPN.Disabled
+}
+
+// InternetEnabled says whether the group runs its internet gateway: spec.gateway.enabled when set, else on (a group made before the
+// switch has its gateway pod).
+func (g *LabGroup) InternetEnabled() bool {
+	return g.Spec.Gateway.Enabled == nil || *g.Spec.Gateway.Enabled
 }

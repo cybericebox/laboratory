@@ -18,8 +18,12 @@ type LabVPNSpec struct {
 	// LabName is the name of the parent Lab.
 	// +kubebuilder:validation:Required
 	LabName string `json:"labName"`
-	// NetworkIndex is the subnet index N from the lab-subnets pool.
-	// VPN CIDR is derived as 10.8.N.0/24. Immutable after FinalizerController is set.
+	// Device is the name of the gateway of the lab this object serves (spec.gateways[].name).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Device string `json:"device"`
+	// NetworkIndex is the number of the gateway's leg (interface lab<N>), from the lab-subnets pool. The CIDR is not derived from
+	// it: it is in the parent Lab status (status.gateways). Immutable after FinalizerController is set.
 	NetworkIndex uint `json:"networkIndex,omitempty"`
 }
 
@@ -53,6 +57,15 @@ type LabVPNStatus struct {
 	Phase       LabVPNPhase         `json:"phase,omitempty"`
 	DHCPEnabled bool                `json:"dhcpEnabled,omitempty"`
 	DHCPReady   bool                `json:"dhcpReady,omitempty"`
+	// LabInitiatedBlocked: the gateway program of the group's VPN pod, which enforces the block of connections that a device of the lab
+	// starts towards a VPN client, has applied it to this lab (reverseConnections of the gateway is false). Written only by a program
+	// that enforces it; a VPN pod that still runs an older program never sets it, so absent means "not known to be blocked".
+	// +optional
+	LabInitiatedBlocked bool `json:"labInitiatedBlocked,omitempty"`
+	// LabInitiatedDropped counts the packets the block dropped for this lab since the VPN process started. For the cluster
+	// administrator's metrics; it is not part of the agent API.
+	// +optional
+	LabInitiatedDropped int64 `json:"labInitiatedDropped,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional

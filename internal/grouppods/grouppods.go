@@ -6,6 +6,7 @@ package grouppods
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -94,13 +95,36 @@ func sized(size *laboratoryv1alpha1.GroupPodSize) corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{Requests: l.DeepCopy(), Limits: l}
 }
 
-// PodNames are the pods a LabGroup runs itself: the VPN (unless disabled) and the gateway.
+// The servers the laboratory itself runs (chart vpn.enabled, inetGateway.enabled): a group's pod for a server that is off cluster-wide does
+// not exist whatever the group's switch says (a group made before the switches has them on). Set once at start by the operator and the
+// agent; on until then.
+var clusterVPN, clusterInternet atomic.Bool
+
+func init() { SetCluster(true, true) }
+
+// SetCluster says which servers the laboratory runs.
+func SetCluster(vpn, internet bool) {
+	clusterVPN.Store(vpn)
+	clusterInternet.Store(internet)
+}
+
+// Wanted says which of the pods a group runs itself exist for it: the VPN pod while the group's VPN switch is on, the gateway pod while
+// its internet switch is on (spec.vpn.enabled, spec.gateway.enabled; a group made before them keeps both unless its VPN is disabled).
+func Wanted(lg *laboratoryv1alpha1.LabGroup) (vpn, gateway bool) {
+	return lg.VPNEnabled() && clusterVPN.Load(), lg.InternetEnabled() && clusterInternet.Load()
+}
+
+// PodNames are the pods a LabGroup runs itself: the VPN and the gateway, each only while its switch is on (see Wanted).
 func PodNames(lg *laboratoryv1alpha1.LabGroup) []string {
 	var out []string
-	if !lg.Spec.VPN.Disabled {
+	vpn, gateway := Wanted(lg)
+	if vpn {
 		out = append(out, names.ComponentVPN)
 	}
-	return append(out, names.ComponentGateway)
+	if gateway {
+		out = append(out, names.ComponentGateway)
+	}
+	return out
 }
 
 // Requests is what the named pod of the group requests (its size, else the chart's default); nil for another name.

@@ -1,8 +1,6 @@
 package l7
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +14,6 @@ import (
 )
 
 func TestHandler_StripsCookie(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 
 	var gotCookieHeader string
 	backend := httptest.NewServer(
@@ -33,11 +30,11 @@ func TestHandler_StripsCookie(t *testing.T) {
 		return backend.URL, nil
 	}
 
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", resolver)
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge", resolver)
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
-	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", Host: "mytask.challenges.example.com", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	req.AddCookie(&http.Cookie{Name: "other", Value: "keep"})
 
 	rec := httptest.NewRecorder()
@@ -55,8 +52,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 }
 
 func TestHandler_InvalidHost(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", nil)
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge", nil)
 
 	req := httptest.NewRequest("GET", "http://evil.com/", nil)
 	req.Host = "evil.com"
@@ -69,7 +65,6 @@ func TestHandler_InvalidHost(t *testing.T) {
 }
 
 func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		_, _ = w.Write([]byte("hello lab"))
@@ -77,13 +72,13 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	defer backend.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 
 	send := func(token, body string) int {
-		req := httptest.NewRequest("POST", "http://web-abc123.challenges.example.com/secret/path?q=1", strings.NewReader(body))
-		req.Host = "web-abc123.challenges.example.com"
+		req := httptest.NewRequest("POST", "http://web-abc12w.challenges.example.com/secret/path?q=1", strings.NewReader(body))
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: token})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -112,17 +107,16 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 }
 
 func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	dead := httptest.NewServer(http.NotFoundHandler())
 	url := dead.URL
 	dead.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
-	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -136,22 +130,21 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 }
 
 func TestHandler_ClientAndAuthorizer(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	token := func(sub string) string {
 		return signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	}
 	call := func(h *Handler, tok string) int {
-		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
 	build := func(authorize Authorizer) *Handler {
-		h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+		h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 			func(task, groupID string) (string, error) { return backend.URL, nil })
 		if authorize != nil {
 			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
@@ -173,21 +166,20 @@ func TestHandler_ClientAndAuthorizer(t *testing.T) {
 // A valid, unexpired token of a member who is no longer in the group policy is
 // refused: revocation is done by the policy, not by the token.
 func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	rules := []laboratoryv1alpha1.LabGroupAccessRule{{
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
 	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab) }
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
 		WithAuthorizer(authorize)
 	call := func(sub string) int {
-		tok := signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
-		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		tok := signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * time.Hour))}})
+		req := httptest.NewRequest("GET", "http://web-abc12w.challenges.example.com/", nil)
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -239,6 +231,8 @@ func TestDeviceResponseFilter(t *testing.T) {
 		"challenge=x",                                  // our session cookie, host-only: removed
 		"challenge=x; Domain=web-abc.labs.example.com", // and with its own domain: removed
 		"challengex=1",                                 // only the exact name
+		"h=1; Domain=labs.example.com.",                // a trailing dot names the same host: removed
+		"i=1; Domain=web-abc.labs.example.com.",        // and for its own host: stays
 	} {
 		h.Add("Set-Cookie", c)
 	}
@@ -248,7 +242,7 @@ func TestDeviceResponseFilter(t *testing.T) {
 	h.Set("Content-Type", "text/html")
 	deviceResponseFilter(h, "challenge", host+":443", base)
 	got := strings.Join(h.Values("Set-Cookie"), "|")
-	want := "a=1|b=1; Path=/; Domain=web-abc.labs.example.com|c=1; Domain=.web-abc.labs.example.com|challengex=1"
+	want := "a=1|b=1; Path=/; Domain=web-abc.labs.example.com|c=1; Domain=.web-abc.labs.example.com|challengex=1|i=1; Domain=web-abc.labs.example.com."
 	if got != want {
 		t.Fatalf("cookies:\n got %q\nwant %q", got, want)
 	}
@@ -272,7 +266,7 @@ func TestSessionCookieIsNeverForwardedUpstream(t *testing.T) {
 	}))
 	_ = h
 	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	req.AddCookie(&http.Cookie{Name: "app", Value: "1"})
 	resp, err := http.DefaultClient.Do(req)

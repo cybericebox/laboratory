@@ -89,8 +89,8 @@ func TestGatewayImageIsPassedOnlyWhenItDiffers(t *testing.T) {
 
 // The agent's host, the lab domain and the VPN endpoint it reports come from the operator's values.
 func TestAgentDomainAndEndpointAreDerived(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "operator.baseDomain=labs.example.org", "-s", "templates/agent/certificate-server.yaml", "-s", "templates/agent/tlsroute.yaml")
-	if err != nil || strings.Count(out, `"ctl.labs.example.org"`) != 2 {
+	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "operator.baseDomain=labs.example.org", "-s", "templates/agent/certificate-server.yaml")
+	if err != nil || strings.Count(out, `"ctl.labs.example.org"`) != 1 {
 		t.Errorf("agent.domain defaults to ctl.<baseDomain>: %v\n%s", err, out)
 	}
 	out, err = helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.org", "-s", "templates/agent/certificate-server.yaml")
@@ -160,7 +160,8 @@ func TestTuningKnobsStayValues(t *testing.T) {
 		"--set", "agent.monitoring.subscriberBuffer=9", "--set", "agent.monitoring.maxStreamsPerTenant=3",
 		"--set", "nodeAgent.ovsRunHostPath=/run/ovs-x", "--set", "nodeAgent.ovsSocket=/run/ovs-x/db.sock", "--set", "nodeAgent.ovsDBHostPath=/var/lib/ovs-x",
 		"--set", "nodeAgent.grpcSocket=/run/cice/na.sock", "--set", "nodeAgent.ovsBridge=br-x", "--set", "nodeAgent.healthPort=9555",
-		"--set", "nodeAgent.devicePlugin.dir=/var/lib/kubelet/dp-x", "--set", "priorityClasses.group.name=grp-x")
+		"--set", "nodeAgent.devicePlugin.dir=/var/lib/kubelet/dp-x", "--set", "priorityClasses.group.name=grp-x",
+		"--set", "registry.cache.enabled=true") // the registry address is only passed when a registry is installed
 	var cm corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &cm, set...)
 	for k, want := range map[string]string{"VPN_STATS_INTERVAL": "45s", "AGENT_SERVICE_NAMESPACE": "lab-agent-x", "AGENT_SERVICE_ACCOUNT": "laboratory-agent",
@@ -177,7 +178,7 @@ func TestTuningKnobsStayValues(t *testing.T) {
 	agentEnv := envOf(dep.Spec.Template.Spec.Containers[0])
 	for k, want := range map[string]string{"AGENT_MONITORING_JOURNAL_SIZE": "77", "AGENT_MONITORING_JOURNAL_AGE": "3m", "AGENT_MONITORING_POLL_INTERVAL": "2s",
 		"AGENT_MONITORING_SUBSCRIBER_BUFFER": "9", "AGENT_MONITORING_MAX_STREAMS_PER_TENANT": "3", "AGENT_RELEASE_NAMESPACE": "laboratory-system",
-		"AGENT_PULL_SECRET_NAMESPACE": "laboratory-system", "AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5000"} {
+		"AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443"} {
 		if agentEnv[k].Value != want {
 			t.Errorf("agent %s = %q, want %q", k, agentEnv[k].Value, want)
 		}
@@ -192,7 +193,7 @@ func TestTuningKnobsStayValues(t *testing.T) {
 	}
 	naEnv := envOf(main)
 	for k, want := range map[string]string{"OVS_SOCK": "/run/ovs-x/db.sock", "GRPC_SOCK": "/run/cice/na.sock", "OVS_BRIDGE": "br-x",
-		"HEALTH_ADDR": "127.0.0.1:9555", "DEVICE_PLUGIN_DIR": "/var/lib/kubelet/dp-x", "STATE_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5000"} {
+		"HEALTH_ADDR": "127.0.0.1:9555", "DEVICE_PLUGIN_DIR": "/var/lib/kubelet/dp-x", "STATE_REGISTRY_ADDR": "registry.lab.internal:5443"} {
 		if naEnv[k].Value != want {
 			t.Errorf("node-agent %s = %q, want %q", k, naEnv[k].Value, want)
 		}

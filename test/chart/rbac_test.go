@@ -86,8 +86,37 @@ func TestOperatorClusterRoleIsLeastPrivilege(t *testing.T) {
 			bound = r.ResourceNames
 		}
 	}
-	if len(bound) != 4 || !has(bound, "laboratory-proxy-reports") || !has(bound, "laboratory-operator-namespaced") || !has(bound, "laboratory-vpn-role") || !has(bound, "laboratory-agent-role") {
+	if len(bound) != 5 || !has(bound, "laboratory-gateway-role") || has(bound, "laboratory-checker-secrets") || !has(bound, "laboratory-proxy-reports") || !has(bound, "laboratory-operator-namespaced") || !has(bound, "laboratory-vpn-role") || !has(bound, "laboratory-agent-role") {
 		t.Errorf("bind is limited to the named roles: %v", bound)
+	}
+}
+
+// The LabGroupClient controller recomputes the WireGuard AllowedIPs of a client from the group's access policy, so it watches
+// LabGroupAccessPolicy cluster-wide, read-only.
+func TestOperatorReadsAccessPolicies(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	found := false
+	for _, r := range rulesOf(t, docs(t, out)[0]) {
+		if !has(r.APIGroups, "laboratory.cybericebox.com") || !has(r.Resources, "labgroupaccesspolicies") {
+			continue
+		}
+		found = true
+		for _, v := range []string{"get", "list", "watch"} {
+			if !has(r.Verbs, v) {
+				t.Errorf("labgroupaccesspolicies: verb %q missing in %+v", v, r)
+			}
+		}
+		for _, v := range r.Verbs {
+			if v != "get" && v != "list" && v != "watch" {
+				t.Errorf("labgroupaccesspolicies must be read-only for the operator: %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the operator ClusterRole has no rule for labgroupaccesspolicies")
 	}
 }
 
@@ -136,7 +165,7 @@ func TestOperatorAdmissionPolicy(t *testing.T) {
 	render := func(extra ...string) (string, error) {
 		return helmTemplate(t, append([]string{"-s", "templates/operator/admission-policy.yaml"}, extra...)...)
 	}
-	out, err := render("--kube-version", "1.33.0")
+	out, err := render("--kube-version", "1.35.0")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -150,7 +179,7 @@ func TestOperatorAdmissionPolicy(t *testing.T) {
 		t.Errorf("bindings = %d, want 3", n)
 	}
 	// off by a value, and not rendered where the API does not exist
-	if o, err := render("--kube-version", "1.33.0", "--set", "operator.admissionPolicy.enabled=false"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
+	if o, err := render("--kube-version", "1.35.0", "--set", "operator.admissionPolicy.enabled=false"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
 		t.Errorf("a disabled policy must not render:\n%s", o)
 	}
 	if o, err := render("--kube-version", "1.29.0"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
@@ -158,39 +187,61 @@ func TestOperatorAdmissionPolicy(t *testing.T) {
 	}
 }
 
-// The node-agent answers the requests, and reads Secrets in the images namespace only: its role reaches no platform Secret.
-func TestNodeAgentReadsOnlyTheImagesNamespaceSecrets(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml", "-s", "templates/images-namespace.yaml")
+// The node-agent answers the requests and reads no Secret anywhere: its role has no Secret rule, and no Role of the namespace that holds the upstream
+// credentials names it. Only the operator and the agent write there, and only the registry gate reads.
+func TestNodeAgentReadsNoSecretAndOnlyTheGateReadsTheUpstreamNamespace(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml", "-s", "templates/upstream-namespace.yaml", "-s", "templates/registry/rbac.yaml",
+		"--set", "agent.enabled=true")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+	writers := map[string]bool{"laboratory-operator-upstream": true, "laboratory-agent-upstream": true}
+	var sawGate bool
 	for _, d := range docs(t, out) {
 		md, _ := d["metadata"].(map[string]any)
-		switch {
-		case d["kind"] == "ClusterRole":
+		name, _ := md["name"].(string)
+		switch d["kind"] {
+		case "ClusterRole":
 			var pulls, statusWrite bool
 			for _, r := range rulesOf(t, d) {
 				if has(r.Resources, "secrets") {
-					t.Errorf("the cluster-wide node-agent role must not touch Secrets: %+v", r)
+					t.Errorf("the cluster-wide role %s must not touch Secrets: %+v", name, r)
 				}
 				pulls = pulls || (has(r.Resources, "imagepulls") && has(r.Verbs, "watch"))
 				statusWrite = statusWrite || (has(r.Resources, "imagepulls/status") && has(r.Verbs, "patch"))
 			}
-			if !pulls || !statusWrite {
+			if name == "laboratory-node-agent" && (!pulls || !statusWrite) {
 				t.Errorf("the node-agent must watch imagepulls and write their status: %v %v", pulls, statusWrite)
 			}
-		case d["kind"] == "Role" && md["name"] == "laboratory-node-agent-images":
-			if md["namespace"] != "laboratory-images" {
-				t.Errorf("namespace %v", md["namespace"])
+		case "Role":
+			if md["namespace"] != "laboratory-upstream" {
+				t.Errorf("role %s in %v", name, md["namespace"])
 			}
 			rs := rulesOf(t, d)
-			if len(rs) != 1 || len(rs[0].Verbs) != 1 || rs[0].Verbs[0] != "get" || !has(rs[0].Resources, "secrets") {
-				t.Errorf("the node-agent may only get Secrets there: %+v", rs)
+			if len(rs) != 1 || !has(rs[0].Resources, "secrets") {
+				t.Errorf("%s: one rule on Secrets: %+v", name, rs)
+			}
+			switch {
+			case name == "laboratory-registry-gate-upstream":
+				sawGate = true
+				if len(rs) == 1 && (has(rs[0].Verbs, "create") || has(rs[0].Verbs, "update") || has(rs[0].Verbs, "patch") || has(rs[0].Verbs, "delete") || !has(rs[0].Verbs, "get")) {
+					t.Errorf("the gate only reads: %+v", rs)
+				}
+			case writers[name]:
+			default:
+				t.Errorf("unexpected role %s in the upstream credentials namespace", name)
+			}
+		case "RoleBinding":
+			for _, sub := range d["subjects"].([]any) {
+				sa := sub.(map[string]any)["name"]
+				if sa == "laboratory-node-agent" || sa == "laboratory-node-state" || sa == "laboratory-proxy" || sa == "laboratory-device-access" {
+					t.Errorf("a component of the lab pool is bound in the upstream credentials namespace: %v", sa)
+				}
 			}
 		}
 	}
-	if !strings.Contains(out, "name: laboratory-images") || !strings.Contains(out, "name: laboratory-operator-images") {
-		t.Error("the images namespace and the operator's role in it")
+	if !sawGate || !strings.Contains(out, "name: laboratory-upstream") {
+		t.Error("the namespace and the gate's Role in it")
 	}
 }
 
@@ -281,7 +332,9 @@ func TestProxyReportsRoleIsLeastPrivilege(t *testing.T) {
 			}
 		}
 	}
-	if len(got) != 2 || strings.Join(got["labtrafficreports"], ",") != "get,create" || strings.Join(got["labtrafficreports/status"], ",") != "update" {
+	// The two traffic reports and, for the console sessions of activity reports, the proxy's own LabActivityReport ring: the same verbs.
+	if len(got) != 4 || strings.Join(got["labtrafficreports"], ",") != "get,create" || strings.Join(got["labtrafficreports/status"], ",") != "update" ||
+		strings.Join(got["labactivityreports"], ",") != "get,create" || strings.Join(got["labactivityreports/status"], ",") != "update" {
 		t.Fatalf("proxy reports role = %v", got)
 	}
 }
@@ -307,8 +360,29 @@ func TestGatewayRoleReadsLabs(t *testing.T) {
 	}
 }
 
-func TestNodeAgentRBACCapturePatchOnly(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml")
+// The node-agent holds no Pod patch privilege any more (the capture guard is the snapshot engine's, which is node-state's).
+func TestNodeAgentRBACHasNoPodPatch(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-agent/clusterrole.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" {
+			continue
+		}
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "pods") && has(r.Verbs, "patch") {
+				t.Fatalf("the node-agent must not patch Pods: %+v", r)
+			}
+			if has(r.Resources, "secrets") {
+				t.Fatalf("the node-agent must not read Secrets: %+v", r)
+			}
+		}
+	}
+}
+
+func TestNodeStateRBACCapturePatchOnly(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-state/rbac.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +401,7 @@ func TestNodeAgentRBACCapturePatchOnly(t *testing.T) {
 		}
 	}
 	if !patch {
-		t.Fatal("node-agent lacks guarded Pod patch privilege")
+		t.Fatal("node-state lacks guarded Pod patch privilege")
 	}
 }
 

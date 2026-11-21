@@ -288,7 +288,7 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 		if nstest.Reach(t, "pa", "tcp", "10.8.100.2:7300", tcpLab) {
 			t.Errorf("a participant reached the lab without an access rule")
 		}
-		rule := AccessRule{ClientName: "a", LabName: "l", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.100.0/24", Action: AccessAllow, LabInterface: "lab1"}
+		rule := AccessRule{ClientName: "a", LabName: "l", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.100.0/24", Action: AccessAllow, LabInterface: "lab1", LabInitiated: true}
 		if err := m.ReplaceAccessRules([]AccessRule{rule}); err != nil {
 			t.Fatal(err)
 		}

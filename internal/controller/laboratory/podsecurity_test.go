@@ -23,7 +23,7 @@ func newDeviceForPod() *laboratoryv1alpha1.Device {
 // A device pod gets no token, the runtime's seccomp profile, no service links, dropped capabilities and a storage limit.
 func TestDevicePodIsHardened(t *testing.T) {
 	r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi"}, TerminationGraceSeconds: 5}
-	_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+	_, _, _, spec := r.workloadTemplate(newDeviceForPod())
 	if g := spec.TerminationGracePeriodSeconds; g == nil || *g != 5 {
 		t.Errorf("a device pod needs no graceful drain: terminationGracePeriodSeconds = %v", g)
 	}
@@ -60,7 +60,7 @@ func TestDevicePodIsHardened(t *testing.T) {
 
 func TestDevicePodUserNamespacesWhenAsked(t *testing.T) {
 	r := &DeviceReconciler{Security: PodSecurity{UserNamespaces: true}}
-	_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+	_, _, _, spec := r.workloadTemplate(newDeviceForPod())
 	if spec.HostUsers == nil || *spec.HostUsers {
 		t.Fatal("hostUsers must be false")
 	}
@@ -73,7 +73,7 @@ func TestNetconfigInitContainerKeepsOnlyItsCapabilities(t *testing.T) {
 	d := newDeviceForPod()
 	d.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}
 	r := &DeviceReconciler{NetConfigImage: "node"}
-	_, _, _, spec := r.workloadTemplate(d, false)
+	_, _, _, spec := r.workloadTemplate(d)
 	if len(spec.InitContainers) != 1 {
 		t.Fatalf("init containers = %d", len(spec.InitContainers))
 	}
@@ -137,7 +137,7 @@ func TestExtendedDeviceRequestsTun(t *testing.T) {
 		d := newDeviceForPod()
 		d.Spec.SecurityPreset = preset
 		r := &DeviceReconciler{}
-		_, _, _, spec := r.workloadTemplate(d, false)
+		_, _, _, spec := r.workloadTemplate(d)
 		res := spec.Containers[0].Resources
 		one := resource.MustParse("1")
 		if got := res.Limits["cybericebox.com/tun"]; got.Cmp(one) != 0 {
@@ -153,7 +153,7 @@ func TestExtendedDeviceRequestsTun(t *testing.T) {
 func TestPingSysctlIsTheSameWithAndWithoutUserNamespaces(t *testing.T) {
 	for _, userns := range []bool{false, true} {
 		r := &DeviceReconciler{Security: PodSecurity{UserNamespaces: userns}}
-		_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+		_, _, _, spec := r.workloadTemplate(newDeviceForPod())
 		sc := spec.SecurityContext.Sysctls
 		if len(sc) != 1 || sc[0].Name != "net.ipv4.ping_group_range" || sc[0].Value != "0 65535" {
 			t.Errorf("userns=%v: sysctls %+v", userns, sc)
@@ -217,7 +217,7 @@ func TestAdmissionPolicyCapabilitiesAreWhatTheCodeAdds(t *testing.T) {
 func TestDevicePodStaysInsideItsOwnLab(t *testing.T) {
 	for _, noCPULimit := range []bool{false, true} {
 		r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi", UserNamespaces: true}, Defaults: DeviceDefaults{CPU: "100m", Memory: "256Mi", MaxCPU: "2", MaxMemory: "4Gi", NoCPULimit: noCPULimit}}
-		_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+		_, _, _, spec := r.workloadTemplate(newDeviceForPod())
 		c := spec.Containers[0]
 		if spec.HostNetwork || spec.HostPID || spec.HostIPC {
 			t.Error("a device never shares the host's namespaces")

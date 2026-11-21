@@ -8,12 +8,12 @@ import (
 	"maps"
 	"net"
 	"regexp"
-	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -41,6 +42,8 @@ import (
 // DeviceReconciler reconciles a Device object.
 type DeviceReconciler struct {
 	client.Client
+	// Workers is how many devices are reconciled at once (0 = 1). A device is never reconciled by two workers at once.
+	Workers         int
 	Scheme          *runtime.Scheme
 	LabNodeSelector map[string]string
 	LabTolerations  []corev1.Toleration
@@ -64,8 +67,6 @@ type DeviceReconciler struct {
 	Registry SnapshotRegistry
 	// Recorder records the events of a Device (a lab pull Secret that is missing); nil records none.
 	Recorder record.EventRecorder
-	// pullWaiting holds the devices whose wait for the lab's pull Secret was already told.
-	pullWaiting sync.Map
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would start a device twice.
 	Reader client.Reader
@@ -99,14 +100,10 @@ type DeviceReconciler struct {
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var device laboratoryv1alpha1.Device
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
-		if errors.IsNotFound(err) {
-			r.pullWaiting.Delete(req.NamespacedName)
-		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
-		r.pullWaiting.Delete(req.NamespacedName)
 		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -252,7 +249,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 			if stderrors.Is(err, errProfileUnsupported) {
 				return ctrl.Result{}, nil // refused for good, with an event: nothing to retry
 			}
-			return r.pullSecretWait(ctx, device, err)
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
@@ -286,17 +283,14 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err := r.deleteLegacyPodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
 	}
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
-		dep.Spec.Replicas = ptrInt32(replicas)
-		if err := r.Update(ctx, &dep); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.syncWorkload(ctx, device, &dep, replicas); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
 	ready := dep.Status.AvailableReplicas >= 1
 
-	if err := r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready); err != nil {
+	if err := r.publishWorkloadPlacement(ctx, device, nodeName, podIP, podName, ready); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
@@ -306,6 +300,54 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// syncWorkload writes the replicas and, for a device on the cache, the images of the Deployment, in one update when either differs.
+func (r *DeviceReconciler) syncWorkload(ctx context.Context, device *laboratoryv1alpha1.Device, dep *appsv1.Deployment, replicas int32) error {
+	changed := r.convergeDeviceImages(device, dep)
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
+		dep.Spec.Replicas = ptrInt32(replicas)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return r.Update(ctx, dep)
+}
+
+// convergeDeviceImages brings the Deployment of a device made by an earlier version to what a new one is made with: the cache references with
+// the tenant segment, the pull policy Always, and no image pull secret. A reference without the segment is refused by the registry gate,
+// so such a Deployment would fail at its next pull. The pod template changes, and the Recreate rollout restarts the device: the upgrade is
+// made between events (the release notes say so). It touches nothing else and does nothing for a device that is not on the cache or whose
+// Deployment already matches; the pods of a state device are made new for every incarnation and need no convergence.
+// It reports whether it changed the Deployment.
+func (r *DeviceReconciler) convergeDeviceImages(device *laboratoryv1alpha1.Device, dep *appsv1.Deployment) bool {
+	if device.Spec.ImageMirror == "" {
+		return false
+	}
+	_, _, _, want := r.workloadTemplate(device)
+	have := &dep.Spec.Template.Spec
+	changed := false
+	sync := func(cur, wanted []corev1.Container) {
+		for i := range cur {
+			for j := range wanted {
+				if cur[i].Name != wanted[j].Name {
+					continue
+				}
+				if cur[i].Image != wanted[j].Image || cur[i].ImagePullPolicy != wanted[j].ImagePullPolicy {
+					cur[i].Image, cur[i].ImagePullPolicy = wanted[j].Image, wanted[j].ImagePullPolicy
+					changed = true
+				}
+			}
+		}
+	}
+	sync(have.InitContainers, want.InitContainers)
+	sync(have.Containers, want.Containers)
+	if len(have.ImagePullSecrets) > 0 {
+		have.ImagePullSecrets = nil
+		changed = true
+	}
+	return changed
 }
 
 // deleteWithdrawnWorkload deletes the Deployment of a device the scheduler withdrew (its group did not get every pod a node
@@ -321,7 +363,7 @@ func (r *DeviceReconciler) deleteWithdrawnWorkload(ctx context.Context, device *
 	if err := r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
 		return err
 	}
-	return r.publishDevicePlacement(ctx, device, "", "", "", false)
+	return r.publishDevicePlacement(ctx, device, "", "", "", false, nil)
 }
 
 // devicePodPlacement returns the NodeName/PodIP/PodName of the device's live pod,
@@ -389,15 +431,21 @@ func networkAnnotation(device *laboratoryv1alpha1.Device, stableMAC bool) string
 // workloadTemplate is the pod of a device, shared by the Deployment and the
 // bare-Pod (state persistence) modes: the labels, selector labels, pod
 // annotations and the pod spec running the device image.
-func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, stableMAC bool) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
+func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
+	return r.workloadTemplateFor(device, false, podPlan{})
+}
+
+// workloadTemplateFor is workloadTemplate for a pod whose start is known: from a saved state, for repair, or as an attempt
+// of a bootstrap (see device_bootstrap.go).
+func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device, stableMAC bool, plan podPlan) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
 	annotations = map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
 		names.AnnotationNetworks: networkAnnotation(device, stableMAC),
 		// a running lab is never evicted by a cluster autoscaler
 		names.AnnotationSafeToEvict: "false",
 	}
-	if device.Spec.Exposure != nil {
-		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
+	if laboratoryv1alpha1.HTTPAccess(device.Spec.Access) != nil {
+		annotations[names.AnnotationDefaultNetwork] = names.EDAIface
 	} else if len(device.Spec.Interfaces) > 0 {
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}
@@ -494,6 +542,11 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	// node-agent, which reads them to attribute the containers.
 	labels[names.LabelLabUID] = parentUID
 	labels[names.LabelDeviceUID] = string(device.UID)
+	// The device access service reads this label from the runtime and refuses a console to a device without it.
+	if enabled, command, user := device.TerminalSettings(); enabled {
+		labels[names.LabelTerminal] = valueTrue
+		labels[names.LabelTerminalSpec] = names.TerminalSpecHash(command, user)
+	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
 	// need no capabilities of their own. addr.type=dhcp interfaces are handled by
@@ -501,7 +554,9 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
-	r.withReadiness(device, &podSpec)
+	mode := launchModeFor(device, plan)
+	r.withReadiness(device, &podSpec, mode == launchRun)
+	r.withLauncher(device, &podSpec, annotations, mode, plan)
 	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
 	// optionally its own user namespace.
 	hardenPod(&podSpec, false, r.TerminationGraceSeconds)
@@ -512,7 +567,24 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		hostUsers := false
 		podSpec.HostUsers = &hostUsers
 	}
+	// Every container and init container with a cache reference pulls with Always; the pod has no image pull secret.
+	setPullPolicies(&podSpec, device.Spec.ImageMirror)
 	return labels, selectorLabels, annotations, podSpec
+}
+
+// refuseUncached refuses to start a device made for the image cache whose image the cache cannot serve (the list of served registries
+// changed since the lab was admitted): it is never pulled directly.
+func (r *DeviceReconciler) refuseUncached(device *laboratoryv1alpha1.Device) error {
+	if device.Spec.ImageMirror == "" {
+		return nil
+	}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.For(names.TenantOf(device.Labels))
+	for _, img := range []string{device.Spec.Image, r.NetConfigImage} {
+		if _, err := rw.RewriteRequired(img); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // deviceImage is the reference the node pulls for an image of the device:
@@ -521,7 +593,7 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 	if device.Spec.ImageMirror == "" {
 		return image
 	}
-	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.For(names.TenantOf(device.Labels))
 	return rw.RewritePinned(image, device.Spec.ImageDigests[image])
 }
 
@@ -529,8 +601,14 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	if err := r.refuseUnrunnableProfile(device); err != nil {
 		return err
 	}
-	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
-	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
+	if err := r.refuseUnbootstrappable(device); err != nil {
+		return err
+	}
+	if err := r.refuseUncached(device); err != nil {
+		return err
+	}
+	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device)
+	if err := r.stampGroupName(ctx, device, labels); err != nil {
 		return err
 	}
 
@@ -729,10 +807,14 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		// Devices with state persistence run as bare Pods owned by the Device.
 		Owns(&corev1.Pod{}).
+		// The pods of a Deployment are not owned by the Device; those that bootstrap are watched, to see a container that
+		// restarted in place and has to be recreated.
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.devicesForBootstrapPod)).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLabGroup), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.
 		Watches(&laboratoryv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.devicesForConnection)).
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)}).
 		Complete(reconcileutil.Quiet(r))
 }
 
@@ -746,6 +828,24 @@ func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace stri
 		return false, err
 	}
 	return group.Spec.Suspended, nil
+}
+
+// stampGroupName puts the name of the device's LabGroup on the labels of its pod (names.LabelGroupName). The device access service requires
+// it to equal the group of a console grant: lab and device names repeat across groups, so it is what binds a grant to the namespace it is for.
+// The tenant of the group goes with it (names.LabelTenant, names.TenantOf of the LabGroup): the service requires it to equal the issuer of the
+// grant, so a tenant that holds a valid key cannot open the device of another tenant's group. Both labels are operator-made
+// (names.LabelPrefix labels are never copied from a user), so a participant cannot set them. A namespace with no LabGroup gets neither, and
+// then no console opens in it.
+func (r *DeviceReconciler) stampGroupName(ctx context.Context, device *laboratoryv1alpha1.Device, labels map[string]string) error {
+	group, err := r.labGroupOfNamespace(ctx, device.Namespace)
+	if err != nil {
+		return err
+	}
+	if group != nil {
+		labels[names.LabelGroupName] = group.Name
+		labels[names.LabelTenant] = names.TenantOf(group.Labels)
+	}
+	return nil
 }
 
 // labGroupOfNamespace returns the LabGroup named by the namespace label, or the
@@ -833,8 +933,21 @@ func (r *DeviceReconciler) devicesForLab(ctx context.Context, obj client.Object)
 	return out
 }
 
-func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool) error {
+// publishWorkloadPlacement publishes the placement of a Deployment's pod together with the state of its bootstrap.
+func (r *DeviceReconciler) publishWorkloadPlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool) error {
+	bootstrap, err := r.workloadBootstrap(ctx, device)
+	if err != nil {
+		return err
+	}
+	return r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready, bootstrap)
+}
+
+func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool, bootstrap *laboratoryv1alpha1.DeviceBootstrapStatus) error {
 	updated := false
+	if bootstrap != nil && !equality.Semantic.DeepEqual(device.Status.Bootstrap, bootstrap) {
+		device.Status.Bootstrap = bootstrap
+		updated = true
+	}
 	if nodeName != device.Status.NodeName {
 		device.Status.NodeName = nodeName
 		updated = true

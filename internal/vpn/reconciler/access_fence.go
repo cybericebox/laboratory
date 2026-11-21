@@ -102,7 +102,7 @@ func (r *AccessReconciler) writeStoppedFences(ctx context.Context, labs []lab.La
 		return err
 	}
 	for _, old := range labs {
-		if !old.Spec.VPN.Enabled || !old.Spec.Lifecycle.IsStopped() {
+		if !old.Spec.HasVPN() || !old.Spec.Lifecycle.IsStopped() {
 			continue
 		}
 		var current lab.Lab
@@ -112,31 +112,38 @@ func (r *AccessReconciler) writeStoppedFences(ctx context.Context, labs []lab.La
 		if old.UID != current.UID || old.Generation != current.Generation || !reflect.DeepEqual(old.Spec.Lifecycle, current.Spec.Lifecycle) {
 			return fmt.Errorf("lab changed during physical fence")
 		}
-		var leg lab.LabVPN
-		if err := r.direct().Get(ctx, client.ObjectKey{Name: names.LabVPNObjectName(current.Name), Namespace: current.Namespace}, &leg); err != nil {
-			return err
-		}
-		owned := false
-		for _, o := range leg.OwnerReferences {
-			owned = owned || o.Kind == "Lab" && o.UID == current.UID
-		}
-		if !owned {
-			return fmt.Errorf("VPN leg ownership differs from live Lab")
-		}
-		fence := &lab.LabAccessFence{OperationID: current.Spec.Lifecycle.OperationID, Revision: current.Spec.Lifecycle.Revision, LabUID: string(current.UID), ObservedGeneration: current.Generation, GroupUID: r.GroupUID, VPNRuntimeIdentity: r.Runtime, FencedAt: metav1.Now()}
-		if prev := leg.Status.AccessFence; prev != nil {
-			a, b := *prev, *fence
-			a.FencedAt = b.FencedAt
-			if reflect.DeepEqual(a, b) {
-				continue
+		for _, g := range current.Spec.GatewaysOfKind(lab.GatewayKindVPN) {
+			if err := r.writeLegFence(ctx, &current, names.LabVPNObjectName(current.Name, g.Name)); err != nil {
+				return err
 			}
-		}
-		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": leg.ResourceVersion}, statusSubresource: map[string]any{"accessFence": fence}})
-		if err := r.Status().Patch(ctx, &leg, client.RawPatch(types.MergePatchType, raw)); err != nil {
-			return err
 		}
 	}
 	return nil
+}
+
+// writeLegFence writes the access fence of a stopped lab on one of its LabVPN objects.
+func (r *AccessReconciler) writeLegFence(ctx context.Context, current *lab.Lab, legName string) error {
+	var leg lab.LabVPN
+	if err := r.direct().Get(ctx, client.ObjectKey{Name: legName, Namespace: current.Namespace}, &leg); err != nil {
+		return err
+	}
+	owned := false
+	for _, o := range leg.OwnerReferences {
+		owned = owned || o.Kind == "Lab" && o.UID == current.UID
+	}
+	if !owned {
+		return fmt.Errorf("VPN leg ownership differs from live Lab")
+	}
+	fence := &lab.LabAccessFence{OperationID: current.Spec.Lifecycle.OperationID, Revision: current.Spec.Lifecycle.Revision, LabUID: string(current.UID), ObservedGeneration: current.Generation, GroupUID: r.GroupUID, VPNRuntimeIdentity: r.Runtime, FencedAt: metav1.Now()}
+	if prev := leg.Status.AccessFence; prev != nil {
+		a, b := *prev, *fence
+		a.FencedAt = b.FencedAt
+		if reflect.DeepEqual(a, b) {
+			return nil
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": leg.ResourceVersion}, statusSubresource: map[string]any{"accessFence": fence}})
+	return r.Status().Patch(ctx, &leg, client.RawPatch(types.MergePatchType, raw))
 }
 func stoppedFenceKey(labs []lab.Lab) string {
 	type key struct {

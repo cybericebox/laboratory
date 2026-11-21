@@ -3,15 +3,11 @@ package devicestate
 import (
 	"context"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/go-logr/logr"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -86,9 +82,16 @@ func TestWatchFallsBackToPollingPastTheDirectoryCap(t *testing.T) {
 }
 
 func TestWatchBudget(t *testing.T) {
-	b := &watchBudget{max: 2}
+	b := NewWatchBudget(2)
 	if !b.take() || !b.take() || b.take() {
 		t.Fatal("the budget allows exactly max watches")
+	}
+	if b.Used() != 2 {
+		t.Fatalf("used %d", b.Used())
+	}
+	b.give(1)
+	if !b.take() {
+		t.Fatal("a share given back can be taken again")
 	}
 }
 
@@ -159,53 +162,5 @@ func TestFingerprintDetectsChangeAndIgnoresExcluded(t *testing.T) {
 	}
 	if Fingerprint(root, pol) == b {
 		t.Fatal("a modified file must change the fingerprint")
-	}
-}
-
-func TestForwardRelaysToTarget(t *testing.T) {
-	up, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer up.Close()
-	go func() {
-		for {
-			c, err := up.Accept()
-			if err != nil {
-				return
-			}
-			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
-		}
-	}()
-	probe, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := probe.Addr().String()
-	probe.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- Forward(ctx, addr, up.Addr().String(), logr.Discard()) }()
-	var c net.Conn
-	for i := 0; i < 50; i++ {
-		if c, err = net.Dial("tcp", addr); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	if _, err := c.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 4)
-	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "ping" {
-		t.Fatalf("got %q %v", buf, err)
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Forward must return when ctx ends")
 	}
 }

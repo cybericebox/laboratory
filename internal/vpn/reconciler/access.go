@@ -58,6 +58,7 @@ type AccessReconciler struct {
 	revokeClients     []string
 	revokeReissued    map[string]bool
 	activationPending bool
+	dropPublished     map[string]time.Time
 	initialChecked    bool
 }
 
@@ -96,7 +97,7 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("get group access policy: %w", err)
 	}
 	policyFound := err == nil
-	desiredPolicy := policyRules(policy)
+	desiredPolicy := vpn.PolicyRules(policy)
 	policyIdentityError := ""
 	if policy.Spec.ExpectedGroupUID != "" && policy.Spec.ExpectedGroupUID != r.GroupUID {
 		desiredPolicy = nil
@@ -118,9 +119,12 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, fmt.Errorf("%s", policyIdentityError)
 	}
+	if err := r.publishLabEnforcement(ctx, labsByName, legs.Items); err != nil {
+		return ctrl.Result{}, fmt.Errorf("publish the lab block state: %w", err)
+	}
 	hasStopped := false
 	for _, l := range labs.Items {
-		hasStopped = hasStopped || l.Spec.VPN.Enabled && l.Spec.Lifecycle.IsStopped()
+		hasStopped = hasStopped || l.Spec.HasVPN() && l.Spec.Lifecycle.IsStopped()
 	}
 	if hasStopped {
 		if err := r.writeStoppedFences(ctx, labs.Items); err != nil {
@@ -140,23 +144,6 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
-}
-
-func policyRules(policy *laboratoryv1alpha1.LabGroupAccessPolicy) []vpn.AccessPolicyRule {
-	rules := make([]vpn.AccessPolicyRule, 0, len(policy.Spec.Rules))
-	for _, rule := range policy.Spec.Rules {
-		var action vpn.AccessAction
-		switch rule.Action {
-		case laboratoryv1alpha1.LabGroupAccessAllow:
-			action = vpn.AccessAllow
-		case laboratoryv1alpha1.LabGroupAccessDeny:
-			action = vpn.AccessDeny
-		default:
-			continue
-		}
-		rules = append(rules, vpn.AccessPolicyRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
-	}
-	return rules
 }
 
 func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *laboratoryv1alpha1.LabGroupAccessPolicy, rules []vpn.AccessRule, counters map[string]vpn.TrafficCounter, state, lastError string) error {
@@ -185,6 +172,7 @@ func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *labora
 		policy.Status.Rules = append(policy.Status.Rules, laboratoryv1alpha1.LabGroupAccessPolicyRuleStatus{
 			ClientName:   statistic.ClientName,
 			LabName:      statistic.LabName,
+			GatewayNames: statistic.GatewayNames,
 			Action:       laboratoryv1alpha1.LabGroupAccessAction(statistic.Action),
 			Packets:      statistic.Packets,
 			Bytes:        statistic.Bytes,

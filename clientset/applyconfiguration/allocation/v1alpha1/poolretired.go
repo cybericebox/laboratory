@@ -24,7 +24,8 @@ import (
 // PoolRetiredApplyConfiguration represents a declarative configuration of the PoolRetired type for use
 // with apply.
 //
-// PoolRetired is a slot waiting out its quarantine.
+// PoolRetired is a slot waiting out its quarantine. OwnerUID and Generation are the lease it had (empty for a slot that never
+// had one); RetiredAt starts the quarantine.
 type PoolRetiredApplyConfiguration struct {
 	OwnerUID   *string  `json:"ownerUID,omitempty"`
 	Generation *int64   `json:"generation,omitempty"`
@@ -37,19 +38,25 @@ func PoolRetired() *PoolRetiredApplyConfiguration {
 	return &PoolRetiredApplyConfiguration{}
 }
 
-// WithOwnerUID sets the OwnerUID field in the declarative configuration to the given value.
+// WithOwnerUID sets the OwnerUID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the OwnerUID field is set to the value of the last call.
 func (b *PoolRetiredApplyConfiguration) WithOwnerUID(value string) *PoolRetiredApplyConfiguration {
 	b.OwnerUID = &value
 	return b
 }
 
-// WithGeneration sets the Generation field in the declarative configuration to the given value.
+// WithGeneration sets the Generation field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Generation field is set to the value of the last call.
 func (b *PoolRetiredApplyConfiguration) WithGeneration(value int64) *PoolRetiredApplyConfiguration {
 	b.Generation = &value
 	return b
 }
 
-// WithRetiredAt sets the RetiredAt field in the declarative configuration to the given value.
+// WithRetiredAt sets the RetiredAt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RetiredAt field is set to the value of the last call.
 func (b *PoolRetiredApplyConfiguration) WithRetiredAt(value v1.Time) *PoolRetiredApplyConfiguration {
 	b.RetiredAt = &value
 	return b

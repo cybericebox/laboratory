@@ -44,7 +44,9 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 		VpnSize:       immutableGroupSize(g.Spec.VPN.Size),
 		GatewaySize:   immutableGroupSize(g.Spec.Gateway.Size),
 		// the reservation's CR name; the callers map it back to the id (reservationIDOf)
-		ReservationId: g.Labels[names.LabelReservation],
+		ReservationId:   g.Labels[names.LabelReservation],
+		VpnEnabled:      g.VPNEnabled(),
+		InternetEnabled: g.InternetEnabled(),
 	}
 }
 
@@ -56,6 +58,21 @@ func labToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.La
 	return p
 }
 
+// gatewaysToProto lists the gateways of the lab in spec order with their state. The block of connections started by the lab is reported
+// only for a gateway whose switch is off.
+func gatewaysToProto(l *laboratoryv1alpha1.Lab) []*protobuf.LabGatewayStatus {
+	out := make([]*protobuf.LabGatewayStatus, 0, len(l.Spec.Gateways))
+	for _, g := range l.Spec.Gateways {
+		item := &protobuf.LabGatewayStatus{Name: g.Name, Kind: string(g.Kind)}
+		if st := l.Status.GatewayStatus(g.Name); st != nil {
+			item.Cidr, item.Ready = st.CIDR, st.Ready
+			item.LabInitiatedBlocked = st.LabInitiatedBlocked && !g.ReverseConnections
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits.Limits) *protobuf.Lab {
 	var specJSON []byte
 	if includeSpec {
@@ -63,22 +80,22 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	}
 	st := l.Status
 	status := &protobuf.LabStatus{
-		Phase:         string(st.Phase),
-		VpnCidr:       st.VPN.CIDR,
-		InternetCidr:  st.Internet.CIDR,
-		Ready:         st.Phase == laboratoryv1alpha1.PhaseReady,
-		VpnReady:      st.VPN.Ready,
-		InternetReady: st.Internet.Ready,
-		ImageWarning:  st.ImageWarning,
+		Phase:        string(st.Phase),
+		Ready:        st.Phase == laboratoryv1alpha1.PhaseReady,
+		ImageWarning: st.ImageWarning,
+		Gateways:     gatewaysToProto(l),
 	}
 	status.Retirement = retirementToProto(l, l.Status.Retirement)
 	status.Lifecycle = lifecycleToProto(l)
 	status.Resources = retiredStorageToProto(l, labAllocationToProto(l, sizing...))
 	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
+	status.Checks = checkResultsToProto(st.Checks)
+	status.ChecksRunAck = st.ChecksRunAck
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
 			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
-			Snapshot: snapshotStatusToProto(st.Devices[i].State),
+			Snapshot:  snapshotStatusToProto(st.Devices[i].State),
+			Bootstrap: bootstrapStatusToProto(st.Devices[i].Bootstrap),
 		})
 		if t := st.Devices[i].CPUThrottle; t != nil {
 			last := status.Devices[len(status.Devices)-1]
@@ -105,12 +122,18 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	for i := range st.Access {
 		a := &st.Access[i]
 		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
-		status.AccessUrls = append(status.AccessUrls, a.URL)
+		if a.URL != "" {
+			// a terminal entry has no link yet: the platform issues it
+			status.AccessUrls = append(status.AccessUrls, a.URL)
+		}
 	}
 	// Retained configuration or an old Ready status must never expose stopped
 	// intent as accessible runtime. Keep phases/CIDRs/snapshot history intact.
 	if l.Spec.Lifecycle != nil && !exactRunningProjection(l) {
-		status.Ready, status.VpnReady, status.InternetReady = false, false, false
+		status.Ready = false
+		for _, g := range status.Gateways {
+			g.Ready, g.LabInitiatedBlocked = false, false
+		}
 		status.Access, status.AccessUrls = nil, nil
 		for _, d := range status.Devices {
 			d.Ready = false
@@ -326,7 +349,11 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 		case laboratoryv1alpha1.LabGroupAccessDeny:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
-		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames)})
+		include := make([]*protobuf.AccessInclude, 0, len(rule.Include))
+		for _, in := range rule.Include {
+			include = append(include, &protobuf.AccessInclude{Host: in.Host, Prefix: in.Prefix})
+		}
+		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames), GatewayNames: rule.GatewayNames, Include: include})
 	}
 	for _, rule := range policy.Status.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
@@ -338,7 +365,7 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 		}
 		p.Status.Rules = append(p.Status.Rules, &protobuf.LabGroupAccessRuleStatistics{
 			ClientName: origOne(rule.ClientName), LabName: origOne(rule.LabName), Action: action,
-			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset,
+			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset, GatewayNames: rule.GatewayNames,
 		})
 	}
 	return p
@@ -459,7 +486,7 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 	observed := l.Status.Lifecycle
 	current := allocationObservationCurrent(a, intent, observed, l)
 	snapshotSucceeded := intent.SnapshotMode != "Required" || observed != nil && observed.SnapshotComplete && observed.Error == ""
-	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
+	accessFenced := !l.Spec.HasVPN() || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
 	released := allocationReleaseComplete(current, intent, observed, a, snapshotSucceeded, accessFenced)
 	if !current {
 		out.StorageState = allocationUnknown

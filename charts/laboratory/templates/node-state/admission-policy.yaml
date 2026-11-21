@@ -1,0 +1,109 @@
+{{- if and (include "laboratory.nodeState.enabled" .) .Values.operator.admissionPolicy.enabled }}
+{{- /*
+node-state's ServiceAccount may patch the Node object of its own node (the node name is in the bound token of its pod) and change nothing
+but the annotation cybericebox.com/state-persistence, the result of its start-up check (ready, disabled or "unavailable: <CODE>: <detail>"),
+and, on the Pods of its own node, only the capture-guard annotation of a Device-owned state Pod. RBAC cannot say either; these policies do.
+The node-agent keeps the other node writes (templates/node-agent/admission-policy.yaml). See DEPLOY.md, "Which nodes run labs".
+*/ -}}
+{{- $nodeState := printf "system:serviceaccount:%s:laboratory-node-state" .Release.Namespace }}
+{{- $key := "cybericebox.com/state-persistence" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-state-annotation
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [nodes]
+  matchConditions:
+    - name: from-node-state
+      expression: request.userInfo.username == {{ $nodeState | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: newAnnotations
+      expression: "object.metadata.?annotations.orValue({})"
+    - name: oldAnnotations
+      expression: "oldObject.metadata.?annotations.orValue({})"
+  validations:
+    - expression: "variables.ownNode != '' && variables.ownNode == object.metadata.name"
+      message: "node-state may change only the Node of the node it runs on"
+      reason: Forbidden
+    - expression: "object.spec == oldObject.spec && object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
+      message: "node-state may change only the annotation cybericebox.com/state-persistence of its node (no spec, label, finalizer or owner)"
+      reason: Forbidden
+    - expression: "variables.newAnnotations.all(k, k == '{{ $key }}' || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k == '{{ $key }}' || k in variables.newAnnotations)"
+      message: "node-state may change only the annotation cybericebox.com/state-persistence of its node"
+      reason: Forbidden
+    - expression: "!('{{ $key }}' in variables.newAnnotations) || variables.newAnnotations['{{ $key }}'].matches('^(ready|disabled|unavailable: [A-Z0-9_]+: .{0,500})$')"
+      message: "the check annotation is ready, disabled or unavailable: CODE: detail"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-state-annotation
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-node-state-annotation
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-state-capture
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [pods, pods/status]
+  matchConditions:
+    - name: from-node-state
+      expression: request.userInfo.username == {{ $nodeState | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: newAnnotations
+      expression: "object.metadata.?annotations.orValue({})"
+    - name: oldAnnotations
+      expression: "oldObject.metadata.?annotations.orValue({})"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec.nodeName == variables.ownNode && oldObject.spec.nodeName == variables.ownNode"
+      message: "node-state may patch only Pods on its bound node"
+      reason: Forbidden
+    - expression: "'state.cybericebox.com/device' in variables.oldAnnotations && oldObject.metadata.?ownerReferences.orValue([]).exists(o, o.apiVersion == 'laboratory.cybericebox.com/v1alpha1' && o.kind == 'Device' && o.name == variables.oldAnnotations['state.cybericebox.com/device'] && has(o.controller) && o.controller && o.uid != '')"
+      message: "the capture guard belongs only to platform Device-owned state Pods"
+      reason: Forbidden
+    - expression: "object.spec == oldObject.spec && object.?status.orValue({}) == oldObject.?status.orValue({})"
+      message: "node-state may not change Pod spec or status"
+      reason: Forbidden
+    - expression: "object.metadata.?generateName == oldObject.metadata.?generateName && object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([]) && object.metadata.?deletionTimestamp == oldObject.metadata.?deletionTimestamp && object.metadata.?deletionGracePeriodSeconds == oldObject.metadata.?deletionGracePeriodSeconds"
+      message: "node-state may not change Pod labels, ownership, finalizers or deletion state"
+      reason: Forbidden
+    - expression: "variables.newAnnotations.all(k, k == 'laboratory.cybericebox.com/capture-guard' || (k in variables.oldAnnotations && variables.newAnnotations[k] == variables.oldAnnotations[k])) && variables.oldAnnotations.all(k, k == 'laboratory.cybericebox.com/capture-guard' || k in variables.newAnnotations)"
+      message: "node-state may change only the Pod capture-guard annotation"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-state-capture
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-node-state-capture
+  validationActions: [Deny]
+---
+{{- end }}

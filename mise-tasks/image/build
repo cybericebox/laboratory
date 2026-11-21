@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Build images (all five, or the named ones). Usage: mise run image:build [controller|agent|proxy|node|lab ...]. Env: CONTROLLER_IMG, AGENT_IMG, PROXY_IMG, NODE_IMG, LAB_IMG (default cybericebox/laboratory-<name>:$BUILD_TAG), BUILD_TAG (default: timestamp), CONTAINER_TOOL (docker)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+# shellcheck source=hack/images.sh
+. hack/images.sh
+
+names=("$@")
+[[ ${#names[@]} -gt 0 ]] || names=("${ALL_IMAGES[@]}")
+for name in "${names[@]}"; do
+  ref=$(image_ref "$name")
+  echo "== $name: $ref"
+  "$CONTAINER_TOOL" build -t "$ref" --target "$name" .
+done

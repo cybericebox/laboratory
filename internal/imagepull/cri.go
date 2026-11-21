@@ -38,11 +38,7 @@ func (c *CRIPuller) Present(ctx context.Context, ref string) (bool, error) {
 }
 
 // Pull implements Puller.
-func (c *CRIPuller) Pull(ctx context.Context, ref string, auth *Auth) error {
-	req := &criapi.PullImageRequest{Image: &criapi.ImageSpec{Image: ref}}
-	if auth != nil {
-		req.Auth = &criapi.AuthConfig{Username: auth.Username, Password: auth.Password}
-	}
-	_, err := c.images.PullImage(ctx, req)
+func (c *CRIPuller) Pull(ctx context.Context, ref string) error {
+	_, err := c.images.PullImage(ctx, &criapi.PullImageRequest{Image: &criapi.ImageSpec{Image: ref}})
 	return err
 }

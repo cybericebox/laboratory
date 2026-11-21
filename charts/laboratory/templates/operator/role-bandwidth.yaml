@@ -5,7 +5,7 @@ node-agent (whose pods are outside what the operator may patch). It may read, ma
 */ -}}
 {{- $namespaces := list .Release.Namespace }}
 {{- if .Values.proxy.enabled }}{{ $namespaces = append $namespaces .Values.proxy.namespace }}{{ end }}
-{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}{{ $namespaces = append $namespaces (include "laboratory.wgNamespace" .) }}{{ end }}
+{{- if include "laboratory.wgEnabled" . }}{{ $namespaces = append $namespaces (include "laboratory.wgNamespace" .) }}{{ end }}
 {{- range $ns := $namespaces | uniq }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

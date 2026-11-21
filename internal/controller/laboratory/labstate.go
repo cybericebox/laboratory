@@ -2,6 +2,9 @@ package laboratory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,7 +16,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
@@ -40,18 +45,10 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 	if lab.Status.ImageCache != nil {
 		return false, nil
 	}
-	// A lab with registry credentials of its own (Spec.ImagePullSecret) pulls straight from
-	// its registry for the same reason as a tenant with its own, below.
-	cache := r.Mirror.Prefix != "" && lab.Spec.ImagePullSecret == ""
-	if cache {
-		// A tenant with registry credentials of its own pulls straight from its registries:
-		// the shared cache would fetch its private images with the platform's credentials.
-		secret, err := tenantPullSecret(ctx, r, names.TenantOf(lab.Labels))
-		if err != nil {
-			return false, err
-		}
-		cache = secret == ""
-	}
+	// Every lab goes through the cache when it is on, also one with registry credentials of its own or of its tenant: the gate proves each
+	// pull with the pull's own credentials (re-keyed for the cache path by the Device controller), so a private image is never fetched with
+	// anyone else's. Credentials only decide whether the tags are pinned (below).
+	cache := r.Mirror.Enabled()
 	if cache {
 		var devices laboratoryv1alpha1.DeviceList
 		if err := r.List(ctx, &devices, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
@@ -61,10 +58,29 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 			cache = false
 		}
 	}
-	lab.Status.ImageCache = &cache
+	// The tags are pinned at creation, so every device of the lab (and the labs of one wave) runs the same image if an upstream tag moves
+	// mid-event. A lab with registry credentials of its own, or whose tenant has some, resolves them with those credentials (in memory,
+	// one source per credential fingerprint), so a private image is pinned too; the pods then pull the digest through the gate with
+	// the same credentials.
 	if cache {
-		r.pinImages(ctx, lab)
+		source, pending, err := r.pinSource(ctx, lab)
+		if err != nil {
+			return false, err
+		}
+		if pending {
+			return false, reconcileutil.Waiting(errPullSecretPending, pullSecretRetry)
+		}
+		pending, err = r.pinImages(ctx, lab, source)
+		if err != nil {
+			return false, err
+		}
+		if pending {
+			// Nothing is decided or written until the digests are known; the Pinner wakes the lab when they are. The resolutions run
+			// in the background, so the worker goes on with other labs.
+			return false, reconcileutil.Waiting(errPinningPending, pinningRecheck)
+		}
 	}
+	lab.Status.ImageCache = &cache
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return false, err
 	}
@@ -162,18 +178,90 @@ func throttleStateInfo(old, cur []laboratoryv1alpha1.DeviceRef) (throttled bool)
 	return throttled
 }
 
-// pinImages resolves the image tags of the lab's container devices, and the
-// netconfig image, to digests once, at creation, and records them in the Lab
-// status: the whole lab pulls exactly that content. An image that cannot be
-// resolved is left to its tag and named in Status.ImageWarning.
-func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab) {
-	if r.Resolver == nil {
-		return
+// errPinningPending is why a lab waits: some of its image tags are still being resolved in the background.
+var errPinningPending = errors.New("pinning pending: the image digests are still being resolved")
+
+// pinningRecheck is how soon a lab that waits for digests looks again if the Pinner did not wake it (a lost wake-up, a restart).
+const pinningRecheck = 5 * time.Second
+
+// sourceOf is the credential source a tag is resolved with: the lab's own, except the netconfig image, which is the platform's and is
+// resolved with the operator's pull secrets whatever credentials the lab has.
+func sourceOf(labSource, ref, netConfig string) string {
+	if ref == netConfig {
+		return imagecache.OperatorSource
+	}
+	return labSource
+}
+
+// pinSource is the credential source the tags of the lab are resolved with: the operator's own pull secrets for a lab with no credentials
+// of its own or its tenant's, otherwise a source made of those credentials (the tenant's, then the lab's own over them), named by a
+// fingerprint of the documents. pending says that the lab's own Secret, which the agent writes into the upstream namespace, is not there yet.
+func (r *LabReconciler) pinSource(ctx context.Context, lab *laboratoryv1alpha1.Lab) (source string, pending bool, err error) {
+	if r.Pinner == nil {
+		return imagecache.OperatorSource, false, nil
+	}
+	var docs [][]byte
+	secret, err := tenantPullSecret(ctx, r, names.TenantOf(lab.Labels))
+	if err != nil {
+		return "", false, err
+	}
+	if secret != "" {
+		var s corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: secret, Namespace: names.TenantsNamespace}, &s); err != nil {
+			return "", false, fmt.Errorf("tenant image pull secret %s/%s: %w", names.TenantsNamespace, secret, err)
+		}
+		docs = append(docs, s.Data[corev1.DockerConfigJsonKey])
+	}
+	if lab.Spec.ImagePullSecret != "" {
+		// The Secret is the one the agent writes for this lab: its name is computed, whatever the field of the Lab says.
+		var s corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: names.UpstreamLabSecret(lab.Namespace, lab.Name), Namespace: names.UpstreamNamespace}, &s); err != nil {
+			if apierrors.IsNotFound(err) {
+				return "", true, nil
+			}
+			return "", false, err
+		}
+		docs = append(docs, s.Data[corev1.DockerConfigJsonKey])
+	}
+	if len(docs) == 0 {
+		return imagecache.OperatorSource, false, nil
+	}
+	if r.CredentialResolver == nil {
+		return "", false, nil // nothing can resolve with them: the tags stay tags (imageWarning)
+	}
+	kc, err := imagecache.NewDockerConfigKeychain(docs...)
+	if err != nil {
+		return "", false, nil
+	}
+	h := sha256.New()
+	for _, d := range docs {
+		h.Write(d)
+		h.Write([]byte{0})
+	}
+	source = imagecache.CredentialSource(hex.EncodeToString(h.Sum(nil))[:24])
+	r.Pinner.EnsureSource(source, func() imagecache.Resolver { return r.CredentialResolver(kc) })
+	return source, false, nil
+}
+
+// digestRequiredError is the refusal of a lab whose image tags could not be pinned to a digest while the cache requires digests.
+type digestRequiredError struct{ images []string }
+
+func (e *digestRequiredError) Error() string {
+	return "IMAGE_DIGEST_REQUIRED: the image cache requires digests, and these tags could not be resolved: " + strings.Join(e.images, "; ")
+}
+
+// pinImages resolves the image tags of the lab's container devices, and the netconfig image, to digests once, at creation, and records
+// them in the Lab status: the whole lab pulls exactly that content. An image that cannot be resolved is left to its tag and named in
+// Status.ImageWarning. The resolving is done by the Pinner in the background: while any answer is missing pinImages touches nothing
+// and reports pending (the lab asks again when the Pinner wakes it).
+func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab, source string) (pending bool, err error) {
+	if r.Pinner == nil {
+		return false, nil
 	}
 	var refs []string
 	seen := map[string]bool{}
 	add := func(ref string) {
-		if ref != "" && !seen[ref] && r.Mirror.Rewrite(ref) != ref {
+		if ref != "" && !seen[ref] && r.Mirror.RewriteFor(names.TenantOf(lab.Labels), ref) != ref {
 			seen[ref] = true
 			refs = append(refs, ref)
 		}
@@ -186,18 +274,36 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 	if len(refs) > 0 {
 		add(r.NetConfigImage)
 	}
+	waiter := lab.Namespace + "/" + lab.Name
+	answers := make([]imagecache.Lookup, len(refs))
+	for i, ref := range refs {
+		answers[i] = r.Pinner.Lookup(ctx, sourceOf(source, ref, r.NetConfigImage), ref, waiter)
+		if answers[i].Pending {
+			pending = true
+		}
+	}
+	if pending {
+		return true, nil
+	}
 	digests := map[string]string{}
 	var failed []string
-	for _, ref := range refs {
-		d, err := r.Resolver.Resolve(ctx, ref)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s (%v)", ref, err))
+	for i, ref := range refs {
+		if answers[i].Err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%s)", ref, imagecache.SafeError(answers[i].Err))) // never the registry's own words: this reaches the status and an event
 			continue
 		}
-		digests[ref] = d
+		digests[ref] = answers[i].Digest
+	}
+	for _, ref := range refs {
+		r.Pinner.Done(ctx, sourceOf(source, ref, r.NetConfigImage), waiter, ref)
 	}
 	if len(digests) > 0 {
 		lab.Status.ImageDigests = digests
+	}
+	if len(failed) > 0 && r.RequireDigest {
+		// The gate refuses a pull by tag (GATE_REQUIRE_DIGEST): a lab whose tag cannot be pinned cannot start, and says so now and not
+		// as pods that fail to pull.
+		return false, &digestRequiredError{images: failed}
 	}
 	if len(failed) > 0 {
 		lab.Status.ImageWarning = "image tags not pinned to a digest, pulled by tag: " + strings.Join(failed, "; ")
@@ -205,6 +311,7 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 			r.Recorder.Event(lab, corev1.EventTypeWarning, "ImageNotPinned", lab.Status.ImageWarning)
 		}
 	}
+	return false, nil
 }
 
 // deviceDigests is the pinned digests of a new Device's images: its own image

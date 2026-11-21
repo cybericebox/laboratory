@@ -21,9 +21,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-func RequestsForLab(ctx context.Context, c client.Client, namespace, name, network string) []reconcile.Request {
+// RequestsForLab are the requests of the legs of the lab (all labs when name is empty) of the kind of gateway: "vpn" (LabVPN) or "internet"
+// (LabGateway).
+func RequestsForLab(ctx context.Context, c client.Client, namespace, name string, kind lab.GatewayKind) []reconcile.Request {
 	requests := []reconcile.Request{}
-	if network == networkVPN {
+	if kind == lab.GatewayKindVPN {
 		var legs lab.LabVPNList
 		if err := c.List(ctx, &legs, client.InNamespace(namespace)); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "list VPN DHCP legs")
@@ -48,7 +50,10 @@ func RequestsForLab(ctx context.Context, c client.Client, namespace, name, netwo
 	}
 	return requests
 }
-func WatchDHCP(mgr ctrl.Manager, b *builder.Builder, c client.Client, dhcpMgr *dhcp.Manager, namespace, network string) (*builder.Builder, error) {
+
+// WatchDHCP makes the controller of the legs of one kind react to what their DHCP servers depend on: the Lab, the DHCP pools, and the
+// changes the DHCP manager reports. The manager is keyed by the name of the leg object.
+func WatchDHCP(mgr ctrl.Manager, b *builder.Builder, c client.Client, dhcpMgr *dhcp.Manager, namespace string, kind lab.GatewayKind) (*builder.Builder, error) {
 	events := make(chan event.GenericEvent)
 	err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		defer dhcpMgr.Close()
@@ -72,22 +77,25 @@ func WatchDHCP(mgr ctrl.Manager, b *builder.Builder, c client.Client, dhcpMgr *d
 	mapping := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 		name := obj.GetName()
 		if p, ok := obj.(*allocation.Pool); ok {
-			name = PoolLabName(p, network)
-			if name == "" {
+			if name, _ = PoolOwner(p); name == "" {
 				return nil
 			}
 		}
-		return RequestsForLab(ctx, c, obj.GetNamespace(), name, network)
+		return RequestsForLab(ctx, c, obj.GetNamespace(), name, kind)
+	})
+	// The DHCP manager names a leg by the name of its object.
+	legOfChange := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+		return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: obj.GetNamespace(), Name: obj.GetName()}}}
 	})
 	labChanges := predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		a, aok := e.ObjectOld.(*lab.Lab)
 		z, zok := e.ObjectNew.(*lab.Lab)
-		return !aok || !zok || InputsChanged(a, z, network)
+		return !aok || !zok || InputsChanged(a, z)
 	}}
 	poolChanges := predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		a, aok := e.ObjectOld.(*allocation.Pool)
 		z, zok := e.ObjectNew.(*allocation.Pool)
 		return !aok || !zok || !reflect.DeepEqual(a.Spec, z.Spec) || !reflect.DeepEqual(a.OwnerReferences, z.OwnerReferences) || !reflect.DeepEqual(a.DeletionTimestamp, z.DeletionTimestamp)
 	}}
-	return b.Watches(&lab.Lab{}, mapping, builder.WithPredicates(labChanges)).Watches(&allocation.Pool{}, mapping, builder.WithPredicates(poolChanges)).WatchesRawSource(source.Channel(events, mapping)), nil
+	return b.Watches(&lab.Lab{}, mapping, builder.WithPredicates(labChanges)).Watches(&allocation.Pool{}, mapping, builder.WithPredicates(poolChanges)).WatchesRawSource(source.Channel(events, legOfChange)), nil
 }

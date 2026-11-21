@@ -47,7 +47,7 @@ import (
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
-// labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within VPNBaseNetwork.
+// labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within LabBaseNetwork.
 const labSubnetPrefixLen = 24
 
 // LabGroupReconciler reconciles a LabGroup object.
@@ -58,6 +58,8 @@ type LabGroupReconciler struct {
 	GatewayEgressEnv []corev1.EnvVar
 	// VPNFirewall is how the VPN pods created from now on forward: "nft" (no connection tracking) or "" / "iptables".
 	VPNFirewall string
+	// ActivityReports puts ACTIVITY_REPORTS=true in the VPN pod of a NEW group (a pod that exists keeps what it was made with).
+	ActivityReports bool
 	client.Client
 	// Reader provides direct identity reads for lifecycle side effects.
 	Reader                 client.Reader
@@ -70,10 +72,9 @@ type LabGroupReconciler struct {
 	// WGDemuxMode is the mode of the WireGuard demux (userspace, tc or xdp). tc and xdp run it on the host network, which the VPN pods'
 	// policy must admit.
 	WGDemuxMode string
-	// VPNBaseNetwork is the base address space for all VPN subnets (e.g. "10.8.0.0/10").
-	VPNBaseNetwork string
-	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
-	InetBaseNetwork string
+	// LabBaseNetwork is the one address space of the lab networks (e.g. "10.128.0.0/9"): /24 number 0 is the VPN clients, every other
+	// /24 goes to a gateway of a lab.
+	LabBaseNetwork string
 	// VPNImage is the container image for VPN pods.
 	VPNImage string
 	// GatewayImage is the container image for gateway pods.
@@ -92,6 +93,9 @@ type LabGroupReconciler struct {
 	Mirror imagecache.Rewriter
 	// Resolver pins those images to a digest, once, at creation; nil pins nothing.
 	Resolver imagecache.Resolver
+	// RequireDigest refuses a group whose VPN or gateway image cannot be pinned (the registry gate refuses a pull by tag, on by default);
+	// off, the image is pulled by its tag and the group status says so.
+	RequireDigest bool
 
 	pinMu       sync.Mutex
 	pinFailures map[string][]string
@@ -120,8 +124,8 @@ type LabGroupReconciler struct {
 	OperatorSA types.NamespacedName
 	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
 	VPNStatsInterval time.Duration
-	// ImagePullSecrets names registry Secrets of the operator namespace. They are
-	// copied into every group namespace and referenced by the VPN and gateway pods.
+	// ImagePullSecrets names registry Secrets of the operator namespace, the credentials of the platform's own images. The operator copies
+	// them into the Secret "platform" of the namespace laboratory-upstream, which only the registry gate reads; no pod references them.
 	ImagePullSecrets []string
 	// BandwidthEnabled gives the gateway pods made from now on the file with their bandwidth ceiling (see mountOwnAnnotations).
 	BandwidthEnabled bool
@@ -182,7 +186,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 	r.rollout.begin(ns)
-	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	clientSubnet, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("derive VPN client subnet: %w", err)
 	}
@@ -207,16 +211,15 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure proxy reports role binding")
 		return ctrl.Result{}, err
 	}
-
-	if err := copyPullSecrets(ctx, r.Client, r.ImagePullSecrets, ns); err != nil {
-		logger.Error(err, "copy image pull secrets")
-		return ctrl.Result{}, err
-	}
-	if err := syncTenantPullSecret(ctx, r.Client, names.TenantOf(lg.Labels), ns); err != nil {
-		logger.Error(err, "copy the tenant's image pull secret")
+	if err := r.removeLegacyCheckerSecretsBinding(ctx, ns); err != nil {
+		logger.Error(err, "remove the namespace-wide checker secrets role binding")
 		return ctrl.Result{}, err
 	}
 
+	if err := syncUpstreamPlatform(ctx, r.Client, r.Mirror.Enabled(), r.ImagePullSecrets); err != nil {
+		logger.Error(err, "write the platform's image credentials for the registry gate")
+		return ctrl.Result{}, err
+	}
 	if err := r.ensureDefaultDeny(ctx, ns); err != nil {
 		logger.Error(err, "ensure default-deny network policy")
 		return ctrl.Result{}, err
@@ -246,17 +249,26 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	if err = r.ensureVPNService(ctx, ns); err != nil {
-		logger.Error(err, "ensure VPN service")
-		return ctrl.Result{}, err
+	// The group's two servers run only while their switches are on (spec.vpn.enabled, spec.gateway.enabled): the VPN server for the
+	// VPN gateways and the clients of the labs, the gateway for their Internet gateways. A server that is off has no pod, no Deployment
+	// and no scheduling record; a lab that needs it is refused by the Lab controller (and by the agent).
+	vpnOn, gatewayOn := grouppods.Wanted(&lg)
+	if vpnOn {
+		if err = r.ensureVPNService(ctx, ns); err != nil {
+			logger.Error(err, "ensure VPN service")
+			return ctrl.Result{}, err
+		}
+		if err = r.ensureServiceAccount(ctx, ns, names.ComponentVPN); err != nil {
+			logger.Error(err, "ensure VPN service account")
+			return ctrl.Result{}, err
+		}
+		if err = r.ensureRoleBinding(ctx, ns, names.ComponentVPN, names.RoleVPNName); err != nil {
+			logger.Error(err, "ensure VPN role binding")
+			return ctrl.Result{}, err
+		}
 	}
-
-	if err = r.ensureServiceAccount(ctx, ns, names.ComponentVPN); err != nil {
-		logger.Error(err, "ensure VPN service account")
-		return ctrl.Result{}, err
-	}
-	if err = r.ensureRoleBinding(ctx, ns, names.ComponentVPN, names.RoleVPNName); err != nil {
-		logger.Error(err, "ensure VPN role binding")
+	if err = r.dropGroupPodRecords(ctx, &lg); err != nil {
+		logger.Error(err, "drop the scheduling records of the servers that are off")
 		return ctrl.Result{}, err
 	}
 	if err = r.ensureGroupScheduling(ctx, &lg); err != nil {
@@ -269,26 +281,36 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	// Suspension stops task devices only. Keep the team's tunnel and internet
 	// gateway running so participants can test their connection during a pause.
-	if !r.groupPodQueued(&lg, names.ComponentVPN) {
-		if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled, lg.Spec.VPN.Size); err != nil {
-			logger.Error(err, "ensure VPN deployment")
-			return ctrl.Result{}, err
+	if vpnOn {
+		if !r.groupPodQueued(&lg, names.ComponentVPN) {
+			if err = r.ensureVPNDeployment(ctx, ns, false, lg.Spec.VPN.Size); err != nil {
+				logger.Error(err, "ensure VPN deployment")
+				return ctrl.Result{}, err
+			}
 		}
+	} else if err = r.deleteGroupDeployment(ctx, ns, names.ComponentVPN); err != nil {
+		logger.Error(err, "delete the VPN deployment of a group whose VPN is off")
+		return ctrl.Result{}, err
 	}
 
-	if err = r.ensureServiceAccount(ctx, ns, names.ComponentGateway); err != nil {
-		logger.Error(err, "ensure gateway service account")
-		return ctrl.Result{}, err
-	}
-	if err = r.ensureRoleBinding(ctx, ns, names.ComponentGateway, names.RoleGatewayName); err != nil {
-		logger.Error(err, "ensure gateway role binding")
-		return ctrl.Result{}, err
-	}
-	if !r.groupPodQueued(&lg, names.ComponentGateway) {
-		if err = r.ensureGatewayDeployment(ctx, ns, false, lg.Spec.Gateway.Size); err != nil {
-			logger.Error(err, "ensure gateway deployment")
+	if gatewayOn {
+		if err = r.ensureServiceAccount(ctx, ns, names.ComponentGateway); err != nil {
+			logger.Error(err, "ensure gateway service account")
 			return ctrl.Result{}, err
 		}
+		if err = r.ensureRoleBinding(ctx, ns, names.ComponentGateway, names.RoleGatewayName); err != nil {
+			logger.Error(err, "ensure gateway role binding")
+			return ctrl.Result{}, err
+		}
+		if !r.groupPodQueued(&lg, names.ComponentGateway) {
+			if err = r.ensureGatewayDeployment(ctx, ns, false, lg.Spec.Gateway.Size); err != nil {
+				logger.Error(err, "ensure gateway deployment")
+				return ctrl.Result{}, err
+			}
+		}
+	} else if err = r.deleteGroupDeployment(ctx, ns, names.ComponentGateway); err != nil {
+		logger.Error(err, "delete the gateway deployment of a group whose internet gateway is off")
+		return ctrl.Result{}, err
 	}
 
 	// An image update waits its turn (one group at a time) and the next group starts when this one's pods are rolled out.
@@ -296,6 +318,14 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		logger.Error(err, "check the rollout of the VPN and gateway pods")
 		return ctrl.Result{}, err
+	}
+	// The pull secrets of an earlier version go only when no pod of the group references them any more: the VPN and gateway Deployments are
+	// converged (a group waiting for its turn in the rollout keeps them until it has had it).
+	if !rolloutRequeue {
+		if err = r.removeLegacyPullSecretsWhenConverged(ctx, ns); err != nil {
+			logger.Error(err, "remove the image pull secrets of an earlier version")
+			return ctrl.Result{}, err
+		}
 	}
 	later := func(res ctrl.Result) ctrl.Result {
 		if rolloutRequeue && (res.RequeueAfter == 0 || res.RequeueAfter > rolloutPoll) {
@@ -319,7 +349,12 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if err = r.ensurePool(ctx, ns, names.PoolLabSubnets, poolpkg.PoolTypeLabSubnets, 1, 254); err != nil {
+	labSubnets, err := labSubnetPoolSize(r.LabBaseNetwork)
+	if err != nil {
+		logger.Error(err, "size the lab-subnets pool")
+		return ctrl.Result{}, err
+	}
+	if err = r.ensurePool(ctx, ns, names.PoolLabSubnets, poolpkg.PoolTypeLabSubnets, 1, labSubnets); err != nil {
 		logger.Error(err, "ensure lab-subnets pool")
 		return ctrl.Result{}, err
 	}
@@ -336,7 +371,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if lg.Spec.Suspended {
 		vpnReady := false
-		if !lg.Spec.VPN.Disabled {
+		if vpnOn {
 			vpnReady, err = r.vpnReadyState(ctx, ns)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -351,20 +386,23 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
 		lg.Status.VPN.ClientSubnet = clientSubnet
 		lg.Status.VPN.Registered = vpnReady
+		if lg.Status.VPN.Backend, err = r.vpnBackend(ctx, ns, vpnReady); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err = updateStatus(); err != nil {
 			return ctrl.Result{}, err
 		}
 		if err = r.observeGroupStart(ctx, &lg); err != nil {
 			return ctrl.Result{}, err
 		}
-		if !lg.Spec.VPN.Disabled && !vpnReady {
+		if vpnOn && !vpnReady {
 			return later(ctrl.Result{RequeueAfter: 5 * time.Second}), nil
 		}
 		return later(ctrl.Result{}), nil
 	}
 
 	vpnReady := false
-	if !lg.Spec.VPN.Disabled {
+	if vpnOn {
 		vpnReady, err = r.vpnReadyState(ctx, ns)
 		if err != nil {
 			logger.Error(err, "check VPN readiness")
@@ -385,6 +423,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.ClientSubnet = clientSubnet
 	wasRegistered := lg.Status.VPN.Registered
 	lg.Status.VPN.Registered = vpnReady
+	if lg.Status.VPN.Backend, err = r.vpnBackend(ctx, ns, vpnReady); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err = updateStatus(); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -392,7 +433,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err = r.observeGroupStart(ctx, &lg); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !vpnReady && !lg.Spec.VPN.Disabled {
+	if !vpnReady && vpnOn {
 		if wasRegistered {
 			r.Recorder.Event(&lg, corev1.EventTypeWarning, labstatus.ReasonWaitingForVPNServer,
 				"VPN server has no ready replicas; group not registered in demux")
@@ -557,11 +598,34 @@ var errForeignNamespace = fmt.Errorf("the namespace exists and is not this group
 // ensureNamespace creates the namespace of a group, labelled with the group. It never adopts a namespace that exists
 // without the group's label: a tenant picks the group name, and must not be able to point the operator at kube-system
 // or at another group's namespace.
+// groupNamespaceLabels are the labels the operator keeps on the namespace of a group: the group, and its two switches as the admission
+// policies read them ("true" or "false"; the group's own switch, whatever the cluster runs: the policies know the cluster's from the chart).
+func groupNamespaceLabels(g *laboratoryv1alpha1.LabGroup) map[string]string {
+	return map[string]string{
+		names.LabelGroup:         g.Name,
+		names.LabelGroupVPN:      strconv.FormatBool(g.VPNEnabled()),
+		names.LabelGroupInternet: strconv.FormatBool(g.InternetEnabled()),
+	}
+}
+
 func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, owner *laboratoryv1alpha1.LabGroup) error {
 	var existing corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &existing); err == nil {
 		if !ownsNamespace(&existing, owner) {
 			return fmt.Errorf("%w: %s", errForeignNamespace, ns)
+		}
+		// the switches follow the group: a group made before the labels gets them, a switch turned on or off is copied
+		want, changed := groupNamespaceLabels(owner), false
+		if existing.Labels == nil {
+			existing.Labels = map[string]string{}
+		}
+		for k, v := range want {
+			if existing.Labels[k] != v {
+				existing.Labels[k], changed = v, true
+			}
+		}
+		if changed {
+			return r.Update(ctx, &existing)
 		}
 		return nil
 	} else if !errors.IsNotFound(err) {
@@ -570,7 +634,7 @@ func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, own
 	n := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ns,
-			Labels: map[string]string{names.LabelGroup: owner.Name},
+			Labels: groupNamespaceLabels(owner),
 		},
 	}
 	return r.Create(ctx, n)
@@ -776,8 +840,11 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	vpnImage := r.cachedImage(ctx, ns, r.VPNImage)
-	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	vpnImage, err := r.cachedImage(ctx, ns, r.VPNImage)
+	if err != nil {
+		return err
+	}
+	clientSubnet, err := netutil.SubnetForIndex(r.LabBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return fmt.Errorf("derive VPN client subnet: %w", err)
 	}
@@ -795,7 +862,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ServiceAccountName: names.ComponentVPN,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -804,7 +870,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 						Resources:       r.GroupPods.VPNFor(size),
 						Image:           vpnImage,
 						Command:         []string{"/lab", names.ComponentVPN},
-						ImagePullPolicy: pullPolicyFor(vpnImage),
+						ImagePullPolicy: pullPolicyFor(vpnImage, r.Mirror.Prefix),
 						Env: append([]corev1.EnvVar{
 							{
 								Name: "PRIVATE_KEY",
@@ -818,7 +884,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							{Name: "NAMESPACE", Value: ns},
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
 							{Name: groupUIDEnvironment, Value: groupUID},
-							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
 							{Name: "SUPPORT_EMAIL", Value: r.SupportEmail},
 						}, r.vpnStatsEnv()...),
@@ -832,6 +897,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		// restart it and drop the WireGuard sessions of the group).
 		c := &d.Spec.Template.Spec.Containers[0]
 		c.Env = append(c.Env, corev1.EnvVar{Name: "VPN_FIREWALL", Value: "nft"})
+	}
+	if r.ActivityReports {
+		c := &d.Spec.Template.Spec.Containers[0]
+		c.Env = append(c.Env, corev1.EnvVar{Name: "ACTIVITY_REPORTS", Value: "true"})
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps, r.TerminationGraceSeconds)
 	return r.Create(ctx, d)
@@ -902,7 +971,10 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	gatewayImage := r.cachedImage(ctx, ns, r.GatewayImage)
+	gatewayImage, err := r.cachedImage(ctx, ns, r.GatewayImage)
+	if err != nil {
+		return err
+	}
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: names.ComponentGateway, Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
@@ -917,7 +989,6 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					ServiceAccountName: names.ComponentGateway,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -926,7 +997,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
-						ImagePullPolicy: pullPolicyFor(gatewayImage),
+						ImagePullPolicy: pullPolicyFor(gatewayImage, r.Mirror.Prefix),
 						Env:             append(append(r.gatewayEnv(ns), r.gatewayLimitsEnv()...), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
 					}},
 				},
@@ -990,12 +1061,12 @@ func (r *LabGroupReconciler) ensureRoleBinding(ctx context.Context, ns, saName, 
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: ns},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: rbacv1.GroupName,
+			Kind:     kindClusterRole,
 			Name:     clusterRoleName,
 		},
 		Subjects: []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
+			Kind:      rbacv1.ServiceAccountKind,
 			Name:      saName,
 			Namespace: ns,
 		}},
@@ -1019,12 +1090,12 @@ func (r *LabGroupReconciler) ensureAgentRoleBinding(ctx context.Context, ns stri
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: names.AgentRoleBindingName, Namespace: ns},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: rbacv1.GroupName,
+			Kind:     kindClusterRole,
 			Name:     names.RoleAgentName,
 		},
 		Subjects: []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
+			Kind:      rbacv1.ServiceAccountKind,
 			Name:      r.AgentSA.Name,
 			Namespace: r.AgentSA.Namespace,
 		}},
@@ -1046,9 +1117,20 @@ func (r *LabGroupReconciler) ensureProxyReportsBinding(ctx context.Context, ns s
 	}
 	return r.Create(ctx, &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: names.ProxyReportsBindingName, Namespace: ns},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleProxyReportsName},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "laboratory-proxy", Namespace: names.ProxyNamespace}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kindClusterRole, Name: names.RoleProxyReportsName},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "laboratory-proxy", Namespace: names.ProxyNamespace}},
 	})
+}
+
+// removeLegacyCheckerSecretsBinding deletes the namespace-wide RoleBinding of the earlier design, which gave the lab checker `get` on every
+// Secret of the group namespace. The checker's right is now one Role per lab, for the one Secret it reads (checker_access.go). It is
+// removed from every existing group namespace on the first reconcile after an upgrade.
+func (r *LabGroupReconciler) removeLegacyCheckerSecretsBinding(ctx context.Context, ns string) error {
+	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: names.CheckerSecretsBindingName, Namespace: ns}}
+	if err := r.Delete(ctx, rb); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // ensureDefaultDeny creates a default-deny NetworkPolicy in the group
@@ -1186,7 +1268,7 @@ func apiServerEgress() map[string]interface{} {
 // the private ranges, CGNAT, the cluster and node networks). Never in-cluster pods, no DNS. The kube-apiserver entity is
 // not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they send to those
 // ranges. No ingress rule is needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *unstructured.Unstructured {
+func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
 	toAny := func(list []string) []interface{} {
 		out := make([]interface{}, len(list))
 		for i, c := range list {
@@ -1214,31 +1296,13 @@ func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *
 					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": egressRules,
-				// The operator pulls the per-minute egress summaries of the gateway on one port, and nothing else reaches the pod.
-				"ingress": []interface{}{map[string]interface{}{
-					"fromEndpoints": []interface{}{map[string]interface{}{"matchLabels": map[string]interface{}{
-						"k8s:io.kubernetes.pod.namespace": names.SystemNamespace,
-						"control-plane":                   "controller-manager",
-					}}},
-					"toPorts": []interface{}{map[string]interface{}{"ports": []interface{}{
-						map[string]interface{}{"port": strconv.Itoa(statsPort), "protocol": "TCP"},
-					}}},
-				}},
+				// Nothing reaches the gateway pod: the egress summaries go out as a LabEgressReport, written by the pod itself. In a
+				// CiliumNetworkPolicy (not a Kubernetes one) an empty rule allows nothing and puts the pod in default deny for ingress
+				// (docs.cilium.io, "Ingress/Egress Default Deny"); the group's default-deny NetworkPolicy does the same, this keeps it so alone.
+				"ingress": []interface{}{map[string]interface{}{}},
 			},
 		},
 	}
-}
-
-// egressStatsPort is the port of the summaries page of the gateways (default 9188).
-func (r *LabGroupReconciler) egressStatsPort() int {
-	for _, e := range r.GatewayEgressEnv {
-		if e.Name == "EGRESS_STATS_PORT" {
-			if p, err := strconv.Atoi(e.Value); err == nil && p > 0 {
-				return p
-			}
-		}
-	}
-	return 9188
 }
 
 // ensureVPNGatewayPolicies applies the vpn-egress and gateway-egress
@@ -1262,7 +1326,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if err != nil {
 		return err
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel, r.egressStatsPort())} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
@@ -1290,7 +1354,8 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 	poolName := fmt.Sprintf("%s-0", name)
 	var existing allocationv1alpha1.Pool
 	if err := r.Get(ctx, types.NamespacedName{Name: poolName, Namespace: ns}, &existing); err == nil {
-		return nil
+		// A pool made smaller (the 254 numbers of the time before the one lab address pool) grows to the wanted size; it never shrinks.
+		return poolpkg.GrowPool(ctx, r.Client, ns, poolName, size)
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
@@ -1314,6 +1379,35 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 	p.Status.Free = free
 	p.Status.BitMap = bitmapStr
 	return r.Status().Update(ctx, p)
+}
+
+// dropGroupPodRecords removes the scheduling record of a pod the group does not run (its switch is off), so a server switched on again
+// is queued afresh by the scheduler instead of starting at once on an old "started" record.
+func (r *LabGroupReconciler) dropGroupPodRecords(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) error {
+	if len(lg.Status.Pods) == 0 {
+		return nil
+	}
+	wanted := map[string]bool{}
+	for _, n := range groupPodNames(lg) {
+		wanted[n] = true
+	}
+	kept := make([]laboratoryv1alpha1.NamedPodSchedule, 0, len(lg.Status.Pods))
+	for _, p := range lg.Status.Pods {
+		if wanted[p.Name] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == len(lg.Status.Pods) {
+		return nil
+	}
+	lg.Status.Pods = kept
+	return r.Status().Update(ctx, lg)
+}
+
+// deleteGroupDeployment removes a Deployment of the group (and with it its pod); a missing one is fine.
+func (r *LabGroupReconciler) deleteGroupDeployment(ctx context.Context, ns, name string) error {
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	return client.IgnoreNotFound(r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationBackground)))
 }
 
 func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -1353,22 +1447,31 @@ func isVPNPod(pod *corev1.Pod) bool {
 // cachedImage is the reference a new VPN or gateway pod of the group pulls:
 // through the image cache, pinned to the digest of the tag at this moment. When
 // the digest cannot be resolved the tag is used, and the failure is kept for the
-// group status (and the log).
-func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) string {
-	if r.Mirror.Prefix == "" || r.Mirror.Rewrite(image) == image {
-		return image
+// group status (and the log). With the cache on an image the cache cannot serve is
+// refused (imagecache.ErrNotCacheable), never pulled directly.
+func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) (string, error) {
+	platform := r.Mirror.ForPlatform()
+	if _, err := platform.RewriteRequired(image); err != nil {
+		return "", fmt.Errorf("group image: %w", err)
+	}
+	if r.Mirror.Prefix == "" || platform.Rewrite(image) == image {
+		return image, nil // the cache is off, or the image is already the cache's own
 	}
 	digest := ""
 	if r.Resolver != nil {
 		d, err := r.Resolver.Resolve(ctx, image)
 		if err != nil {
-			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", err.Error())
-			r.notePinFailure(ns, fmt.Sprintf("%s (%v)", image, err))
+			if r.RequireDigest {
+				log.FromContext(ctx).Info("image not pinned to a digest, refused", "image", image, "err", imagecache.SafeError(err))
+				return "", fmt.Errorf("group image %s cannot be pinned to a digest, and the image cache requires digests", image)
+			}
+			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", imagecache.SafeError(err))
+			r.notePinFailure(ns, fmt.Sprintf("%s (%s)", image, imagecache.SafeError(err)))
 		} else {
 			digest = d
 		}
 	}
-	return r.Mirror.RewritePinned(image, digest)
+	return platform.RewritePinned(image, digest), nil
 }
 
 func (r *LabGroupReconciler) notePinFailure(ns, what string) {
@@ -1414,7 +1517,6 @@ func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
 func (r *LabGroupReconciler) gatewayEnv(ns string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "NAMESPACE", Value: ns},
-		{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
 	}
 }
 
@@ -1482,8 +1584,8 @@ func (r *LabGroupReconciler) ensureOperatorBinding(ctx context.Context, ns strin
 	if r.OperatorSA.Name == "" {
 		return nil
 	}
-	want := rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleOperatorNamespacedName}
-	subject := rbacv1.Subject{Kind: "ServiceAccount", Name: r.OperatorSA.Name, Namespace: r.OperatorSA.Namespace}
+	want := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kindClusterRole, Name: names.RoleOperatorNamespacedName}
+	subject := rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: r.OperatorSA.Name, Namespace: r.OperatorSA.Namespace}
 	var existing rbacv1.RoleBinding
 	err := r.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: ns}, &existing)
 	if err == nil {

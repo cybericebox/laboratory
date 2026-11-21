@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Download the envtest binaries (API server, etcd) into bin/ and print their directory; a direct go test needs KUBEBUILDER_ASSETS set to it"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+# The Kubernetes version of the envtest binaries: 1.<minor> of k8s.io/api in go.mod.
+version=$(go list -m -f '{{ .Version }}' k8s.io/api | awk -F'[v.]' '{printf "1.%d", $3}')
+echo "Setting up envtest binaries for Kubernetes version $version..." >&2
+go tool setup-envtest use "$version" --bin-dir "$MISE_PROJECT_ROOT/bin" -p path

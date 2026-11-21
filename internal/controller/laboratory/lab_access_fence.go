@@ -61,17 +61,38 @@ func (r *LabReconciler) noVPNPodFence(ctx context.Context, l *lab.Lab) (bool, *m
 	return true, &now, nil
 }
 
-// currentAccessFence reads the native producer and current VPN Pod directly.
-// API absence is unknown whenever this Lab configured VPN access.
+// currentAccessFence reads the native producer and the current VPN Pod directly: the lab is fenced when every VPN gateway of it is, by the
+// same boot of the VPN process. API absence is unknown whenever this Lab configured VPN access.
 func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (bool, *metav1.Time, string, error) {
-	if !l.Spec.VPN.Enabled {
+	vpns := l.Spec.GatewaysOfKind(lab.GatewayKindVPN)
+	if len(vpns) == 0 {
 		return true, nil, "", nil
 	}
 	if ok, at, boot, err := r.fenceWithoutLivePod(ctx, l); err != nil || ok {
 		return ok, at, boot, err
 	}
+	var latest *metav1.Time
+	bootID := ""
+	for _, g := range vpns {
+		ok, at, boot, err := r.legAccessFence(ctx, l, names.LabVPNObjectName(l.Name, g.Name))
+		if err != nil || !ok {
+			return false, nil, "", err
+		}
+		if bootID != "" && boot != bootID {
+			return false, nil, "", nil
+		}
+		bootID = boot
+		if latest == nil || at.After(latest.Time) {
+			latest = at
+		}
+	}
+	return true, latest, bootID, nil
+}
+
+// legAccessFence is the fence of one LabVPN of the lab.
+func (r *LabReconciler) legAccessFence(ctx context.Context, l *lab.Lab, legName string) (bool, *metav1.Time, string, error) {
 	var leg lab.LabVPN
-	if err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: names.LabVPNObjectName(l.Name), Namespace: l.Namespace}, &leg); err != nil {
+	if err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: legName, Namespace: l.Namespace}, &leg); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil, "", nil
 		}

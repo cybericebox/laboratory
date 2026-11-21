@@ -8,7 +8,6 @@ import (
 	"github.com/go-logr/logr"
 
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -19,9 +18,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -115,8 +112,9 @@ func Run() {
 	mgr, err := ctrl.NewManager(
 		restCfg, ctrl.Options{
 			Scheme: scheme,
-			// No metrics endpoint: the node-agent is on the host network, so it would be open on the node's address.
-			Metrics: metricsserver.Options{BindAddress: "0"},
+			// No metrics endpoint unless METRICS_ADDR (chart nodeAgent.metrics) asks for one: the node-agent is on the host network, so
+			// it is open on the node's address, in plain HTTP.
+			Metrics: metricsserver.Options{BindAddress: cfg.MetricsAddr},
 			// Probes: liveness is "OVS answers" (a node-agent whose channels to it hang is restarted, not left dark), readiness adds
 			// "the caches have synced" (the controllers can read what they wire).
 			HealthProbeBindAddress: cfg.HealthAddr,
@@ -190,7 +188,6 @@ func Run() {
 		Flows:    flows,
 		CRISock:  cfg.CRISock,
 	}
-	askedPersistence := cfg.StatePersistence
 	pre := preflightNode(cfg, log)
 	if cfg.RuntimeObservation {
 		if err := nodeagent.SetupRuntimeObservation(mgr, cfg, networkAttach); err != nil {
@@ -203,18 +200,13 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if err := mgr.Add(&nodeagent.AccessPortChecker{
+	if err := mgr.Add(&nodeagent.EDAChecker{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		CRISock:  cfg.CRISock,
-		Recorder: mgr.GetEventRecorderFor("node-agent-access-port"),
+		Recorder: mgr.GetEventRecorderFor("node-agent-eda"),
 	}); err != nil {
-		log.Error(err, "setup AccessPortChecker")
-		os.Exit(1)
-	}
-
-	if err := mgr.Add(&nodeagent.CPUThrottleMonitor{Client: mgr.GetClient(), NodeName: cfg.NodeName, CgroupRoot: cfg.CgroupRoot}); err != nil {
-		log.Error(err, "setup CPUThrottleMonitor")
+		log.Error(err, "setup EDAChecker")
 		os.Exit(1)
 	}
 
@@ -225,25 +217,24 @@ func Run() {
 	}
 	defer func() { _ = puller.Close() }()
 	if err := (&nodeagent.ImagePullReconciler{
-		Client:          mgr.GetClient(),
-		Reader:          mgr.GetAPIReader(),
-		NodeName:        cfg.NodeName,
-		ImagesNamespace: names.ImagesNamespace,
-		Puller:          puller,
-		Concurrency:     cfg.ImagePullConcurrency,
-		Timeout:         cfg.ImagePullTimeout,
+		Client:      mgr.GetClient(),
+		NodeName:    cfg.NodeName,
+		Puller:      puller,
+		Concurrency: cfg.ImagePullConcurrency,
+		Timeout:     cfg.ImagePullTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup ImagePullReconciler")
 		os.Exit(1)
 	}
 
-	if err := nodeagent.SetupDeviceState(mgr, cfg); err != nil {
-		log.Error(err, "setup device state persistence")
+	// The registry relay only: the snapshot engine and the CPU throttle monitor are the node-state DaemonSet's (/node node-state).
+	if err := nodeagent.SetupRegistryForwarder(mgr, cfg); err != nil {
+		log.Error(err, "setup the registry forwarder")
 		os.Exit(1)
 	}
 
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := setupReadiness(mgr, cfg, pre, askedPersistence, log); err != nil {
+	if err := setupReadiness(mgr, cfg, pre); err != nil {
 		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
@@ -358,7 +349,10 @@ func setupBandwidth(mgr ctrl.Manager, cfg *nodeagent.Config, flows *nodeagent.Fl
 // preflightNode checks what the node can do for the lifecycle of a lab. A feature that cannot work here is switched off in this process
 // and published on the Node (and told in an Event): the node-agent goes on serving pod networking, it never hangs or exits for it.
 func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightResult {
-	pre := nodeagent.Preflight(context.Background(), cfg.PreflightInput())
+	// State persistence is checked by the node-state DaemonSet, which owns the snapshot engine and the node annotation of it.
+	in := cfg.PreflightInput()
+	in.Persistence = false
+	pre := nodeagent.Preflight(context.Background(), in)
 	for _, f := range pre.Failures() {
 		log.Info("WARNING: not available on this node, switched off", "reason", f)
 	}
@@ -366,44 +360,7 @@ func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightRe
 	return pre
 }
 
-// addPersistenceRetry repeats the failed check of state persistence and starts the snapshot engine in this process when it passes.
-func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, labeler *nodeagent.NodeLabeler, log logr.Logger) error {
-	input := cfg.PreflightInput()
-	input.Persistence = true
-	rec := mgr.GetEventRecorderFor("node-agent-preflight")
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName}}
-	return mgr.Add(&nodeagent.PreflightRetry{
-		Log: log.WithName("preflight-retry"), Input: input, First: first,
-		Enable: func() error {
-			cfg.StatePersistence = true
-			if err := nodeagent.SetupStateEngine(mgr, cfg); err != nil {
-				cfg.StatePersistence = false
-				return err
-			}
-			return nil
-		},
-		Annotate: func(ctx context.Context, value string) error {
-			labeler.SetAnnotation(names.AnnotationStatePersistence, value) // the labeler asserts it again every minute
-			patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{names.AnnotationStatePersistence: value}}})
-			return mgr.GetClient().Patch(ctx, node.DeepCopy(), client.RawPatch(types.MergePatchType, patch))
-		},
-		Told: func(message string) { rec.Event(node, corev1.EventTypeNormal, "LifecyclePreflightRecovered", message) },
-	})
-}
-
-// retryFailedPersistence repeats a persistence check that failed at the start: the registry of a fresh cluster is often not up yet.
-func retryFailedPersistence(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, asked bool, labeler *nodeagent.NodeLabeler, log logr.Logger) error {
-	if _, bad := nodeagent.IsUnavailable(pre.StatePersistence); !bad || !asked {
-		return nil
-	}
-	return addPersistenceRetry(mgr, cfg, pre.StatePersistence, labeler, log)
-}
-
-// setupReadiness repeats a persistence check that failed at the start, then makes the node usable for labs.
-func setupReadiness(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, askedPersistence bool, log logr.Logger) error {
-	labeler := nodeagent.NewNodeLabeler(mgr, cfg, pre)
-	if err := retryFailedPersistence(mgr, cfg, pre, askedPersistence, labeler, log); err != nil {
-		return fmt.Errorf("persistence check retry: %w", err)
-	}
-	return nodeagent.SetupNodeReadiness(mgr, cfg, labeler)
+// setupReadiness makes the node usable for labs.
+func setupReadiness(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult) error {
+	return nodeagent.SetupNodeReadiness(mgr, cfg, nodeagent.NewNodeLabeler(mgr, cfg, pre))
 }

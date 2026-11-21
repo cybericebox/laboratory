@@ -39,6 +39,78 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
+              access:
+                description: |-
+                  Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
+                  and rdp. At most one entry per kind.
+                items:
+                  description: |-
+                    DeviceAccess is one access of a device (an entry of the EDA access list). At most one entry per kind. http, vnc and rdp need a
+                    port (and http a protocol); terminal takes a command and a user and no port.
+                  properties:
+                    command:
+                      description: Command starts the terminal session; empty means
+                        /bin/sh. Terminal only.
+                      items:
+                        maxLength: 4096
+                        type: string
+                      maxItems: 32
+                      type: array
+                    kind:
+                      description: |-
+                        AccessKind is one way a participant reaches a device besides its network (design record docs/specs/2026-11-12-device-access-and-checks.md,
+                        section 2).
+                      enum:
+                      - http
+                      - terminal
+                      - vnc
+                      - rdp
+                      type: string
+                    port:
+                      description: Port of the device (http, vnc, rdp).
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      description: 'Protocol of an http access: http (the default)
+                        or https.'
+                      enum:
+                      - http
+                      - https
+                      type: string
+                    user:
+                      description: User the terminal session runs as; empty means
+                        the user of the image (root if the image names none). Terminal
+                        only.
+                      maxLength: 128
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                  x-kubernetes-validations:
+                  - message: http, vnc and rdp need a port from 1 to 65535, terminal
+                      takes none
+                    rule: 'self.kind == ''terminal'' ? (!has(self.port) && !has(self.protocol))
+                      : (has(self.port) && self.port > 0 && self.port <= 65535)'
+                  - message: only an http access has a protocol
+                    rule: self.kind == 'http' || !has(self.protocol)
+                  - message: only a terminal access has a command and a user
+                    rule: self.kind == 'terminal' || (!has(self.command) && !has(self.user))
+                maxItems: 4
+                type: array
+                x-kubernetes-list-map-keys:
+                - kind
+                x-kubernetes-list-type: map
+              bootstrap:
+                description: Bootstrap says the device has a bootstrap list in the
+                  Secret <device>-bootstrap (see DeviceTemplate).
+                properties:
+                  enabled:
+                    description: 'Enabled: the Secret exists (or is being written)
+                      and the service must not start before the bootstrap is done.'
+                    type: boolean
+                type: object
               code:
                 description: |-
                   Code is the short random code that makes the workload name <name>-<code>
@@ -46,23 +118,6 @@ spec:
                   one. It is drawn when the Device is created and never changes. Empty on a
                   Device that predates codes: its workload keeps the name of the Device.
                 type: string
-              exposure:
-                description: ExposureSpec declares how a device is externally reachable.
-                properties:
-                  web:
-                    description: WebExposure publishes a device port via an L7 proxy.
-                    properties:
-                      port:
-                        format: int32
-                        type: integer
-                      protocol:
-                        default: http
-                        description: Protocol is "http" or "https".
-                        type: string
-                    required:
-                    - port
-                    type: object
-                type: object
               image:
                 type: string
               imageDigests:
@@ -93,43 +148,47 @@ spec:
                       properties:
                         addressRef:
                           description: |-
-                            NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                            NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                             The lab reconciler resolves it before creating a Device.
                           properties:
+                            gateway:
+                              description: Gateway is the name of a gateway declared
+                                in spec.gateways.
+                              maxLength: 35
+                              minLength: 1
+                              pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                              type: string
                             host:
                               format: int32
                               maximum: 254
                               minimum: 1
                               type: integer
-                            network:
-                              enum:
-                              - vpn
-                              - internet
-                              type: string
                           required:
+                          - gateway
                           - host
-                          - network
                           type: object
                         gateway:
                           type: string
                         gatewayRef:
                           description: |-
-                            NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                            NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                             The lab reconciler resolves it before creating a Device.
                           properties:
+                            gateway:
+                              description: Gateway is the name of a gateway declared
+                                in spec.gateways.
+                              maxLength: 35
+                              minLength: 1
+                              pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                              type: string
                             host:
                               format: int32
                               maximum: 254
                               minimum: 1
                               type: integer
-                            network:
-                              enum:
-                              - vpn
-                              - internet
-                              type: string
                           required:
+                          - gateway
                           - host
-                          - network
                           type: object
                         ip:
                           type: string
@@ -140,37 +199,41 @@ spec:
                               dst:
                                 type: string
                               dstRef:
-                                description: NetworkSubnetRef selects the full lab-allocated
-                                  VPN or Internet /24.
+                                description: NetworkSubnetRef selects the full /24
+                                  of a gateway of the lab (see NetworkIPRef).
                                 properties:
-                                  network:
-                                    enum:
-                                    - vpn
-                                    - internet
+                                  gateway:
+                                    description: Gateway is the name of a gateway
+                                      declared in spec.gateways.
+                                    maxLength: 35
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                                     type: string
                                 required:
-                                - network
+                                - gateway
                                 type: object
                               via:
                                 type: string
                               viaRef:
                                 description: |-
-                                  NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                  NetworkIPRef selects a host address from the /24 of a gateway of the lab (spec.gateways).
                                   The lab reconciler resolves it before creating a Device.
                                 properties:
+                                  gateway:
+                                    description: Gateway is the name of a gateway
+                                      declared in spec.gateways.
+                                    maxLength: 35
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                                    type: string
                                   host:
                                     format: int32
                                     maximum: 254
                                     minimum: 1
                                     type: integer
-                                  network:
-                                    enum:
-                                    - vpn
-                                    - internet
-                                    type: string
                                 required:
+                                - gateway
                                 - host
-                                - network
                                 type: object
                             type: object
                           type: array
@@ -202,13 +265,13 @@ spec:
                     name:
                       description: |-
                         Name is the interface name inside the pod: a lowercase word of at most 15
-                        characters; lo and accessport are reserved.
+                        characters; lo, eda and accessport (the EDA interface; accessport is its name before the rename) are reserved.
                       maxLength: 15
                       pattern: ^[a-z][a-z0-9-]{0,14}$
                       type: string
                       x-kubernetes-validations:
                       - message: reserved interface name
-                        rule: self != 'lo' && self != 'accessport'
+                        rule: self != 'lo' && self != 'eda' && self != 'accessport'
                   required:
                   - name
                   type: object
@@ -257,6 +320,35 @@ spec:
                 - standard
                 - extended
                 type: string
+              service:
+                description: Service is the service command of a container device
+                  (see DeviceTemplate).
+                properties:
+                  args:
+                    description: Args are the arguments of the command.
+                    items:
+                      maxLength: 4096
+                      type: string
+                    maxItems: 256
+                    type: array
+                  command:
+                    description: Command is the entrypoint list.
+                    items:
+                      maxLength: 4096
+                      type: string
+                    maxItems: 64
+                    type: array
+                  user:
+                    description: User is the user (name or uid[:gid]) the service
+                      runs as.
+                    maxLength: 128
+                    type: string
+                  workingDir:
+                    description: WorkingDir is the working directory of the service
+                      (an absolute path).
+                    maxLength: 4096
+                    type: string
+                type: object
               state:
                 description: |-
                   State is the optional state-persistence policy and operator controls of
@@ -390,6 +482,31 @@ spec:
           status:
             description: DeviceStatus defines the observed state of Device.
             properties:
+              bootstrap:
+                description: Bootstrap is the observed bootstrap of the device; absent
+                  for a device without one. Written by the launcher side (not yet
+                  built).
+                properties:
+                  attempts:
+                    description: Attempts is the number of attempts made so far (at
+                      most three, internal/labchecks.BootstrapMaxAttempts).
+                    format: int32
+                    type: integer
+                  phase:
+                    description: BootstrapPhase is where the bootstrap of a device
+                      is.
+                    enum:
+                    - none
+                    - pending
+                    - done
+                    - failed
+                    type: string
+                  reason:
+                    description: Reason is a short explanation of a failed or pending
+                      bootstrap (at most 256 bytes).
+                    maxLength: 256
+                    type: string
+                type: object
               cpuThrottle:
                 description: |-
                   CPUThrottle is how much the CPU limit holds the device back. The node-agent of the pod's node keeps it; absent means

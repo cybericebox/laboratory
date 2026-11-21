@@ -10,6 +10,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
+	"github.com/cybericebox/laboratory/internal/switches"
 )
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA. TLS is always on; the files are where the chart mounts the
@@ -66,6 +67,8 @@ type Config struct {
 	RequiredSnapshotAdvertised bool   `env:"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	RequiredSnapshotAvailable  bool   `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	GRPCPort                   string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	// MetricsAddr is where the Prometheus endpoint (/metrics, plain HTTP) is served; empty: none (chart agent.metrics).
+	MetricsAddr string `env:"AGENT_METRICS_ADDR"`
 	// AgentID is a stable, deployment-scoped identity used to make monitoring
 	// observations idempotent at the platform boundary.
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`
@@ -118,6 +121,32 @@ type Config struct {
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// MaxLabGateways is the most gateways (VPN entries and Internet exits together, the shorthand spec.vpn and spec.internet counted) one lab
+	// may have: a lab with more is refused when it is created (the chart's operator.maxLabGateways, which the operator checks again).
+	MaxLabGateways int `env:"MAX_LAB_GATEWAYS" envDefault:"10"`
+	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled: two independent options, both off by
+	// default. A lab with checks (or a terminal device) is refused while the matching option is off; GetFeatures reports them.
+	ChecksEnabled bool `env:"CHECKS_ENABLED" envDefault:"false"`
+	// ActivityReports is the chart's activityReports.enabled (off by default): raw activity facts for the platform, see GetLabGroupActivity.
+	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
+	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// The feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled, proxy.enabled with proxy.rdp.enabled and
+	// proxy.vnc.enabled), the same variables the operator reads: what a Lab may ask for, reported in GetFeatures.
+	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
+	InternetEnabled bool `env:"INTERNET_ENABLED" envDefault:"true"`
+	ProxyL7Enabled  bool `env:"PROXY_L7_ENABLED" envDefault:"true"`
+	ProxyRDPEnabled bool `env:"PROXY_RDP_ENABLED" envDefault:"false"`
+	ProxyVNCEnabled bool `env:"PROXY_VNC_ENABLED" envDefault:"false"`
+	// TerminalMaxLifetime is the chart's terminal.limits.maxLifetime and VPNFirewall its vpn.firewall: the agent reports them in the activity
+	// feature (the longest console session; whether devices-touched events exist).
+	TerminalMaxLifetime time.Duration `env:"TERMINAL_MAX_LIFETIME" envDefault:"8h"`
+	VPNFirewall         string        `env:"VPN_FIREWALL" envDefault:"iptables"`
+	// TerminalServed says the device access service and the proxy's console route are deployed (the chart renders both with terminal.enabled).
+	TerminalServed bool `env:"TERMINAL_SERVED" envDefault:"false"`
+	// ChecksMaxTimeLimit is the ceiling of the time limit of one check run in seconds, ChecksManualCooldown the least time between two manual
+	// runs of one lab (the chart's checks.maxTimeLimitSeconds and checks.manualCooldown).
+	ChecksMaxTimeLimit   int           `env:"CHECKS_MAX_TIME_LIMIT_SECONDS" envDefault:"120"`
+	ChecksManualCooldown time.Duration `env:"CHECKS_MANUAL_COOLDOWN" envDefault:"10s"`
 	// AdmissionStaleAfter is how long a pending child admission of another lab that wrote nothing blocks its group before the
 	// next claim clears it (ADMISSION_STALE_AFTER).
 	AdmissionStaleAfter time.Duration `env:"ADMISSION_STALE_AFTER" envDefault:"10m"`
@@ -126,11 +155,12 @@ type Config struct {
 	State StateConfig
 	// Scheduler and Endpoints are reported by GetFeatures (the same chart values as the operator's).
 	Scheduler SchedulerConfig
-	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures. They are
-	// read under the proxy's own names (the same variables of the same chart values), not as a second copy.
-	ProxyAccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
-	ProxySessionIdleTTL    time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
-	ProxySessionMaxTTL     time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
+	// ProxyGrantMaxTTL and TerminalGrantMaxTTL are the longest exp - iat of an access grant that the L7 proxy
+	// (chart proxy.l7.grantMaxTTL) and device-access (chart terminal.grantMaxTTL) accept. GetFeatures reports the
+	// smaller one, so a grant the backend signs is accepted by both. They are read under the same names as the
+	// services' own variables (the same chart values), not as a second copy.
+	ProxyGrantMaxTTL    time.Duration `env:"GRANT_MAX_TTL" envDefault:"8h"`
+	TerminalGrantMaxTTL time.Duration `env:"TERMINAL_GRANT_MAX_TTL" envDefault:"8h"`
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`
@@ -142,17 +172,26 @@ type Config struct {
 	// operator's values (operator.baseDomain, operator.publicVPNEndpoint): the chart passes one value to both.
 	BaseDomain        string `env:"BASE_DOMAIN"`
 	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT"`
-	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it: snapshot export reads the device snapshots from
-	// it, and PrewarmImages makes the cache fetch through it. Empty = names.RegistryServiceAddr (the chart always installs it there).
+	// RegistryAddr is host:port of the registry gate's TLS port as the agent reaches it: snapshot export reads the device snapshots from
+	// it (the same gate that PrewarmImages warms the cache through, Cache.GateAddr). Empty = names.RegistryGateAddr.
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
-	// RegistryUser and RegistryPassword are the reader account of the registry: the snapshots are not anonymous.
-	RegistryUser     string `env:"AGENT_REGISTRY_USER"`
-	RegistryPassword string `env:"AGENT_REGISTRY_PASSWORD"`
+	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform images):
+	// the agent has no registry address, a snapshot export is refused and PrewarmImages is off. Default true.
+	RegistryEnabled bool `env:"AGENT_REGISTRY_ENABLED" envDefault:"true"`
+	// RegistryTokenFile is the projected ServiceAccount token (audience laboratory-registry-gate) the agent presents to the registry gate,
+	// for the snapshot export and the prewarm. The agent has no registry account.
+	RegistryTokenFile string `env:"AGENT_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// RegistryInsecureDev (AGENT_REGISTRY_INSECURE_DEV): plain http and no token, for development. Without a CA file
+	// (AGENT_PREWARM_GATE_CA_FILE) and without it the agent refuses to talk to the gate: its token never travels in the clear.
+	RegistryInsecureDev bool `env:"AGENT_REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's
 	// private repositories); a tenant's own allow list narrows the rest.
 	ImageDeny []string `env:"AGENT_IMAGE_DENY" envSeparator:","`
+	// AllowedRegistries are the registries lab images may come from (the chart's registry.allowedRegistries, with the registries of
+	// the platform's own images added); an image from another registry is refused with REGISTRY_NOT_ALLOWED. "*" allows every registry.
+	AllowedRegistries []string `env:"ALLOWED_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 }
 
 // StateConfig is the state persistence values of the operator, under the operator's names (STATE_*): one chart value, one name.
@@ -176,7 +215,7 @@ type SchedulerConfig struct {
 }
 
 // CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition. The names are the operator's
-// (IMAGE_CACHE_*, IMAGE_PULL_SECRETS): one chart value, one name.
+// (IMAGE_CACHE_*): one chart value, one name.
 type CacheConfig struct {
 	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
 	// NodePrefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); a tenant image that names it
@@ -184,10 +223,13 @@ type CacheConfig struct {
 	NodePrefix string `env:"IMAGE_CACHE_PREFIX"`
 	// Registries are the upstream registries the cache serves.
 	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
-	// PullSecrets are dockerconfigjson Secrets of the release namespace used to ask the upstream registries for digests.
-	PullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
-	// PullSecretNamespace is the namespace of those Secrets; empty = names.SystemNamespace.
-	PullSecretNamespace string `env:"AGENT_PULL_SECRET_NAMESPACE"`
+	// PlainHTTPRegistries: the served registries listed with an http:// url (the tag resolver asks them over plain http, as the gate does).
+	PlainHTTPRegistries []string `env:"IMAGE_CACHE_PLAIN_HTTP_REGISTRIES" envSeparator:","`
+	// GateAddr is host:port of the registry gate's TLS port, where the cache path is served: PrewarmImages warms images through it, with the
+	// credentials of the call. Empty = names.RegistryGateAddr. GateCAFile is the authority the agent trusts there (the chart gives it the CA
+	// of the gate's certificate only); without it the agent speaks plain http, which only a development setup does.
+	GateAddr   string `env:"AGENT_PREWARM_GATE_ADDR"`
+	GateCAFile string `env:"AGENT_PREWARM_GATE_CA_FILE"`
 	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
 	PinTTL      time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`
@@ -216,15 +258,20 @@ func Load() (*Config, error) {
 	if err := env.Parse(c); err != nil {
 		return nil, err
 	}
-	if c.RegistryAddr == "" {
-		c.RegistryAddr = names.RegistryServiceAddr
+	if !c.RegistryEnabled {
+		if c.Cache.Enabled {
+			return nil, fmt.Errorf("IMAGE_CACHE_ENABLED needs the platform registry, but AGENT_REGISTRY_ENABLED is false")
+		}
+		c.RegistryAddr = ""
+	} else if c.RegistryAddr == "" {
+		c.RegistryAddr = names.RegistryGateAddr
 	}
 	c.PublicVPNEndpoint = names.WithPublicVPNPort(c.PublicVPNEndpoint)
 	if c.ReleaseNamespace == "" {
 		c.ReleaseNamespace = names.SystemNamespace
 	}
-	if c.Cache.PullSecretNamespace == "" {
-		c.Cache.PullSecretNamespace = names.SystemNamespace
+	if c.Cache.GateAddr == "" {
+		c.Cache.GateAddr = names.RegistryGateAddr
 	}
 	if c.Cache.NodePrefix == "" {
 		c.Cache.NodePrefix = names.RegistryNodePrefix
@@ -257,4 +304,9 @@ func (c *Config) ValidateLifecycle() error {
 		return fmt.Errorf("required snapshot advertisement requires qualified acceptance")
 	}
 	return nil
+}
+
+// Switches is what the laboratory serves, from the chart (package switches).
+func (c *Config) Switches() switches.Cluster {
+	return switches.Cluster{VPN: c.VPNEnabled, Internet: c.InternetEnabled, L7: c.ProxyL7Enabled, Terminal: c.TerminalEnabled, RDP: c.ProxyRDPEnabled, VNC: c.ProxyVNCEnabled, Checks: c.ChecksEnabled}
 }

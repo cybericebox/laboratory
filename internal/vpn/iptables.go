@@ -5,7 +5,6 @@ package vpn
 import (
 	"context"
 	"fmt"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +37,9 @@ type IPTablesManager struct {
 	quiesced      bool
 	// nft, when set, replaces the iptables relation chains: the forwarding is nftables without connection tracking (nft_forward_linux.go).
 	nft NFTCommand
+	// dropBase holds the packets the block rules dropped before the last rewrite of the access rules, by lab interface (a rewrite
+	// starts the kernel counters again); with the counters now in the kernel it is the total since the process started.
+	dropBase map[string]uint64
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -214,12 +216,7 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 		if err != nil {
 			return nil, err
 		}
-		result := map[string]TrafficCounter{}
-		for _, row := range snapshot.Rows {
-			id := AccessRule{ClientName: row.Subject, LabName: row.Lab, Action: AccessAllow}.Identifier()
-			result[id] = TrafficCounter{Packets: counterInt64(row.PacketsOut), Bytes: counterInt64(row.BytesOut)}
-		}
-		return result, nil
+		return sumPairCounters(snapshot.Rows), nil
 	}
 	lines, err := m.ipt.ListWithCounters("filter", accessChain)
 	if err != nil {
@@ -247,7 +244,7 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 		if packetErr != nil || bytesErr != nil {
 			continue
 		}
-		counters[id] = TrafficCounter{Packets: packets, Bytes: bytes}
+		addTrafficCounter(counters, id, TrafficCounter{Packets: packets, Bytes: bytes})
 	}
 	return counters, nil
 }
@@ -293,9 +290,43 @@ func (m *IPTablesManager) cleanupGuards() {
 	}
 }
 
-func counterInt64(n uint64) int64 {
-	if n > math.MaxInt64 {
-		return math.MaxInt64
+// foldDrops adds counts read before a rewrite to the total. The caller holds forwardMu.
+func (m *IPTablesManager) foldDrops(counts map[string]uint64) {
+	if len(counts) == 0 {
+		return
 	}
-	return int64(n)
+	if m.dropBase == nil {
+		m.dropBase = map[string]uint64{}
+	}
+	for iface, n := range counts {
+		m.dropBase[iface] += n
+	}
+}
+
+// LabDropCounts is the number of packets that a lab without the switch sent towards the clients and the gate dropped (new connections
+// and anything that is not a reply), by lab interface, since this process started. It is for the operator's metrics only.
+func (m *IPTablesManager) LabDropCounts(ctx context.Context) (map[string]uint64, error) {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	var now map[string]uint64
+	if m.nftOn() {
+		var err error
+		if now, err = m.nftDropCounters(ctx); err != nil {
+			return nil, err
+		}
+	} else {
+		saved, err := m.commands.Save(ctx)
+		if err != nil {
+			return nil, err
+		}
+		now = parseBlockCounters(saved)
+	}
+	out := make(map[string]uint64, len(m.dropBase)+len(now))
+	for iface, n := range m.dropBase {
+		out[iface] = n
+	}
+	for iface, n := range now {
+		out[iface] += n
+	}
+	return out, nil
 }

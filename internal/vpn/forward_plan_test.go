@@ -9,17 +9,17 @@ import (
 func TestForwardPlanKeepsOnlyAllowedBindings(t *testing.T) {
 	clients := []ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}
 	labs := map[string]LabAccessSnapshot{
-		"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"},
-		"b": {VPNCIDR: "10.8.2.0/24", Ready: true, Interface: "lab2"},
+		"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"},
+		"b": {LabName: "b", Gateway: "vpn", VPNCIDR: "10.8.2.0/24", Ready: true, Interface: "lab2"},
 	}
-	plan, err := CompileForwardPlan(clients, labs, []AccessPolicyRule{{Action: AccessAllow, LabNames: []string{"a"}}})
+	plan, err := CompileForwardPlan(clients, labs, allowLabs("a"))
 	if err != nil || len(plan.Allows) != 1 || len(plan.Decisions) != 2 {
 		t.Fatalf("unexpected plan: %+v, %v", plan, err)
 	}
 	if r := plan.Allows[0]; r.ClientName != "p1" || r.LabName != "a" || r.ClientCIDR != "10.8.0.2/32" || r.LabCIDR != "10.8.1.0/24" || r.LabInterface != "lab1" || r.BindingID == "" {
 		t.Fatalf("wrong allowed binding: %+v", r)
 	}
-	blocked, err := CompileForwardPlan(clients, labs, []AccessPolicyRule{{Action: AccessAllow}, {Action: AccessDeny, LabNames: []string{"a"}}})
+	blocked, err := CompileForwardPlan(clients, labs, append(allowLabs("a", "b"), AccessPolicyRule{Action: AccessDeny, LabNames: []string{"a"}}))
 	if err != nil || len(blocked.Allows) != 1 || blocked.Allows[0].LabName != "b" {
 		t.Fatalf("explicit deny did not win: %+v, %v", blocked, err)
 	}
@@ -32,8 +32,8 @@ func TestForwardPlanTwentyByTwentyHasTwentyKernelBindings(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		p, l := fmt.Sprintf("p%02d", i), fmt.Sprintf("l%02d", i)
 		clients = append(clients, ClientAccessSnapshot{Name: p, AssignedIP: fmt.Sprintf("10.8.0.%d/32", i+2)})
-		labs[l] = LabAccessSnapshot{VPNCIDR: fmt.Sprintf("10.8.%d.0/24", i+1), Ready: true, Interface: fmt.Sprintf("lab%d", i+1)}
-		policy = append(policy, AccessPolicyRule{Action: AccessAllow, ClientNames: []string{p}, LabNames: []string{l}})
+		labs[l] = LabAccessSnapshot{LabName: l, Gateway: "vpn", VPNCIDR: fmt.Sprintf("10.8.%d.0/24", i+1), Ready: true, Interface: fmt.Sprintf("lab%d", i+1)}
+		policy = append(policy, AccessPolicyRule{Action: AccessAllow, ClientNames: []string{p}, LabNames: []string{l}, GatewayNames: []string{"vpn"}})
 	}
 	plan, err := CompileForwardPlan(clients, labs, policy)
 	if err != nil || len(plan.Allows) != 20 || len(plan.Decisions) != 400 {
@@ -45,8 +45,8 @@ func TestForwardPlanTwentyByTwentyHasTwentyKernelBindings(t *testing.T) {
 }
 
 func TestForwardPlanBindingIdentityFollowsAllocation(t *testing.T) {
-	labs := map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}
-	policy := []AccessPolicyRule{{Action: AccessAllow}}
+	labs := map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}
+	policy := allowLabs("a", "b", "l1")
 	a, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2"}}, labs, policy)
 	if err != nil {
 		t.Fatal(err)
@@ -71,13 +71,13 @@ func TestForwardPlanRejectsUnsafeBindings(t *testing.T) {
 		{"10.8.0.2/32", "10.8.1.0/24", "lab1\n-j ACCEPT"},
 	} {
 		_, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: tc.address}},
-			map[string]LabAccessSnapshot{"a": {VPNCIDR: tc.subnet, Ready: true, Interface: tc.iface}}, []AccessPolicyRule{{Action: AccessAllow}})
+			map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: tc.subnet, Ready: true, Interface: tc.iface}}, allowLabs("a", "b", "l1"))
 		if err == nil {
 			t.Fatalf("unsafe binding accepted: %+v", tc)
 		}
 	}
 	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}},
-		map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: false}}, []AccessPolicyRule{{Action: AccessAllow}})
+		map[string]LabAccessSnapshot{"a": {LabName: "a", Gateway: "vpn", VPNCIDR: "10.8.1.0/24", Ready: false}}, allowLabs("a", "b", "l1"))
 	if err != nil || len(plan.Allows) != 0 {
 		t.Fatalf("not-ready lab became reachable: %+v, %v", plan, err)
 	}
@@ -93,10 +93,10 @@ func BenchmarkForwardPlan(b *testing.B) {
 				for i := 0; i < users; i++ {
 					name := fmt.Sprintf("p%d", i)
 					clients = append(clients, ClientAccessSnapshot{Name: name, AssignedIP: fmt.Sprintf("10.8.0.%d/32", i+2)})
-					rules = append(rules, AccessPolicyRule{Action: AccessAllow, ClientNames: []string{name}, LabNames: []string{fmt.Sprintf("l%d", i%labs)}})
+					rules = append(rules, AccessPolicyRule{Action: AccessAllow, ClientNames: []string{name}, LabNames: []string{fmt.Sprintf("l%d", i%labs)}, GatewayNames: []string{"vpn"}})
 				}
 				for i := 0; i < labs; i++ {
-					nets[fmt.Sprintf("l%d", i)] = LabAccessSnapshot{Ready: true, VPNCIDR: fmt.Sprintf("10.8.%d.0/24", i+1), Interface: fmt.Sprintf("lab%d", i+1)}
+					nets[fmt.Sprintf("l%d", i)] = LabAccessSnapshot{LabName: fmt.Sprintf("l%d", i), Gateway: "vpn", Ready: true, VPNCIDR: fmt.Sprintf("10.8.%d.0/24", i+1), Interface: fmt.Sprintf("lab%d", i+1)}
 				}
 				b.ReportAllocs()
 				b.ResetTimer()

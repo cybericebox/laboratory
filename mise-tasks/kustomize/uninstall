@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Remove the CRDs from the cluster of the current kubectl context. Env: IGNORE_NOT_FOUND (default false)"
+#MISE depends=["generate:manifests"]
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+kustomize build config/crd | kubectl delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f -

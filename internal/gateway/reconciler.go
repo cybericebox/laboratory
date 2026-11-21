@@ -77,15 +77,15 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.dhcpFailure(ctx, &gw, err)
 	}
 	if parent.Spec.Lifecycle.IsStopped() {
-		r.DHCP.Stop(gw.Spec.LabName)
+		r.DHCP.Stop(gw.Name)
 		iface := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 		if err := r.IPT.BlockLab(iface); err != nil {
 			return ctrl.Result{}, err
 		}
 		r.IPT.DenyDHCP(iface)
-		cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
-		if err != nil {
-			return ctrl.Result{}, err
+		cidr := parent.Status.GatewayCIDR(gw.Spec.Device)
+		if cidr == "" {
+			return ctrl.Result{}, fmt.Errorf("the lab has no CIDR for Internet gateway %q", gw.Spec.Device)
 		}
 		if err := r.clearNetwork(appliedNetwork{Iface: iface, CIDR: cidr}); err != nil {
 			return ctrl.Result{}, err
@@ -109,9 +109,9 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	if err := r.IPT.BlockLab(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)); err != nil {
 		return ctrl.Result{}, err
 	}
-	r.DHCP.Drop(gw.Spec.LabName)
+	r.DHCP.Drop(gw.Name)
 	r.IPT.DenyDHCP(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex))
-	if cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex); err == nil {
+	if cidr, err := r.gatewayCIDR(ctx, gw); err == nil {
 		r.IPT.DelMasquerade(cidr)
 		r.IPT.DenyPing(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), firstHostIP(cidr))
 		r.IPT.DelAntiSpoof(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), cidr)
@@ -144,7 +144,7 @@ func (r *LabGatewayReconciler) patchStatus(
 }
 
 func (r *LabGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	b, err := labdhcp.WatchDHCP(mgr, ctrl.NewControllerManagedBy(mgr).For(&laboratoryv1alpha1.LabGateway{}), r.Client, r.DHCP, r.Cfg.Namespace, "internet")
+	b, err := labdhcp.WatchDHCP(mgr, ctrl.NewControllerManagedBy(mgr).For(&laboratoryv1alpha1.LabGateway{}), r.Client, r.DHCP, r.Cfg.Namespace, laboratoryv1alpha1.GatewayKindInternet)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func (r *LabGatewayReconciler) clearNetwork(old appliedNetwork) error {
 	return nil
 }
 func (r *LabGatewayReconciler) dhcpFailure(ctx context.Context, gw *laboratoryv1alpha1.LabGateway, err error) (ctrl.Result, error) {
-	r.DHCP.Stop(gw.Spec.LabName)
+	r.DHCP.Stop(gw.Name)
 	iface := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 	if r.IPT != nil {
 		r.IPT.DenyDHCP(iface)
@@ -205,7 +205,7 @@ func announceGateway(ctx context.Context, iface, cidr string) {
 }
 
 func (r *LabGatewayReconciler) networkFailure(ctx context.Context, obj *laboratoryv1alpha1.LabGateway, err error) (ctrl.Result, error) {
-	r.DHCP.Stop(obj.Spec.LabName)
+	r.DHCP.Stop(obj.Name)
 	if r.IPT != nil {
 		r.IPT.DenyDHCP(names.LabIfaceNameByIndex(obj.Spec.NetworkIndex))
 	}
@@ -223,12 +223,27 @@ func (r *LabGatewayReconciler) networkFailure(ctx context.Context, obj *laborato
 	return ctrl.Result{}, err
 }
 
+// gatewayCIDR is the /24 of the gateway this object serves, from the status of the parent Lab (where the operator wrote it when it took the
+// number from the pool): not computed from the number, because the Internet /24 of a lab made before the one address pool keeps the old
+// place of its number.
+func (r *LabGatewayReconciler) gatewayCIDR(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (string, error) {
+	var parent laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, client.ObjectKey{Name: gw.Spec.LabName, Namespace: gw.Namespace}, &parent); err != nil {
+		return "", fmt.Errorf("read the lab of the Internet gateway: %w", err)
+	}
+	cidr := parent.Status.GatewayCIDR(gw.Spec.Device)
+	if cidr == "" {
+		return "", fmt.Errorf("the lab has no CIDR for Internet gateway %q yet", gw.Spec.Device)
+	}
+	return cidr, nil
+}
+
 func gatewayNetworkNeedsSetup(known bool, previous appliedNetwork, desired appliedNetwork, link netlink.Link, cidr string) bool {
 	return !known || previous.Iface != desired.Iface || previous.CIDR != desired.CIDR || previous.LinkIndex != desired.LinkIndex || previous.Hardware != desired.Hardware || !networkPresent(link, cidr)
 }
 
 func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (ctrl.Result, error) {
-	dhcpEnabled, ranges, dns, dhcpErr := labdhcp.Desired(ctx, r.Client, gw.Namespace, gw.Spec.LabName, "internet")
+	dhcpEnabled, ranges, dns, dhcpErr := labdhcp.Desired(ctx, r.Client, gw.Namespace, gw.Spec.LabName, gw.Spec.Device)
 	if dhcpErr != nil {
 		return r.dhcpFailure(ctx, gw, dhcpErr)
 	}
@@ -237,7 +252,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 	link, linkErr := netlink.LinkByName(ifaceName)
 	if linkErr != nil {
-		r.DHCP.Stop(gw.Spec.LabName)
+		r.DHCP.Stop(gw.Name)
 		if old, ok := r.applied.get(gw.Name); ok {
 			if err := r.clearNetwork(old); err != nil {
 				return r.networkFailure(ctx, gw, err)
@@ -256,9 +271,9 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		return ctrl.Result{RequeueAfter: interfaceWait}, nil
 	}
 
-	cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
+	cidr, err := r.gatewayCIDR(ctx, gw)
 	if err != nil {
-		return r.networkFailure(ctx, gw, fmt.Errorf("compute inet CIDR: %w", err))
+		return r.networkFailure(ctx, gw, err)
 	}
 
 	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
@@ -269,7 +284,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		}
 
 		if known {
-			r.DHCP.Stop(gw.Spec.LabName)
+			r.DHCP.Stop(gw.Name)
 			if err := r.clearNetwork(previous); err != nil {
 				return r.networkFailure(ctx, gw, err)
 			}
@@ -318,7 +333,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 			}
 		}
 		if err := r.DHCP.Start(
-			gw.Spec.LabName, dhcp.Config{
+			gw.Name, dhcp.Config{
 				Iface:   ifaceName,
 				Subnet:  cidr,
 				Gateway: gwIP,
@@ -327,10 +342,10 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 				Ranges:  ranges,
 			},
 		); err != nil {
-			return r.dhcpFailure(ctx, gw, fmt.Errorf("start DHCP for lab %s: %w", gw.Spec.LabName, err))
+			return r.dhcpFailure(ctx, gw, fmt.Errorf("start DHCP for gateway %s: %w", gw.Name, err))
 		}
 	} else {
-		r.DHCP.Stop(gw.Spec.LabName)
+		r.DHCP.Stop(gw.Name)
 		if !state.DHCPKnown || state.DHCP {
 			r.IPT.DenyDHCP(ifaceName)
 		}
@@ -338,7 +353,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	state.DHCPKnown = true
 	state.DHCP = dhcpEnabled
 	r.applied.set(gw.Name, state)
-	if dhcpEnabled && !r.DHCP.Healthy(gw.Spec.LabName) {
+	if dhcpEnabled && !r.DHCP.Healthy(gw.Name) {
 		return r.dhcpFailure(ctx, gw, fmt.Errorf("DHCP socket is unavailable"))
 	}
 
@@ -352,7 +367,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		Phase:       laboratoryv1alpha1.LabGatewayPhaseReady,
 		NATReady:    true,
 		DHCPEnabled: dhcpEnabled,
-		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(gw.Spec.LabName),
+		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(gw.Name),
 		Conditions:  slices.Clone(gw.Status.Conditions),
 	}
 	labstatus.SetReady(&newStatus.Conditions, gw.Generation, true, labstatus.ReasonReady, "lab internet gateway ready")

@@ -69,6 +69,13 @@ spec:
               gateway:
                 description: Gateway holds the internet gateway pod's settings.
                 properties:
+                  enabled:
+                    description: |-
+                      Enabled is the switch of the group's internet gateway pod: the pod exists only while it is on. A lab with an Internet gateway
+                      (spec.gateways, kind internet) is refused while it is off, and it cannot be turned off while a lab of the group has one. Absent
+                      (a group made before the field) means on, so existing groups keep their gateway pod. The agent writes it explicitly, off unless the
+                      caller asks for it.
+                    type: boolean
                   size:
                     description: Size is the size of the gateway pod; absent = the
                       chart's default. Fixed once set.
@@ -125,8 +132,16 @@ spec:
                 description: LabGroupVPNSpec holds VPN server configuration.
                 properties:
                   disabled:
-                    description: Disabled stops only the VPN server; internet gateway
-                      and Labs remain running.
+                    description: |-
+                      Disabled is the old switch, kept so a group made before Enabled means the same: true stops the VPN server (no pod). Enabled wins
+                      when it is set. New code reads VPNEnabled(), not this field.
+                    type: boolean
+                  enabled:
+                    description: |-
+                      Enabled is the switch of the group's VPN server pod: the pod exists only while it is on. A lab with a VPN gateway (spec.gateways,
+                      kind vpn) and a LabGroupClient are refused while it is off, and it cannot be turned off while a lab of the group has a VPN
+                      gateway. Absent (a group made before the field) it follows Disabled, so existing groups keep their VPN pod unless they disabled it.
+                      The agent writes it explicitly (and keeps Disabled equal to its opposite), off unless the caller asks for it.
                     type: boolean
                   keypairSecretRef:
                     description: |-
@@ -1038,6 +1053,11 @@ spec:
               vpn:
                 description: LabGroupVPNStatus exposes VPN server connection details.
                 properties:
+                  backend:
+                    description: |-
+                      Backend is "<pod IP>:<port>", the UDP address of the ready VPN pod of the group, written by the operator on every change of that pod;
+                      the demux sends the group's handshakes there and uses no name. Empty while no VPN pod is ready: the demux then drops them.
+                    type: string
                   clientSubnet:
                     description: ClientSubnet is the group subnet containing the tunnel-only
                       test gateway.

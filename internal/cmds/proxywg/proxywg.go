@@ -170,15 +170,16 @@ func Run() {
 	runs := []func(){func() {
 		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, cfg.NodeName,
 			func(l bandwidth.Limits) {
+				ct.Throttle().SetFloor(l.MinKbps)
 				ct.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
 				shaper.set(l)
-				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps, "participantMinKbps", l.MinKbps)
 			},
 			func(err error) { log.Error(err, "read the bandwidth annotation") })
 		if err != nil {
 			log.Error(err, "watch the bandwidth annotation")
 		}
-	}, func() { shaper.run(ctx) }, func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
+	}, func() { shaper.run(ctx) }, func() { ct.RunTTLCleanup(stop) }, func() { dmx.Run(stop) }}
 	if fast {
 		stats = func() map[string]uint64 { return fp.Stats() }
 		runs = append(runs, func() { restoreOnce(ctx, mgr, watcher, fp, ct, table) }, func() { resync(ctx, cfg.Resync, fp, ct) })

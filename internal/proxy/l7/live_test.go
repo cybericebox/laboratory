@@ -2,8 +2,6 @@ package l7
 
 import (
 	"bufio"
-	"crypto/ed25519"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
@@ -19,12 +17,11 @@ import (
 
 func liveFixture(t *testing.T, backend http.Handler) (*Handler, *httptest.Server, *atomic.Bool, string) {
 	t.Helper()
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	b := httptest.NewServer(backend)
 	t.Cleanup(b.Close)
 	var allowed atomic.Bool
 	allowed.Store(true)
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return b.URL, nil }).
 		WithAuthorizer(func(group, client, lab string) bool { return allowed.Load() })
 	srv := httptest.NewServer(h)
@@ -51,7 +48,7 @@ func TestLiveUpgradedConnectionIsClosedWhenAccessIsRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	fmt.Fprintf(c, "GET /term HTTP/1.1\r\nHost: web-abc123.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
+	fmt.Fprintf(c, "GET /term HTTP/1.1\r\nHost: web-abc12w.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: challenge=%s\r\n\r\n", cookie)
 	br := bufio.NewReader(c)
 	line, err := br.ReadString('\n')
 	if err != nil || !strings.Contains(line, "101") {
@@ -105,7 +102,7 @@ func TestLiveLongRequestIsCancelledWhenAccessIsRevoked(t *testing.T) {
 		}
 	}))
 	req, _ := http.NewRequest("GET", srv.URL+"/stream", nil)
-	req.Host = "web-abc123.challenges.example.com"
+	req.Host = "web-abc12w.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -137,7 +134,7 @@ func TestLiveDeadlineAndTenantChange(t *testing.T) {
 	started := make(chan struct{})
 	go func() {
 		req, _ := http.NewRequest("GET", srv.URL+"/hang", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 		close(started)
 		if resp, err := http.DefaultClient.Do(req); err == nil {
@@ -176,7 +173,7 @@ func TestLiveCapsRefuseRequestsPastTheCap(t *testing.T) {
 	h.WithLiveCaps(LiveCaps{PerClient: 2})
 	get := func() *http.Response {
 		req, _ := http.NewRequest("GET", srv.URL+"/slow", nil)
-		req.Host = "web-abc123.challenges.example.com"
+		req.Host = "web-abc12w.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -226,64 +223,6 @@ func TestLiveCapsPerGroupAndTotal(t *testing.T) {
 	}
 	if s.tryAdd(mk("g3", "a"), caps) {
 		t.Fatal("the total cap")
-	}
-}
-
-// The handoff path is limited, so a flood of invalid or valid links cannot make the proxy verify signatures without end.
-func TestAuthPathIsRateLimited(t *testing.T) {
-	h, srv, _, _ := liveFixture(t, http.NotFoundHandler())
-	h.WithAuthRateLimit(1, 2) // per lab and session 2 in a burst; the shared bucket is 20 times that
-	hit := func() int {
-		req, _ := http.NewRequest("GET", srv.URL+AuthPath+"?token=junk", nil)
-		req.Host = "web-abc123.challenges.example.com"
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		return resp.StatusCode
-	}
-	limited := 0
-	for i := 0; i < 6; i++ {
-		if hit() == http.StatusTooManyRequests {
-			limited++
-		}
-	}
-	if limited < 3 {
-		t.Fatalf("only %d of 6 handoff attempts were limited", limited)
-	}
-}
-
-// The key is the lab and the session cookie, never the peer address (behind the gateway every client has the same one): a flood at one
-// lab, or from one cookie, does not hold back another lab or another cookie.
-func TestAuthRateLimitIsKeyedByLabAndSession(t *testing.T) {
-	h, srv, _, _ := liveFixture(t, http.NotFoundHandler())
-	h.WithAuthRateLimit(1, 2)
-	hit := func(host, cookie string) int {
-		req, _ := http.NewRequest("GET", srv.URL+AuthPath+"?token=junk", nil)
-		req.Host = host
-		if cookie != "" {
-			req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		return resp.StatusCode
-	}
-	a, b := "web-abc123.challenges.example.com", "web-def456.challenges.example.com"
-	for i := 0; i < 6; i++ {
-		hit(a, "")
-	}
-	if hit(a, "") != http.StatusTooManyRequests {
-		t.Fatal("the flooded lab is limited")
-	}
-	if hit(b, "") == http.StatusTooManyRequests {
-		t.Fatal("another lab must not be held back")
-	}
-	if hit(a, "other-session") == http.StatusTooManyRequests {
-		t.Fatal("another session at the same lab must not be held back")
 	}
 }
 

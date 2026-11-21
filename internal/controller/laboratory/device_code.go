@@ -20,7 +20,10 @@ import (
 // The code is drawn once, when the device is first needed, and then lives in
 // Device.spec.code. Uniqueness in the namespace is checked against the codes of
 // the other devices and the Services, with reads from the API server: the lab
-// reconciler is the only one that draws codes and it runs one lab at a time.
+// reconciler is the only one that draws codes, and the labs of one namespace draw
+// them one after another (LabReconciler.codeLocks, held from the first read to the
+// last write of materializeDevices and ensureWebServices); labs of other namespaces
+// run in parallel.
 
 func (r *LabReconciler) reader() client.Reader {
 	if r.Reader != nil {
@@ -69,7 +72,10 @@ func (a *codeAllocator) load(ctx context.Context) error {
 // codeFor returns the code of a container device of the lab: the one it already
 // has (on its Device, or in the name of its web Service when the Device is not
 // created yet), a new one for a device that has none, and "" for a device that
-// exists without a code (it predates codes and keeps its names).
+// exists without a code (it predates codes and keeps its names). A code is the
+// random part only; the access hosts of the device are <device>-<code> plus a kind
+// character (names.AccessHostLabel), and the Service of the web port is
+// <device>-<code>w. A Device that already exists keeps its code whatever its length.
 func (a *codeAllocator) codeFor(ctx context.Context, device string) (string, error) {
 	existing, err := devices.Get(ctx, a.r.reader(), a.lab.Namespace, a.lab.Name, device)
 	switch {
@@ -83,8 +89,9 @@ func (a *codeAllocator) codeFor(ctx context.Context, device string) (string, err
 		return "", err
 	}
 	if svc != nil {
-		if code, ok := strings.CutPrefix(svc.Name, device+"-"); ok && code != "" {
-			return code, nil
+		// The name of the Service is <device>-<code>w: the code is what is left without the kind character.
+		if rest, ok := strings.CutPrefix(svc.Name, device+"-"); ok && len(rest) > 1 && strings.HasSuffix(rest, "w") {
+			return strings.TrimSuffix(rest, "w"), nil
 		}
 	}
 	if err := a.load(ctx); err != nil {

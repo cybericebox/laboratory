@@ -173,7 +173,7 @@ func TestLoadConfigSafeDefaults(t *testing.T) {
 	if !cfg.RequireAdmissionPolicy || !cfg.AgentEnabled || !cfg.ProxyEnabled {
 		t.Errorf("RequireAdmissionPolicy %v AgentEnabled %v ProxyEnabled %v: all must default to true", cfg.RequireAdmissionPolicy, cfg.AgentEnabled, cfg.ProxyEnabled)
 	}
-	if cfg.State.RegistryAddr != "laboratory-registry.laboratory-system.svc:5000" || cfg.Cache.Prefix != "localhost:5035" {
+	if cfg.State.RegistryAddr != "laboratory-registry.laboratory-system.svc:5443" || cfg.Cache.Prefix != "localhost:5035" {
 		t.Errorf("registry addresses: %q %q", cfg.State.RegistryAddr, cfg.Cache.Prefix)
 	}
 }
@@ -280,6 +280,113 @@ func TestParseCapacityRejectsNegative(t *testing.T) {
 			t.Setenv(kv[0], kv[1])
 			if _, err := LoadConfig(); err == nil {
 				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}
+
+// The lab address space is one network, a /9 unless set.
+func TestLoadConfigLabNetwork(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.LabBaseNetwork != "10.128.0.0/9" || cfg.MaxLabGateways != 10 {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	t.Setenv("LAB_BASE_NETWORK", "10.0.0.0/8")
+	if cfg, err = LoadConfig(); err != nil || cfg.LabBaseNetwork != "10.0.0.0/8" {
+		t.Fatalf("set: %+v %v", cfg, err)
+	}
+	t.Setenv("LAB_BASE_NETWORK", "10.0.0.0/24")
+	if _, err = LoadConfig(); err == nil {
+		t.Fatal("a network too small for gateways must stop the start")
+	}
+	t.Setenv("LAB_BASE_NETWORK", "")
+	for _, bad := range []string{"0", "65", "-1"} {
+		t.Setenv("MAX_LAB_GATEWAYS", bad)
+		if _, err = LoadConfig(); err == nil {
+			t.Errorf("MAX_LAB_GATEWAYS=%s must be refused", bad)
+		}
+	}
+	t.Setenv("MAX_LAB_GATEWAYS", "12")
+	if cfg, err = LoadConfig(); err != nil || cfg.MaxLabGateways != 12 {
+		t.Fatalf("raised: %+v %v", cfg, err)
+	}
+}
+
+func TestLoadConfigReconcileWorkers(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LabWorkers != 8 || cfg.DeviceWorkers != 16 || cfg.ConnectionWorkers != 8 {
+		t.Fatalf("defaults: %d %d %d", cfg.LabWorkers, cfg.DeviceWorkers, cfg.ConnectionWorkers)
+	}
+	t.Setenv("LAB_RECONCILE_WORKERS", "1")
+	t.Setenv("DEVICE_RECONCILE_WORKERS", "64")
+	if cfg, err = LoadConfig(); err != nil || cfg.LabWorkers != 1 || cfg.DeviceWorkers != 64 {
+		t.Fatalf("bounds are allowed: %+v %v", cfg, err)
+	}
+	for _, kv := range [][2]string{{"LAB_RECONCILE_WORKERS", "0"}, {"DEVICE_RECONCILE_WORKERS", "65"}, {"CONNECTION_RECONCILE_WORKERS", "-1"}} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}
+
+func TestLoadConfigAPIRate(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.APIQPS != 200 || cfg.APIBurst != 400 {
+		t.Fatalf("defaults: %v %v", cfg, err)
+	}
+	for _, kv := range [][2]string{{"API_QPS", "0"}, {"API_QPS", "2001"}, {"API_BURST", "199"}, {"API_BURST", "4001"}} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}
+
+// A tag that cannot be pinned fails the lab unless the operator says otherwise (the gate refuses a pull by tag by default as well).
+func TestLoadConfigRequireDigestIsOnByDefault(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || !cfg.Cache.RequireDigest {
+		t.Fatalf("default: %v %v", cfg.Cache.RequireDigest, err)
+	}
+	t.Setenv("IMAGE_CACHE_REQUIRE_DIGEST", "false")
+	if cfg, err = LoadConfig(); err != nil || cfg.Cache.RequireDigest {
+		t.Fatalf("false: %v %v", cfg.Cache.RequireDigest, err)
+	}
+}
+
+func TestLoadConfigPinConcurrency(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.Cache.PinConcurrency != 8 {
+		t.Fatalf("default: %v %v", cfg, err)
+	}
+	for _, v := range []string{"0", "65"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("IMAGE_CACHE_PIN_CONCURRENCY", v)
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("IMAGE_CACHE_PIN_CONCURRENCY=%s must be refused", v)
 			}
 		})
 	}

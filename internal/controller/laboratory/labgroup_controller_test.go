@@ -1,6 +1,7 @@
 package laboratory
 
 import (
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -9,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -20,7 +22,7 @@ import (
 var _ = Describe("LabGroup suspension", func() {
 	It("passes the configured support address to the VPN server", func() {
 		const namespace = "default"
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test", SupportEmail: "help@example.org"}
+		r := &LabGroupReconciler{Client: k8sClient, LabBaseNetwork: "10.8.0.0/10", VPNImage: "test", SupportEmail: "help@example.org"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
 		DeferCleanup(func() {
 			var dep appsv1.Deployment
@@ -47,7 +49,7 @@ var _ = Describe("LabGroup suspension", func() {
 
 	It("gives the VPN and gateway pods Guaranteed resources, and a changed value never reaches an existing group", func() {
 		const namespace = "default"
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", InetBaseNetwork: "10.9.0.0/10", VPNImage: "test", GatewayImage: "test",
+		r := &LabGroupReconciler{Client: k8sClient, LabBaseNetwork: "10.8.0.0/10", VPNImage: "test", GatewayImage: "test",
 			GroupPods: grouppods.Config{VPNCPU: "120m", VPNMemory: "80Mi", GatewayCPU: "60m", GatewayMemory: "40Mi"}}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
 		Expect(r.ensureGatewayDeployment(ctx, namespace, false, nil)).To(Succeed())
@@ -173,14 +175,80 @@ var _ = Describe("LabGroup suspension", func() {
 				return false
 			}
 			var vpn, gateway appsv1.Deployment
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn); err != nil {
+			// a VPN that is off has no pod at all (no Deployment, not one at zero replicas)
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn); !apierrors.IsNotFound(err) {
 				return false
 			}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &gateway); err != nil {
 				return false
 			}
-			return vpn.Spec.Replicas != nil && *vpn.Spec.Replicas == 0 && gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1 && !current.Status.VPN.Registered && !current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24"
+			return gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1 && !current.Status.VPN.Registered && !current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24" && current.Status.Phase == laboratoryv1alpha1.PhaseReady
 		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
+	})
+
+	It("refuses a lab whose connector needs a server its group has switched off, and lets it in when the switch is turned on", func() {
+		const name = "servers-off"
+		off := false
+		group := &laboratoryv1alpha1.LabGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: laboratoryv1alpha1.LabGroupSpec{
+				VPN:     laboratoryv1alpha1.LabGroupVPNSpec{Enabled: &off},
+				Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Enabled: &off},
+			},
+		}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		ns := laboratoryv1alpha1.LabGroupNamespace(name)
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: ns}, &corev1.Namespace{})
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		lab := &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Name: "needs-vpn", Namespace: ns},
+			Spec:       laboratoryv1alpha1.LabSpec{Gateways: []laboratoryv1alpha1.GatewayTemplate{{Name: "entry", Kind: laboratoryv1alpha1.GatewayKindVPN}}},
+		}
+		Expect(k8sClient.Create(ctx, lab)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, lab) })
+
+		Eventually(func() string {
+			var cur laboratoryv1alpha1.Lab
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lab.Name, Namespace: ns}, &cur); err != nil || cur.Status.Phase != laboratoryv1alpha1.PhaseFailed {
+				return ""
+			}
+			for _, c := range cur.Status.Conditions {
+				if strings.Contains(c.Message, "GroupVPNOff") {
+					return c.Message
+				}
+			}
+			return ""
+		}, 20*time.Second, 250*time.Millisecond).ShouldNot(BeEmpty())
+		var vpn appsv1.Deployment
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &vpn))).To(BeTrue(), "no VPN pod while the VPN is off")
+
+		// turn the VPN on: the pod is made and the lab is no longer refused (it is looked at again by itself)
+		Eventually(func() error {
+			var cur laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &cur); err != nil {
+				return err
+			}
+			on := true
+			cur.Spec.VPN.Enabled = &on
+			return k8sClient.Update(ctx, &cur)
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &vpn)
+		}, 15*time.Second, 250*time.Millisecond).Should(Succeed())
+		Eventually(func() bool {
+			var cur laboratoryv1alpha1.Lab
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: lab.Name, Namespace: ns}, &cur); err != nil {
+				return false
+			}
+			for _, c := range cur.Status.Conditions {
+				if strings.Contains(c.Message, "GroupVPNOff") {
+					return false
+				}
+			}
+			return true
+		}, 40*time.Second, 500*time.Millisecond).Should(BeTrue())
 	})
 
 	It("scales existing VPN and gateway deployments down", func() {
@@ -201,7 +269,7 @@ var _ = Describe("LabGroup suspension", func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, dep) })
 		}
 
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
+		r := &LabGroupReconciler{Client: k8sClient, LabBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, true, nil)).To(Succeed())
 		Expect(r.ensureGatewayDeployment(ctx, namespace, true, nil)).To(Succeed())
 

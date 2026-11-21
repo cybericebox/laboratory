@@ -64,7 +64,7 @@ func TestBuildImagePull(t *testing.T) {
 	if len(ip.Spec.Images) != maxPrepullImages {
 		t.Fatalf("images = %d", len(ip.Spec.Images))
 	}
-	if ip.Labels[managedByLabel] != managedByValue || ip.Spec.Tenant != "acme" || ip.Spec.PullSecret != "" {
+	if ip.Labels[managedByLabel] != managedByValue || ip.Spec.Tenant != "acme" {
 		t.Fatalf("%+v", ip.Spec)
 	}
 	// The same group name of two tenants is two requests.

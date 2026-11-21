@@ -1,6 +1,9 @@
 package l7
 
 import (
+	"errors"
+	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -8,46 +11,111 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/cybericebox/laboratory/internal/grant"
 )
 
-// AuthPath is the path of the handoff link the platform gives the participant:
-// https://<device>-<code>.<base>/_auth?t=<jwt>. The proxy consumes it and never
-// forwards it to a lab.
+// AuthPath is the path a platform page posts an access grant to: POST https://<device>-<code><kind>.<base>/_auth. The proxy consumes it
+// and never forwards it to a lab.
+//
+// The request is a form post (application/x-www-form-urlencoded, at most authBodyMax bytes) of the fields
+//
+//	grant  the access grant, a JWS of at most grant.MaxLen bytes (see internal/grant)
+//	next   optional: a root-relative path (with a query) to land on; anything else becomes "/"
+//
+// The form comes from the platform page, so it is cross-site: the proxy requires the Origin header and matches it against the list of
+// platform origins, which stops an attacker's page from posting its own grant into a victim's browser (login CSRF). On a web host the
+// answer is a 303 to `next` with the grant as a host-only cookie; on a console host it is the console page, with no cookie. A GET (the
+// old link with a token in its URL) consumes nothing and gets the "session over" card, so a link of the old shape fails closed.
 const AuthPath = "/_auth"
 
-// handoff turns a platform link into the proxy's own cookie and sends the
-// browser to a safe device destination, so the token leaves the URL.
-func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
+const (
+	// authBodyMax bounds the body of the post; the grant field is bounded by grant.MaxLen inside it.
+	authBodyMax = 8 << 10
+	// nextMax bounds the next field.
+	nextMax = 2048
+)
+
+// readAuthForm runs the checks every post to AuthPath passes before a grant is looked at: the method, the content type, the size of the
+// body and of the fields, and the Origin. It answers a failure itself and reports false. The reason of a refusal that says nothing about
+// the grant (the wrong method, the size, the type) is the status; every refusal about the grant or the origin is the one card.
+func (h *Handler) readAuthForm(w http.ResponseWriter, r *http.Request) (raw, next string, ok bool) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
-	raw := r.URL.Query().Get("t")
-	if raw == "" || len(h.secret) == 0 {
+	switch r.Method {
+	case http.MethodPost:
+	case http.MethodGet, http.MethodHead:
+		// The old link carried the token in its URL; nothing is consumed from a GET.
 		h.expired(w, r)
+		return "", "", false
+	default:
+		w.Header().Set("Allow", http.MethodPost)
+		fail(w, r, http.StatusMethodNotAllowed, pageGone, "method not allowed")
+		return "", "", false
+	}
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/x-www-form-urlencoded" {
+		fail(w, r, http.StatusUnsupportedMediaType, pageGone, "unsupported media type")
+		return "", "", false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, authBodyMax)
+	if err := r.ParseForm(); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			fail(w, r, http.StatusRequestEntityTooLarge, pageGone, "request too large")
+			return "", "", false
+		}
+		h.expired(w, r)
+		return "", "", false
+	}
+	// only the body counts: a grant in the query string is a link of the old shape
+	raw, next = r.PostForm.Get("grant"), r.PostForm.Get("next")
+	if raw == "" || len(raw) > grant.MaxLen || len(next) > nextMax || !h.platformOrigin(r) {
+		h.expired(w, r)
+		return "", "", false
+	}
+	return raw, next, true
+}
+
+// platformOrigin says whether the Origin of the request is one of the platform's pages (proxy.l7.platformOrigins). A request without an
+// Origin is refused, and so is every request while the list is empty.
+func (h *Handler) platformOrigin(r *http.Request) bool {
+	o := r.Header.Get("Origin")
+	return o != "" && h.origins.Ancestor(o) != ancestorNone
+}
+
+// authenticate turns a grant posted by the platform page into the cookie of a web host and sends the browser to a safe destination.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, task string) {
+	raw, next, ok := h.readAuthForm(w, r)
+	if !ok {
 		return
 	}
-	now := h.now()
-	claims, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
+	if !h.acquireVerify(w, r) {
+		return
+	}
+	g, err := h.verifyLogin(raw, task, requestHost(r))
+	h.releaseVerify()
 	if err != nil {
 		h.expired(w, r)
 		return
 	}
-	// The session ends at the link's sess, but not later than sessionMax from now; it is valid for sessionIdle,
-	// and renewals (renewSession) slide that until the absolute end.
-	abs := time.Unix(claims.Session, 0)
-	if limit := now.Add(h.sessionMax); h.sessionMax > 0 && abs.After(limit) {
-		abs = limit
-	}
-	value, end, err := h.sessionCookie(jwtClaims{
-		GroupID: claims.GroupID, Client: claims.client(), Tenant: claims.Issuer, Abs: abs.Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now)},
-	}, now)
-	if err != nil {
-		fail(w, r, http.StatusInternalServerError, pageFailed, "internal error")
+	// Only a grant that verifies is counted: a flood of garbage costs one cheap rejection each and uses up nobody's budget.
+	if !h.throttleHandoff(w, r, task, g.Group+"|"+g.client()) {
 		return
 	}
-	h.setSessionCookie(w, value, end, now)
-	http.Redirect(w, r, handoffDestination(r.URL.Query().Get("next")), http.StatusSeeOther)
+	h.setGrantCookie(w, raw, g.End(), h.now())
+	http.Redirect(w, r, handoffDestination(next), http.StatusSeeOther)
+}
+
+// rootRelative says whether s starts with one slash that is not followed by another slash or a backslash (a browser reads both
+// as the start of an authority), holds no backslash anywhere and no control character (a browser drops tabs and line breaks
+// before it parses, so "/<tab>/host" is "//host").
+func rootRelative(s string) bool {
+	if len(s) == 0 || s[0] != '/' {
+		return false
+	}
+	if len(s) > 1 && (s[1] == '/' || s[1] == '\\') {
+		return false
+	}
+	return !strings.Contains(s, "\\") && strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
 // handoffDestination accepts only an unambiguous root-relative device URL.
@@ -57,8 +125,7 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 func handoffDestination(target string) string {
 	candidate := target
 	for range 4 {
-		if !strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, "//") ||
-			strings.Contains(candidate, "\\") || strings.IndexFunc(candidate, unicode.IsControl) >= 0 {
+		if !rootRelative(candidate) {
 			return "/"
 		}
 		u, err := url.Parse(candidate)
@@ -78,39 +145,20 @@ func handoffDestination(target string) string {
 	return "/"
 }
 
-// sessionCookie signs the cookie of c, valid for sessionIdle from now and not past c.Abs.
-func (h *Handler) sessionCookie(c jwtClaims, now time.Time) (string, time.Time, error) {
-	end := now.Add(h.sessionIdle)
-	if abs := time.Unix(c.Abs, 0); h.sessionIdle <= 0 || end.After(abs) {
-		end = abs
-	}
-	c.ExpiresAt = jwt.NewNumericDate(end)
-	value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(h.secret)
-	return value, end, err
-}
-
-func (h *Handler) setSessionCookie(w http.ResponseWriter, value string, end, now time.Time) {
+// setGrantCookie sets the cookie of a web session: the grant itself, host-only, until the grant ends.
+func (h *Handler) setGrantCookie(w http.ResponseWriter, value string, end, now time.Time) {
 	http.SetCookie(w, &http.Cookie{
-		Name: h.cookieName, Value: value, Domain: h.baseDomain, Path: "/",
+		Name: h.cookieName, Value: value, Path: "/", // no Domain: host-only, the cookie belongs to the one device host that set it
 		Expires: end, MaxAge: int(end.Sub(now).Seconds()),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 }
 
-// renewSession slides the session of a valid cookie: when less than sessionRenew of it remains and the absolute end
-// allows a later expiry, a fresh cookie goes out with the response. An active user costs one renewal per
-// sessionRenew at most, and a cookie without an absolute end (older) is left alone.
-func (h *Handler) renewSession(w http.ResponseWriter, c jwtClaims) {
-	if c.Abs == 0 || c.ExpiresAt == nil || h.sessionRenew <= 0 {
-		return
+// requestHost is the host name of the request: lower case, without a port.
+func requestHost(r *http.Request) string {
+	host := strings.ToLower(r.Host)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
-	now := h.now()
-	if c.ExpiresAt.Sub(now) >= h.sessionRenew {
-		return
-	}
-	value, end, err := h.sessionCookie(c, now)
-	if err != nil || !end.After(c.ExpiresAt.Time) {
-		return
-	}
-	h.setSessionCookie(w, value, end, now)
+	return strings.TrimSuffix(host, ".")
 }
