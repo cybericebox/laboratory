@@ -101,6 +101,8 @@ type uploadSession struct {
 	node, repo string
 	started    time.Time
 	lastUsed   time.Time
+	// patched: a PATCH has carried bytes into this session; its final PUT is then never exempt from the budget.
+	patched bool
 }
 
 const (
@@ -454,6 +456,9 @@ func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev 
 	if f, ok := g.checkSession(lp, p); !ok {
 		return f, false
 	}
+	if r.Method == http.MethodPatch {
+		g.markPatched(lp)
+	}
 	if g.registryFull() {
 		return fullRefusal, false
 	}
@@ -469,9 +474,14 @@ func (g *LabGate) budgetBodyOf(r *http.Request, lp labPath, p Principal, dev Dev
 	}
 	// the image's own layer is not the snapshot's: exempt only when the body declares its length and it is not larger than the descriptor
 	// size the proven manifest gave; anything else is budgeted
-	if d := r.URL.Query().Get("digest"); d != "" && r.ContentLength > 0 {
-		if _, size, sized, ok := g.mountSource(lp, p, dev, d, exit); ok && sized && r.ContentLength <= size {
-			return refusal{}, true
+	// Only a monolithic POST, or the PUT of a session that has received no PATCH, may be exempt (zot ignores "digest" on a PATCH, so chunks
+	// sent with a granted digest would otherwise all go free and the final PUT store any size). The length is capped by the descriptor size
+	// of the grant and by the size the registry really holds for the source blob.
+	if d := r.URL.Query().Get("digest"); d != "" && r.ContentLength > 0 && g.exemptMethod(r, lp) {
+		if from, size, sized, ok := g.mountSource(lp, p, dev, d, exit); ok && sized && r.ContentLength <= size {
+			if real, found, err := g.blobSize(r.Context(), from, d); err == nil && found && r.ContentLength <= real {
+				return refusal{}, true
+			}
 		}
 	}
 	used, retry := g.used(lp.Repo, exit, g.now())
@@ -487,6 +497,30 @@ func (g *LabGate) budgetBodyOf(r *http.Request, lp labPath, p Principal, dev Dev
 		br.b = b
 	}
 	return refusal{}, true
+}
+
+// exemptMethod: a POST (monolithic upload), or a PUT on a session that no PATCH has put bytes into. A PATCH is always budgeted.
+func (g *LabGate) exemptMethod(r *http.Request, lp labPath) bool {
+	switch r.Method {
+	case http.MethodPost:
+		return true
+	case http.MethodPut:
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		s, ok := g.sess[lp.Ref]
+		return ok && !s.patched
+	}
+	return false
+}
+
+// markPatched notes that a PATCH has been sent on the session.
+func (g *LabGate) markPatched(lp labPath) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if s, ok := g.sess[lp.Ref]; ok {
+		s.patched = true
+		g.sess[lp.Ref] = s
+	}
 }
 
 // poolLimit is the size of the pool a push is taken from: the window budget, or for an exit push its own ceiling.
