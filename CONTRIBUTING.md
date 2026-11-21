@@ -19,12 +19,12 @@ The tasks use `scripts/dev.sh` and need the `gh` CLI, logged in.
 
 ## Tools
 
-Every command runs through mise (`mise install` once, then `mise run <task>`; any Makefile target is `mise run make <target>`). Where a tool is pinned:
+Every command runs through mise (`mise install` once, then `mise run <task>`; `mise tasks` lists them with the environment variables each reads). A short command is a task in `mise.toml`, a longer one an executable script under `mise-tasks/` (a subdirectory is a group: `mise-tasks/image/build` is `image:build`); keep them shellcheck-clean and give each a `#MISE description`. Where a tool is pinned:
 
 - **A Go tool of the module goes into `go.mod` as a `tool` directive**: `controller-gen`, `setup-envtest` and `bpf2go`. They run as `go tool <name>`, built by the toolchain of `go.mod`, at the version `go.mod` records. Add one with `go get -tool <package>@<version>`, bump it with `go get -tool <package>@<version>`, then `go mod tidy` and `mise run generate-check`. A bump of `controller-tools` changes the version line of every CRD, so commit the regenerated files with it.
 - **Everything else goes into `mise.toml`**: Go itself (the same version as the `toolchain` line of `go.mod`; the `golang` images in `Dockerfile` and `hack/*.sh` are pinned to it by tag and digest, and `hack/generate-bpf.sh` keeps the Debian snapshot date of its image), kind, kubectl, helm, kustomize, protoc and its Go plugins, zot, gh. `golangci-lint` is also in `mise.toml` (built with the pinned Go through the `go:` backend), not in `go.mod`: its authors advise against making it a module dependency, and it would pull its whole dependency tree into the module.
 - The code generators of `hack/update-codegen.sh` (`client-gen`, `lister-gen`, `informer-gen`, `applyconfiguration-gen`) are not tool directives: `kube_codegen.sh` of `k8s.io/code-generator` builds them itself with `go install`, at the version of `k8s.io/client-go` in `go.mod`, into `bin/codegen` (ignored).
-- Nothing is installed by hand and nothing a task writes goes outside `bin/`, `dist/` and the generated directories (`.gitignore`).
+- Nothing is installed by hand and nothing a task writes goes outside `bin/`, `dist/` (the chart package of the release) and the generated directories (`.gitignore`).
 
 ## How to change things
 
@@ -41,7 +41,7 @@ Run each step through `mise run`. `mise run generate` regenerates every generate
 
 1. Create `api/<group>/v1alpha1/<kind>_types.go` with the spec, the status, the kind and its list. Above the kind: `// +genclient` (and `// +genclient:nonNamespaced` with `// +kubebuilder:resource:scope=Cluster` for a cluster-wide kind) and `// +kubebuilder:object:root=true`; above the list `// +kubebuilder:object:root=true`; in `init()` `SchemeBuilder.Register(&Kind{}, &KindList{})`. Copy `maintenancewindow_types.go`.
 2. `mise run generate`. New files: `config/crd/bases/<group>_<plural>.yaml`, the same in `charts/laboratory/crds/`, and `clientset/applyconfiguration/.../<kind>.go`, `<kind>spec.go`, `clientset/client/.../<kind>.go` and its fake, `clientset/informers/.../<kind>.go`, `clientset/listers/.../<kind>.go`; the deepcopy and the `*_client.go`, `generic.go`, `expansion` files change.
-3. Add `bases/<group>_<plural>.yaml` to `config/crd/kustomization.yaml`. For a controller, add `+kubebuilder:rbac` markers to it (`mise run generate` writes `config/rbac/role.yaml`) and the same rules to the chart's ClusterRoles in `charts/laboratory/templates`; `test/chart/rbac*_test.go` check them.
+3. Add `bases/<group>_<plural>.yaml` to `config/crd/kustomization.yaml` (the manager e2e suite installs the CRDs from it). For a controller, add `+kubebuilder:rbac` markers to it (`mise run generate` writes `config/rbac/role.yaml`) and the same rules to the chart's ClusterRoles in `charts/laboratory/templates`; `test/chart/rbac*_test.go` check them.
 4. Tests: `mise run test`.
 
 ### agent.proto and node_agent.proto
@@ -64,7 +64,7 @@ Run the checks CI runs, in this order, and push when all are green:
 ```bash
 mise run check                                   # generate-check, lint, test (commit your change first: generate-check needs a clean tree)
 mise run test-netns                              # Docker
-mise run test-bpf                                # Docker; after a change of wg_fastpath.bpf.c also: mise run make generate-bpf and commit the objects
+mise run test-bpf                                # Docker; after a change of wg_fastpath.bpf.c also: mise run generate-bpf and commit the objects
 mise run cluster-up && mise run e2e              # Docker; then: mise run cluster-down
 ```
 

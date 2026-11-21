@@ -1484,7 +1484,7 @@ group namespace; `operator.networkPolicy.enabled` is the policy of the operator 
 
 **Defaults of the binaries that the chart also sets.** The operator's defaults are the safe ones the chart has: `OPERATOR_REQUIRE_ADMISSION_POLICY`,
 `AGENT_ENABLED` and `PROXY_ENABLED` are on, and `--leader-elect` is on (`--leader-elect=false` and `OPERATOR_REQUIRE_ADMISSION_POLICY=false` for a manager
-on a developer's machine, as `mise run make run` does). The proxy's `MAX_CONNECTIONS` and `LIVE_TOTAL` default to 2500, the values the chart and its memory limit
+on a developer's machine, as `mise run run` does). The proxy's `MAX_CONNECTIONS` and `LIVE_TOTAL` default to 2500, the values the chart and its memory limit
 (512Mi) were measured with.
 
 ### Enrollment & access keys
