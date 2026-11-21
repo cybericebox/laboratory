@@ -93,6 +93,7 @@ cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 lab workers); for
 .PHONY: cluster-down
 cluster-down: ## Delete Kind cluster
 	$(KIND) delete cluster --name $(KIND_CLUSTER_NAME)
+	-$(CONTAINER_TOOL) rm -f registry.e2e.test
 
 .PHONY: docker-build-controller docker-build-agent docker-build-proxy docker-build-node docker-build-lab
 docker-build-controller: ## Build the controller (operator) image

@@ -12,6 +12,11 @@ operator:
 registry:
   networkPolicy:
     enabled: false
+  cache:
+    # the upstream of the lab image (see vpn.image), a plain HTTP registry the gate can reach by name on the kind network
+    extraRegistries:
+      - name: registry.e2e.test
+        url: http://registry.e2e.test
   gate:
     # The registry gate is reached through a node port of the control-plane node (where the lab-control pool runs on Kind); kind containers resolve each
     # other by name on their docker network. The cluster is named kind here (make cluster-up KIND_CLUSTER_NAME=kind, the CI step); the tests give
@@ -29,11 +34,15 @@ nodeAgent:
     conntrackAccounting: false
     sysctls:
       net.core.fb_tunnels_only_for_init_net: null
+# The VPN and gateway pods pull the lab image through the registry gate, which fetches it from an upstream registry: the tests start a plain HTTP
+# registry on the docker network of kind (test/utils PublishToKindRegistry, test/utils KindRegistryHost) and push the image there.
 vpn:
   image:
+    repository: registry.e2e.test/cybericebox/laboratory-lab
     tag: e2e
 inetGateway:
   image:
+    repository: registry.e2e.test/cybericebox/laboratory-lab
     tag: e2e
 devices:
   security:

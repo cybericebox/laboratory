@@ -48,8 +48,10 @@ const (
 	nodeImage = "cybericebox/laboratory-node:e2e"
 	labImage  = "cybericebox/laboratory-lab:e2e"
 
-	// pauseImage is on every Kind node already (the pause image of the sandbox), so a device needs no pull.
-	pauseImage = "registry.k8s.io/pause:3.10"
+	// pauseImage is the device image: the pause image of Kubernetes, which does nothing, from the upstream registry of the tests (the lab
+	// nodes pull it through the registry gate; the BeforeAll of each suite publishes it, utils.PublishToKindRegistry).
+	pauseImage  = utils.KindRegistryHost + "/pause:3.10"
+	pauseSource = "registry.k8s.io/pause:3.10"
 
 	labNodeLabel = "cybericebox.com/lab=true"
 
@@ -75,9 +77,12 @@ var _ = Describe(
 					),
 				)
 				Expect(err).NotTo(HaveOccurred(), "Failed to build the node and lab images")
-				for _, img := range []string{nodeImage, labImage} {
-					Expect(utils.LoadImageToKindClusterWithName(img)).To(Succeed(), "Failed to load %s into Kind", img)
-				}
+				Expect(utils.LoadImageToKindClusterWithName(nodeImage)).To(Succeed(), "Failed to load %s into Kind", nodeImage)
+				// The lab image (VPN and gateway pods) is pulled by the lab nodes through the registry gate, so it goes to the upstream registry.
+				_, err = utils.PublishToKindRegistry(labImage, "cybericebox/laboratory-lab")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", labImage)
+				_, err = utils.PublishToKindRegistry(pauseSource, "pause")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", pauseSource)
 
 				By("waiting for the namespace of an earlier deployment to go")
 				Eventually(

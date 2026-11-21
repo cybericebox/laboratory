@@ -187,6 +187,48 @@ func LoadImageToKindClusterWithName(name string) error {
 	return err
 }
 
+const (
+	// KindRegistryHost is the name of the upstream registry of the kind tests, as the cluster sees it: a plain HTTP registry in a container on the docker
+	// network of kind, standing in for the registry the platform images come from (docker.io, ghcr.io). It has a dot, so it reads as a registry host.
+	// hack/kind/e2e-values.yaml names it in the cache registries and in the repositories of the VPN and gateway image.
+	KindRegistryHost = "registry.e2e.test"
+	// kindRegistryHostPort is where the same registry is reached from the machine that runs the tests (a push to localhost is plain HTTP).
+	kindRegistryHostPort = "127.0.0.1:5001"
+)
+
+// PublishToKindRegistry pushes a docker image (pulled first when it is not local) to the upstream registry of the kind tests, starting it when
+// it is not running, under the repository repo with the tag of the image, and gives the address the cluster knows it by. Under the registry gate a
+// lab node pulls every image through the gate from an upstream, so an image that is only loaded onto the nodes cannot be pulled: the gate has
+// nothing to fetch it from. (registry.k8s.io cannot stand in as the upstream: it answers every manifest request with a redirect, which the gate
+// never takes as a proof.)
+func PublishToKindRegistry(image, repo string) (string, error) {
+	_, tag, _ := strings.Cut(image, ":")
+	if _, err := Run(exec.Command("docker", "image", "inspect", image)); err != nil {
+		if _, err = Run(exec.Command("docker", "pull", image)); err != nil {
+			return "", err
+		}
+	}
+	running, err := Run(exec.Command("docker", "inspect", "-f", "{{.State.Running}}", KindRegistryHost))
+	if err != nil || strings.TrimSpace(running) != "true" {
+		_, _ = Run(exec.Command("docker", "rm", "-f", KindRegistryHost))
+		if _, err = Run(exec.Command("docker", "run", "-d", "--restart=always", "--name", KindRegistryHost, "--network", "kind",
+			"-e", "REGISTRY_HTTP_ADDR=:80", "-p", kindRegistryHostPort+":80", "registry:2")); err != nil {
+			return "", err
+		}
+	}
+	local := kindRegistryHostPort + "/" + repo + ":" + tag
+	if _, err = Run(exec.Command("docker", "tag", image, local)); err != nil {
+		return "", err
+	}
+	if _, err = Run(exec.Command("docker", "push", local)); err != nil {
+		return "", err
+	}
+	return KindRegistryHost + "/" + repo + ":" + tag, nil
+}
+
+// RemoveKindRegistry removes the upstream registry of the kind tests.
+func RemoveKindRegistry() { _, _ = Run(exec.Command("docker", "rm", "-f", KindRegistryHost)) }
+
 // GetNonEmptyLines converts given command output string into individual objects
 // according to line breakers, and ignores the empty elements in it.
 func GetNonEmptyLines(output string) []string {
