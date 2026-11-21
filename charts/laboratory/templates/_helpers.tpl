@@ -377,10 +377,11 @@ ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 {{- range .Values.registry.cache.registries -}}
 {{- $url := index $known . -}}
 {{- if not $url -}}{{- fail (printf "registry.cache.registries: %q is not built in; add it to registry.cache.extraRegistries with its url" .) -}}{{- end -}}
-{{- $out = append $out (dict "name" . "url" $url) -}}
+{{- /* The token endpoint of Docker Hub is another host than the registry's: the gate sends credentials only to the registry's own host and to these. */ -}}
+{{- $out = append $out (dict "name" . "url" $url "authHosts" (ternary (list "auth.docker.io") (list) (eq . "docker.io"))) -}}
 {{- end -}}
 {{- range .Values.registry.cache.extraRegistries -}}
-{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url)) -}}
+{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url) "authHosts" (.authHosts | default (list))) -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}

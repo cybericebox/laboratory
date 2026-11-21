@@ -519,7 +519,7 @@ proxy:
     grantMaxTTL: 8h
     platformOrigins: []
     # The name of the host-only cookie that carries the grant after `/_auth` (a device cannot set or clear a cookie of this name).
-    grantCookieName: cib_grant
+    grantCookieName: __Host-cib_grant
     # HTTP server limits of the L7 proxy, set before any routing or authentication so that a client that dribbles its
     # headers or body cannot hold connections forever: the request headers, the whole request, a kept-alive connection
     # with no request, and the size of the headers. No write timeout: responses stream, and an upgraded (WebSocket)
@@ -949,6 +949,8 @@ registry:
     # Additional upstream registries: - name: registry.example.com
     #                                   url: https://registry.example.com
     extraRegistries: []
+    # An entry may also carry authHosts: [host, ...], the hosts besides the registry's own whose token endpoint its challenge may name (the gate
+    # sends credentials only to the registry's host and to these; docker.io has auth.docker.io built in).
     # The credentials for an upstream registry are the tenant's (tenants.<name>.images.pullSecret), the lab's own (the registry credentials of
     # a variant call) and the platform's (imagePullSecrets). They sit in the namespace laboratory-upstream, which only the gate reads: no pod of
     # a lab and no node holds one, and an image address names the tenant (localhost:5035/c/<tenant>/...), so the gate proves a pull with that
@@ -1411,10 +1413,6 @@ images:
   # image would otherwise get it). Enforced by the management agent on CreateLabs and
   # PrewarmImages. A tenant's own images.allow narrows the rest.
   tenantDeny: []
-  # true: every tenant runs ONLY images of the platform's provider repository, pinned by digest and named platform:<name>@sha256:<hex>;
-  # any other reference is refused at deploy with the reason IMAGE_NOT_PLATFORM. A tenant can set the same for itself with
-  # tenants.<name>.images.platformOnly. Off by default. The cache fetches such an image like any other.
-  platformOnly: false
 
 # ============================================================
 # Common
@@ -1466,7 +1464,6 @@ cert-manager:
 #                                     #   own registry credentials for its devices. With the image cache
 #                                     #   on they go through it (re-keyed for the cache path, the tenant
 #                                     #   in the username) and the registry gate proves every pull.
-#         platformOnly: true          # optional; only platform images (platform:<name>@sha256:<hex>) run for this tenant
 #         allow:                      # optional; absent = any image `images.tenantDeny` does not exclude
 #           - ghcr.io/acme/           # registry/repository prefixes; a reference equal to an entry
 #           - docker.io/library       #   or under it is allowed

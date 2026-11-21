@@ -30,10 +30,10 @@ spec:
     spec:
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       # The gate checks the ServiceAccount tokens of its callers with TokenReview and watches the cluster objects it decides from, so the pod has
-      # its own ServiceAccount and a token. Kubernetes mounts the token per pod, not per container, so zot sees it too: zot never reads it and
-      # runs as another user. The ServiceAccount has no right on Secrets outside the namespace laboratory-upstream (templates/registry/rbac.yaml).
+      # its own ServiceAccount. The token is NOT mounted for the pod (that would give it to zot too): a projected volume (gate-api-access, below)
+      # holds it, the cluster's CA and the namespace, and only the gate container mounts it where a client library looks for them.
       serviceAccountName: laboratory-registry-gate
-      automountServiceAccountToken: true
+      automountServiceAccountToken: false
       # zot runs as an unprivileged user; fsGroup makes the volume writable for it.
       securityContext:
         runAsNonRoot: true
@@ -107,6 +107,9 @@ spec:
               value: ":5002"
             - name: GATE_ZOT_ADDR
               value: "127.0.0.1:5001"
+            # The host the nodes pull from (the relay of the node-agent, a constant of the images): the gate refuses to start without it.
+            - name: GATE_IMAGE_HOST
+              value: "localhost:5035"
             # Every pull goes through the cache: /v2/c/<tenant>/<registry>/<repo>/... is proved against the upstream registry with the tenant's
             # credentials (read from the namespace {{ include "laboratory.upstreamNamespace" . }}) and served from zot.
             - name: GATE_CACHE_ENABLED
@@ -194,6 +197,10 @@ spec:
             capabilities:
               drop: [ ALL ]
           volumeMounts:
+            # The gate's own token for the API server (TokenReview and the watches), with the CA and the namespace: in this container only.
+            - name: gate-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
             - name: gate-config
               mountPath: /etc/gate
               readOnly: true
@@ -218,6 +225,23 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        - name: gate-api-access
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 3607
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
         - name: config
           configMap:
             name: laboratory-registry

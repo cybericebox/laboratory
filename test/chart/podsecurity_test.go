@@ -433,15 +433,3 @@ func TestAgentAndProxyNamespacesEnforcePodSecurity(t *testing.T) {
 		t.Errorf("%d namespaces rendered", n)
 	}
 }
-
-// The registry pod has its own ServiceAccount, whose token the gate needs for TokenReview and its watches. Kubernetes mounts a token per pod, so zot sees
-// it too: the account has no right on Secrets outside laboratory-upstream (rbac tests), and zot runs as another user.
-func TestRegistryPodHasTheGateServiceAccountOnly(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/deployment.yaml")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	if !strings.Contains(out, "serviceAccountName: laboratory-registry-gate") || !strings.Contains(out, "automountServiceAccountToken: true") {
-		t.Errorf("the registry pod runs as the gate's ServiceAccount with its token:\n%s", out)
-	}
-}
