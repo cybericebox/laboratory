@@ -485,7 +485,7 @@ func TestLabNodesNeedTheCacheAndTheGateAddress(t *testing.T) {
 	}
 }
 
-// The gate of the kind E2E: the chart is rendered with the exact flags of hack/registry-gate-e2e/run.sh, and the allowed list that the gate
+// The gate of the kind E2E: the chart is rendered with the flags the kind E2E uses (hack/kind/e2e-values.yaml), and the allowed list that the gate
 // gets holds the two registries that the test uses and not the third one it knows (so the refusal is tested end to end).
 func TestRegistryGateAllowedListWithTheE2EFlags(t *testing.T) {
 	spec := registryPod(t,
