@@ -15,9 +15,17 @@ protoc = "35.0"
 protoc-gen-go = "1.36.12"
 protoc-gen-go-grpc = "1.6.2"
 gh = "2.104.0"           # dev-push
+"github:mokevnin/heavy" = "0.1.2"  # a machine-wide semaphore: heavy commands of every checkout and agent take turns (heavy --status)
 # Built with the pinned Go, not downloaded: a tool built by an older Go cannot parse the newer standard library.
 "go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "0.22.0"
 "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "2.14.0"
+
+# The registry of the chart (the same version as registry.image in charts/laboratory/values.yaml): the registry gate tests run
+# against the real binary (ZOT_BIN, set by the test task).
+[tools."github:project-zot/zot"]
+version = "2.1.21"
+asset_pattern = "zot-{{os(macos='darwin')}}-{{arch(x64='amd64')}}"
+bin = "zot"
 
 [env]
 # This module is built on its own: a go.work of a parent directory (the daemon's local workspace) must not change what it resolves.
@@ -35,7 +43,7 @@ run = "make"
 [tasks.build]
 description = "Generate, vet and build the manager binary"
 depends = ["cache-guard"]
-run = "make build"
+run = "heavy -- make build"
 
 [tasks.generate]
 description = "Regenerate the CRDs, the RBAC, the deepcopy code and the API clients"
@@ -52,20 +60,20 @@ run = [
 description = "golangci-lint, for Linux as in CI (on macOS the Linux-only files would be left out and their helpers reported unused)"
 depends = ["cache-guard"]
 env = { GOOS = "linux" }
-run = "make lint"
+run = "heavy -- make lint"
 
 [tasks.test]
-description = "Unit and envtest tests (everything but e2e)"
+description = "Unit and envtest tests (everything but e2e); the registry gate tests run against the real zot"
 depends = ["cache-guard"]
-run = "make test"
+run = 'ZOT_BIN="$(command -v zot)" heavy -- make test'
 
 [tasks.test-netns]
 description = "The real-iptables tests in network namespaces (Docker, privileged)"
-run = "make test-netns"
+run = "heavy -- make test-netns"
 
 [tasks.test-bpf]
 description = "The eBPF tests of the WireGuard demux fast path (Docker, privileged)"
-run = "make test-bpf"
+run = "heavy -- make test-bpf"
 
 [tasks.cluster-up]
 description = "Create the kind cluster of the e2e tests (1 control plane + 2 lab workers)"
@@ -78,7 +86,7 @@ run = "make cluster-down KIND_CLUSTER_NAME=kind"
 [tasks.e2e]
 description = "The e2e tests on the kind cluster (mise run cluster-up first)"
 depends = ["cache-guard"]
-run = "make test-e2e"
+run = "heavy -- make test-e2e"
 
 [tasks.check]
 description = "What the CI check runs without Docker: lint and test"
