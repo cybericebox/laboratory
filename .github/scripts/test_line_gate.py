@@ -1,0 +1,102 @@
+import json
+import os
+import tempfile
+import unittest
+
+import line_gate as lg
+
+
+def f(name, add=1, dele=0, prev=None):
+    d = {"filename": name, "additions": add, "deletions": dele}
+    if prev:
+        d["previous_filename"] = prev
+    return d
+
+
+class SizeTests(unittest.TestCase):
+    def test_small_change_passes(self):
+        self.assertEqual(lg.problems([f("a.go", 30, 10)], 1), [])
+
+    def test_limit_is_inclusive(self):
+        self.assertEqual(lg.problems([f("a.go", 300, 100)], 1), [])
+        self.assertEqual(len(lg.problems([f("a.go", 300, 101)], 1)), 1)
+
+    def test_lines_are_summed_over_files(self):
+        files = [f("a.go", 200), f("b.go", 150, 51)]
+        self.assertEqual(len(lg.problems(files, 2)), 1)
+
+    def test_generated_files_and_go_sum_are_not_counted(self):
+        files = [
+            f("go.sum", 900),
+            f("api/x/v1alpha1/zz_generated.deepcopy.go", 500),
+            f("pkg/agent/protobuf/agent.pb.go", 500),
+            f("pkg/agent/protobuf/agent_grpc.pb.go", 500),
+            f("clientset/client/a.go", 500),
+            f("config/crd/bases/a.yaml", 500),
+            f("charts/laboratory/crds/a.yaml", 500),
+            f("internal/proxy/demux/fastpath/wg_bpfel.go", 500),
+            f("internal/proxy/demux/fastpath/wg_bpfel.o", 500),
+            f("main.go", 10),
+        ]
+        self.assertEqual(lg.changed_lines(files), 10)
+        self.assertEqual(lg.problems(files, len(files)), [])
+
+    def test_a_hand_written_file_with_a_similar_name_is_counted(self):
+        self.assertEqual(lg.changed_lines([f("internal/clientset/a.go", 7), f("docs/go.sum.md", 3)]), 10)
+
+    def test_override_label_waives_the_size_only(self):
+        big = [f("a.go", 900)]
+        self.assertEqual(lg.problems(big, 1, labels=["large-fix"]), [])
+        self.assertEqual(len(lg.problems(big, 1, labels=["other"])), 1)
+        harness = [f(".github/workflows/check.yml", 1)]
+        self.assertEqual(len(lg.problems(harness, 1, labels=["large-fix"])), 1)
+
+
+class ProtectedTests(unittest.TestCase):
+    def test_harness_is_refused(self):
+        for name in [".github/workflows/check.yml", ".github/scripts/ci.sh", ".github/CODEOWNERS", "mise.toml", "mise-tasks/test",
+                     "hack/test-netns.sh", "scripts/dev.sh", ".golangci.yml", ".golangci.yaml"]:
+            self.assertEqual(len(lg.problems([f(name)], 1)), 1, name)
+
+    def test_product_files_are_allowed(self):
+        for name in ["internal/a.go", "Dockerfile", "charts/laboratory/values.yaml", "DEPLOY.md", "docs/mise.toml.md", "x/scripts/a.go"]:
+            self.assertEqual(lg.problems([f(name)], 1), [], name)
+
+    def test_rename_away_from_a_protected_path_is_refused(self):
+        self.assertEqual(len(lg.problems([f("internal/x.sh", 1, 1, prev=".github/scripts/ci.sh")], 1)), 1)
+
+
+class CompletenessTests(unittest.TestCase):
+    def test_short_list_fails_closed(self):
+        self.assertEqual(len(lg.problems([f("a.go")], 2)), 1)
+
+    def test_empty_list_for_a_non_empty_change_fails(self):
+        self.assertEqual(len(lg.problems([], 5)), 1)
+
+    def test_cap_fails(self):
+        files = [f(f"{i}.go", 0) for i in range(3000)]
+        self.assertEqual(len(lg.problems(files, 3000)), 1)
+
+    def test_bad_changed_files_fails(self):
+        self.assertEqual(len(lg.problems([f("a.go")], None)), 1)
+
+
+class CliTests(unittest.TestCase):
+    def run_cli(self, files, n, labels=""):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "files.json")
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump(files, fh)
+            argv = ["check", "--files", p, "--changed-files", str(n)]
+            if labels:
+                argv += ["--labels", labels]
+            return lg.main(argv)
+
+    def test_exit_codes(self):
+        self.assertEqual(self.run_cli([f("a.go", 5)], 1), 0)
+        self.assertEqual(self.run_cli([f("a.go", 500)], 1), 1)
+        self.assertEqual(self.run_cli([f("a.go", 500)], 1, "bug,large-fix"), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
