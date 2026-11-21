@@ -81,6 +81,38 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(len(lg.problems([f("a.go")], None)), 1)
 
 
+class DependencyTests(unittest.TestCase):
+    def test_every_listed_lock_file_is_not_counted(self):
+        for name in lg.LOCK_FILES:
+            self.assertEqual(lg.changed_lines([f(name, 900, 800)]), 0, name)
+
+    def test_the_lists_are_what_this_repository_has(self):
+        self.assertIn("go.sum", lg.LOCK_FILES)
+        self.assertIn("go.work.sum", lg.LOCK_FILES)
+        self.assertIn("charts/laboratory/Chart.lock", lg.LOCK_FILES)
+
+    def test_a_dependency_security_patch_passes(self):
+        files = [f("go.mod", 4, 4), f("go.sum", 1200, 1100), f("internal/x/x.go", 6, 3), f("internal/x/x_test.go", 20, 0)]
+        self.assertEqual(lg.problems(files, len(files)), [])
+
+    def test_a_lock_file_in_another_place_is_counted(self):
+        for name in ["sub/go.sum", "go.sum.bak", "docs/go.sum", "charts/other/Chart.lock", "package-lock.json/x", "Go.Sum"]:
+            self.assertEqual(lg.changed_lines([f(name, 10)]), 10, name)
+
+    def test_go_mod_is_counted(self):
+        self.assertEqual(lg.changed_lines([f("go.mod", 30, 20)]), 50)
+
+    def test_generated_trees_are_not_counted_and_lookalikes_are(self):
+        for name in ["clientset/a/b.go", "config/crd/bases/x.yaml", "charts/laboratory/crds/x.yaml", "config/rbac/role.yaml",
+                     "api/laboratory/v1alpha1/zz_generated.deepcopy.go", "pkg/agent/protobuf/agent.pb.go",
+                     "pkg/agent/protobuf/agent_grpc.pb.go", "pkg/rpc/node/v1/node_agent.pb.go",
+                     "internal/proxy/demux/fastpath/wg_bpfel.o", "internal/proxy/demux/fastpath/wg_bpfel.go"]:
+            self.assertEqual(lg.changed_lines([f(name, 500)]), 0, name)
+        for name in ["internal/clientset/a.go", "vendor/clientset/a.go", "pkg/agent/protobuf/contract.lock", "hand/zz_generated.deepcopy.go",
+                     "api/zz_generated.deepcopy.go", "charts/laboratory/templates/crds/x.yaml", "config/crd/patches/x.yaml"]:
+            self.assertEqual(lg.changed_lines([f(name, 7)]), 7, name)
+
+
 class CliTests(unittest.TestCase):
     def run_cli(self, files, n, labels=""):
         with tempfile.TemporaryDirectory() as d:

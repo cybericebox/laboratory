@@ -22,19 +22,34 @@ import sys
 MAX_CHANGED_LINES = 400
 OVERRIDE_LABEL = "large-fix"
 
-# Not counted: files a tool writes. Each pattern is anchored to the place where the tool writes (a file anywhere else, named like a
-# generated one, is counted: the name is the attacker's to choose, so a name alone never lowers the count).
-UNCOUNTED = re.compile(
-    r"^(go\.sum|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|uv\.lock|mise\.lock)$"
-    r"|^api/[^/]+/[^/]+/zz_generated\.deepcopy\.go$"
-    r"|^pkg/(agent/protobuf|rpc/[^/]+/[^/]+)/[^/]*\.pb\.go$"
-    r"|^clientset/"
-    r"|^config/crd/bases/"
-    r"|^config/rbac/role\.yaml$"
-    r"|^charts/laboratory/crds/"
-    r"|^internal/proxy/demux/fastpath/[^/]*\.(o|elf)$"
-    r"|^internal/proxy/demux/fastpath/[^/]*_bpfe[lb]\.go$"
+# Not counted: files a tool writes, so a dependency or a code-generation change is judged by what a person wrote (go.mod, the Go code,
+# the markers) and not by the output. Two explicit lists. Each entry is anchored to the place where the tool writes (a file anywhere else,
+# named like a generated one, is counted: the name is the author's to choose, so a name alone never lowers the count).
+#   LOCK_FILES   dependency lock files, at the root or at the one path where this repository has them (this repository is one Go module
+#                with one chart: no nested lock file exists, so a nested go.sum is counted). Security patches of dependencies go into lines.
+#   GENERATED    trees and files that `mise run generate` and the eBPF build write (and generate-check proves current)
+LOCK_FILES = (
+    "go.sum",
+    "go.work.sum",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "uv.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "charts/laboratory/Chart.lock",
 )
+GENERATED = (
+    r"api/[^/]+/[^/]+/zz_generated\.deepcopy\.go",  # deepcopy
+    r"pkg/(agent/protobuf|rpc/[^/]+/[^/]+)/[^/]*\.pb\.go",  # gRPC and protobuf code
+    r"clientset/.*",  # the generated clientset, listers, informers, apply configurations
+    r"config/crd/bases/.*",  # CRDs
+    r"config/rbac/role\.yaml",  # RBAC from the markers
+    r"charts/laboratory/crds/.*",  # the chart's copy of the CRDs
+    r"internal/proxy/demux/fastpath/[^/]*\.(o|elf)",  # eBPF objects
+    r"internal/proxy/demux/fastpath/[^/]*_bpfe[lb]\.go",  # bpf2go output
+)
+UNCOUNTED = re.compile("^(" + "|".join([re.escape(f) for f in LOCK_FILES] + list(GENERATED)) + ")$")
 
 # What each CI job runs. A line takes no change here (develop takes it). Case-insensitive on purpose.
 #   .github/**                 the workflows and every script they run, CODEOWNERS
