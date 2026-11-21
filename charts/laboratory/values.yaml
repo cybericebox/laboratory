@@ -855,6 +855,21 @@ registry:
     apiStaleMax: 15m
     # The most images the management agent's prewarm makes the gate fetch at once.
     agentMaxFills: 8
+    # Bounds on what one caller can make the gate hold or open (defaults are the gate's own; raise them only for a measured need).
+    # manifestHoldBytes: memory for manifests held while their layers are checked; manifestMaxBytes: one manifest; grantsPerNode and
+    # grantMaxDigests: the layer grants one node holds and the digests one grant carries; tokenReviewConcurrency: TokenReview calls in flight;
+    # uploadsPerDevice and uploadsPerNode: open snapshot uploads; exitPushesPerHour and exitMaxBytes: the pushes a device may make when it
+    # exits (0 bytes = the device's write quota, and without one the push budget).
+    limits:
+      manifestHoldBytes: 67108864
+      manifestMaxBytes: 4194304
+      grantsPerNode: 2000
+      grantMaxDigests: 512
+      tokenReviewConcurrency: 8
+      uploadsPerDevice: 4
+      uploadsPerNode: 64
+      exitPushesPerHour: 6
+      exitMaxBytes: 0
     resources:
       requests:
         cpu: 100m

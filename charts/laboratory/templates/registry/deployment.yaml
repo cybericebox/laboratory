@@ -141,6 +141,24 @@ spec:
               value: {{ $r.gate.apiStaleMax | quote }}
             - name: GATE_AGENT_MAX_FILLS
               value: {{ $r.gate.agentMaxFills | quote }}
+            - name: GATE_MANIFEST_HOLD_BYTES
+              value: {{ $r.gate.limits.manifestHoldBytes | int64 | quote }}
+            - name: GATE_MANIFEST_MAX_BYTES
+              value: {{ $r.gate.limits.manifestMaxBytes | int64 | quote }}
+            - name: GATE_GRANTS_PER_NODE
+              value: {{ $r.gate.limits.grantsPerNode | int64 | quote }}
+            - name: GATE_GRANT_MAX_DIGESTS
+              value: {{ $r.gate.limits.grantMaxDigests | int64 | quote }}
+            - name: GATE_TOKENREVIEW_CONCURRENCY
+              value: {{ $r.gate.limits.tokenReviewConcurrency | int64 | quote }}
+            - name: GATE_UPLOADS_PER_DEVICE
+              value: {{ $r.gate.limits.uploadsPerDevice | int64 | quote }}
+            - name: GATE_UPLOADS_PER_NODE
+              value: {{ $r.gate.limits.uploadsPerNode | int64 | quote }}
+            - name: GATE_EXIT_PUSHES_PER_HOUR
+              value: {{ $r.gate.limits.exitPushesPerHour | int64 | quote }}
+            - name: GATE_EXIT_MAX_BYTES
+              value: {{ $r.gate.limits.exitMaxBytes | int64 | quote }}
             # registry.allowedRegistries (plus the platform's own images): a registry that is not on it is refused before any upstream call.
             - name: GATE_ALLOWED_REGISTRIES
               value: {{ include "laboratory.allowedRegistries" . | quote }}

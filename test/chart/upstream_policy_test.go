@@ -375,3 +375,36 @@ func TestNoPlatformOnlyImages(t *testing.T) {
 		t.Errorf("the agent has no platform-only switch:\n%s", out)
 	}
 }
+
+// The gate's bounds are rendered from registry.gate.limits, whole numbers as the gate parses them, and follow a value.
+func TestRegistryGateLimitsAreRendered(t *testing.T) {
+	render := func(extra ...string) map[string]string {
+		out, err := helmTemplate(t, append([]string{"-s", "templates/registry/deployment.yaml"}, extra...)...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		var dep appsv1.Deployment
+		if err := yaml.Unmarshal([]byte(out), &dep); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{}
+		for _, c := range dep.Spec.Template.Spec.Containers {
+			if c.Name == "gate" {
+				for _, e := range c.Env {
+					env[e.Name] = e.Value
+				}
+			}
+		}
+		return env
+	}
+	env := render("--set", "registry.gate.limits.uploadsPerNode=100")
+	want := map[string]string{
+		"GATE_MANIFEST_HOLD_BYTES": "67108864", "GATE_MANIFEST_MAX_BYTES": "4194304", "GATE_GRANTS_PER_NODE": "2000", "GATE_GRANT_MAX_DIGESTS": "512",
+		"GATE_TOKENREVIEW_CONCURRENCY": "8", "GATE_UPLOADS_PER_DEVICE": "4", "GATE_UPLOADS_PER_NODE": "100", "GATE_EXIT_PUSHES_PER_HOUR": "6", "GATE_EXIT_MAX_BYTES": "0",
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("%s = %q, want %q", k, env[k], v)
+		}
+	}
+}
