@@ -2711,8 +2711,8 @@ compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.ad
   makes the answer inconclusive (`503`). A cluster that sends the gate's traffic through an HTTP proxy (`HTTPS_PROXY`) is judged at the proxy's address,
   not the target's. The gate also checks the bytes: a manifest fetched by digest and a blob must hash (sha256) to the digest asked for. A blob is hashed while
   it streams and its last byte is held back until the hash matches, so on a mismatch zot never receives a complete body (nothing is stored, whatever zot
-  checks itself) and the client's download stays short; a miss streamed through on a full volume is checked the same way. A byte range is not checked (the
-  kubelet checks the digest of what it pulls).
+  checks itself) and the client's download stays short; a miss streamed through on a full volume is checked the same way. A request for a byte range that
+  the cache cannot answer from a stored blob is answered with the whole blob, verified (a range is never passed on from upstream: it cannot be hashed).
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.
@@ -2738,7 +2738,7 @@ compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.ad
   netconfig image (the platform's) is always resolved with them. The lab waits (briefly) for its own Secret, which the agent writes
   right after the Lab. With `registry.cache.requireDigest` off, a failed resolution falls back to the tag and is named in `Lab.status.imageWarning`; with it on (the default) the lab is not created (`IMAGE_DIGEST_REQUIRED`, naming the images). A resolved digest is remembered for `registry.cache.pinTTL`
   (default 30m), so labs created in the same wave get the same image. The VPN and gateway images of a group are
-  pinned the same way when the group's pods are created; a failure there is recorded in `LabGroup.status.imageWarning`.
+  pinned the same way when the group's pods are created; a failure there is recorded in `LabGroup.status.imageWarning` (pulled by tag), or, with `requireDigest` on (the default), refuses the pods of the group and names the image.
   Both warnings reach the management agent (`LabStatus.image_warning`, `LabGroupStatus.image_warning`). With `requireDigest` off, an image whose digest cannot be resolved is pulled by its
   tag and named in `Lab.status.imageWarning` (and a Warning event on the Lab). An image reference that already carries `@sha256:` is never looked up. The operator takes the digest from the `Docker-Content-Digest` header of its own `HEAD` to the
   upstream registry (or, for a node with one architecture, from the index body it fetched), following redirects like any HTTP client; the gate later fetches that digest and refuses content that does not hash to it, so a digest named by a redirect target is only ever usable with content that target serves. The operator needs HTTPS egress to the

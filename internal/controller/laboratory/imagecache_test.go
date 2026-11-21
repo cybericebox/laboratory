@@ -465,3 +465,18 @@ func TestLabsSharingAnImageResolveItOnce(t *testing.T) {
 		}
 	}
 }
+
+// The gate refuses a manifest by tag by default, so a VPN or gateway image that cannot be pinned must not be handed to a pod as a tag:
+// it would sit in ImagePullBackOff under a status that says "pulled by tag".
+func TestGroupImageUnpinnableIsRefusedWhenDigestsAreRequired(t *testing.T) {
+	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
+	img := "ghcr.io/cybericebox/laboratory-lab:v1"
+	g := &LabGroupReconciler{Mirror: rw, RequireDigest: true, Resolver: &fakeResolver{fail: map[string]bool{img: true}}}
+	got, err := g.cachedImage(context.Background(), "ns", img)
+	if err == nil || got != "" || !strings.Contains(err.Error(), img) {
+		t.Fatalf("an unpinnable image with digests required: %q %v", got, err)
+	}
+	if w := g.takePinWarning("ns"); w != "" {
+		t.Fatalf("no \"pulled by tag\" warning for an image that is not pulled: %q", w)
+	}
+}

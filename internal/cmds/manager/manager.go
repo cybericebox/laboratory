@@ -287,6 +287,7 @@ func Run() {
 		VPNImage:                cfg.VPNImage,
 		Mirror:                  mirror,
 		Resolver:                resolver,
+		RequireDigest:           cfg.Cache.RequireDigest,
 		GatewayImage:            cfg.GatewayImage,
 		GroupPods:               cfg.GroupPods,
 		PriorityClass:           cfg.GroupPriorityClass,

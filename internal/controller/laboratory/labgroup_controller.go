@@ -93,6 +93,9 @@ type LabGroupReconciler struct {
 	Mirror imagecache.Rewriter
 	// Resolver pins those images to a digest, once, at creation; nil pins nothing.
 	Resolver imagecache.Resolver
+	// RequireDigest refuses a group whose VPN or gateway image cannot be pinned (the registry gate refuses a pull by tag, on by default);
+	// off, the image is pulled by its tag and the group status says so.
+	RequireDigest bool
 
 	pinMu       sync.Mutex
 	pinFailures map[string][]string
@@ -1458,6 +1461,10 @@ func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) 
 	if r.Resolver != nil {
 		d, err := r.Resolver.Resolve(ctx, image)
 		if err != nil {
+			if r.RequireDigest {
+				log.FromContext(ctx).Info("image not pinned to a digest, refused", "image", image, "err", err.Error())
+				return "", fmt.Errorf("group image %s cannot be pinned to a digest, and the image cache requires digests", image)
+			}
 			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", err.Error())
 			r.notePinFailure(ns, fmt.Sprintf("%s (%v)", image, err))
 		} else {
