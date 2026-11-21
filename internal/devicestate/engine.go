@@ -591,10 +591,45 @@ func (e *Engine) finish(ctx context.Context, t *tracked) {
 	}
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := t.snapshot(sctx, false); err != nil && !errors.Is(err, ErrSnapshotsBlocked) {
+	if err := t.exitSnapshot(ctx, sctx); err != nil && !errors.Is(err, ErrSnapshotsBlocked) {
 		e.Log.Error(err, "exit snapshot", "device", t.pod.Device, "pod", t.pod.Pod)
 	}
 	e.markExit(ctx, t.pod)
+}
+
+// maxExitAttempts bounds how many times the exit snapshot is tried when the gate says to wait.
+const maxExitAttempts = 4
+
+// exitSnapshot takes the exit snapshot, and when the gate answers with a wait (429 or 503 with Retry-After, a restart code) it waits that
+// long and tries again, a bounded number of times and never past the exit deadline (sctx): the pod is gone and nothing will ask again. When
+// the gate's time is longer than what is left (the hourly limit of exit snapshots, a view that stays out of contact), or the attempts are
+// used up, the exit state is given up and the lab status says that it was not saved.
+func (t *tracked) exitSnapshot(ctx, sctx context.Context) error {
+	for attempt := 1; ; attempt++ {
+		err := t.snapshot(sctx, false)
+		var def *errDeferred
+		if !errors.As(err, &def) {
+			return err
+		}
+		left := time.Duration(-1)
+		if dl, ok := sctx.Deadline(); ok {
+			left = time.Until(dl)
+		}
+		if attempt >= maxExitAttempts || (left >= 0 && def.after >= left) {
+			t.mu.Lock()
+			t.warn(ctx, snapshot.TruncateWarning("the state of the device at its exit was not saved: "+def.reason))
+			t.mu.Unlock()
+			return nil
+		}
+		t.e.Log.Info("exit snapshot deferred by the registry", "device", t.pod.Device, "pod", t.pod.Pod, "after", def.after.String(), "attempt", attempt)
+		timer := time.NewTimer(def.after)
+		select {
+		case <-sctx.Done():
+			timer.Stop()
+			return sctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (e *Engine) markExit(ctx context.Context, p PodInfo) {

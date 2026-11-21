@@ -75,8 +75,11 @@ func (r Rewriter) RewriteFor(tenant, ref string) string { return r.For(tenant).R
 // unchanged. With the cache off (no prefix) the reference is returned as is.
 func (s Scoped) RewriteRequired(ref string) (string, error) {
 	r := s.r
-	if r.Prefix == "" || ref == "" || strings.HasPrefix(ref, r.Prefix+"/") {
+	if r.Prefix == "" || ref == "" {
 		return ref, nil
+	}
+	if prefixed, err := s.checkCachePrefixed(ref); prefixed || err != nil {
+		return ref, err
 	}
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
@@ -92,6 +95,33 @@ func (s Scoped) RewriteRequired(ref string) (string, error) {
 	return s.Rewrite(ref), nil
 }
 
+// hasPrefixFold is strings.HasPrefix without regard to case: a registry host is not case sensitive, and "LOCALHOST:5035/c/x/..." must not
+// slip past a comparison made on the lower case form.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// checkCachePrefixed decides what a reference that already names the cache (its address, in any case) may be. Written straight into a Device
+// or Lab it would otherwise reach another tenant's cache path or the platform's: only the cache path of this scope's own tenant segment
+// passes, and a snapshot (lab/..., which the gate judges by its own rule). Anything else under the prefix is refused with ErrNotCacheable.
+// prefixed says the reference names the cache at all.
+func (s Scoped) checkCachePrefixed(ref string) (prefixed bool, err error) {
+	if !hasPrefixFold(ref, s.r.Prefix+"/") {
+		return false, nil
+	}
+	rest := ref[len(s.r.Prefix)+1:]
+	switch {
+	case strings.HasPrefix(rest, "lab/"):
+		return true, nil
+	case strings.HasPrefix(rest, CacheSegment+"/"):
+		if seg, _, ok := strings.Cut(rest[len(CacheSegment)+1:], "/"); ok && seg == s.segment {
+			return true, nil
+		}
+		return true, fmt.Errorf("%w: %q names the cache path of another tenant", ErrNotCacheable, ref)
+	}
+	return true, fmt.Errorf("%w: %q names the cache but not a cache path of this tenant or a snapshot", ErrNotCacheable, ref)
+}
+
 // Rewrite returns the reference to pull through the cache, <prefix>/c/<segment>/<registry>/<repo>. It returns ref
 // unchanged when the rewriter is empty, the reference is malformed, it already
 // points at the cache, or its registry is not one the cache serves (a private
@@ -105,8 +135,8 @@ func (s Scoped) Rewrite(ref string) string {
 	if r.Prefix == "" || len(r.Registries) == 0 || ref == "" {
 		return ref
 	}
-	if strings.HasPrefix(ref, r.Prefix+"/") {
-		return ref
+	if hasPrefixFold(ref, r.Prefix+"/") {
+		return ref // already the cache's (checkCachePrefixed says whether it is this tenant's to name)
 	}
 	parsed, err := name.ParseReference(ref)
 	if err != nil {

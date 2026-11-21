@@ -103,6 +103,8 @@ type PreflightInput struct {
 	// RegistryCAFile and RegistryTokenFile: how the check speaks to the gate (TLS trusting that authority, the node-agent's own token);
 	// empty: plain http without a token (a development setup, the tests).
 	RegistryCAFile, RegistryTokenFile string
+	// RegistryInsecureDev: plain http and no token (a development setup); without it a missing CA file is a failed check.
+	RegistryInsecureDev bool
 }
 
 // PreflightResult is what the node supports.
@@ -162,6 +164,12 @@ func checkPersistence(ctx context.Context, cfg PreflightInput) error {
 	if err := checkSocket(cfg.CRISock); err != nil {
 		return err
 	}
+	if cfg.RegistryCAFile == "" && !cfg.RegistryInsecureDev {
+		return fail(CodeSnapshotRegistry, "no certificate authority for the registry (STATE_REGISTRY_CA_FILE): the node's token would travel in the clear")
+	}
+	if cfg.RegistryInsecureDev {
+		return checkRegistry(ctx, cfg.RegistryAddr, "", "")
+	}
 	return checkRegistry(ctx, cfg.RegistryAddr, cfg.RegistryCAFile, cfg.RegistryTokenFile)
 }
 
@@ -195,7 +203,7 @@ func checkRegistry(ctx context.Context, addr, caFile, tokenFile string) error {
 	if err != nil {
 		return fail(CodeSnapshotRegistry, "the snapshot registry address %q: %v", addr, err)
 	}
-	if tokenFile != "" {
+	if tokenFile != "" && caFile != "" { // the token is sent over TLS only
 		if err := imagecache.NewTokenFile(tokenFile).SetNodeToken(req.Header); err != nil {
 			return fail(CodeSnapshotRegistry, "the node's registry token cannot be read: %v", err)
 		}

@@ -21,3 +21,10 @@ func UpstreamLabSecret(namespace, lab string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + lab))
 	return "lab-" + hex.EncodeToString(sum[:])[:16]
 }
+
+// The annotations of a lab's Secret in laboratory-upstream that say whose it is (its name is a hash): the operator's sweep reads them to
+// remove the Secret of a lab that no longer exists.
+const (
+	AnnotationUpstreamLabNamespace = "laboratory.cybericebox.com/lab-namespace"
+	AnnotationUpstreamLab          = "laboratory.cybericebox.com/lab"
+)

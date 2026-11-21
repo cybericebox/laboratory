@@ -217,11 +217,6 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "write the platform's image credentials for the registry gate")
 		return ctrl.Result{}, err
 	}
-	if err := removeLegacyPullSecrets(ctx, r.Client, ns); err != nil {
-		logger.Error(err, "remove the image pull secrets of an earlier version")
-		return ctrl.Result{}, err
-	}
-
 	if err := r.ensureDefaultDeny(ctx, ns); err != nil {
 		logger.Error(err, "ensure default-deny network policy")
 		return ctrl.Result{}, err
@@ -320,6 +315,14 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		logger.Error(err, "check the rollout of the VPN and gateway pods")
 		return ctrl.Result{}, err
+	}
+	// The pull secrets of an earlier version go only when no pod of the group references them any more: the VPN and gateway Deployments are
+	// converged (a group waiting for its turn in the rollout keeps them until it has had it).
+	if !rolloutRequeue {
+		if err = r.removeLegacyPullSecretsWhenConverged(ctx, ns); err != nil {
+			logger.Error(err, "remove the image pull secrets of an earlier version")
+			return ctrl.Result{}, err
+		}
 	}
 	later := func(res ctrl.Result) ctrl.Result {
 		if rolloutRequeue && (res.RequeueAfter == 0 || res.RequeueAfter > rolloutPoll) {

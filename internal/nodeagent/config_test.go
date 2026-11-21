@@ -46,7 +46,7 @@ func TestLoadConfig_TuningKnobs(t *testing.T) {
 		cfg.ImagePullConcurrency != 2 || cfg.ImagePullTimeout != 5*time.Minute {
 		t.Errorf("defaults: %+v", cfg)
 	}
-	if cfg.StateForwardPort != 5035 || cfg.StateRegistryAddr != "laboratory-registry.laboratory-system.svc:5000" {
+	if cfg.StateForwardPort != 5035 || cfg.StateRegistryAddr != "laboratory-registry.laboratory-system.svc:5443" {
 		t.Errorf("registry: relay port %d, address %q", cfg.StateForwardPort, cfg.StateRegistryAddr)
 	}
 	t.Setenv("TUN_CHECK_PATH", "/x/tun")

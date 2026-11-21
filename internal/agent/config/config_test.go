@@ -63,8 +63,8 @@ func TestLoadTuningKnobs(t *testing.T) {
 	if m.JournalSize != 10000 || m.JournalAge != 15*time.Minute || m.PollInterval != time.Second || m.SubscriberBuffer != 256 || m.MaxStreamsPerTenant != 8 {
 		t.Errorf("monitoring defaults: %+v", m)
 	}
-	if c.ReleaseNamespace != "laboratory-system" || c.Cache.PullSecretNamespace != "laboratory-system" {
-		t.Errorf("namespaces: %q %q", c.ReleaseNamespace, c.Cache.PullSecretNamespace)
+	if c.ReleaseNamespace != "laboratory-system" {
+		t.Errorf("namespace: %q", c.ReleaseNamespace)
 	}
 	if c.PublicVPNEndpoint != "vpn.example.com:51820" {
 		t.Errorf("a host without a port gets the default port: %q", c.PublicVPNEndpoint)
@@ -75,7 +75,6 @@ func TestLoadTuningKnobs(t *testing.T) {
 	t.Setenv("AGENT_MONITORING_SUBSCRIBER_BUFFER", "7")
 	t.Setenv("AGENT_MONITORING_MAX_STREAMS_PER_TENANT", "2")
 	t.Setenv("AGENT_RELEASE_NAMESPACE", "rel")
-	t.Setenv("AGENT_PULL_SECRET_NAMESPACE", "pull")
 	t.Setenv("AGENT_REGISTRY_ADDR", "reg.example:5000")
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:443")
 	c, err = Load()
@@ -86,8 +85,8 @@ func TestLoadTuningKnobs(t *testing.T) {
 	if m.JournalSize != 5 || m.JournalAge != time.Minute || m.PollInterval != 3*time.Second || m.SubscriberBuffer != 7 || m.MaxStreamsPerTenant != 2 {
 		t.Errorf("monitoring overrides: %+v", m)
 	}
-	if c.ReleaseNamespace != "rel" || c.Cache.PullSecretNamespace != "pull" || c.RegistryAddr != "reg.example:5000" || c.PublicVPNEndpoint != "vpn.example.com:443" {
-		t.Errorf("overrides: %q %q %q %q", c.ReleaseNamespace, c.Cache.PullSecretNamespace, c.RegistryAddr, c.PublicVPNEndpoint)
+	if c.ReleaseNamespace != "rel" || c.RegistryAddr != "reg.example:5000" || c.PublicVPNEndpoint != "vpn.example.com:443" {
+		t.Errorf("overrides: %q %q %q", c.ReleaseNamespace, c.RegistryAddr, c.PublicVPNEndpoint)
 	}
 }
 

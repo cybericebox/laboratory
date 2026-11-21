@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -128,4 +130,23 @@ func removeLegacyPullSecrets(ctx context.Context, c client.Client, ns string) er
 		}
 	}
 	return nil
+}
+
+// removeLegacyPullSecretsWhenConverged is removeLegacyPullSecrets once the VPN and gateway Deployments of the group reference no image pull
+// secret (a Deployment of an earlier version still does, until the rollout has converged it): deleting a Secret a pod references would stop
+// the pod from being pulled again.
+func (r *LabGroupReconciler) removeLegacyPullSecretsWhenConverged(ctx context.Context, ns string) error {
+	for _, name := range []string{names.ComponentVPN, names.ComponentGateway} {
+		var d appsv1.Deployment
+		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &d); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if len(d.Spec.Template.Spec.ImagePullSecrets) > 0 {
+			return nil // not converged yet: a later reconcile does it
+		}
+	}
+	return removeLegacyPullSecrets(ctx, r.Client, ns)
 }

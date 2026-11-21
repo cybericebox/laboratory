@@ -283,11 +283,8 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err := r.deleteLegacyPodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
 	}
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
-		dep.Spec.Replicas = ptrInt32(replicas)
-		if err := r.Update(ctx, &dep); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.syncWorkload(ctx, device, &dep, replicas); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
@@ -303,6 +300,54 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// syncWorkload writes the replicas and, for a device on the cache, the images of the Deployment, in one update when either differs.
+func (r *DeviceReconciler) syncWorkload(ctx context.Context, device *laboratoryv1alpha1.Device, dep *appsv1.Deployment, replicas int32) error {
+	changed := r.convergeDeviceImages(device, dep)
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
+		dep.Spec.Replicas = ptrInt32(replicas)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return r.Update(ctx, dep)
+}
+
+// convergeDeviceImages brings the Deployment of a device made by an earlier version to what a new one is made with: the cache references with
+// the tenant segment, the pull policy Always, and no image pull secret. A reference without the segment is refused by the registry gate,
+// so such a Deployment would fail at its next pull. The pod template changes, and the Recreate rollout restarts the device: the upgrade is
+// made between events (the release notes say so). It touches nothing else and does nothing for a device that is not on the cache or whose
+// Deployment already matches; the pods of a state device are made new for every incarnation and need no convergence.
+// It reports whether it changed the Deployment.
+func (r *DeviceReconciler) convergeDeviceImages(device *laboratoryv1alpha1.Device, dep *appsv1.Deployment) bool {
+	if device.Spec.ImageMirror == "" {
+		return false
+	}
+	_, _, _, want := r.workloadTemplate(device)
+	have := &dep.Spec.Template.Spec
+	changed := false
+	sync := func(cur, wanted []corev1.Container) {
+		for i := range cur {
+			for j := range wanted {
+				if cur[i].Name != wanted[j].Name {
+					continue
+				}
+				if cur[i].Image != wanted[j].Image || cur[i].ImagePullPolicy != wanted[j].ImagePullPolicy {
+					cur[i].Image, cur[i].ImagePullPolicy = wanted[j].Image, wanted[j].ImagePullPolicy
+					changed = true
+				}
+			}
+		}
+	}
+	sync(have.InitContainers, want.InitContainers)
+	sync(have.Containers, want.Containers)
+	if len(have.ImagePullSecrets) > 0 {
+		have.ImagePullSecrets = nil
+		changed = true
+	}
+	return changed
 }
 
 // deleteWithdrawnWorkload deletes the Deployment of a device the scheduler withdrew (its group did not get every pod a node

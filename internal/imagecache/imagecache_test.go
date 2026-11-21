@@ -158,3 +158,36 @@ func TestRewriteRequiredRefusesWhatTheCacheCannotServe(t *testing.T) {
 		t.Errorf("with the cache off the reference is left alone: %q %v", got, err)
 	}
 }
+
+// A reference that already names the cache passes only as this tenant's own cache path or as a snapshot: never another tenant's, the
+// platform's or any other path under the prefix, in any case of the host.
+func TestPrefixedReferencesAreCheckedAgainstTheCallersSegment(t *testing.T) {
+	r := Rewriter{Prefix: "localhost:5035", Registries: DefaultRegistries}
+	acme := r.For("acme")
+	dg := "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, ok := range []string{
+		"localhost:5035/c/acme/docker.io/library/nginx" + dg,
+		"LOCALHOST:5035/c/acme/docker.io/library/nginx" + dg,
+		"localhost:5035/lab/ns/lab/dev" + dg,
+	} {
+		if got, err := acme.RewriteRequired(ok); err != nil || got != ok {
+			t.Errorf("%s: %q %v", ok, got, err)
+		}
+	}
+	for _, bad := range []string{
+		"localhost:5035/c/other/docker.io/library/nginx" + dg,
+		"LocalHost:5035/c/other/docker.io/library/nginx" + dg,
+		"localhost:5035/c/platform/ghcr.io/o/vpn" + dg,
+		"localhost:5035/c/docker.io/library/nginx" + dg, // the internal tree, no segment
+		"localhost:5035/c/acme",
+		"localhost:5035/base" + dg,
+		"localhost:5035/platform/tools" + dg,
+	} {
+		if _, err := acme.RewriteRequired(bad); !errors.Is(err, ErrNotCacheable) {
+			t.Errorf("%s must be refused: %v", bad, err)
+		}
+	}
+	if _, err := r.ForPlatform().RewriteRequired("localhost:5035/c/platform/ghcr.io/o/vpn" + dg); err != nil {
+		t.Errorf("the platform's own segment is the platform's: %v", err)
+	}
+}

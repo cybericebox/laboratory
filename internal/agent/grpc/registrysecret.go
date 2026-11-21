@@ -131,6 +131,8 @@ func (h *Handler) writeRegistrySecret(ctx context.Context, lab *laboratoryv1alph
 			Name:      name,
 			Namespace: names.UpstreamNamespace,
 			Labels:    map[string]string{"app.kubernetes.io/managed-by": "laboratory-agent"},
+			// whose it is: the name is a hash, and the operator's sweep removes the Secret of a lab that is gone
+			Annotations: map[string]string{names.AnnotationUpstreamLabNamespace: lab.Namespace, names.AnnotationUpstreamLab: lab.Name},
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{corev1.DockerConfigJsonKey: raw},

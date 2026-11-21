@@ -314,6 +314,9 @@ type StateConfig struct {
 	RegistryAddr      string `env:"STATE_REGISTRY_ADDR"`
 	RegistryCAFile    string `env:"STATE_REGISTRY_CA_FILE"`
 	RegistryTokenFile string `env:"STATE_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// RegistryInsecureDev (STATE_REGISTRY_INSECURE_DEV): plain http and no token, for development. Without a CA file and without it the
+	// operator refuses to talk to the registry: its token never travels in the clear.
+	RegistryInsecureDev bool `env:"STATE_REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// Debounce is how long a device's writable layer must stay quiet before a snapshot.
 	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
 	// ExcludePaths are never snapshotted (comma-separated absolute paths).

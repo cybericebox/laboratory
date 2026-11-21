@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -125,5 +126,74 @@ func TestGroupPodsUseThePlatformSegmentAndHaveNoPullSecrets(t *testing.T) {
 	}
 	if len(d.Spec.Template.Spec.ImagePullSecrets) != 0 {
 		t.Errorf("%v", d.Spec.Template.Spec.ImagePullSecrets)
+	}
+}
+
+// A Deployment of a device made by an earlier version (references without the tenant segment, IfNotPresent, pull secrets) is converged to
+// what a new one is made with, once; one that already matches is left alone.
+func TestDeviceDeploymentOfAnEarlierVersionIsConverged(t *testing.T) {
+	d := bootstrapDevice()
+	d.Spec.ImageMirror = cachePrefix
+	d.Labels = map[string]string{names.LabelTenant: "acme"}
+	r := readinessReconciler()
+	r.MirrorRegistries = imagecache.DefaultRegistries
+	_, _, _, spec := r.workloadTemplate(d)
+	old := spec.DeepCopy()
+	for i := range old.Containers {
+		old.Containers[i].Image = strings.Replace(old.Containers[i].Image, "/c/acme/", "/c/", 1)
+		old.Containers[i].ImagePullPolicy = corev1.PullIfNotPresent
+	}
+	for i := range old.InitContainers {
+		old.InitContainers[i].Image = strings.Replace(old.InitContainers[i].Image, "/c/acme/", "/c/", 1)
+		old.InitContainers[i].ImagePullPolicy = corev1.PullIfNotPresent
+	}
+	old.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "l1-cache-registry"}}
+	dep := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: *old}}}
+	if !r.convergeDeviceImages(d, dep) {
+		t.Fatal("an old Deployment must be converged")
+	}
+	got := dep.Spec.Template.Spec
+	if len(got.ImagePullSecrets) != 0 {
+		t.Errorf("%v", got.ImagePullSecrets)
+	}
+	for _, c := range append(append([]corev1.Container{}, got.InitContainers...), got.Containers...) {
+		if !strings.HasPrefix(c.Image, cachePrefix+"/c/acme/") || c.ImagePullPolicy != corev1.PullAlways {
+			t.Errorf("%s: %s %s", c.Name, c.Image, c.ImagePullPolicy)
+		}
+	}
+	if r.convergeDeviceImages(d, dep) {
+		t.Error("a Deployment that matches is left alone")
+	}
+	d.Spec.ImageMirror = ""
+	if r.convergeDeviceImages(d, dep) {
+		t.Error("a device that is not on the cache is never touched")
+	}
+}
+
+// The pull secrets of an earlier version go only when no Deployment of the group references a pull secret any more.
+func TestLegacyPullSecretsStayWhileAGroupPodReferencesThem(t *testing.T) {
+	ctx := context.Background()
+	legacy := dockerSecret("platform-cache-registry", "ns", map[string][2]string{"ghcr.io": {"a", "b"}})
+	legacy.Labels = map[string]string{managedByLabel: managedByValue}
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: names.ComponentVPN, Namespace: "ns"}}
+	dep.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "platform-cache-registry"}}
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(legacy, dep).Build()
+	r := &LabGroupReconciler{Client: c}
+	if err := r.removeLegacyPullSecretsWhenConverged(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	var s corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "platform-cache-registry"}, &s); err != nil {
+		t.Fatalf("the Secret a pod still references stays: %v", err)
+	}
+	dep.Spec.Template.Spec.ImagePullSecrets = nil
+	if err := c.Update(ctx, dep); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.removeLegacyPullSecretsWhenConverged(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "platform-cache-registry"}, &s); err == nil {
+		t.Fatal("once converged the legacy Secret goes")
 	}
 }

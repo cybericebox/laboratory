@@ -26,10 +26,11 @@ import (
 const (
 	// defaultGateRetry is the wait of a 429 that named none, registryFullRetry the wait after a full registry.
 	defaultGateRetry = time.Minute
-	minGateRetry     = time.Second
 	registryFullWait = 5 * time.Minute
 	restartWait      = 5 * time.Second
 	unavailableWait  = 30 * time.Second
+	// maxGateRetry caps what a Retry-After may ask for (the gate's own hourly limits are the longest).
+	maxGateRetry = time.Hour
 )
 
 // refusalDeferral is the deferral of an answer that asks to wait or to start again (429, 503 with Retry-After, a restart code), nil for any
@@ -39,23 +40,34 @@ func refusalDeferral(ref *snapshot.Refusal) *errDeferred {
 	switch {
 	case ref.Restart():
 		// The gate has no live grant or session for it any more: start again from the first request, a moment later.
-		return &errDeferred{after: restartWait, reason: ref.Error()}
+		return &errDeferred{after: clampRetry(restartWait), reason: ref.Error()}
 	case ref.Status == http.StatusServiceUnavailable:
 		// The gate's view of the cluster is not in contact: it says when to come back, and that is when it is tried again.
 		if after <= 0 {
 			after = unavailableWait
 		}
-		return &errDeferred{after: after, reason: ref.Error()}
+		return &errDeferred{after: clampRetry(after), reason: ref.Error()}
 	case ref.Status == http.StatusTooManyRequests:
 		if after <= 0 {
 			after = defaultGateRetry
 		}
-		if after < minGateRetry {
-			after = minGateRetry
-		}
-		return &errDeferred{after: after, reason: ref.Error()}
+		return &errDeferred{after: clampRetry(after), reason: ref.Error()}
 	}
 	return nil
+}
+
+// minGateRetry is the least wait of a deferral: a Retry-After of a second or none at all must not turn into a loop of requests.
+var minGateRetry = 3 * time.Second
+
+// clampRetry keeps a wait between minGateRetry and maxGateRetry.
+func clampRetry(d time.Duration) time.Duration {
+	switch {
+	case d < minGateRetry:
+		return minGateRetry
+	case d > maxGateRetry:
+		return maxGateRetry
+	}
+	return d
 }
 
 // gateRefusal maps the error of a push onto the deferral and the lab status warning. handled says the error was a refusal of the gate and

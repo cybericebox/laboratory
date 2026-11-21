@@ -75,7 +75,15 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 func (r *LabReconciler) validateRegistries(lab *laboratoryv1alpha1.Lab) error {
 	for i := range lab.Spec.Devices {
 		img := lab.Spec.Devices[i].Image
-		if img == "" || strings.HasPrefix(img, names.RegistryNodePrefix+"/") {
+		if img == "" {
+			continue
+		}
+		if strings.EqualFold(img[:min(len(img), len(names.RegistryNodePrefix)+1)], names.RegistryNodePrefix+"/") {
+			// A reference that names the cache is the cache's own: with the cache on only this tenant's cache path or a snapshot passes
+			// (what the agent admitted; a Lab written by hand does not get past this); off, it is left to the agent as before.
+			if _, err := r.Mirror.For(names.TenantOf(lab.Labels)).RewriteRequired(img); err != nil {
+				return fmt.Errorf("%s: device %q: %v", imagepolicy.ReasonRegistryNotAllowed, lab.Spec.Devices[i].Name, err)
+			}
 			continue
 		}
 		if err := imagepolicy.RegistryAllowed(r.AllowedRegistries, img); err != nil {

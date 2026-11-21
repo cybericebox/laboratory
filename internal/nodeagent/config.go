@@ -60,12 +60,15 @@ type Config struct {
 	// images): the relay is not started and there is no registry address. Default true (a registry exists, as before).
 	RegistryEnabled  bool `env:"REGISTRY_ENABLED" envDefault:"true"`
 	StateForwardPort int
+	// RegistryInsecureDev (REGISTRY_INSECURE_DEV) is the development setup: plain http to the registry and no token at all. Without a
+	// certificate authority and without it the node-agent refuses to start the relay: the node's token never travels in the clear.
+	RegistryInsecureDev bool `env:"REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// RegistryTokenFile is the projected ServiceAccount token (audience laboratory-registry-gate) the relay presents to the gate in
 	// X-Cib-Node-Token on every request. A node has no registry account and no registry password.
 	RegistryTokenFile string `env:"REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
 	// StatePushSocket is the unix socket of the relay on which node-state pushes the snapshots (mode 0600); StatePushSocketUID is the
 	// user it is given to (the user of node-state; -1: the owner stays the node-agent's).
-	StatePushSocket    string `env:"STATE_PUSH_SOCKET" envDefault:"/run/cybericebox/registry-push.sock"`
+	StatePushSocket    string `env:"STATE_PUSH_SOCKET" envDefault:"/run/cybericebox/registry-push/push.sock"`
 	StatePushSocketUID int    `env:"STATE_PUSH_SOCKET_UID" envDefault:"-1"`
 	// StatePersistence turns on the snapshot engine (the forwarder alone serves
 	// the image cache).
@@ -111,7 +114,7 @@ func (c *Config) PreflightInput() PreflightInput {
 	return PreflightInput{
 		Persistence: c.StatePersistence, Observation: c.RuntimeObservation,
 		ContainerdRoot: c.ContainerdRoot, CRISock: c.CRISock, CgroupRoot: c.CgroupRoot, RegistryAddr: c.StateRegistryAddr,
-		RegistryCAFile: c.StateRegistryCAFile, RegistryTokenFile: c.RegistryTokenFile,
+		RegistryCAFile: c.StateRegistryCAFile, RegistryTokenFile: c.RegistryTokenFile, RegistryInsecureDev: c.RegistryInsecureDev,
 	}
 }
 
