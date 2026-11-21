@@ -59,6 +59,7 @@ type gateAnswer struct {
 	code   string
 	retry  int // seconds, 0: no header
 	msg    string
+	huge   bool // Retry-After far beyond any duration
 }
 
 func (g *fakeGate) refuse(a *gateAnswer) { g.mu.Lock(); g.rule = a; g.mu.Unlock() }
@@ -78,7 +79,9 @@ func (g *fakeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.inner.ServeHTTP(w, r)
 		return
 	}
-	if rule.retry > 0 {
+	if rule.huge {
+		w.Header().Set("Retry-After", "99999999999999999")
+	} else if rule.retry > 0 {
 		w.Header().Set("Retry-After", fmt.Sprint(rule.retry))
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -298,4 +301,90 @@ func randomImageForGate(t *testing.T) v1.Image {
 		t.Fatal(err)
 	}
 	return img
+}
+
+func fastGateRetry(t *testing.T) {
+	t.Helper()
+	old := minGateRetry
+	minGateRetry = 20 * time.Millisecond
+	t.Cleanup(func() { minGateRetry = old })
+}
+
+// The exit snapshot is not lost to a short wait of the gate: it waits the Retry-After and tries again, within the exit deadline.
+func TestExitSnapshotWaitsOutTheGateAndIsSaved(t *testing.T) {
+	fastGateRetry(t)
+	for name, a := range map[string]gateAnswer{
+		"429":             {status: http.StatusTooManyRequests, code: snapshot.CodeUploadLimit, retry: 1, msg: "too many uploads"},
+		"503 Retry-After": {status: http.StatusServiceUnavailable, code: "UNAVAILABLE", retry: 1, msg: "not in contact"},
+		"upload unknown":  {status: http.StatusNotFound, code: snapshot.CodeBlobUploadUnknown, msg: "gone"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _ := rigWithClock(t)
+			tr := r.track(t)
+			ans := a
+			r.gate.refuse(&ans)
+			go func() {
+				for r.gate.refusals() < 1 { // the gate lets the device push again once it has refused the first attempt
+					time.Sleep(5 * time.Millisecond)
+				}
+				r.gate.refuse(nil)
+			}()
+			r.rt.setDiff(tarOf(map[string]string{"x": "exit state"}))
+			r.e.finish(context.Background(), tr)
+			recs, warns, exits := r.cl.snapshot()
+			if len(recs) != 1 || len(warns) != 0 || len(exits) != 1 {
+				t.Fatalf("saved after the wait: %v %v %v", recs, warns, exits)
+			}
+			if r.gate.refusals() < 1 {
+				t.Fatal("the gate never refused")
+			}
+		})
+	}
+}
+
+// When the gate's time is longer than what is left (the hourly limit of exit snapshots), the exit state is given up at once, the status says so,
+// and the exit is still marked.
+func TestExitSnapshotGivesUpWhenTheGateWaitIsTooLong(t *testing.T) {
+	r, _ := rigWithClock(t)
+	r.e.ExitTimeout = 2 * time.Second
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodeExitLimit, retry: 1800, msg: "this device has used its exit snapshots for the hour"})
+	r.rt.setDiff(tarOf(map[string]string{"x": "exit state"}))
+	started := time.Now()
+	r.e.finish(context.Background(), tr)
+	recs, warns, exits := r.cl.snapshot()
+	if len(recs) != 0 || len(exits) != 1 || len(warns) != 1 || !strings.Contains(warns[0], "exit was not saved") || !strings.Contains(warns[0], snapshot.CodeExitLimit) {
+		t.Fatalf("%v %v %v", recs, warns, exits)
+	}
+	if time.Since(started) > time.Second || r.gate.refusals() != 1 {
+		t.Fatalf("no waiting for what cannot fit: %s, %d refusals", time.Since(started), r.gate.refusals())
+	}
+}
+
+// A gate that keeps asking to wait is tried a bounded number of times.
+func TestExitSnapshotAttemptsAreBounded(t *testing.T) {
+	fastGateRetry(t)
+	r, _ := rigWithClock(t)
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushBudget, retry: 1, msg: "budget"})
+	r.rt.setDiff(tarOf(map[string]string{"x": "exit state"}))
+	r.e.finish(context.Background(), tr)
+	recs, warns, exits := r.cl.snapshot()
+	if len(recs) != 0 || len(exits) != 1 || len(warns) != 1 || r.gate.refusals() != maxExitAttempts {
+		t.Fatalf("%v %v %v %d", recs, warns, exits, r.gate.refusals())
+	}
+}
+
+// The wait is bounded below and above, and a huge Retry-After does not overflow.
+func TestRetryAfterIsClamped(t *testing.T) {
+	if clampRetry(0) != minGateRetry || clampRetry(time.Second) != minGateRetry || clampRetry(1000*time.Hour) != maxGateRetry || clampRetry(30*time.Second) != 30*time.Second {
+		t.Fatal("clamp")
+	}
+	r, _ := rigWithClock(t)
+	tr := r.track(t)
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushInterval, msg: "x", huge: true})
+	var def *errDeferred
+	if err := push(t, r, tr, "a", "1"); !errors.As(err, &def) || def.after != maxGateRetry {
+		t.Fatalf("%v", err)
+	}
 }

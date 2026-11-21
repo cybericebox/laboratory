@@ -113,7 +113,8 @@ func (o observe) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := o.next.RoundTrip(req)
 	if err == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
 		if n, ok := req.Context().Value(noteKey{}).(*note); ok {
-			if secs, perr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); perr == nil && secs > 0 {
+			if secs, perr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("Retry-After")), 10, 64); perr == nil && secs > 0 {
+				secs = min(secs, 24*3600) // a huge value must not overflow the duration
 				n.mu.Lock()
 				n.retry = time.Duration(secs) * time.Second
 				n.mu.Unlock()
