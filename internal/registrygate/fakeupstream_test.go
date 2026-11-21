@@ -35,12 +35,14 @@ type fakeUpstream struct {
 	plainCDN   bool // ... to the plain-http one
 	// redirectManifests: manifests redirect to the CDN too, whoever asks (a registry that redirects without looking at who asks).
 	redirectManifests bool
-	noDigestHeader    bool // manifests are answered without Docker-Content-Digest
-	headStatus        int  // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
-	redirectHeads     bool // blob HEADs redirect too (not only the GET)
-	cdnStatus         int  // when set, the CDN answers this instead of the object
-	calls             map[string]*atomic.Int64
-	authSeen          []string // Authorization header of every request to the CDN
+	// redirectHost, when set, is the host name of the https Location of a manifest redirect instead of the CDN's address (the test dials it).
+	redirectHost   string
+	noDigestHeader bool // manifests are answered without Docker-Content-Digest
+	headStatus     int  // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
+	redirectHeads  bool // blob HEADs redirect too (not only the GET)
+	cdnStatus      int  // when set, the CDN answers this instead of the object
+	calls          map[string]*atomic.Int64
+	authSeen       []string // Authorization header of every request to the CDN
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
@@ -167,6 +169,11 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		if f.plainCDN {
 			target = f.cdnPlain.URL
 		}
+		f.mu.Lock()
+		if f.redirectHost != "" {
+			target = "https://" + f.redirectHost
+		}
+		f.mu.Unlock()
 		w.Header().Set("Location", target+"/cdn"+r.URL.Path)
 		w.WriteHeader(http.StatusTemporaryRedirect)
 		return

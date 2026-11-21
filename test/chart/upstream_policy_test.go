@@ -362,6 +362,72 @@ func TestRegistryAuthHosts(t *testing.T) {
 	}
 }
 
+func gateRedirects(t *testing.T, extra ...string) map[string][]string {
+	t.Helper()
+	out, err := helmTemplate(t, append([]string{"-s", "templates/registry/gate-configmap.yaml"}, extra...)...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var cm corev1.ConfigMap
+	if err := yaml.Unmarshal([]byte(out), &cm); err != nil {
+		t.Fatal(err)
+	}
+	var list []struct {
+		Name      string   `json:"name"`
+		Redirects []string `json:"redirects"`
+	}
+	if err := json.Unmarshal([]byte(cm.Data["registries.json"]), &list); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, r := range list {
+		got[r.Name] = r.Redirects
+	}
+	return got
+}
+
+// registry.k8s.io redirects every manifest to Artifact Registry, so it ships with that one pattern; no other registry may redirect by default.
+// The list travels in the gate's registries.json, which the gate checks and reloads.
+func TestRegistryRedirectsDefaultAndOverride(t *testing.T) {
+	got := gateRedirects(t)
+	if len(got["registry.k8s.io"]) != 1 || got["registry.k8s.io"][0] != "*.pkg.dev" {
+		t.Errorf("registry.k8s.io: %v", got["registry.k8s.io"])
+	}
+	for _, n := range []string{"docker.io", "ghcr.io", "quay.io"} {
+		if len(got[n]) != 0 {
+			t.Errorf("%s must follow no redirect by default: %v", n, got[n])
+		}
+	}
+	got = gateRedirects(t,
+		"--set", "registry.cache.extraRegistries[0].name=reg.example.com",
+		"--set", "registry.cache.extraRegistries[0].url=https://reg.example.com",
+		"--set", "registry.cache.redirects.reg\\.example\\.com[0]=cdn.example.com",
+		"--set", "registry.cache.redirects.registry\\.k8s\\.io=null")
+	if len(got["reg.example.com"]) != 1 || got["reg.example.com"][0] != "cdn.example.com" || len(got["registry.k8s.io"]) != 0 {
+		t.Errorf("override: %v", got)
+	}
+}
+
+// A redirect list the gate could not enforce is refused when the chart renders.
+func TestRegistryRedirectsAreValidated(t *testing.T) {
+	for name, set := range map[string]string{
+		"an unknown registry": "registry.cache.redirects.nothere\\.example[0]=a.example.com",
+		"a bare wildcard":     "registry.cache.redirects.registry\\.k8s\\.io[0]=*",
+		"a wildcard inside":   "registry.cache.redirects.registry\\.k8s\\.io[0]=a.*.example.com",
+		"a port":              "registry.cache.redirects.registry\\.k8s\\.io[0]=a.example.com:443",
+		"a scheme":            "registry.cache.redirects.registry\\.k8s\\.io[0]=https://a.example.com",
+		"a single label":      "registry.cache.redirects.registry\\.k8s\\.io[0]=localhost",
+		"an upper-case entry": "registry.cache.redirects.registry\\.k8s\\.io[0]=A.example.com",
+		"not a list":          "registry.cache.redirects.registry\\.k8s\\.io=a.example.com",
+	} {
+		if out, err := helmTemplate(t, "-s", "templates/registry/gate-configmap.yaml", "--set", set); err == nil {
+			t.Errorf("%s: rendered\n%s", name, out)
+		} else if !strings.Contains(out, "registry.cache.redirects") {
+			t.Errorf("%s: the error does not name the value: %s", name, out)
+		}
+	}
+}
+
 // The platform's own registry and images are gone from the chart: no value, no agent environment.
 func TestNoPlatformOnlyImages(t *testing.T) {
 	// the Tenant CRD is generated from the Go types and loses the field with the code (pools-registry)

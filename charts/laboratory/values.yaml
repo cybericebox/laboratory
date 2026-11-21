@@ -962,6 +962,16 @@ registry:
     #                                   url: https://registry.example.com
     #                                   authHosts: [auth.example.com]   # optional: token services besides the registry's own host (https only)
     extraRegistries: []
+    # Where a registry may redirect its MANIFEST requests to: a map of a registry (built in or in extraRegistries) to a list of host patterns,
+    # an exact host or "*." and a domain for its subdomains only ("*.pkg.dev"; never a bare "*", an IP address or a public suffix such as
+    # "*.com": the gate refuses to load such a list). registry.k8s.io answers every manifest with a 307 to a regional Google Artifact
+    # Registry host, so it cannot be used without this. The gate follows a redirect (at most 3, each one checked again) only over https, on the
+    # default port, with no userinfo, to a listed host, and never sends the pull's credentials to it; the final answer is judged as a direct one.
+    # Any other redirect stays inconclusive (the pull fails with IMAGE_REGISTRY_UNAVAILABLE), as does every redirect of a registry not listed
+    # here. A registry's list set here replaces its default; set a registry to [] (or null) to follow none. A registry the cache does not serve is ignored if built in, an error otherwise.
+    redirects:
+      registry.k8s.io:
+        - "*.pkg.dev"
     # An entry may also carry authHosts: [host, ...], the hosts besides the registry's own whose token endpoint its challenge may name (the gate
     # sends credentials only to the registry's host and to these; docker.io has auth.docker.io built in).
     # The credentials for an upstream registry are the tenant's (tenants.<name>.images.pullSecret), the lab's own (the registry credentials of
