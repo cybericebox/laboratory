@@ -6,8 +6,8 @@
 #   hack/generate-bpf.sh            run it in a golang container (needs docker)
 set -euo pipefail
 
-image=${BPF_GEN_IMAGE:-docker.io/golang:1.27.1@sha256:162be5298a40ed317005c8339c6de4d10d3eef336d66dc8e9259b03ab9d3a6d2}
-snapshot_date=20261005T000000Z # the Debian snapshot of that image (/etc/apt/sources.list.d/debian.sources)
+image=${BPF_GEN_IMAGE:-docker.io/golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf}
+snapshot_date=20261104T212339Z # the Debian snapshot of that image (/etc/apt/sources.list.d/debian.sources)
 dir=internal/proxy/demux/fastpath
 snapshot=$(mktemp -d)
 container="cice-bpf-gen-$$-${RANDOM}"
