@@ -365,3 +365,61 @@ func TestOneTokenIsReviewedOnceAndInFlightReviewsAreCapped(t *testing.T) {
 		}
 	}
 }
+
+// Review 2, item 7: the table of per-address buckets is never wiped wholesale, and a leader that hangs up does not fail the others.
+func TestTheBucketTableEvictsTheOldestNotEverything(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	a := &Authenticator{Now: func() time.Time { return now }, ReviewBurst: 1, ReviewRate: 0.001}
+	a.rate = map[string]*bucket{}
+	for i := 0; i < maxCachedTokens; i++ {
+		a.rate[fmt.Sprintf("10.%d.%d.%d", i>>16, (i>>8)&255, i&255)] = &bucket{tokens: 0, at: now.Add(-time.Duration(i%50) * time.Millisecond)}
+	}
+	hot := "10.0.0.1" // an address that has used up its bucket just now
+	a.rate[hot] = &bucket{tokens: 0, at: now}
+	if a.allowSource(hot+":1", now) {
+		t.Fatal("an address out of tokens is refused")
+	}
+	// the table is full: a new address gets room, and the address that is out of tokens is NOT handed a fresh bucket by a wipe
+	a.allowSource("192.0.2.200:1", now)
+	if len(a.rate) >= maxCachedTokens+1 {
+		t.Fatalf("the table grew past its bound: %d", len(a.rate))
+	}
+	if len(a.rate) < maxCachedTokens/2 {
+		t.Fatalf("the table was wiped: %d left", len(a.rate))
+	}
+	if a.allowSource(hot+":1", now) {
+		t.Fatal("the hot address was given a fresh bucket by an eviction")
+	}
+}
+
+func TestACancelledLeaderDoesNotFailTheOthers(t *testing.T) {
+	rev := &slowReviewer{release: make(chan struct{})}
+	a := &Authenticator{Reviewer: rev, Accounts: testAccounts, Schedule: NewSchedule(), Precheck: anyShape, ReviewBurst: 1000}
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	results := make(chan error, 3)
+	run := func(ctx context.Context) {
+		r := httptest.NewRequest("GET", "http://x/v2/", nil).WithContext(ctx)
+		r.Header.Set(HeaderNodeToken, "same")
+		_, err := a.Authenticate(ctx, r)
+		results <- err
+	}
+	go run(leaderCtx)
+	waitFor(t, func() bool { return rev.calls.Load() == 1 })
+	go run(context.Background())
+	go run(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	cancel() // the leader's client hangs up while the review is in flight
+	close(rev.release)
+	good := 0
+	for i := 0; i < 3; i++ {
+		if err := <-results; err == nil {
+			good++
+		}
+	}
+	if good < 2 {
+		t.Fatalf("only %d of 3 got an answer: the followers must not fail with the leader", good)
+	}
+	if rev.calls.Load() != 1 {
+		t.Fatalf("%d reviews for one token", rev.calls.Load())
+	}
+}

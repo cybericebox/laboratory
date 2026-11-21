@@ -57,6 +57,10 @@ type Config struct {
 	TokenReviewConcur int `env:"GATE_TOKENREVIEW_CONCURRENCY" envDefault:"8"`
 	// ImageHost is the host the nodes pull cache images from (<host>/c/...); empty: any host in front of /c/.
 	ImageHost string `env:"GATE_IMAGE_HOST"`
+	// AllowAnyImageHost lets the gate start with no ImageHost (tests and local runs only): every host in front of /c/ is then accepted.
+	AllowAnyImageHost bool `env:"GATE_ALLOW_ANY_IMAGE_HOST" envDefault:"false"`
+	// HoldBytes bounds the manifests held in memory in all requests together.
+	HoldBytes int64 `env:"GATE_MANIFEST_HOLD_BYTES" envDefault:"67108864"`
 	// AgentMaxFills is how many prewarm requests of the agent are served at once.
 	AgentMaxFills int `env:"GATE_AGENT_MAX_FILLS" envDefault:"8"`
 
@@ -129,6 +133,9 @@ func Run() {
 	var cfg Config
 	if err := config.Load(&cfg); err != nil {
 		fatal(log, err, "load config")
+	}
+	if err := cfg.validate(); err != nil {
+		fatal(log, err, "config")
 	}
 	gate, err := registrygate.New(cfg.Zot)
 	if err != nil {
@@ -223,6 +230,10 @@ func Run() {
 	}
 }
 
+func (c Config) validate() error {
+	return registrygate.CheckImageHost(c.CacheEnabled, c.ImageHost, c.AllowAnyImageHost)
+}
+
 type logger interface {
 	Error(error, string, ...any)
 	Info(string, ...any)
@@ -239,6 +250,7 @@ func buildLab(ctx context.Context, cfg Config, m *registrygate.Metrics, log logg
 	lab.Meter = &registrygate.ZotMeter{Store: zot, Schedule: sch}
 	lab.Super = &registrygate.Superseder{Store: zot, Grace: cfg.SupersededGrace, OnError: func(repo string, err error) { log.Error(err, "delete a superseded snapshot", "repository", repo) }}
 	go lab.Super.Run(ctx, 10*time.Second)
+	go lab.Run(ctx)
 	return lab
 }
 
@@ -271,7 +283,7 @@ func buildCache(ctx context.Context, cfg Config, m *registrygate.Metrics, log lo
 	c.DiskFull = disk.Full
 	c.Schedule, c.Creds, c.MaxStale = sch, secrets, cfg.APIStaleMax
 	c.Grants = &registrygate.Grants{Grace: cfg.PullGrace, MaxAge: cfg.GrantMaxAge, PerNode: cfg.GrantsPerNode, MaxDigests: cfg.GrantMaxDigests}
-	c.ManifestMaxBytes = cfg.ManifestMaxBytes
+	c.ManifestMaxBytes, c.HoldBytes = cfg.ManifestMaxBytes, cfg.HoldBytes
 	go c.Grants.Run(ctx, time.Minute)
 	c.RequireDigest, c.AgentMaxFills, c.ImageHost = cfg.RequireDigest, cfg.AgentMaxFills, cfg.ImageHost
 	if cfg.AnonymousFillFile != "" {

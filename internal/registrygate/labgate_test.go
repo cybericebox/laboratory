@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,7 +24,8 @@ type fakeZot struct {
 	next      int
 	latest    string // Docker-Content-Digest of "latest" before a push
 	putDigest string
-	fail      []int // statuses to answer with, once each, in place of the normal answer
+	delay     time.Duration // how long a manifest PUT takes
+	fail      []int         // statuses to answer with, once each, in place of the normal answer
 }
 
 type zotReq struct {
@@ -67,6 +69,7 @@ func (z *fakeZot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/blobs/uploads/"):
 		w.WriteHeader(http.StatusCreated)
 	case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/"):
+		time.Sleep(z.delay)
 		w.Header().Set("Docker-Content-Digest", put)
 		w.WriteHeader(http.StatusCreated)
 	case (r.Method == http.MethodHead || r.Method == http.MethodGet) && strings.HasSuffix(r.URL.Path, "/manifests/latest") && latest != "":
@@ -174,13 +177,16 @@ func (m *memStore) Repos(context.Context) ([]string, error)        { return nil,
 func (m *memStore) Tags(context.Context, string) ([]string, error) { return nil, nil }
 
 type fakeMeter struct {
+	mu    sync.Mutex
 	blobs map[string]int64
 	err   error
 	asked []string
 }
 
 func (f *fakeMeter) TenantBlobs(_ context.Context, tenant, except string) (map[string]int64, error) {
+	f.mu.Lock()
 	f.asked = append(f.asked, tenant+"|"+except)
+	f.mu.Unlock()
 	return f.blobs, f.err
 }
 
@@ -480,11 +486,22 @@ func TestBlobMountsOnlyFromTheDevicesOwnProvenImage(t *testing.T) {
 	if got := mount(tokA, repoD1, dg("8"), ""); got != 201 {
 		t.Errorf("a tag reference covers its manifest's layers: %d", got)
 	}
-	// a finished pod's image opens nothing
+	// the device's pod has ended: this is the exit push of the device, and the image of that just-ended pod still opens a mount (with the
+	// same tenant and coverage checks), so that an exit snapshot does not upload its base layers again against the exit ceiling
 	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p7", UID: "u-p7", Node: "node-a", Phase: "Failed", Images: []string{"localhost:5035/c/acme/docker.io/library/redis:7"},
 		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	if got := mount(tokA, repoD1, dg("8"), ""); got != 201 {
+		t.Errorf("the exit push mounts from the image of the just-ended pod: %d", got)
+	}
+	if got := mount(tokA, repoD1, dg("6"), ""); got != 403 {
+		t.Errorf("a digest of another image is still refused for the exit push: %d", got)
+	}
+	// an ended pod of ANOTHER device is no exit of this one: its image opens nothing here
+	r.sch.DeletePod("lg-acme", "p7")
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p8", UID: "u-p8", Node: "node-a", Phase: "Failed", Images: []string{"localhost:5035/c/acme/docker.io/library/redis:7"},
+		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "plain"}})
 	if got := mount(tokA, repoD1, dg("8"), ""); got != 403 {
-		t.Errorf("a finished pod: %d", got)
+		t.Errorf("an ended pod of another device: %d", got)
 	}
 }
 
@@ -498,11 +515,30 @@ func TestUploadOfAGrantedDigestIsNotBudgeted(t *testing.T) {
 	if err := r.lab.Cache.Grants.Add("node-a", "acme", "docker.io/library/x", Creds{}, "", dg("1"), []string{dg("2")}); err != nil {
 		t.Fatal(err)
 	}
+	r.lab.Cache.Grants.NoteSizes("node-a", "acme", "docker.io/library/x", map[string]int64{dg("2"): 5000})
 	w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
 	loc := w.Header().Get("Location")
 	s1 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
 	if w := r.do(tokA, "PUT", s1+"?digest="+dg("2"), bytes.NewReader(make([]byte, 5000)), nil); w.Code != 201 {
-		t.Fatalf("the image's own layer: %d", w.Code)
+		t.Fatalf("the image's own layer, exactly the size the manifest gave: %d", w.Code)
+	}
+	// larger than the descriptor says, or of unknown length: budgeted like anything else (review 2, item 3)
+	newSession := func() string {
+		w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+		loc := w.Header().Get("Location")
+		return "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	}
+	s1 = newSession()
+	if w := r.do(tokA, "PUT", s1+"?digest="+dg("2"), bytes.NewReader(make([]byte, 5001)), nil); w.Code != 429 {
+		t.Fatalf("larger than the descriptor: %d", w.Code)
+	}
+	chunked := httptest.NewRequest("PUT", "http://x"+s1+"?digest="+dg("2"), io.NopCloser(bytes.NewReader(make([]byte, 3000))))
+	chunked.ContentLength = -1
+	chunked.Header.Set(HeaderNodeToken, tokA)
+	rec := httptest.NewRecorder()
+	r.gate.ServeHTTP(rec, chunked)
+	if used, _ := r.lab.used(repoD1, false, *r.clk); used == 0 {
+		t.Fatal("a body of unknown length must be budgeted, not exempt")
 	}
 	w = r.do(tokA, "POST", upPath(repoD1), nil, nil)
 	loc = w.Header().Get("Location")
@@ -683,8 +719,8 @@ func TestAnExitPushHasACeilingOfItsOwn(t *testing.T) {
 	}
 }
 
-// 2.4.4: a request zot refuses gives its reservation back.
-func TestAReservationIsReturnedWhenZotRefuses(t *testing.T) {
+// Review 2, item 3: a body zot refuses stays charged (it was sent); only what was reserved and not sent comes back.
+func TestARefusedBodyStaysCharged(t *testing.T) {
 	r := newLabRig(t) // budget 1000
 	w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
 	loc := w.Header().Get("Location")
@@ -693,11 +729,11 @@ func TestAReservationIsReturnedWhenZotRefuses(t *testing.T) {
 	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 800)), nil); w.Code != 400 {
 		t.Fatalf("zot refuses: %d", w.Code)
 	}
-	if used, _ := r.lab.used(repoD1, false, *r.clk); used != 0 {
-		t.Fatalf("%d bytes stay charged for a request that stored nothing", used)
+	if used, _ := r.lab.used(repoD1, false, *r.clk); used != 800 {
+		t.Fatalf("%d bytes charged for 800 sent: rejected bodies must cost", used)
 	}
-	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 800)), nil); w.Code != 202 {
-		t.Fatalf("the budget is whole again: %d", w.Code)
+	if w := r.do(tokA, "PATCH", s1, bytes.NewReader(make([]byte, 800)), nil); w.Code != 429 {
+		t.Fatalf("the rejected bytes count against the budget: %d", w.Code)
 	}
 }
 
@@ -975,45 +1011,158 @@ func TestUploadID(t *testing.T) {
 	}
 }
 
-// Review finding 7 / 2.4.6a: open upload sessions are limited per device (4) and per node (64); one node cannot use up another's room.
-func TestUploadSessionsAreLimitedPerDeviceAndPerNode(t *testing.T) {
+// Review 2, item 4: abandoned sessions never make a push fail: the device's own oldest-used session is evicted (and cancelled in zot), the exit
+// push is not refused for them, and idle sessions are swept on a short timer. One node never costs another its sessions.
+func TestUploadSessionsEvictTheOwnersOldestAndAreSwept(t *testing.T) {
 	r := newLabRig(t)
 	r.lab.Limits.Budget = 0
-	r.lab.Limits.UploadsPerNode = 6
-	start := func(token, repo string) *httptest.ResponseRecorder {
-		return r.do(token, "POST", upPath(repo), nil, nil)
+	start := func(token, repo string) string {
+		*r.clk = r.clk.Add(time.Second)
+		w := r.do(token, "POST", upPath(repo), nil, nil)
+		if w.Code != 202 {
+			t.Fatalf("a start must never be refused for abandoned sessions: %d %s", w.Code, w.Body.String())
+		}
+		loc := w.Header().Get("Location")
+		return loc[strings.LastIndex(loc, "/")+1:]
 	}
+	patch := func(token, repo, id string) int {
+		return r.do(token, "PATCH", "/v2/"+repo+"/blobs/uploads/"+id, strings.NewReader("1"), nil).Code
+	}
+	other := start(tokB, "lab/lg-acme/lab1/dev2")
+	var ids []string
 	for i := 0; i < 4; i++ {
-		if w := start(tokA, repoD1); w.Code != 202 {
-			t.Fatalf("session %d: %d", i, w.Code)
+		ids = append(ids, start(tokA, repoD1))
+	}
+	patch(tokA, repoD1, ids[0]) // the first is used last: the second is now the oldest-used
+	fifth := start(tokA, repoD1)
+	if c := patch(tokA, repoD1, ids[1]); c != 404 {
+		t.Fatalf("the oldest-used session of the device gave way: %d", c)
+	}
+	waitFor(t, func() bool { return r.zot.count("DELETE", "/blobs/uploads/"+ids[1]) == 1 })
+	for _, id := range []string{ids[0], ids[2], ids[3], fifth} {
+		if c := patch(tokA, repoD1, id); c != 202 {
+			t.Fatalf("session %s must stay: %d", id, c)
 		}
 	}
-	w := start(tokA, repoD1)
-	if w.Code != 429 || !strings.Contains(w.Body.String(), CodeUploadLimit) {
-		t.Fatalf("the fifth for one device: %d %s", w.Code, w.Body.String())
+	if c := patch(tokB, "lab/lg-acme/lab1/dev2", other); c != 202 {
+		t.Fatalf("another node's session must stay: %d", c)
 	}
-	// another device on the same node: the node's own limit (6 in all)
+	// the exit push of a crashed device is not refused for the abandoned ones either
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "dev1-0", UID: "pod-1", Node: "node-a", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	start(tokA, repoD1)
+	// idle sessions are swept (the timer is minutes, not an hour)
+	*r.clk = r.clk.Add(11 * time.Minute)
+	if n := r.lab.SweepSessions(10 * time.Minute); n == 0 {
+		t.Fatal("idle sessions must be swept")
+	}
+	if c := patch(tokA, repoD1, fifth); c != 404 {
+		t.Fatalf("a swept session: %d", c)
+	}
+}
+
+// Node limit: a node's oldest-used session gives way, not another node's.
+func TestNodeSessionLimitEvictsTheNodesOwnOldest(t *testing.T) {
+	r := newLabRig(t)
+	r.lab.Limits.Budget = 0
+	r.lab.Limits.UploadsPerNode = 2
 	r.sch.SetDevice(DeviceInfo{Namespace: "lg-acme", Lab: "lab1", Name: "dev3", Node: "node-a", StateEnabled: true, Tenant: "acme"})
-	d3 := "lab/lg-acme/lab1/dev3"
-	for i := 0; i < 2; i++ {
-		if w := start(tokA, d3); w.Code != 202 {
-			t.Fatalf("dev3 session %d: %d", i, w.Code)
+	start := func(token, repo string) string {
+		*r.clk = r.clk.Add(time.Second)
+		loc := r.do(token, "POST", upPath(repo), nil, nil).Header().Get("Location")
+		return loc[strings.LastIndex(loc, "/")+1:]
+	}
+	patch := func(token, repo, id string) int {
+		return r.do(token, "PATCH", "/v2/"+repo+"/blobs/uploads/"+id, strings.NewReader("1"), nil).Code
+	}
+	b := start(tokB, "lab/lg-acme/lab1/dev2")
+	a1 := start(tokA, repoD1)
+	a2 := start(tokA, "lab/lg-acme/lab1/dev3")
+	a3 := start(tokA, "lab/lg-acme/lab1/dev3")
+	if patch(tokA, repoD1, a1) != 404 || patch(tokA, "lab/lg-acme/lab1/dev3", a2) != 202 || patch(tokA, "lab/lg-acme/lab1/dev3", a3) != 202 {
+		t.Fatal("the node's oldest gave way")
+	}
+	if patch(tokB, "lab/lg-acme/lab1/dev2", b) != 202 {
+		t.Fatal("another node's session must stay")
+	}
+}
+
+// Review 2, item 9: exit slots are reserved under the device lock, so concurrent exit manifests cannot all pass before any is recorded; a
+// manifest zot refuses gives its slot back.
+func TestExitSlotsAreReservedAtomically(t *testing.T) {
+	r := newLabRig(t)
+	r.zot.putDigest = dg("1")
+	r.zot.delay = 150 * time.Millisecond
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "dev1-0", UID: "pod-1", Node: "node-a", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	var wg sync.WaitGroup
+	var ok201 atomic.Int32
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if w := r.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(nil)), nil); w.Code == 201 {
+				ok201.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok201.Load() != 6 {
+		t.Fatalf("%d exit pushes passed with a limit of 6 an hour", ok201.Load())
+	}
+	// a refused manifest does not use up a slot
+	r2 := newLabRig(t)
+	r2.zot.putDigest = dg("1")
+	r2.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "dev1-0", UID: "pod-1", Node: "node-a", Phase: "Failed", Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	for i := 0; i < 8; i++ {
+		r2.zot.failNext(http.StatusInternalServerError)
+		if w := r2.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(nil)), nil); w.Code != 500 {
+			t.Fatalf("refused by zot: %d", w.Code)
 		}
 	}
-	if w := start(tokA, d3); w.Code != 429 {
-		t.Fatalf("the node is at its limit: %d", w.Code)
+	if w := r2.do(tokA, "PUT", manPath(repoD1, "latest"), bytes.NewReader(snapshotManifest(nil)), nil); w.Code != 201 {
+		t.Fatalf("refused manifests must not use up the slots: %d", w.Code)
 	}
-	// another node is not affected
-	if w := start(tokB, "lab/lg-acme/lab1/dev2"); w.Code != 202 {
-		t.Fatalf("another node: %d", w.Code)
+}
+
+// Review 2, item 9: the delete is re-checked right before it: a push of the old content that made it "latest" again in between wins.
+type flipStore struct {
+	*memStore
+	mu    sync.Mutex
+	heads int
+	old   string
+}
+
+func (f *flipStore) Head(ctx context.Context, repo, kind, ref string) (http.Header, bool, error) {
+	if kind == kindManifests && ref == tagLatest {
+		f.mu.Lock()
+		f.heads++
+		n := f.heads
+		f.mu.Unlock()
+		h := http.Header{}
+		if n == 1 {
+			h.Set("Docker-Content-Digest", dg("e")) // at the first look "latest" is something else
+		} else {
+			h.Set("Docker-Content-Digest", f.old) // by the time of the delete the old content is "latest" again
+		}
+		return h, true, nil
 	}
-	// finishing a session makes room; so does time (a session left alone for an hour is forgotten)
-	loc := r.do(tokB, "POST", upPath("lab/lg-acme/lab1/dev2"), nil, nil).Header().Get("Location")
-	_ = loc
-	*r.clk = r.clk.Add(2 * time.Hour)
-	r.sch.Confirm()
-	if w := start(tokA, repoD1); w.Code != 202 {
-		t.Fatalf("an hour later: %d", w.Code)
+	return f.memStore.Head(ctx, repo, kind, ref)
+}
+
+func TestSupersedeRechecksRightBeforeTheDelete(t *testing.T) {
+	st := &memStore{manifests: map[string][]byte{}, blobs: map[string]int64{}, missing: map[string]bool{}}
+	a := snapshotManifest(map[string]int64{dg("a"): 1})
+	b := snapshotManifest(map[string]int64{dg("b"): 1})
+	st.manifests["r|"+sha256Digest(a)] = a
+	st.manifests["r|"+sha256Digest(b)] = b
+	st.manifests["r|latest"] = b
+	fs := &flipStore{memStore: st, old: sha256Digest(a)}
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	s := &Superseder{Store: fs, Grace: time.Minute, Now: func() time.Time { return now }}
+	s.Plan("r", sha256Digest(a), sha256Digest(b))
+	now = now.Add(2 * time.Minute)
+	s.Sweep(context.Background())
+	if len(st.deleted) != 0 {
+		t.Fatalf("deleted %v although the old content was latest again", st.deleted)
 	}
 }
 

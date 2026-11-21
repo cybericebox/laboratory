@@ -78,3 +78,40 @@ func TestOneFailingKindMakesTheViewUnhealthy(t *testing.T) {
 		t.Fatal("the list recovered")
 	}
 }
+
+// Review 2, item 2: a watch that stalled without an error is seen by comparing the informer's resourceVersion with the list's.
+func TestASilentlyStalledInformerMakesTheViewUnhealthy(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	h := &informerHealth{Now: func() time.Time { return now }, StallAfter: 3 * time.Minute}
+	h.ListResult("Pod", nil)
+	h.Observe("Pod", "100", "100") // caught up
+	now = now.Add(time.Minute)
+	h.Observe("Pod", "100", "180") // behind, but only just seen
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("a moment behind is not a stall")
+	}
+	now = now.Add(2 * time.Minute)
+	h.Observe("Pod", "100", "260") // behind and stuck at 100 since
+	now = now.Add(2 * time.Minute)
+	h.Observe("Pod", "100", "300")
+	if ok, k := h.Healthy(); ok || k != "Pod" {
+		t.Fatalf("stuck behind for longer than the stall time: %v %q", ok, k)
+	}
+	h.Observe("Pod", "290", "300") // it moves again
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("an informer that advances is healthy again")
+	}
+	h.Observe("Pod", "not-a-number", "300") // unreadable versions are ignored
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("unreadable versions say nothing")
+	}
+	// a quiet kind that is caught up stays healthy however long nothing happens
+	h.Observe("Pod", "300", "300")
+	h.Observe("Tenant", "50", "50")
+	now = now.Add(time.Hour)
+	h.Observe("Pod", "300", "300")
+	h.Observe("Tenant", "50", "50")
+	if ok, _ := h.Healthy(); !ok {
+		t.Fatal("caught up is healthy")
+	}
+}

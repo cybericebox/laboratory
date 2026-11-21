@@ -8,6 +8,7 @@ import (
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,6 +55,7 @@ type KubeSources struct {
 	OnError func(error)
 
 	health informerHealth
+	infs   map[string]interface{ LastSyncResourceVersion() string }
 }
 
 // Clientset is the typed client the token reviews and the heartbeat use.
@@ -143,7 +145,15 @@ func (k *KubeSources) beat(ctx context.Context, cs kubernetes.Interface, c clien
 		if kind == "Secret" {
 			opts = append(opts, client.InNamespace(secretNS))
 		}
-		k.health.ListResult(kind, c.List(ctx, l, opts...))
+		err := c.List(ctx, l, opts...)
+		k.health.ListResult(kind, err)
+		if err == nil {
+			if acc, aerr := meta.ListAccessor(l); aerr == nil {
+				if v := k.infs[kind]; v != nil {
+					k.health.Observe(kind, v.LastSyncResourceVersion(), acc.GetResourceVersion())
+				}
+			}
+		}
 	}
 	if ok, kind := k.health.Healthy(); !ok {
 		return fmt.Errorf("the view of %s is not healthy", kind)
@@ -151,11 +161,38 @@ func (k *KubeSources) beat(ctx context.Context, cs kubernetes.Interface, c clien
 	return nil
 }
 
+// kindName is the name a kind goes by in the health table.
+func kindName(obj client.Object) string {
+	switch obj.(type) {
+	case *corev1.Pod:
+		return "Pod"
+	case *corev1.Node:
+		return "Node"
+	case *laboratoryv1alpha1.Device:
+		return "Device"
+	case *laboratoryv1alpha1.LabGroup:
+		return "LabGroup"
+	case *laboratoryv1alpha1.ImagePull:
+		return "ImagePull"
+	case *laboratoryv1alpha1.Tenant:
+		return "Tenant"
+	case *corev1.Secret:
+		return "Secret"
+	}
+	return ""
+}
+
 func (k *KubeSources) addHandlers(ctx context.Context, c cache.Cache) error {
 	add := func(obj client.Object, set func(any), del func(any)) error {
 		inf, err := c.GetInformer(ctx, obj)
 		if err != nil {
 			return err
+		}
+		if v, ok := inf.(interface{ LastSyncResourceVersion() string }); ok {
+			if k.infs == nil {
+				k.infs = map[string]interface{ LastSyncResourceVersion() string }{}
+			}
+			k.infs[kindName(obj)] = v
 		}
 		_, err = inf.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 			AddFunc:    func(o any) { set(o) },

@@ -100,6 +100,7 @@ type pushState struct {
 type uploadSession struct {
 	node, repo string
 	started    time.Time
+	lastUsed   time.Time
 }
 
 const (
@@ -211,7 +212,7 @@ func (g *LabGate) Serve(w http.ResponseWriter, r *http.Request, p Principal) {
 	}
 	dev, ok := g.Schedule.Device(lp.NS, lp.Lab, lp.Dev)
 	if !ok || !dev.StateEnabled || !g.deviceOnNode(dev, p.Node) {
-		if lp.Kind == kindUploads && lp.Ref != "" && g.dropSession(r.Context(), lp, p) {
+		if lp.Kind == kindUploads && lp.Ref != "" && g.dropSession(lp, p) {
 			// the device is gone or moved: the session it had open is unknown from now on, and zot is told to forget it
 			g.deny(w, refusal{http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "unknown upload session", 0})
 			return
@@ -375,22 +376,14 @@ func (g *LabGate) refund(c *charge, n int64) {
 	g.mu.Unlock()
 }
 
-// budgetBody takes every read of an upload body from the pool as it happens and cuts the upload when the pool is used up. What it took is
-// remembered so that a request zot refuses gives it all back.
+// budgetBody takes every read of an upload body from the pool as it happens and cuts the upload when the pool is used up. What it read stays
+// charged even when zot then refuses the request: a rejected body is still traffic the node sent (only what was reserved and not sent comes back).
 type budgetBody struct {
 	rc    io.ReadCloser
 	g     *LabGate
 	repo  string
 	exit  bool
 	limit int64
-
-	mu    sync.Mutex
-	taken []taken
-}
-
-type taken struct {
-	c *charge
-	n int64
 }
 
 var errBudget = errors.New("the push budget of the device is used up")
@@ -410,33 +403,17 @@ func (b *budgetBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.rc.Read(p[:got])
 	b.g.refund(c, got-int64(n))
-	if n > 0 {
-		b.mu.Lock()
-		if l := len(b.taken); l > 0 && b.taken[l-1].c == c {
-			b.taken[l-1].n += int64(n)
-		} else {
-			b.taken = append(b.taken, taken{c, int64(n)})
-		}
-		b.mu.Unlock()
-	}
 	return n, err
 }
 
 func (b *budgetBody) Close() error { return b.rc.Close() }
 
-// giveBack returns everything this request took (zot refused it: nothing of it was stored).
-func (b *budgetBody) giveBack() {
-	b.mu.Lock()
-	t := b.taken
-	b.taken = nil
-	b.mu.Unlock()
-	for _, x := range t {
-		b.g.refund(x.c, x.n)
-	}
-}
-
 // bodyRef lets the response hook find the budgeted body of the request it is answering.
-type bodyRef struct{ b *budgetBody }
+type bodyRef struct {
+	b *budgetBody
+	// exitSlot is the time of the exit-push slot this request reserved (zero: none); the response hook gives it back when zot refuses.
+	exitSlot time.Time
+}
 
 const bodyKey ctxKey = 2
 
@@ -445,7 +422,7 @@ const bodyKey ctxKey = 2
 func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev DeviceInfo) (refusal, bool) {
 	exit := g.exitPod(lp, p)
 	if exit {
-		if f, ok := g.exitAllowed(lp); !ok {
+		if f, _, ok := g.exitAllowed(lp, false); !ok {
 			return f, false
 		}
 	}
@@ -454,7 +431,7 @@ func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev 
 		if q.Get("mount") != "" {
 			// the gate computes the source itself: the image of this very device on the calling node whose live proven grant holds the digest.
 			// The "from" the node sent is ignored, and nothing is ever mounted from base or from another repository.
-			from, ok := g.mountSource(lp, p, dev, q.Get("mount"))
+			from, _, _, ok := g.mountSource(lp, p, dev, q.Get("mount"), exit)
 			if !ok {
 				return denied, false
 			}
@@ -469,9 +446,6 @@ func (g *LabGate) authorizeUpload(r *http.Request, lp labPath, p Principal, dev 
 			return fullRefusal, false
 		}
 		if f, ok := g.quotaStillOpen(r.Context(), dev, lp); !ok {
-			return f, false
-		}
-		if f, ok := g.sessionRoom(lp, p); !ok {
 			return f, false
 		}
 		// a monolithic upload carries its bytes in this request: they are budgeted like a PATCH
@@ -493,8 +467,12 @@ func (g *LabGate) budgetBodyOf(r *http.Request, lp labPath, p Principal, dev Dev
 	if limit <= 0 || r.ContentLength == 0 || r.Body == nil || r.Body == http.NoBody {
 		return refusal{}, true
 	}
-	if d := r.URL.Query().Get("digest"); d != "" && g.digestGranted(lp, p, dev, d) {
-		return refusal{}, true
+	// the image's own layer is not the snapshot's: exempt only when the body declares its length and it is not larger than the descriptor
+	// size the proven manifest gave; anything else is budgeted
+	if d := r.URL.Query().Get("digest"); d != "" && r.ContentLength > 0 {
+		if _, size, sized, ok := g.mountSource(lp, p, dev, d, exit); ok && sized && r.ContentLength <= size {
+			return refusal{}, true
+		}
 	}
 	used, retry := g.used(lp.Repo, exit, g.now())
 	if r.ContentLength > 0 && used+r.ContentLength > limit {
@@ -525,8 +503,10 @@ func (g *LabGate) poolLimit(dev DeviceInfo, exit bool) int64 {
 	return g.Limits.Budget
 }
 
-// exitAllowed: at most ExitPushesPerHour accepted exit snapshots of a device in a sliding hour, whatever the pod UIDs.
-func (g *LabGate) exitAllowed(lp labPath) (refusal, bool) {
+// exitAllowed: at most ExitPushesPerHour exit pushes of a device in a sliding hour, whatever the pod UIDs. With reserve the slot is taken in
+// the same step as the check, under the device's lock, so concurrent exit manifests cannot all pass before any is recorded; the response
+// hook returns it when zot refuses the manifest. It returns the time of the reserved slot.
+func (g *LabGate) exitAllowed(lp labPath, reserve bool) (refusal, time.Time, bool) {
 	n := g.Limits.ExitPushesPerHour
 	if n <= 0 {
 		n = 6
@@ -543,46 +523,39 @@ func (g *LabGate) exitAllowed(lp labPath) (refusal, bool) {
 	}
 	s.exitPushes = kept
 	if len(kept) >= n {
-		return refusal{http.StatusTooManyRequests, CodeExitLimit, "this device has used its exit snapshots for the hour", kept[0].Add(time.Hour).Sub(now)}, false
+		return refusal{http.StatusTooManyRequests, CodeExitLimit, "this device has used its exit snapshots for the hour", kept[0].Add(time.Hour).Sub(now)}, time.Time{}, false
 	}
-	return refusal{}, true
+	if reserve {
+		s.exitPushes = append(s.exitPushes, now)
+		return refusal{}, now, true
+	}
+	return refusal{}, time.Time{}, true
 }
 
-// sessionRoom refuses a new upload session when the device or the node already has as many open as it may.
-func (g *LabGate) sessionRoom(lp labPath, p Principal) (refusal, bool) {
-	perDev, perNode := g.Limits.UploadsPerDevice, g.Limits.UploadsPerNode
-	if perDev <= 0 {
-		perDev = 4
+func (g *LabGate) releaseExitSlot(escaped string, slot time.Time) {
+	lp, ok := parseLabPath(escaped)
+	if !ok {
+		return
 	}
-	if perNode <= 0 {
-		perNode = 64
-	}
-	cutoff := g.now().Add(-time.Hour) // zot forgets an upload left alone; so does the gate
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	nd, nn := 0, 0
-	for id, s := range g.sess {
-		if s.started.Before(cutoff) {
-			delete(g.sess, id)
-			continue
-		}
-		if s.repo == lp.Repo {
-			nd++
-		}
-		if s.node == p.Node {
-			nn++
+	s := g.stateLocked(lp.Repo)
+	for i, at := range s.exitPushes {
+		if at.Equal(slot) {
+			s.exitPushes = append(s.exitPushes[:i], s.exitPushes[i+1:]...)
+			return
 		}
 	}
-	if nd >= perDev || nn >= perNode {
-		return refusal{http.StatusTooManyRequests, CodeUploadLimit, "too many uploads are open", 5 * time.Second}, false
-	}
-	return refusal{}, true
 }
 
 // checkSession: an upload session continues only for the node and repository that started it.
 func (g *LabGate) checkSession(lp labPath, p Principal) (refusal, bool) {
 	g.mu.Lock()
 	s, ok := g.sess[lp.Ref]
+	if ok && lp.Ref != "" && s.node == p.Node && s.repo == lp.Repo {
+		s.lastUsed = g.now()
+		g.sess[lp.Ref] = s
+	}
 	g.mu.Unlock()
 	if !ok || lp.Ref == "" || s.node != p.Node || s.repo != lp.Repo {
 		return refusal{http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "unknown upload session", 0}, false
@@ -639,8 +612,12 @@ func (g *LabGate) authorizeManifestPut(r *http.Request, lp labPath, p Principal,
 	now := g.now()
 	exitPush := g.exitPod(lp, p)
 	if exitPush {
-		if f, ok := g.exitAllowed(lp); !ok {
+		f, slot, ok := g.exitAllowed(lp, true)
+		if !ok {
 			return f, false
+		}
+		if br, isRef := r.Context().Value(bodyKey).(*bodyRef); isRef {
+			br.exitSlot = slot
 		}
 	}
 	if !exitPush && g.Limits.MinInterval > 0 {
@@ -701,8 +678,8 @@ func (g *LabGate) authorizeManifestPut(r *http.Request, lp labPath, p Principal,
 // afterZot reads zot's answer for what the gate must remember: the session of a new upload, a finished upload, an accepted snapshot.
 func (g *LabGate) afterZot(resp *http.Response) {
 	req := resp.Request
-	if br, ok := req.Context().Value(bodyKey).(*bodyRef); ok && br.b != nil && resp.StatusCode >= http.StatusBadRequest {
-		br.b.giveBack() // zot refused it: nothing of the reservation was used
+	if br, ok := req.Context().Value(bodyKey).(*bodyRef); ok && !br.exitSlot.IsZero() && resp.StatusCode != http.StatusCreated {
+		g.releaseExitSlot(req.URL.EscapedPath(), br.exitSlot) // the manifest was refused: its slot is free again
 	}
 	lp, ok := parseLabPath(req.URL.EscapedPath())
 	if !ok {
@@ -711,9 +688,13 @@ func (g *LabGate) afterZot(resp *http.Response) {
 	switch {
 	case lp.Kind == kindUploads && req.Method == http.MethodPost && resp.StatusCode == http.StatusAccepted:
 		if id := uploadID(resp.Header.Get("Location")); id != "" {
+			now := g.now()
 			g.mu.Lock()
-			g.admitSessionLocked(id, uploadSession{node: principalNode(req), repo: lp.Repo, started: g.now()})
+			evicted := g.admitSessionLocked(id, uploadSession{node: principalNode(req), repo: lp.Repo, started: now, lastUsed: now})
 			g.mu.Unlock()
+			for _, e := range evicted {
+				go g.cancelInZot(e.repo, e.id)
+			}
 		}
 	case lp.Kind == kindUploads && lp.Ref != "" && (resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusNotFound):
 		g.mu.Lock()
@@ -738,41 +719,81 @@ func principalNode(r *http.Request) string {
 	return n
 }
 
-// admitSessionLocked records a session. The table is bounded per device and per node, and what is evicted to make room is always the
-// oldest session of the same owner (the same device, the same node): one node can never push another node's sessions out. If the table is
-// full of other nodes' sessions this one is not recorded (its uploads are then answered "unknown" and the node starts again).
-func (g *LabGate) admitSessionLocked(id string, s uploadSession) {
-	evictOldest := func(match func(uploadSession) bool) {
-		var oldID string
-		var oldAt time.Time
-		for k, o := range g.sess {
-			if match(o) && (oldID == "" || o.started.Before(oldAt)) {
-				oldID, oldAt = k, o.started
-			}
-		}
-		delete(g.sess, oldID)
+// evictedSession is a session that made room for a new one.
+type evictedSession struct{ repo, id string }
+
+// admitSessionLocked records a session. The table is bounded per device (UploadsPerDevice, 4) and per node (UploadsPerNode, 64), and what
+// is evicted to make room is always the OLDEST-USED session of the same owner (the same device, the same node), which is cancelled in zot:
+// a crashed push leaves abandoned sessions behind, and they must never make the next push, an exit snapshot above all, fail. One node can
+// never push another node's sessions out.
+func (g *LabGate) admitSessionLocked(id string, s uploadSession) []evictedSession {
+	perDev, perNode := g.Limits.UploadsPerDevice, g.Limits.UploadsPerNode
+	if perDev <= 0 {
+		perDev = 4
 	}
-	count := func(match func(uploadSession) bool) int {
-		n := 0
-		for _, o := range g.sess {
-			if match(o) {
+	if perNode <= 0 {
+		perNode = 64
+	}
+	var out []evictedSession
+	evict := func(match func(uploadSession) bool, limit int) {
+		for {
+			n := 0
+			var oldID string
+			var oldAt time.Time
+			for k, o := range g.sess {
+				if !match(o) {
+					continue
+				}
 				n++
+				if oldID == "" || o.lastUsed.Before(oldAt) {
+					oldID, oldAt = k, o.lastUsed
+				}
 			}
+			if n < limit {
+				return
+			}
+			out = append(out, evictedSession{g.sess[oldID].repo, oldID})
+			delete(g.sess, oldID)
 		}
-		return n
 	}
-	sameRepo := func(o uploadSession) bool { return o.repo == s.repo }
-	sameNode := func(o uploadSession) bool { return o.node == s.node }
-	for count(sameRepo) >= maxSessionsPerDevice {
-		evictOldest(sameRepo)
+	evict(func(o uploadSession) bool { return o.repo == s.repo }, perDev)
+	evict(func(o uploadSession) bool { return o.node == s.node }, perNode)
+	if len(g.sess) < maxSessions {
+		g.sess[id] = s
 	}
-	for count(sameNode) >= maxSessionsPerNode {
-		evictOldest(sameNode)
+	return out
+}
+
+// SweepSessions forgets (and cancels in zot) the sessions nobody has touched for idle, so abandoned uploads do not sit in the table for an hour.
+func (g *LabGate) SweepSessions(idle time.Duration) int {
+	cutoff := g.now().Add(-idle)
+	var gone []evictedSession
+	g.mu.Lock()
+	for id, s := range g.sess {
+		if s.lastUsed.Before(cutoff) {
+			gone = append(gone, evictedSession{s.repo, id})
+			delete(g.sess, id)
+		}
 	}
-	if len(g.sess) >= maxSessions {
-		return
+	g.mu.Unlock()
+	for _, e := range gone {
+		g.cancelInZot(e.repo, e.id)
 	}
-	g.sess[id] = s
+	return len(gone)
+}
+
+// Run sweeps abandoned sessions every minute (idle for 10 minutes) until ctx ends.
+func (g *LabGate) Run(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			g.SweepSessions(10 * time.Minute)
+		}
+	}
 }
 
 func uploadID(location string) string {
@@ -800,7 +821,9 @@ func (g *LabGate) snapshotAccepted(req *http.Request, lp labPath, digest string)
 	s := g.stateLocked(lp.Repo)
 	s.lastManifest = now
 	if isExit {
-		s.exitPushes = append(s.exitPushes, now)
+		if br, ok := req.Context().Value(bodyKey).(*bodyRef); !ok || br.exitSlot.IsZero() {
+			s.exitPushes = append(s.exitPushes, now)
+		}
 		kept := s.charges[:0] // the next exit push starts with its whole ceiling
 		for _, c := range s.charges {
 			if !c.exit {
@@ -833,14 +856,14 @@ func (g *LabGate) ForgetDevice(repo string) {
 // grantedRefs are the references (and their images) a pod of this very device on the calling node names, bound to the device's tenant: the
 // segment of the image must be the device tenant's own, the pod's namespace must belong to that tenant, and "platform" is never a device
 // image. Each is a candidate for a mount or an exempt upload.
-func (g *LabGate) deviceImages(lp labPath, p Principal, dev DeviceInfo) []imageRef {
+func (g *LabGate) deviceImages(lp labPath, p Principal, dev DeviceInfo, includeEnded bool) []imageRef {
 	if g.Cache == nil || g.Cache.Grants == nil || g.Schedule == nil {
 		return nil
 	}
 	seg := names.TenantSegment(dev.Tenant)
 	var out []imageRef
 	for _, pod := range g.Schedule.PodsOnNode(p.Node) {
-		if pod.Ended() || pod.Namespace != lp.NS || pod.Labels[names.LabelLab] != lp.Lab || pod.Labels[names.LabelDevice] != lp.Dev {
+		if (pod.Ended() && !includeEnded) || pod.Namespace != lp.NS || pod.Labels[names.LabelLab] != lp.Lab || pod.Labels[names.LabelDevice] != lp.Dev {
 			continue
 		}
 		for _, img := range pod.Images {
@@ -866,19 +889,17 @@ func (r imageRef) pinned() string {
 
 // mountSource finds the cache repository (c/<registry>/<repo>) a blob may be mounted from into the snapshot repository of this device:
 // the image of that very device on the calling node whose live, proven grant covers the digest (the pod's own pinned digest or tag, and
-// what its manifests list, never a digest granted for another image of the repository).
-func (g *LabGate) mountSource(lp labPath, p Principal, dev DeviceInfo, digest string) (string, bool) {
-	for _, ref := range g.deviceImages(lp, p, dev) {
+// what its manifests list, never a digest granted for another image of the repository). For an exit push the image of the device's
+// just-ended pod counts too, with the same tenant and coverage checks: without it every exit snapshot would upload its base layers again
+// against the exit ceiling. It also returns the image and the descriptor size the grant knows for the digest.
+func (g *LabGate) mountSource(lp labPath, p Principal, dev DeviceInfo, digest string, exit bool) (from string, size int64, sized, ok bool) {
+	for _, ref := range g.deviceImages(lp, p, dev, exit) {
 		if g.Cache.Grants.Covers(p.Node, ref.Seg, ref.fullRepo(), ref.pinned(), digest) {
-			return "c/" + ref.Registry + "/" + ref.Repo, true
+			n, has := g.Cache.Grants.Size(p.Node, ref.Seg, ref.fullRepo(), ref.pinned(), digest)
+			return "c/" + ref.Registry + "/" + ref.Repo, n, has, true
 		}
 	}
-	return "", false
-}
-
-func (g *LabGate) digestGranted(lp labPath, p Principal, dev DeviceInfo, digest string) bool {
-	_, ok := g.mountSource(lp, p, dev, digest)
-	return ok
+	return "", 0, false, false
 }
 
 // blobSize is the size of a blob as the registry holds it.
@@ -899,7 +920,7 @@ func (g *LabGate) blobSize(ctx context.Context, repo, digest string) (int64, boo
 
 // dropSession ends the upload session lp.Ref if it is the calling node's own for this repository, and cancels it in zot. It reports
 // whether there was one.
-func (g *LabGate) dropSession(ctx context.Context, lp labPath, p Principal) bool {
+func (g *LabGate) dropSession(lp labPath, p Principal) bool {
 	g.mu.Lock()
 	sess, ok := g.sess[lp.Ref]
 	if ok && sess.node == p.Node && sess.repo == lp.Repo {
@@ -908,20 +929,27 @@ func (g *LabGate) dropSession(ctx context.Context, lp labPath, p Principal) bool
 		ok = false
 	}
 	g.mu.Unlock()
-	if !ok || g.zot == nil {
-		return ok
+	if ok {
+		g.cancelInZot(lp.Repo, lp.Ref)
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	return ok
+}
+
+// cancelInZot tells zot to forget an upload session (best effort, with the gate's own account).
+func (g *LabGate) cancelInZot(repo, id string) {
+	if g.zot == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	u := *g.zot
-	u.Path = "/v2/" + lp.Repo + "/blobs/uploads/" + lp.Ref
+	u.Path = "/v2/" + repo + "/blobs/uploads/" + id
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
 	if err != nil {
-		return true
+		return
 	}
 	req.SetBasicAuth(g.user, g.pass)
 	if resp, err := http.DefaultClient.Do(req); err == nil {
 		_ = resp.Body.Close()
 	}
-	return true
 }
