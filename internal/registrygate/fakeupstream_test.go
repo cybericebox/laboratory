@@ -39,10 +39,11 @@ type fakeUpstream struct {
 	redirectManifests bool
 	// redirectHost, when set, is the host name of the https Location of a manifest redirect instead of the CDN's address (the test dials it).
 	redirectHost   string
-	noDigestHeader bool // manifests are answered without Docker-Content-Digest
-	headStatus     int  // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
-	redirectHeads  bool // blob HEADs redirect too (not only the GET)
-	cdnStatus      int  // when set, the CDN answers this instead of the object
+	noDigestHeader bool   // manifests are answered without Docker-Content-Digest
+	headStatus     int    // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
+	redirectHeads  bool   // blob HEADs redirect too (not only the GET)
+	cdnStatus      int    // when set, the CDN answers this instead of the object
+	failBody       string // the body of an error answer (fail, cdnStatus): text of the upstream that must never reach a client
 	calls          map[string]*atomic.Int64
 	authSeen       []string // Authorization header of every request to the CDN
 }
@@ -58,8 +59,10 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		status := f.cdnStatus
 		f.mu.Unlock()
 		f.count("cdn")
+		failBody := f.failBody
 		if status != 0 {
 			w.WriteHeader(status)
+			_, _ = w.Write([]byte(failBody))
 			return
 		}
 		_, _ = w.Write(body)
@@ -151,7 +154,7 @@ func (f *fakeUpstream) mayRead(repo, user, pass string) bool {
 
 func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	fail := f.fail
+	fail, failBody := f.fail, f.failBody
 	f.mu.Unlock()
 	if r.URL.Path == "/token" {
 		f.count("token")
@@ -180,6 +183,7 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	f.count(r.Method + " " + repo)
 	if fail != 0 {
 		w.WriteHeader(fail)
+		_, _ = w.Write([]byte(failBody))
 		return
 	}
 	f.mu.Lock()

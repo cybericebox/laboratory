@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +110,36 @@ func TestRangeOfAnUnverifiedBlobIsNotPassedOn(t *testing.T) {
 		if r.inZot("c/up/org/private", "blobs", d) {
 			t.Fatalf("diskFull=%v: a blob that does not match its digest was stored", full)
 		}
+	}
+}
+
+// What an upstream says when it refuses or fails is never passed on to the client of the gate (kubelet): the answers carry the gate's own
+// words only.
+func TestGateDoesNotEchoTheBodyOfAnUpstreamError(t *testing.T) {
+	const secret = "INTERNAL-SECRET token=abc123"
+	r := newRig(t)
+	layer := bytes.Repeat([]byte("L"), 2048)
+	ld := r.up.put("org/private", "blobs", layer)
+	md := r.up.put("org/private", "manifests", manifestBody(r.up.put("org/private", "blobs", []byte("{}")), ld))
+
+	r.up.mu.Lock()
+	r.up.failBody = secret
+	r.up.mu.Unlock()
+	for _, code := range []int{401, 403, 404, 429, 500, 503} {
+		r.up.setFail(code)
+		for _, p := range []string{mpath("org/private", md), bpath("org/private", ld)} {
+			if st, body, _ := r.pull("GET", p, alice, "pw", nil); strings.Contains(string(body), "SECRET") || strings.Contains(string(body), "abc123") {
+				t.Errorf("%d %s: the upstream's text reached the client (status %d): %s", code, p, st, body)
+			}
+		}
+	}
+	r.up.setFail(0)
+
+	// the CDN a blob is redirected to fails with a body
+	r.up.mu.Lock()
+	r.up.redirect, r.up.cdnStatus = true, 500
+	r.up.mu.Unlock()
+	if st, body, _ := r.pull("GET", bpath("org/private", ld), alice, "pw", nil); st == 200 || strings.Contains(string(body), "SECRET") {
+		t.Errorf("a failing CDN: %d %s", st, body)
 	}
 }

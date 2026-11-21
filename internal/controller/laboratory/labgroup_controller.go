@@ -1462,11 +1462,11 @@ func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) 
 		d, err := r.Resolver.Resolve(ctx, image)
 		if err != nil {
 			if r.RequireDigest {
-				log.FromContext(ctx).Info("image not pinned to a digest, refused", "image", image, "err", err.Error())
+				log.FromContext(ctx).Info("image not pinned to a digest, refused", "image", image, "err", imagecache.SafeError(err))
 				return "", fmt.Errorf("group image %s cannot be pinned to a digest, and the image cache requires digests", image)
 			}
-			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", err.Error())
-			r.notePinFailure(ns, fmt.Sprintf("%s (%v)", image, err))
+			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", imagecache.SafeError(err))
+			r.notePinFailure(ns, fmt.Sprintf("%s (%s)", image, imagecache.SafeError(err)))
 		} else {
 			digest = d
 		}
