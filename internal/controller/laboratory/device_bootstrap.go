@@ -435,19 +435,26 @@ func (r *DeviceReconciler) recordEndedBootstrapPod(ctx context.Context, device *
 		return nil // the bootstrap of this pod had succeeded (a new run pod resets the status first): it ended for another reason
 	}
 	obs := observeBootstrap(pod, device.Spec.Name)
-	attempt, _ := strconv.Atoi(pod.Annotations[names.AnnotationBootstrapAttempt])
-	if attempt <= 0 {
-		attempt = 1
-	}
+	attempt := podBootstrapAttempt(pod)
 	reason := obs.Reason
 	if reason == "" {
 		reason = "the container ended during the bootstrap"
 	}
-	st := &laboratoryv1alpha1.DeviceBootstrapStatus{Phase: laboratoryv1alpha1.BootstrapPending, Attempts: int32(attempt), Reason: clipReason(reason)}
+	st := &laboratoryv1alpha1.DeviceBootstrapStatus{Phase: laboratoryv1alpha1.BootstrapPending, Attempts: attempt, Reason: clipReason(reason)}
 	if attempt >= labchecks.BootstrapMaxAttempts {
 		st.Phase = laboratoryv1alpha1.BootstrapFailed
 	}
 	return r.setBootstrapStatus(ctx, device, st)
+}
+
+// podBootstrapAttempt is the attempt number a pod was created for, from its annotation; 1 when the annotation is missing, not
+// a number or out of the range of the status field (it is never wrapped into another number).
+func podBootstrapAttempt(pod *corev1.Pod) int32 {
+	n, err := strconv.ParseInt(pod.Annotations[names.AnnotationBootstrapAttempt], 10, 32)
+	if err != nil || n <= 0 {
+		return 1
+	}
+	return int32(n)
 }
 
 // syncStateBootstrap publishes the bootstrap status of the current pod of a device with state persistence.

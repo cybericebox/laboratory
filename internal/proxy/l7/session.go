@@ -105,6 +105,19 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, task stri
 	http.Redirect(w, r, handoffDestination(next), http.StatusSeeOther)
 }
 
+// rootRelative says whether s starts with one slash that is not followed by another slash or a backslash (a browser reads both
+// as the start of an authority), holds no backslash anywhere and no control character (a browser drops tabs and line breaks
+// before it parses, so "/<tab>/host" is "//host").
+func rootRelative(s string) bool {
+	if len(s) == 0 || s[0] != '/' {
+		return false
+	}
+	if len(s) > 1 && (s[1] == '/' || s[1] == '\\') {
+		return false
+	}
+	return !strings.Contains(s, "\\") && strings.IndexFunc(s, unicode.IsControl) < 0
+}
+
 // handoffDestination accepts only an unambiguous root-relative device URL.
 // Recheck decoded forms too: encoded separators, controls and dot segments must
 // not become an authority or return to the handoff endpoint after normalization.
@@ -112,8 +125,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, task stri
 func handoffDestination(target string) string {
 	candidate := target
 	for range 4 {
-		if !strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, "//") ||
-			strings.Contains(candidate, "\\") || strings.IndexFunc(candidate, unicode.IsControl) >= 0 {
+		if !rootRelative(candidate) {
 			return "/"
 		}
 		u, err := url.Parse(candidate)

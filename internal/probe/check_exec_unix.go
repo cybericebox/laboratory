@@ -104,7 +104,7 @@ func credentialFor(user string) (*syscall.Credential, account, error) {
 	if err != nil {
 		return nil, a, err
 	}
-	if int(a.uid) == os.Geteuid() && int(a.gid) == os.Getegid() {
+	if int64(a.uid) == int64(os.Geteuid()) && int64(a.gid) == int64(os.Getegid()) { // widened, never narrowed: a 32-bit id must not wrap
 		return nil, a, nil
 	}
 	return &syscall.Credential{Uid: a.uid, Gid: a.gid}, a, nil

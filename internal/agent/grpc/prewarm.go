@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -184,6 +186,24 @@ type callAuth struct {
 	id string
 }
 
+// credentialKey keys credentialID for this process only: the ids live in the table of entries and nowhere else.
+var credentialKey = func() []byte {
+	k := make([]byte, 32)
+	_, _ = rand.Read(k) // never fails (Go 1.24+)
+	return k
+}()
+
+// credentialID tells the credentials of a call apart in the table of entries. It is a keyed hash (HMAC with a key made at start),
+// not a bare hash of the secret: the id is an equality key, and nobody who sees one can test guesses of the password against it.
+func credentialID(reg, user, secret string) string {
+	m := hmac.New(sha256.New, credentialKey)
+	for _, part := range []string{reg, user, secret} {
+		m.Write([]byte(part))
+		m.Write([]byte{0})
+	}
+	return hex.EncodeToString(m.Sum(nil)[:8])
+}
+
 // credentialedImages maps each distinct requested image whose registry has a credential in the request to the credential the gate
 // is given for it. The keychain it builds from the request is the same one the lab Secret is made from.
 func credentialedImages(images []string, creds []*protobuf.RegistryCredential) map[string]*callAuth {
@@ -220,8 +240,7 @@ func credentialedImages(images []string, creds []*protobuf.RegistryCredential) m
 		if err != nil || ac.Username == "" {
 			continue // a login without a name cannot be sent
 		}
-		sum := sha256.Sum256([]byte(reg + "\x00" + ac.Username + "\x00" + ac.Password))
-		out[img] = &callAuth{user: ac.Username, pass: ac.Password, id: hex.EncodeToString(sum[:8])}
+		out[img] = &callAuth{user: ac.Username, pass: ac.Password, id: credentialID(reg, ac.Username, ac.Password)}
 	}
 	return out
 }

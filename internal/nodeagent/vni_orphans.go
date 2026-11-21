@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -116,6 +117,15 @@ func (r *VNIOrphanReconciler) orphan(ctx context.Context, vni uint) (bool, error
 	return true, nil
 }
 
+// vniNumber is the VNI of a flow as the ledger counts it. A Geneve VNI has 24 bits; a number that does not fit 32 bits is no
+// domain of ours (and would wrap on a 32-bit uint), so it is left alone.
+func vniNumber(v uint64) (uint, bool) {
+	if v > math.MaxUint32 {
+		return 0, false
+	}
+	return uint(v), true
+}
+
 // Sweep does one pass; it returns how many VNIs it removed the flows of and how many it could not judge.
 func (r *VNIOrphanReconciler) Sweep(ctx context.Context) (dropped, undecided int, err error) {
 	// The ledger the operator reads must agree with what this node knows it carries: a ConfigMap edited or deleted by hand is restored.
@@ -137,13 +147,14 @@ func (r *VNIOrphanReconciler) Sweep(ctx context.Context) (dropped, undecided int
 	// A flow of a VNI the ledger does not know (installed before the ledger existed, or by a node-agent that lost it) is written into
 	// the ledger first: from now on the pool keeps the number from anyone else, and the pass below judges it like any other.
 	for _, f := range flows {
-		if !f.HasVNI || candidates[uint(f.VNI)] {
+		vni, ok := vniNumber(f.VNI)
+		if !f.HasVNI || !ok || candidates[vni] {
 			continue
 		}
-		if err := r.Ledger.Note(uint(f.VNI)); err != nil {
+		if err := r.Ledger.Note(vni); err != nil {
 			return 0, 0, err
 		}
-		candidates[uint(f.VNI)] = true
+		candidates[vni] = true
 	}
 	order := make([]uint, 0, len(candidates))
 	for v := range candidates {
