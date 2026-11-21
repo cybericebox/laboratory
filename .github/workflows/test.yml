@@ -1,6 +1,6 @@
 name: Test
 
-# The tests of the repository: the PR check and the pre-release run them (workflow_call).
+# The tests of the repository: the PR check runs them (workflow_call).
 on:
   workflow_call:
 
@@ -8,6 +8,17 @@ permissions:
   contents: read
 
 jobs:
+  scripts:
+    name: Release helpers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      - name: Tests of .github/scripts and scripts/dev.sh (mise run test-scripts)
+        run: mise run test-scripts
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest

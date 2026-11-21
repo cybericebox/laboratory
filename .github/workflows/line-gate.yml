@@ -1,0 +1,50 @@
+name: Line gate
+
+# What may enter a release line (release/X.Y): a pull request whose required checks are green (check.yml) and that passes this gate:
+# the harness (workflows, scripts, tool versions) is untouched, and the change is at most 400 changed lines (generated files and go.sum
+# not counted); the label large-fix waives the size limit. The rule is .github/scripts/line_gate.py. The required check is "Line gate".
+#
+# A pull request cannot change its own gate, for three reasons:
+#   1. pull_request_target: the workflow file and the script come from the BASE branch (the line), never from the pull request;
+#   2. nothing of the pull request is checked out or run: its changed files are read through the API only, as data;
+#   3. the gate refuses any change to .github/**, mise.toml, mise-tasks/**, hack/**, scripts/** and .golangci.yml, so a pull request into a
+#      line cannot edit check.yml, the tests or this gate either. Those changes go into develop (and reach a line through the next cut).
+# It uses no secret: the token of the job reads the pull request and nothing else.
+on:
+  pull_request_target:
+    branches: [ 'release/*' ]
+    types: [ opened, edited, synchronize, reopened, labeled, unlabeled ]
+
+concurrency:
+  group: line-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+jobs:
+  gate:
+    name: Line gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check the base branch (the rule and its script)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Size and files of the change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # A failed call fails the job (set -e, pipefail): an empty answer is never read as "nothing changed".
+          view=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
+          changed=$(jq -r .changed_files <<<"$view")
+          labels=$(jq -r '[.labels[].name] | join(",")' <<<"$view")
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | {filename, previous_filename, additions, deletions}' | jq -s . > "$RUNNER_TEMP/files.json"
+          python3 .github/scripts/line_gate.py check --files "$RUNNER_TEMP/files.json" --changed-files "$changed" --labels "$labels"

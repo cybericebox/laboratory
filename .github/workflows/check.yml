@@ -1,10 +1,11 @@
 name: Check
 
-# A PR into develop or main: tests plus the image build. The layers go to the registry cache
+# A PR into develop or into a release line (release/X.Y): tests plus the image build. The layers go to the registry cache
 # (<image>:buildcache-develop); nothing is published. A PR from a fork gets no secrets, so it builds without the cache.
+# main takes no pull requests: it only receives promoted lines (promote.yml). The required check is "Check passed".
 on:
   pull_request:
-    branches: [ develop, main ]
+    branches: [ develop, 'release/*' ]
 
 concurrency:
   group: check-${{ github.event.pull_request.number }}
@@ -24,17 +25,16 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      # A PR with only docs (*.md, docs/**, .gitignore, LICENSE) builds nothing. A release PR into main always runs everything.
+      # A PR with only docs (*.md, docs/**, .gitignore, LICENSE) builds nothing.
       # This is a job, not a paths-ignore on the workflow: the required check "Check passed" must always report.
       - name: Is there more than docs
         id: c
         env:
-          BASE_REF: ${{ github.base_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           code=false
-          if [[ "$BASE_REF" == main ]] || ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
+          if ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
             code=true
           else
             while IFS= read -r f; do

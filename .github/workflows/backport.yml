@@ -1,0 +1,46 @@
+name: Backport
+
+# After every push to a release line (a merged pull request), open a pull request with the same change into develop (a cherry-pick), so a
+# fix never exists only in the line. A change that does not apply cleanly gets an issue that says so (.github/scripts/backport.sh).
+#
+# Pull requests made with the default GITHUB_TOKEN do not start other workflows, so such a pull request would get no "Check passed" by
+# itself. Set the secret RELEASE_TOKEN (a fine-grained token or an app token with contents, pull requests and issues write) and the
+# checks start; without it the workflow still works, and the owner closes and reopens the pull request to start them.
+# The repository setting "Allow GitHub Actions to create and approve pull requests" is needed either way.
+# The job runs only the code that is already merged into the line, never code of a pull request.
+on:
+  push:
+    branches: [ 'release/*' ]
+
+concurrency:
+  group: backport-${{ github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  backport:
+    name: Pull request into develop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - name: Cherry-pick into develop
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          LINE_BRANCH: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: .github/scripts/backport.sh
