@@ -51,10 +51,10 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
-  # The credentials of a lab are written once per lab and read back by nobody but the gate.
+  # The credentials of a lab are written by delete and create (never updated in place) and read back by nobody but the gate.
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
-    verbs: [ "create", "get", "update" ]
+    verbs: [ "create", "delete" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

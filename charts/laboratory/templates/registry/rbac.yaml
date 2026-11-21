@@ -28,9 +28,9 @@ rules:
   - apiGroups: [ "" ]
     resources: [ pods, nodes ]
     verbs: [ get, list, watch ]
-  # What a pull or a push is checked against: the devices and labs of the schedule, the prepull requests, the tenants and their groups.
+  # What a pull or a push is checked against: the devices of the schedule, the prepull requests, the tenants and their groups.
   - apiGroups: [ laboratory.cybericebox.com ]
-    resources: [ devices, labs, imagepulls, tenants, labgroups ]
+    resources: [ devices, imagepulls, tenants, labgroups ]
     verbs: [ get, list, watch ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

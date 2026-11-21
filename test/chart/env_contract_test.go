@@ -459,3 +459,115 @@ func keysOf[V any](m map[string]V) []string {
 	sort.Strings(out)
 	return out
 }
+
+// The VPN, gateway and netconfig pods are made by the operator, not by the chart: every environment variable the operator gives them is read by the
+// binary they run (the same contract, from the other side).
+func TestOperatorBuiltPodsGiveTheirBinariesOnlyWhatTheyRead(t *testing.T) {
+	read := map[string]bool{}
+	for _, pkg := range []string{"./internal/cmds/vpn", "./internal/cmds/gateway", "./internal/cmds/netconfig"} {
+		cfg := map[string][]string{
+			"./internal/cmds/vpn":     {"./internal/vpn"},
+			"./internal/cmds/gateway": {"./internal/gateway"},
+		}[pkg]
+		for name := range declaredEnv(t, pkg, cfg...) {
+			read[name] = true
+		}
+	}
+	for _, p := range listPkgs(t, true, "./internal/controller/laboratory") {
+		collectConsts(t, p)
+	}
+	fset := token.NewFileSet()
+	files, _ := filepath.Glob("../../internal/controller/laboratory/*.go")
+	given := map[string]string{} // name -> file
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			if sel, ok := lit.Type.(*ast.SelectorExpr); lit.Type != nil && (!ok || sel.Sel.Name != "EnvVar") {
+				return true
+			}
+			if lit.Type == nil && !onlyEnvKeys(lit) { // an element of a []corev1.EnvVar{ {Name: ..., Value: ...} }
+				return true
+			}
+			for _, el := range lit.Elts {
+				kv, ok := el.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "Name" {
+					continue
+				}
+				switch v := kv.Value.(type) {
+				case *ast.BasicLit:
+					if name, err := strconv.Unquote(v.Value); err == nil {
+						given[name] = filepath.Base(f)
+					}
+				case *ast.Ident:
+					if name := stringConsts[v.Name]; name != "" {
+						given[name] = filepath.Base(f)
+					}
+				}
+			}
+			return true
+		})
+	}
+	if len(given) < 5 {
+		t.Fatalf("the scan found %d variables the operator gives its pods: it lost its footing", len(given))
+	}
+	// and what the VPN and gateway binaries require, the operator gives them
+	for pkg, cfg := range map[string]string{"./internal/cmds/vpn": "./internal/vpn", "./internal/cmds/gateway": "./internal/gateway"} {
+		for name, spec := range declaredEnv(t, pkg, cfg) {
+			if _, ok := given[name]; spec.required && !ok {
+				t.Errorf("%s requires %s, the operator does not give it to the pod", pkg, name)
+			}
+		}
+	}
+	// what the operator gives to pods of other binaries (devices, the probe, the checker) is not in this contract
+	other := map[string]bool{"NETCONFIG": true}
+	var dead []string
+	for name, file := range given {
+		if !envName.MatchString(name) {
+			continue // a sysctl or another Name/Value pair
+		}
+		if !read[name] && !other[name] {
+			dead = append(dead, name+" ("+file+")")
+		}
+	}
+	sort.Strings(dead)
+	for _, d := range dead {
+		t.Errorf("the operator gives a pod %s, no binary of the group pods reads it", d)
+	}
+}
+
+// onlyEnvKeys says whether an untyped composite literal has the shape of an EnvVar: a Name and a Value or ValueFrom, and no other key.
+func onlyEnvKeys(lit *ast.CompositeLit) bool {
+	var name, value bool
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			return false
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		switch key.Name {
+		case "Name":
+			name = true
+		case "Value", "ValueFrom":
+			value = true
+		default:
+			return false
+		}
+	}
+	return name && value
+}
