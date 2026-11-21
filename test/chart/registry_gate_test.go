@@ -393,7 +393,7 @@ func TestRegistryGateRights(t *testing.T) {
 	if len(roleRules) != 1 || !has(roleRules[0].Resources, "secrets") || len(roleRules[0].Resources) != 1 {
 		t.Errorf("one namespaced rule, on Secrets: %+v", roleRules)
 	}
-	need := map[string]bool{"tokenreviews": false, "pods": false, "nodes": false, "devices": false, "labs": false, "imagepulls": false, "tenants": false, "labgroups": false}
+	need := map[string]bool{"tokenreviews": false, "pods": false, "nodes": false, "devices": false, "imagepulls": false, "tenants": false, "labgroups": false}
 	for _, r := range clusterRules {
 		for _, res := range r.Resources {
 			if _, ok := need[res]; !ok {
