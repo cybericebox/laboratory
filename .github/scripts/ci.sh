@@ -134,7 +134,8 @@ retag() {
 chart() {
   local dir=$1 version=$2 app=$3 out=$4 oci=oci://registry-1.docker.io/cybericebox tmp
   tmp=$(mktemp -d)
-  mkdir -p "$out"
+  # helm 4 writes into an existing directory only: helm pull --destination / --untardir does not create it
+  mkdir -p "$out" "$tmp/remote" "$tmp/pulled"
   helm package "$dir" --version "$version" --app-version "$app" --destination "$out" >/dev/null
   if helm pull "$oci/laboratory" --version "$version" --untar --untardir "$tmp/remote" >/dev/null 2>&1; then
     mkdir -p "$tmp/local"
