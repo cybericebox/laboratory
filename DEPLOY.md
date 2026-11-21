@@ -2401,7 +2401,7 @@ and the host cgroups and is not pod networking:
 Why: the node-agent wires every new pod and is `system-node-critical`; the privileges of the snapshot engine are not its. node-state has
 `appArmorProfile: Unconfined`, `DAC_READ_SEARCH`, `SYS_ADMIN`, the containerd root (read-only) and the cgroup tree; the node-agent has none of
 these any more except the cgroup tree and the journal directory of the observer (only with the observation on). node-state is on the host
-network and reaches the registry **only through the node-agent's relay** (a unix socket in the directory the two share, `/run/cybericebox/registry-push.sock`;
+network and reaches the registry **only through the node-agent's relay** (a unix socket in the directory the two share, `/run/cybericebox/registry-push/push.sock`;
 there is no network path from it to zot, no registry credential on the pod, and the push rules are the gate's). It has its own ServiceAccount: it may read devices, labs and pods, write the status of devices, patch the capture annotation of a Device-owned Pod, and annotate its own
 node; the node and Pod writes are confined by the admission policies `laboratory-node-state-annotation` and `laboratory-node-state-capture`, and
 the `devices/status` guard of native reports (`laboratory-node-agent-device-runtime`) covers it too. Its priority is the platform class (below
@@ -2670,7 +2670,7 @@ compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.ad
 - **How the nodes reach it.** The node-agent relays `127.0.0.1:5035` on every node to the gate at `registry.gate.address` (TLS, the node's own
   ServiceAccount token), and containerd reads `localhost:<port>` as a plain-HTTP registry, so nothing is configured on the host. The relay has two
   listeners: TCP `127.0.0.1:5035` for containerd and the kubelet (`GET` and `HEAD` of `/v2/c/**` and `/v2/lab/**` only: no push, no mount, no delete can arrive
-  through it) and a unix socket `/run/cybericebox/registry-push.sock` (mode 0600) for node-state's snapshot push, in the host directory the two share. To
+  through it) and a unix socket `/run/cybericebox/registry-push/push.sock` (mode 0600) for node-state's snapshot push, in the host directory the two share. To
   rotate the certificate, delete the Secret `laboratory-registry-tls` and upgrade the release.
 - **What is rewritten.** The operator rewrites `REG/repo:tag` (and `@sha256:` references) into
   `localhost:<port>/c/<tenant>/REG/repo:tag` (the tenant is the one of the lab, never anything a caller sends; `default` when there is no label; a name outside `[a-z0-9-]` or the reserved `platform` is encoded as `t-<12 hex>`), for registries in `registry.cache.registries` and `extraRegistries` only. Names

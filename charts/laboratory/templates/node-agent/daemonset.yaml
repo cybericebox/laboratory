@@ -226,9 +226,10 @@ spec:
               value: /etc/registry-ca/ca.crt
             - name: REGISTRY_TOKEN_FILE
               value: /var/run/secrets/registry-gate/token
-            # The unix socket of the push listener, in the directory shared with node-state (the snapshot engine).
+            # The unix socket of the push listener, in a directory of its own (mode 0700) shared with node-state only (the snapshot engine):
+            # the directory is a subdirectory of the host directory the node-agent already mounts, and nothing else lives in it.
             - name: STATE_PUSH_SOCKET
-              value: /run/cybericebox/registry-push.sock
+              value: /run/cybericebox/registry-push/push.sock
           {{- else }}
             # No lab registry in this release (no cache, no state persistence): no relay on the node.
             - name: REGISTRY_ENABLED

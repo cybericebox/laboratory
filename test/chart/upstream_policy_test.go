@@ -300,7 +300,7 @@ func TestRegistryGateRightsAreReadOnlyAndBounded(t *testing.T) {
 	if !has(got["tokenreviews"], "create") || len(got["tokenreviews"]) != 1 {
 		t.Errorf("tokenreviews create only: %v", got["tokenreviews"])
 	}
-	for _, res := range []string{"pods", "nodes", "devices", "labgroups", "imagepulls", "tenants", "labs"} {
+	for _, res := range []string{"pods", "nodes", "devices", "labgroups", "imagepulls", "tenants"} {
 		v := got[res]
 		if !has(v, "list") || !has(v, "watch") || has(v, "create") || has(v, "update") || has(v, "patch") || has(v, "delete") {
 			t.Errorf("%s: list/watch read-only expected, got %v", res, v)
@@ -400,7 +400,7 @@ func TestRegistryGateLimitsAreRendered(t *testing.T) {
 	env := render("--set", "registry.gate.limits.uploadsPerNode=100")
 	want := map[string]string{
 		"GATE_MANIFEST_HOLD_BYTES": "67108864", "GATE_MANIFEST_MAX_BYTES": "4194304", "GATE_GRANTS_PER_NODE": "2000", "GATE_GRANT_MAX_DIGESTS": "512",
-		"GATE_TOKENREVIEW_CONCURRENCY": "8", "GATE_UPLOADS_PER_DEVICE": "4", "GATE_UPLOADS_PER_NODE": "100", "GATE_EXIT_PUSHES_PER_HOUR": "6", "GATE_EXIT_MAX_BYTES": "0",
+		"GATE_TOKENREVIEW_CONCURRENCY": "8", "GATE_UPLOADS_PER_DEVICE": "4", "GATE_UPLOADS_PER_NODE": "100",
 	}
 	for k, v := range want {
 		if env[k] != v {

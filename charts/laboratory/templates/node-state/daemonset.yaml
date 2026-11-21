@@ -76,7 +76,7 @@ spec:
             # reserve and the superseded snapshots are gate settings, see templates/registry/deployment.yaml). The snapshots are pushed through
             # a unix socket the node-agent serves in the directory below; node-state answers a 429 or a CIB_* refusal with its deferral.
             - name: STATE_PUSH_SOCKET
-              value: /run/cybericebox/registry-push.sock
+              value: /run/cybericebox/registry-push/push.sock
           {{- end }}
           securityContext:
             {{- if .Values.devices.statePersistence.enabled }}
@@ -125,9 +125,9 @@ spec:
               readOnly: true
             - name: state-work
               mountPath: /var/cache/cybericebox/state
-            # The directory node-agent and node-state share: the push socket of the relay (mode 0600, owned by the user of this pod).
+            # The directory node-agent and node-state share and nothing else: the push socket of the relay (directory 0700, socket 0600).
             - name: registry-push
-              mountPath: /run/cybericebox
+              mountPath: /run/cybericebox/registry-push
           {{- end }}
           {{- with .Values.nodeState.resources }}
           resources:
@@ -155,7 +155,7 @@ spec:
             type: DirectoryOrCreate
         - name: registry-push
           hostPath:
-            path: /run/cybericebox
+            path: /run/cybericebox/registry-push
             type: DirectoryOrCreate
       {{- end }}
 {{- end }}

@@ -192,10 +192,10 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 			t.Errorf("node-state %s comes from a Secret: a node holds no registry credential", e.Name)
 		}
 	}
-	if envOf(engine)["STATE_PUSH_SOCKET"].Value != "/run/cybericebox/registry-push.sock" {
+	if envOf(engine)["STATE_PUSH_SOCKET"].Value != "/run/cybericebox/registry-push/push.sock" {
 		t.Errorf("node-state pushes through the unix socket of the relay: %v", envOf(engine)["STATE_PUSH_SOCKET"])
 	}
-	if m := mounts["registry-push"]; m.MountPath != "/run/cybericebox" {
+	if m := mounts["registry-push"]; m.MountPath != "/run/cybericebox/registry-push" {
 		t.Errorf("node-state mounts the directory it shares with the node-agent: %+v", m)
 	}
 	if _, direct := envOf(engine)["STATE_REGISTRY_ADDR"]; direct {
@@ -416,12 +416,10 @@ func TestAgentPrewarmWiring(t *testing.T) {
 	var dep appsv1.Deployment
 	render(t, "templates/agent/deployment.yaml", &dep, on...)
 	env := envOf(dep.Spec.Template.Spec.Containers[0])
-	// The agent reads the cache settings under the operator's names (IMAGE_CACHE_*, IMAGE_PULL_SECRETS); the registry address, the node prefix
-	// and the secret namespace are constants of the image.
+	// The agent reads the cache settings under the operator's names (IMAGE_CACHE_*); it holds no pull secret (the gate does the proof).
 	want := map[string]string{
 		"IMAGE_CACHE_ENABLED":       "true",
 		"IMAGE_CACHE_REGISTRIES":    "docker.io,ghcr.io,quay.io,registry.k8s.io",
-		"IMAGE_PULL_SECRETS":        "pull-one",
 		"AGENT_PREWARM_CONCURRENCY": "7",
 		"AGENT_PREWARM_TIMEOUT":     "10m",
 		// the prewarm goes through the gate's TLS port, trusting the registry's own authority only

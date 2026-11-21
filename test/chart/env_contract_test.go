@@ -571,3 +571,15 @@ func onlyEnvKeys(lit *ast.CompositeLit) bool {
 	}
 	return name && value
 }
+
+// The development flags that let a component talk to the registry without TLS and a token (REGISTRY_INSECURE_DEV and its kin) are for the
+// kind and unit setups only: no release renders them, whatever the values.
+func TestChartNeverRendersTheInsecureDevelopmentFlags(t *testing.T) {
+	out, err := helmTemplate(t, everything...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "INSECURE_DEV") {
+		t.Error("the chart renders an *_INSECURE_DEV flag")
+	}
+}

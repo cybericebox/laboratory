@@ -193,7 +193,6 @@ RESERVATION_ENDING_NOTICE_SECONDS: {{ .Values.reservations.endingNoticeSeconds |
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
 {{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}
-IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
 LAB_TOLERATIONS: {{ .Values.pools.lab.tolerations | toJson | quote }}
 VPN_CPU: {{ .Values.vpn.resources.cpu | quote }}
@@ -288,6 +287,7 @@ DEVICE_RECONCILE_WORKERS: {{ .Values.operator.workers.device | quote }}
 CONNECTION_RECONCILE_WORKERS: {{ .Values.operator.workers.connection | quote }}
 API_QPS: {{ .Values.operator.api.qps | quote }}
 API_BURST: {{ .Values.operator.api.burst | quote }}
+IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
 IMAGE_CACHE_REQUIRE_DIGEST: {{ .Values.registry.cache.requireDigest | quote }}
 {{- end }}
