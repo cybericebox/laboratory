@@ -4,11 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/random"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -182,4 +188,114 @@ func TestEngineKeepsFailuresThatAreNotTheGatesRules(t *testing.T) {
 	if err == nil || errors.As(err, &def) || !strings.Contains(err.Error(), "push snapshot") {
 		t.Fatalf("%v", err)
 	}
+}
+
+// 503 with Retry-After (the gate's view of the cluster is not in contact) is waited out by the time the gate names, and the codes that ask to
+// start the push again (a cancelled upload session, a blob that is not there yet) defer it by a few seconds: neither fails the device.
+func TestEngineHonoursUnavailableAndRestartAnswers(t *testing.T) {
+	cases := map[string]struct {
+		answer gateAnswer
+		after  time.Duration
+	}{
+		"503 with Retry-After": {gateAnswer{status: http.StatusServiceUnavailable, code: "UNAVAILABLE", retry: 30, msg: "the cluster view is not available"}, 30 * time.Second},
+		"503 without":          {gateAnswer{status: http.StatusServiceUnavailable, code: "UNAVAILABLE", msg: "x"}, unavailableWait},
+		"upload unknown":       {gateAnswer{status: http.StatusNotFound, code: snapshot.CodeBlobUploadUnknown, msg: "unknown upload session"}, restartWait},
+		"manifest blob":        {gateAnswer{status: http.StatusBadRequest, code: snapshot.CodeManifestBlobUnknown, msg: "a blob is missing"}, restartWait},
+		"upload limit":         {gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodeUploadLimit, retry: 5, msg: "too many uploads"}, 5 * time.Second},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, _ := rigWithClock(t)
+			tr := r.track(t)
+			a := c.answer
+			r.gate.refuse(&a)
+			err := push(t, r, tr, "a", "1")
+			var def *errDeferred
+			if !errors.As(err, &def) || def.after != c.after {
+				t.Fatalf("%v", err)
+			}
+			if recs, warns, _ := r.cl.snapshot(); len(recs) != 0 || len(warns) != 0 {
+				t.Fatalf("a deferral is not a failure and not a warning: %v %v", recs, warns)
+			}
+		})
+	}
+}
+
+// A blob without a live grant (404 BLOB_UNKNOWN) makes the read ask for the manifest, which makes the grant, and then ask for the blob again;
+// a read that still does not go through is a deferral, and a 503 with Retry-After is one by the gate's time.
+func TestPackedLayerReadRestartsAfterBlobUnknown(t *testing.T) {
+	img := randomImageForGate(t)
+	layers, _ := img.Layers()
+	ld, _ := layers[0].Digest()
+	md, _ := img.Digest()
+	var mu sync.Mutex
+	granted, manifestAsked, blobAsked := false, 0, 0
+	mode := "grant"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			manifestAsked++
+			granted = true
+			raw, _ := img.RawManifest()
+			w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+			w.Header().Set("Docker-Content-Digest", md.String())
+			_, _ = w.Write(raw)
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			blobAsked++
+			switch {
+			case mode == "unavailable":
+				w.Header().Set("Retry-After", "17")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"errors":[{"code":"UNAVAILABLE","message":"not in contact"}]}`)
+			case mode == "never" || !granted:
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"errors":[{"code":"BLOB_UNKNOWN","message":"ask for the manifest first"}]}`)
+			default:
+				rc, _ := layers[0].Compressed()
+				_, _ = io.Copy(w, rc)
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	repo, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/c/acme/docker.io/library/app", name.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := readPackedLayer(context.Background(), repo, md, nil, http.DefaultTransport, ld)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, rc)
+	_ = rc.Close()
+	mu.Lock()
+	if manifestAsked != 1 || blobAsked != 2 {
+		t.Errorf("the manifest is asked once and the blob twice: %d %d", manifestAsked, blobAsked)
+	}
+	granted, mode = false, "never"
+	mu.Unlock()
+	_, err = readPackedLayer(context.Background(), repo, md, nil, http.DefaultTransport, ld)
+	var def *errDeferred
+	if !errors.As(err, &def) || def.after != restartWait {
+		t.Fatalf("a read that still does not go through is deferred: %v", err)
+	}
+	mu.Lock()
+	mode = "unavailable"
+	mu.Unlock()
+	_, err = readPackedLayer(context.Background(), repo, md, nil, http.DefaultTransport, ld)
+	if !errors.As(err, &def) || def.after != 17*time.Second {
+		t.Fatalf("503 is waited out by the gate's time: %v", err)
+	}
+}
+
+func randomImageForGate(t *testing.T) v1.Image {
+	t.Helper()
+	img, err := random.Image(256, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
 }

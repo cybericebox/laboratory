@@ -43,10 +43,21 @@ const (
 	CodeExitLimit    = "CIB_EXIT_LIMIT"
 	CodeTenantQuota  = "CIB_TENANT_QUOTA"
 	CodeRegistryFull = "CIB_REGISTRY_FULL"
+	CodeUploadLimit  = "CIB_UPLOAD_LIMIT"
 )
 
-// Refusal is a push the gate refused by a rule of its own: 429 with Retry-After (the interval, the budget, the exit limit), 403
-// CIB_TENANT_QUOTA, 507 CIB_REGISTRY_FULL.
+// The standard registry codes that mean "start the operation again from its first request": a blob the gate has no live grant for (the
+// kubelet and the clients ask for the manifest first, which makes the grant), an upload session the gate cancelled, a manifest whose blob is
+// not there yet.
+const (
+	CodeBlobUnknown         = "BLOB_UNKNOWN"
+	CodeBlobUploadUnknown   = "BLOB_UPLOAD_UNKNOWN"
+	CodeManifestBlobUnknown = "MANIFEST_BLOB_UNKNOWN"
+)
+
+// Refusal is an answer of the gate that is not a failure: 429 or 503 with Retry-After (the interval, the budget, the exit and upload limits, a
+// cluster view that is not in contact), 403 CIB_TENANT_QUOTA, 507 CIB_REGISTRY_FULL, and the codes that ask for a restart of the operation
+// (BLOB_UNKNOWN, BLOB_UPLOAD_UNKNOWN, MANIFEST_BLOB_UNKNOWN).
 type Refusal struct {
 	Status int
 	// Code is the CIB_* code, "" when the answer had none.
@@ -67,7 +78,27 @@ func (r *Refusal) Error() string {
 	return fmt.Sprintf("the registry refused the push (%d): %s", r.Status, msg)
 }
 
+// Restart says the operation is to be started again from its first request: a blob without a live grant, a cancelled upload session.
+func (r *Refusal) Restart() bool {
+	return r.Code == CodeBlobUnknown || r.Code == CodeBlobUploadUnknown || r.Code == CodeManifestBlobUnknown
+}
+
 type noteKey struct{}
+
+// Note carries the Retry-After of the last 429 or 503 of one operation: the error of the client library does not have the headers.
+type Note = note
+
+// NewNote returns a context in which Observe records the Retry-After under the returned note.
+func NewNote(ctx context.Context) (context.Context, *Note) {
+	n := &note{}
+	return context.WithValue(ctx, noteKey{}, n), n
+}
+
+// Observe wraps a transport so that the Retry-After of every 429 and 503 is recorded under the note of the request's context.
+func Observe(rt http.RoundTripper) http.RoundTripper { return observe{rt} }
+
+// Classify is refusal for other packages: the error as a *Refusal when it is an answer of the gate that is not a failure.
+func Classify(err error, n *Note) error { return refusal(err, n) }
 
 // note carries the Retry-After of the last refused request of one operation: the error of the client library does not have the headers.
 type note struct {
@@ -80,7 +111,7 @@ type observe struct{ next http.RoundTripper }
 
 func (o observe) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := o.next.RoundTrip(req)
-	if err == nil && resp.StatusCode == http.StatusTooManyRequests {
+	if err == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
 		if n, ok := req.Context().Value(noteKey{}).(*note); ok {
 			if secs, perr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); perr == nil && secs > 0 {
 				n.mu.Lock()
@@ -101,7 +132,7 @@ func (r *Registry) opts(ctx context.Context) []remote.Option {
 func retryable(err error) bool {
 	var terr *transport.Error
 	if errors.As(err, &terr) {
-		if terr.StatusCode == http.StatusTooManyRequests || terr.StatusCode == http.StatusInsufficientStorage {
+		if terr.StatusCode == http.StatusTooManyRequests || terr.StatusCode == http.StatusInsufficientStorage || terr.StatusCode == http.StatusServiceUnavailable {
 			return false
 		}
 		for _, d := range terr.Errors {
@@ -133,13 +164,17 @@ func refusal(err error, n *note) error {
 	}
 	code, msg := "", ""
 	for _, d := range terr.Errors {
-		if strings.HasPrefix(string(d.Code), "CIB_") {
-			code, msg = string(d.Code), d.Message
+		if c := string(d.Code); strings.HasPrefix(c, "CIB_") || c == CodeBlobUnknown || c == CodeBlobUploadUnknown || c == CodeManifestBlobUnknown {
+			code, msg = c, d.Message
 			break
 		}
 	}
-	if terr.StatusCode != http.StatusTooManyRequests && code == "" && terr.StatusCode != http.StatusInsufficientStorage {
-		return err
+	switch terr.StatusCode {
+	case http.StatusTooManyRequests, http.StatusInsufficientStorage, http.StatusServiceUnavailable:
+	default:
+		if code == "" {
+			return err
+		}
 	}
 	if msg == "" && len(terr.Errors) > 0 {
 		msg = terr.Errors[0].Message
