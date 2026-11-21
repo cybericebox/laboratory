@@ -121,6 +121,32 @@ check "cleanup dry run deletes nothing" "" "$(cleanup "$release" true img | grep
 unset -f retry
 # shellcheck source=/dev/null
 source "$here/ci.sh"
+# chart: helm 4 writes only into an existing --destination / --untardir (a faked helm that refuses a missing directory)
+# shellcheck disable=SC2329
+helm() {
+  local cmd=$1 dest="" untar=no
+  shift
+  while [[ $# -gt 0 ]]; do
+    case $1 in --destination | --untardir) dest=$2; shift ;; --untar) untar=yes ;; esac
+    shift
+  done
+  if [[ -n "$dest" && ! -d "$dest" ]]; then echo "Error: open $dest/x.tgz: no such file or directory" >&2; return 1; fi
+  case $cmd in
+    package) : >"$dest/laboratory-$CHART_V.tgz" ;;
+    pull) [[ $untar == yes ]] && return 1; : >"$dest/laboratory-$CHART_V.tgz" ;;
+    push) return 0 ;;
+  esac
+}
+export CHART_V=1.2.0-rc.1
+out_dir="$tmp/chart-out"
+export -f helm
+# ci.sh runs as CI runs it (set -euo pipefail), not as the functions sourced here with set +e
+rc=0; "$here/ci.sh" chart charts/laboratory "$CHART_V" "v$CHART_V" "$out_dir" >/dev/null 2>&1 || rc=$?
+export -n -f helm
+check "chart: pushes and keeps the registry copy" "0 yes" "$rc $([[ -f "$out_dir/laboratory-$CHART_V.tgz" ]] && echo yes || echo no)"
+unset -f helm
+unset CHART_V
+
 export RETRY_DELAYS="0 0"
 n="$tmp/n"
 : >"$n"
