@@ -81,7 +81,7 @@ jobs:
       - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Login to docker registry
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -99,7 +99,7 @@ jobs:
           push: false
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=${{ matrix.image }}:buildcache-develop
-          cache-to: ${{ github.event.pull_request.head.repo.full_name == github.repository && format('type=registry,ref={0}:buildcache-develop,mode=max', matrix.image) || '' }}
+          cache-to: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && format('type=registry,ref={0}:buildcache-develop,mode=max', matrix.image) || '' }}
 
   passed:
     name: Check passed

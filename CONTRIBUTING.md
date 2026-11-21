@@ -70,6 +70,15 @@ mise run cluster-up && mise run e2e              # Docker; then: mise run cluste
 
 After Docker work remove what it left: `docker image prune -af`, `docker builder prune -af`, `docker volume prune -af`.
 
+## Dependency updates
+
+Dependabot opens version updates every Monday morning (Kyiv time), into `develop`. Minor and patch updates are grouped: one pull request per ecosystem and kind per week. Major updates come as separate pull requests, so they stay visible. Config: `.github/dependabot.yml`.
+
+- A pull request with only patch updates merges itself into `develop` once the required checks are green (`.github/workflows/dependabot-auto-merge.yml`).
+- Anything with a minor or a major update waits for the owner: review it, fix what breaks, merge it.
+- Security updates are opened by GitHub against the default branch (`main`), not `develop` (a Dependabot limit). They never merge themselves. Critical and high ones are handled the same day: the fix goes into `develop` first; if production needs it, it ships through the release line as a patch.
+- A Dependabot check that fails on a secret means a workflow step uses a repository secret: Dependabot runs get none, so such steps are skipped for it.
+
 ## Releases
 
 - A merge of `develop` into `main` (`prerelease.yml`) publishes `vX.Y.Z-rc.N` and creates the GitHub pre-release. The version is a patch bump of the last release; it is a minor bump when any PR merged since then has the `minor` label; a major bump only through a manual run with `major`. Nothing is built when the tree is unchanged since the last rc. The rc is a retag of the develop image (no build) when the tree of `main` equals the tree of the develop head (the second parent of the merge) and that head has its `sha-<7>` image; otherwise it is built, reading the `buildcache-develop` cache.

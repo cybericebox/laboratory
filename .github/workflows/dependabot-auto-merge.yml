@@ -1,0 +1,41 @@
+name: Dependabot auto-merge
+
+# A Dependabot pull request into develop that updates only patch versions merges itself once the required
+# checks are green. Minor and major updates wait for the owner.
+# Safety: pull_request event (never pull_request_target), no checkout, no secrets besides GITHUB_TOKEN, the pull request
+# author and the triggering actor must both be Dependabot (a human push to the branch is skipped, and fetch-metadata
+# itself refuses a pull request with non-Dependabot or unverified commits).
+on:
+  pull_request:
+    branches: [ develop ]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Auto-merge patch updates
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # update-type is the highest level in the pull request, so a group merges itself only when every member is a patch.
+      - name: Enable auto-merge
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --merge "$PR_URL"
