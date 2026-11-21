@@ -9,16 +9,26 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"path"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-logr/logr"
 
 	"github.com/cybericebox/laboratory/internal/imagecache"
 )
+
+// maxHeaderBytes bounds the headers the relay accepts from a client and from the gate: a registry request carries a few hundred bytes.
+const maxHeaderBytes = 64 << 10
+
+// pushQuery are the query parameters the snapshot client uses on the push socket: the mount of a blob (mount, from) and the digest that
+// ends an upload. The relay drops every other one; what the parameters mean stays the gate's decision (a mount source it has not allowed
+// is refused there).
+var pushQuery = []string{"mount", "from", "digest"}
 
 // Forward listens on listen (a loopback address) and relays the registry requests of the node's container runtime and the kubelet to
 // target, the registry gate. The node-agent uses it to make the cluster-internal registry reachable as localhost:<port>, which the
@@ -55,7 +65,7 @@ func Forward(ctx context.Context, listen, target string, log logr.Logger, opts .
 	if o.tlsConf != nil {
 		scheme = "https"
 	}
-	pull := &http.Server{Handler: relayHandler(scheme, target, tr, o.token, pullAllowed), ReadHeaderTimeout: 10 * time.Second}
+	pull := newServer(relayHandler(scheme, target, tr, o.token, pullAllowed, nil))
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
@@ -79,7 +89,7 @@ func Forward(ctx context.Context, listen, target string, log logr.Logger, opts .
 			wg.Wait()
 			return err
 		}
-		push := &http.Server{Handler: relayHandler(scheme, target, tr, o.token, pushAllowed), ReadHeaderTimeout: 10 * time.Second}
+		push := newServer(relayHandler(scheme, target, tr, o.token, pushAllowed, pushQuery))
 		servers = append(servers, push)
 		wg.Add(1)
 		go serve(push, pln, "push socket")
@@ -160,6 +170,13 @@ func (o *forwardOptions) upstreamTransport() http.RoundTripper {
 		return o.transport
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// The registry is the gate at a fixed address: no proxy of the environment, and no total deadline (a layer is large), but a bound on
+	// every wait that is not the transfer itself.
+	tr.Proxy = nil
+	tr.TLSHandshakeTimeout = 10 * time.Second
+	tr.ResponseHeaderTimeout = 5 * time.Minute
+	tr.IdleConnTimeout = 90 * time.Second
+	tr.MaxResponseHeaderBytes = maxHeaderBytes
 	if o.tlsConf != nil {
 		tr.TLSClientConfig = o.tlsConf
 	}
@@ -226,13 +243,28 @@ func cleanRequestPath(r *http.Request) (string, bool) {
 	return p, true
 }
 
+// newServer is an HTTP server with the bounds a relay needs: no total deadline (a blob is large), a short header deadline, an idle limit and
+// a small header limit.
+func newServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: maxHeaderBytes}
+}
+
 // relayHandler forwards what the rule lets through to target, with the identity of the node: the client's Authorization and every X-Cib-*
 // header are removed and the token is set. A token that cannot be read is a 503, never a request without identity.
-func relayHandler(scheme, target string, transport http.RoundTripper, token *imagecache.TokenFile, allow rule) http.Handler {
+func relayHandler(scheme, target string, transport http.RoundTripper, token *imagecache.TokenFile, allow rule, query []string) http.Handler {
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme, pr.Out.URL.Host, pr.Out.Host = scheme, target, target
+			if query != nil {
+				q := url.Values{}
+				for _, k := range query {
+					if v, ok := pr.In.URL.Query()[k]; ok {
+						q[k] = v
+					}
+				}
+				pr.Out.URL.RawQuery = q.Encode()
+			}
 			pr.Out.Header.Del("Authorization")
 			imagecache.StripPlatformHeaders(pr.Out.Header)
 			if token != nil {
@@ -258,9 +290,22 @@ func relayHandler(scheme, target string, transport http.RoundTripper, token *ima
 	})
 }
 
-// listenPushSocket creates the unix socket of the snapshot push: mode 0600, the owner given. A socket left by an earlier run is removed;
-// anything else at the path is an error.
+// listenPushSocket creates the unix socket of the snapshot push in a directory of its own (mode 0700, owned by uid when uid is not negative),
+// and the socket itself with mode 0600 from the start (a restrictive umask while it is created). A socket left by an earlier run is removed;
+// anything else at the path is an error. The directory must not be one shared with other sockets (node-agent.sock, the CNI gate).
 func listenPushSocket(sock string, uid int) (net.Listener, error) {
+	dir := path.Dir(sock)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("push socket %s: %w", sock, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("push socket %s: %w", sock, err)
+	}
+	if uid >= 0 {
+		if err := os.Chown(dir, uid, -1); err != nil {
+			return nil, fmt.Errorf("push socket %s: %w", sock, err)
+		}
+	}
 	if fi, err := os.Lstat(sock); err == nil {
 		if fi.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("push socket %s: the path exists and is not a socket", sock)
@@ -269,10 +314,9 @@ func listenPushSocket(sock string, uid int) (net.Listener, error) {
 			return nil, fmt.Errorf("push socket %s: %w", sock, err)
 		}
 	}
-	if err := os.MkdirAll(path.Dir(sock), 0o755); err != nil {
-		return nil, fmt.Errorf("push socket %s: %w", sock, err)
-	}
+	old := syscall.Umask(0o177)
 	ln, err := net.Listen("unix", sock)
+	syscall.Umask(old)
 	if err != nil {
 		return nil, fmt.Errorf("push socket %s: %w", sock, err)
 	}

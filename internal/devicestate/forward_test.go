@@ -32,12 +32,14 @@ type seen struct {
 	headers []http.Header
 	methods []string
 	paths   []string
+	queries []string
 }
 
 func (s *seen) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.headers, s.methods, s.paths = append(s.headers, r.Header.Clone()), append(s.methods, r.Method), append(s.paths, r.URL.Path)
+		s.queries = append(s.queries, r.URL.RawQuery)
 		s.mu.Unlock()
 		_, _ = io.WriteString(w, "ok")
 	})
@@ -74,7 +76,7 @@ func handlerFor(t *testing.T, s *seen, allow rule) (http.Handler, *imagecache.To
 	up := httptest.NewServer(s.handler())
 	t.Cleanup(up.Close)
 	tf := imagecache.NewTokenFile(writeToken(t, "node-token\n"))
-	return relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, allow), tf
+	return relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, allow, nil), tf
 }
 
 func do(h http.Handler, method, target string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -124,7 +126,7 @@ func TestRelayTokenIsReread(t *testing.T) {
 	file := writeToken(t, "one")
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	tf := &imagecache.TokenFile{Path: file, Now: func() time.Time { return now }}
-	h := relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, pullAllowed)
+	h := relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, pullAllowed, nil)
 	if rec := do(h, "GET", "/v2/", nil); rec.Code != 200 || s.headers[0].Get("X-Cib-Node-Token") != "one" {
 		t.Fatalf("%d", rec.Code)
 	}
@@ -398,7 +400,7 @@ func TestForwardOverTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	tf := imagecache.NewTokenFile(writeToken(t, "tok"))
-	h := relayHandler("https", target, o.upstreamTransport(), tf, pullAllowed)
+	h := relayHandler("https", target, o.upstreamTransport(), tf, pullAllowed, nil)
 	if rec := do(h, "GET", "/v2/c/acme/ghcr.io/o/app/manifests/sha256:abc", nil); rec.Code != 200 || got.Get("X-Cib-Node-Token") != "tok" {
 		t.Fatalf("%d %v", rec.Code, got)
 	}
@@ -407,7 +409,7 @@ func TestForwardOverTLS(t *testing.T) {
 	other.StartTLS()
 	defer other.Close()
 	got = nil
-	h2 := relayHandler("https", strings.TrimPrefix(other.URL, "https://"), o.upstreamTransport(), tf, pullAllowed)
+	h2 := relayHandler("https", strings.TrimPrefix(other.URL, "https://"), o.upstreamTransport(), tf, pullAllowed, nil)
 	if rec := do(h2, "GET", "/v2/c/a/b/manifests/x", nil); rec.Code != http.StatusBadGateway || got != nil {
 		t.Fatalf("an untrusted server must not be reached: %d %v", rec.Code, got)
 	}
@@ -436,4 +438,42 @@ func selfSigned(t *testing.T) tls.Certificate {
 		t.Fatal(err)
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// On the push socket only the query parameters of the snapshot client reach the gate; the pull listener forwards the query as it is.
+func TestPushSocketDropsQueryParametersTheClientDoesNotUse(t *testing.T) {
+	var s seen
+	h, _ := handlerFor(t, &s, pushAllowed)
+	up := httptest.NewServer(s.handler())
+	defer up.Close()
+	tf := imagecache.NewTokenFile(writeToken(t, "tok"))
+	h = relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, pushAllowed, pushQuery)
+	do(h, "POST", "/v2/lab/ns/lab/dev/blobs/uploads/?mount=sha256%3Aabc&from=c%2Fdocker.io%2Flibrary%2Fapp&sneaky=1&_state=x", nil)
+	do(h, "PUT", "/v2/lab/ns/lab/dev/blobs/uploads/id?digest=sha256%3Aabc&other=1", nil)
+	q := s.queries
+	if len(q) != 2 || strings.Contains(q[0], "sneaky") || strings.Contains(q[0], "_state") || !strings.Contains(q[0], "mount=") || !strings.Contains(q[0], "from=") ||
+		strings.Contains(q[1], "other") || !strings.Contains(q[1], "digest=") {
+		t.Fatalf("%v", q)
+	}
+}
+
+// The push socket has a directory of its own (0700) and is created 0600; the upstream transport takes no proxy from the environment and is
+// bounded on every wait but the transfer.
+func TestPushSocketDirectoryAndUpstreamTransportBounds(t *testing.T) {
+	sock := filepath.Join(shortDir(t), "registry-push", "push.sock")
+	ln, err := listenPushSocket(sock, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	di, _ := os.Stat(filepath.Dir(sock))
+	si, _ := os.Stat(sock)
+	if di.Mode().Perm() != 0o700 || si.Mode().Perm() != 0o600 {
+		t.Fatalf("dir %v socket %v", di.Mode(), si.Mode())
+	}
+	var o forwardOptions
+	tr, ok := o.upstreamTransport().(*http.Transport)
+	if !ok || tr.Proxy != nil || tr.ResponseHeaderTimeout <= 0 || tr.IdleConnTimeout <= 0 || tr.MaxResponseHeaderBytes != maxHeaderBytes || tr.TLSHandshakeTimeout <= 0 {
+		t.Fatalf("%+v", tr)
+	}
 }
