@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/cybericebox/laboratory/internal/netguard"
 )
 
 // maxProofRedirects is how many redirects of a manifest proof are followed (fixed, not a setting).
@@ -41,7 +43,7 @@ func parseRedirectPattern(p string) (string, error) {
 	if strings.Contains(host, "*") {
 		return "", errors.New(`only one leading "*." wildcard is allowed`)
 	}
-	if !plainHostName(host) {
+	if !netguard.PlainHostName(host) {
 		return "", errors.New("not a plain host name (no scheme, port, path, userinfo, IP address, empty label or trailing dot)")
 	}
 	if net.ParseIP(host) != nil {
@@ -59,24 +61,6 @@ func parseRedirectPattern(p string) (string, error) {
 		return "", errors.New("a numeric last label (an IPv4 address in a short form), not a host name")
 	}
 	return p, nil
-}
-
-// plainHostName is true for dot-separated labels of letters, digits and hyphen, none empty or starting or ending with a hyphen.
-func plainHostName(h string) bool {
-	if h == "" || len(h) > 253 {
-		return false
-	}
-	for _, l := range strings.Split(h, ".") {
-		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
-			return false
-		}
-		for _, c := range l {
-			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // redirectHostMatches says whether host is an exact pattern or a subdomain of a wildcard one. The patterns are normalized.
@@ -112,7 +96,7 @@ func redirectTarget(reg Registry, resp *http.Response) (*url.URL, bool) {
 	t := resp.Request.URL.ResolveReference(ref)
 	host := t.Hostname()
 	if t.Scheme != schemeHTTPS || t.User != nil || t.Port() != "" || t.Host != host || host == "" || strings.HasSuffix(host, ".") ||
-		net.ParseIP(host) != nil || !plainHostName(strings.ToLower(host)) || !redirectHostMatches(reg.Redirects, host) {
+		net.ParseIP(host) != nil || !netguard.PlainHostName(strings.ToLower(host)) || !redirectHostMatches(reg.Redirects, host) {
 		return nil, false
 	}
 	t.Fragment = ""
@@ -137,7 +121,7 @@ func (u *Upstream) followProof(ctx context.Context, reg Registry, resp *http.Res
 		if hops >= maxProofRedirects {
 			return nil, false, nil
 		}
-		req, err := http.NewRequestWithContext(hopContext(ctx), method, t.String(), nil) // dialed with the internal addresses refused
+		req, err := http.NewRequestWithContext(netguard.HopContext(ctx), method, t.String(), nil) // dialed with the internal addresses refused
 		if err != nil {
 			return nil, false, err
 		}
