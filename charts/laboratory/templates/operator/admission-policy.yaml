@@ -7,7 +7,7 @@ policies do. They apply to the operator's ServiceAccount only. See DEPLOY.md, "O
 {{- /* CEL does not expose ownerReferences of an object, so "a namespace of a LabGroup" is the label the operator puts on it when it creates it. */ -}}
 {{- $owned := "has(%s.metadata.labels) && 'laboratory.cybericebox.com/group' in %s.metadata.labels" }}
 ---
-# Writes in a namespace: only the namespaces of LabGroups, plus the release, tenants and images namespaces for what the operator does there.
+# Writes in a namespace: only the namespaces of LabGroups, plus the release, tenants and upstream credentials namespaces for what the operator does there.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -49,10 +49,10 @@ spec:
     - name: groupNamespace
       expression: {{ printf $owned "namespaceObject" "namespaceObject" | quote }}
     - name: platformNamespace
-      expression: namespaceObject.metadata.name in [{{ .Release.Namespace | quote }}, "laboratory-tenants", "laboratory-images", "laboratory-access-keys"]
+      expression: namespaceObject.metadata.name in [{{ .Release.Namespace | quote }}, "laboratory-tenants", "laboratory-upstream", "laboratory-access-keys"]
   validations:
     - expression: "variables.groupNamespace || (variables.platformNamespace && !(request.resource.resource in ['rolebindings', 'roles']))"
-      message: "the operator may write here only in the namespaces of its LabGroups (RoleBindings and Roles: only there), the release namespace, the tenants, images and access keys namespaces"
+      message: "the operator may write here only in the namespaces of its LabGroups (RoleBindings and Roles: only there), the release namespace, the tenants, upstream credentials and access keys namespaces"
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

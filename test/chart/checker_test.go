@@ -140,7 +140,7 @@ func capNames(in []corev1.Capability) []string {
 // The values reach the pod: the socket directory, the concurrency, the ceiling and the placement of the lab nodes.
 func TestCheckerFollowsItsValuesAndTheLabNodes(t *testing.T) {
 	ds := checkerDaemonSet(t, "--set", "checks.socketDir=/var/run/cib", "--set", "checks.maxConcurrent=9", "--set", "checks.maxTimeLimitSeconds=45",
-		"--set", "checks.socketUid=2000", "--set", "checks.socketGid=2001", "--set", "labWorkloads.nodeSelector.pool=labs")
+		"--set", "checks.socketUid=2000", "--set", "checks.socketGid=2001")
 	spec := ds.Spec.Template.Spec
 	env := envOf(spec.Containers[0])
 	if env["DEVICE_ACCESS_SOCKET"].Value != "/var/run/cib/checker.sock" || env["CHECKER_MAX_CONCURRENT"].Value != "9" || env["CHECKER_MAX_TIME_LIMIT_SECONDS"].Value != "45" {
@@ -149,7 +149,7 @@ func TestCheckerFollowsItsValuesAndTheLabNodes(t *testing.T) {
 	if sc := spec.Containers[0].SecurityContext; *sc.RunAsUser != 2000 || *sc.RunAsGroup != 2001 {
 		t.Errorf("user %v group %v", *sc.RunAsUser, *sc.RunAsGroup)
 	}
-	if spec.NodeSelector["pool"] != "labs" {
+	if spec.NodeSelector["node-restriction.kubernetes.io/cib-pool"] != "lab" {
 		t.Errorf("node selector %v: the checker runs where the labs run", spec.NodeSelector)
 	}
 	for _, v := range spec.Volumes {

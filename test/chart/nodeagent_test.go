@@ -16,6 +16,8 @@ var baseSet = []string{
 	"--set", "operator.publicVPNEndpoint=vpn.example.com:51820",
 	"--set", "operator.baseDomain=lab.example.com",
 	"--set", "operator.supportEmail=support@example.com",
+	// Required with the lab registry: the internal load balancer address the lab nodes dial to reach the registry gate.
+	"--set", "registry.gate.address=registry.lab.internal:5443",
 }
 
 func helmTemplate(t *testing.T, extra ...string) (string, error) {
@@ -239,33 +241,33 @@ func TestCNIFallbackIsOptIn(t *testing.T) {
 	}
 }
 
-// C-18: the node-agent runs where lab pods can run, and lab pods run only where a ready node-agent has marked its node.
+// The node-agent runs on the lab pool, where lab pods run, and lab pods run only where a ready node-agent has marked its node.
 func TestNodeAgentFollowsLabPlacementAndLabPodsNeedItsLabel(t *testing.T) {
 	const ready = "laboratory.cybericebox.com/node-agent-ready"
+	const pool = "node-restriction.kubernetes.io/cib-pool"
 	ds := nodeAgent(t)
 	if ds.Spec.Template.Spec.Affinity != nil {
 		t.Errorf("no control-plane exclusion any more: %+v", ds.Spec.Template.Spec.Affinity)
 	}
-	if len(ds.Spec.Template.Spec.NodeSelector) != 0 {
-		t.Errorf("default node selector: %v", ds.Spec.Template.Spec.NodeSelector)
+	if sel := ds.Spec.Template.Spec.NodeSelector; len(sel) != 1 || sel[pool] != "lab" {
+		t.Errorf("default node selector: %v", sel)
 	}
 	tols := ds.Spec.Template.Spec.Tolerations
 	if len(tols) != 2 || tols[0].Key != "node.cilium.io/agent-not-ready" || tols[1].Key != "cybericebox.com/node-starting" {
 		t.Errorf("by default only Cilium's agent-not-ready taint and the startup taint are tolerated: %v", tols)
 	}
 
-	set := []string{"--set", "labWorkloads.nodeSelector.pool=labs",
-		"--set", "labWorkloads.tolerations[0].key=node-role.kubernetes.io/control-plane", "--set", "labWorkloads.tolerations[0].operator=Exists", "--set", "labWorkloads.tolerations[0].effect=NoSchedule"}
+	set := []string{"--set", "pools.lab.tolerations[0].key=node-role.kubernetes.io/control-plane", "--set", "pools.lab.tolerations[0].operator=Exists", "--set", "pools.lab.tolerations[0].effect=NoSchedule"}
 	ds = nodeAgent(t, set...)
-	if ds.Spec.Template.Spec.NodeSelector["pool"] != "labs" {
-		t.Errorf("the node-agent follows labWorkloads.nodeSelector: %v", ds.Spec.Template.Spec.NodeSelector)
+	if sel := ds.Spec.Template.Spec.NodeSelector; len(sel) != 1 || sel[pool] != "lab" {
+		t.Errorf("the selector of the pool is a constant: %v", sel)
 	}
 	found := false
 	for _, tol := range ds.Spec.Template.Spec.Tolerations {
 		found = found || tol.Key == "node-role.kubernetes.io/control-plane"
 	}
 	if !found {
-		t.Errorf("a control-plane node that takes labs must get a node-agent: %v", ds.Spec.Template.Spec.Tolerations)
+		t.Errorf("the tolerations of the lab pool reach the node-agent: %v", ds.Spec.Template.Spec.Tolerations)
 	}
 
 	for name, args := range map[string][]string{"default": nil, "custom": set} {
@@ -275,8 +277,15 @@ func TestNodeAgentFollowsLabPlacementAndLabPodsNeedItsLabel(t *testing.T) {
 		if err := json.Unmarshal([]byte(cm.Data["LAB_NODE_SELECTOR"]), &sel); err != nil {
 			t.Fatal(err)
 		}
-		if sel[ready] != "true" || (name == "custom" && sel["pool"] != "labs") || (name == "default" && len(sel) != 1) {
+		if sel[ready] != "true" || sel[pool] != "lab" || len(sel) != 2 {
 			t.Errorf("%s: LAB_NODE_SELECTOR = %v", name, sel)
+		}
+		var lt []corev1.Toleration
+		if err := json.Unmarshal([]byte(cm.Data["LAB_TOLERATIONS"]), &lt); err != nil {
+			t.Fatal(err)
+		}
+		if (name == "custom") != (len(lt) == 1) {
+			t.Errorf("%s: LAB_TOLERATIONS = %v: the lab pods carry the tolerations of the lab pool", name, lt)
 		}
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(args, "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com")...)

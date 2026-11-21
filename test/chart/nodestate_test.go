@@ -95,7 +95,7 @@ func TestNodeStateWithObservationOnlyHasNoSnapshotPrivileges(t *testing.T) {
 // The shape of the pod: host network (it reaches the relay on the loopback of the node), its own probe port, the node-agent's
 // placement, a lower priority than the node-agent, and a start with a command of the shared image.
 func TestNodeStatePodShape(t *testing.T) {
-	ds := nodeState(t, "--set", "devices.statePersistence.enabled=true", "--set", "labWorkloads.nodeSelector.pool=lab")
+	ds := nodeState(t, "--set", "devices.statePersistence.enabled=true")
 	spec := ds.Spec.Template.Spec
 	if !spec.HostNetwork || spec.HostPID {
 		t.Errorf("node-state is on the host network (the relay is on its loopback), never the host PID namespace")
@@ -106,8 +106,8 @@ func TestNodeStatePodShape(t *testing.T) {
 	if spec.PriorityClassName == "system-node-critical" {
 		t.Errorf("the node-agent keeps system-node-critical, node-state is lower")
 	}
-	if spec.NodeSelector["pool"] != "lab" {
-		t.Errorf("node-state follows the lab placement: %v", spec.NodeSelector)
+	if spec.NodeSelector["node-restriction.kubernetes.io/cib-pool"] != "lab" {
+		t.Errorf("node-state runs on the lab pool: %v", spec.NodeSelector)
 	}
 	c := spec.Containers[0]
 	if len(c.Command) != 2 || c.Command[0] != "/node" || c.Command[1] != "node-state" {

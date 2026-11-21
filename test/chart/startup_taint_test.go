@@ -22,7 +22,7 @@ func tolerates(tolerations []corev1.Toleration, key string) bool {
 func TestStartupTaintToleratedByTheNodeDaemonSets(t *testing.T) {
 	keys := []string{"cybericebox.com/node-starting"}
 	for _, key := range keys {
-		for _, set := range [][]string{nil, {"--set", "labWorkloads.nodeSelector.cybericebox\\.com/lab=true"}} {
+		for _, set := range [][]string{nil, {"--set", "pools.lab.tolerations[0].key=cybericebox.com/lab", "--set", "pools.lab.tolerations[0].operator=Exists"}} {
 			if ds := nodeAgent(t, set...); !tolerates(ds.Spec.Template.Spec.Tolerations, key) {
 				t.Errorf("node-agent does not tolerate %s (%v)", key, set)
 			}
@@ -33,7 +33,7 @@ func TestStartupTaintToleratedByTheNodeDaemonSets(t *testing.T) {
 			}
 		}
 		var wg appsv1.DaemonSet
-		render(t, "templates/wg/daemonset.yaml", &wg, "--set", "proxy.wg.enabled=true", "--set", "labWorkloads.tolerations[0].key=cybericebox.com/lab", "--set", "labWorkloads.tolerations[0].operator=Exists")
+		render(t, "templates/wg/daemonset.yaml", &wg, "--set", "proxy.wg.enabled=true", "--set", "pools.lab.tolerations[0].key=cybericebox.com/lab", "--set", "pools.lab.tolerations[0].operator=Exists")
 		if !tolerates(wg.Spec.Template.Spec.Tolerations, key) || !tolerates(wg.Spec.Template.Spec.Tolerations, "cybericebox.com/lab") {
 			t.Errorf("the startup toleration must come on top of the lab tolerations: %+v", wg.Spec.Template.Spec.Tolerations)
 		}

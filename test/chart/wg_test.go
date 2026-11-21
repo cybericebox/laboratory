@@ -163,15 +163,11 @@ func TestWGModeValidated(t *testing.T) {
 	if err == nil || !strings.Contains(out, "proxy.wg.mode") {
 		t.Fatalf("an unknown mode must be refused: %v\n%s", err, out)
 	}
-	out, err = helmTemplate(t, "--set", "proxy.wg.externalTrafficPolicy=Both", "-s", "templates/wg/service.yaml")
-	if err == nil || !strings.Contains(out, "externalTrafficPolicy") {
-		t.Fatalf("an unknown policy must be refused: %v\n%s", err, out)
-	}
-	// null (e.g. an infra template with an empty value) means the default, as "" does.
-	var svc corev1.Service
-	render(t, "templates/wg/service.yaml", &svc, "--set", "proxy.wg.externalTrafficPolicy=null")
-	if svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
-		t.Errorf("null policy: ETP = %q, want Cluster", svc.Spec.ExternalTrafficPolicy)
+	// the traffic policy of the VPN Service is not a value any more: it is Local in every mode
+	for _, v := range []string{"Both", "Cluster", "Local"} {
+		if out, err := helmTemplate(t, "--set", "proxy.wg.externalTrafficPolicy="+v, "-s", "templates/wg/service.yaml"); err == nil || !strings.Contains(out, "externalTrafficPolicy was removed") {
+			t.Errorf("proxy.wg.externalTrafficPolicy=%s must be refused with its replacement: %v\n%s", v, err, out)
+		}
 	}
 }
 
@@ -181,45 +177,21 @@ func TestWGServicePolicyFollowsMode(t *testing.T) {
 	if svc.Namespace != "laboratory-wg" || svc.Name != "laboratory-proxy-wg" {
 		t.Errorf("identity: %s/%s", svc.Namespace, svc.Name)
 	}
-	if svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
-		t.Errorf("userspace (default) ETP = %q, want Cluster", svc.Spec.ExternalTrafficPolicy)
-	}
-	for _, mode := range []string{"tc", "xdp"} {
+	for _, mode := range []string{"userspace", "tc", "xdp"} {
 		var fast corev1.Service
 		render(t, "templates/wg/service.yaml", &fast, "--set", "proxy.wg.mode="+mode)
-		if fast.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
-			t.Errorf("%s ETP = %q, want Local", mode, fast.Spec.ExternalTrafficPolicy)
+		if fast.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal || fast.Spec.Type != corev1.ServiceTypeNodePort {
+			t.Errorf("%s: a NodePort with externalTrafficPolicy %q, want Local in every mode", mode, fast.Spec.ExternalTrafficPolicy)
 		}
 	}
 	if svc.Spec.Selector["app"] != "laboratory-proxy-wg" {
 		t.Errorf("selector: %v", svc.Spec.Selector)
 	}
-	if svc.Annotations["lbipam.cilium.io/sharing-cross-namespace"] != "laboratory-system" || svc.Annotations["lbipam.cilium.io/sharing-key"] != "laboratory-edge" {
-		t.Errorf("annotations: %v", svc.Annotations)
+	if len(svc.Annotations) != 0 {
+		t.Errorf("no annotation by default: %v", svc.Annotations)
 	}
 	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 51820 || svc.Spec.Ports[0].TargetPort.IntValue() != 51820 || svc.Spec.Ports[0].Protocol != corev1.ProtocolUDP {
 		t.Errorf("ports: %+v", svc.Spec.Ports)
-	}
-	var cluster corev1.Service
-	render(t, "templates/wg/service.yaml", &cluster, "--set", "proxy.wg.mode=tc", "--set", "proxy.wg.externalTrafficPolicy=Cluster")
-	if cluster.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
-		t.Errorf("tc with Cluster set: ETP = %q", cluster.Spec.ExternalTrafficPolicy)
-	}
-	var local corev1.Service
-	render(t, "templates/wg/service.yaml", &local, "--set", "proxy.wg.externalTrafficPolicy=Local")
-	if local.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
-		t.Errorf("userspace with Local set: ETP = %q", local.Spec.ExternalTrafficPolicy)
-	}
-}
-
-// The Gateway and the VPN Service name each other's namespace for IP sharing.
-func TestGatewayShareNamesTheWGNamespace(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/gateway/gateway.yaml")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	if !strings.Contains(out, `lbipam.cilium.io/sharing-cross-namespace: "laboratory-wg"`) {
-		t.Errorf("the Gateway must name laboratory-wg:\n%s", out)
 	}
 }
 
@@ -400,8 +372,8 @@ func TestWGDemuxNetworkPolicy(t *testing.T) {
 	if len(np.Spec.Ingress) != 1 || len(np.Spec.Ingress[0].Ports) != 1 || np.Spec.Ingress[0].Ports[0].Port.IntValue() != 51820 || len(np.Spec.Ingress[0].From) != 0 {
 		t.Errorf("vanilla ingress: UDP 51820 from all: %+v", np.Spec.Ingress)
 	}
-	if len(np.Spec.Egress) != 1 || len(np.Spec.Egress[0].Ports) != 2 {
-		t.Errorf("vanilla egress: kube-dns only: %+v", np.Spec.Egress)
+	if len(np.Spec.Egress) != 0 || len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != "Ingress" {
+		t.Errorf("the vanilla policy governs ingress only (no cluster DNS rule): %+v %v", np.Spec.Egress, np.Spec.PolicyTypes)
 	}
 	spec := cnp["spec"].(map[string]any)
 	if cnp["metadata"].(map[string]any)["namespace"] != "laboratory-wg" || spec["endpointSelector"].(map[string]any)["matchLabels"].(map[string]any)["app"] != "laboratory-proxy-wg" {
@@ -420,16 +392,16 @@ func TestWGDemuxNetworkPolicy(t *testing.T) {
 		t.Errorf("health and metrics from the host: %v", host)
 	}
 	eg := spec["egress"].([]any)
-	if len(eg) != 3 {
-		t.Fatalf("egress: %v", eg)
+	if len(eg) != 2 {
+		t.Fatalf("egress: the API server and the group endpoints, no cluster DNS: %v", eg)
 	}
 	if fmt.Sprint(eg[0]) != "map[toEntities:[kube-apiserver]]" {
 		t.Errorf("apiserver: %v", eg[0])
 	}
-	if !strings.Contains(fmt.Sprint(eg[1]), "k8s-app:kube-dns") || !strings.Contains(fmt.Sprint(eg[1]), "53") {
-		t.Errorf("dns: %v", eg[1])
+	if strings.Contains(fmt.Sprint(eg), "kube-dns") {
+		t.Errorf("the demux needs no cluster DNS: %v", eg)
 	}
-	grp := fmt.Sprint(eg[2])
+	grp := fmt.Sprint(eg[1])
 	if !strings.Contains(grp, "laboratory.cybericebox.com/group") || !strings.Contains(grp, "Exists") || !strings.Contains(grp, "port:51820 protocol:UDP") {
 		t.Errorf("group endpoints on UDP 51820: %v", grp)
 	}

@@ -1,6 +1,6 @@
 {{- /*
 The access keys namespace: the access public keys of the tenants, one Secret each (tenant-<name>-access-keys). The agent writes them, the
-proxy reads them to verify the handoff links, the operator removes a tenant's. It is a namespace of its own so that the internet-facing
+proxy reads them to verify the grants, the operator removes a tenant's and mirrors them into a ConfigMap for the device access service. It is a namespace of its own so that the internet-facing
 proxy can read it without being able to read the enrollment tokens and registry credentials of the tenants namespace.
 */ -}}
 apiVersion: v1
@@ -20,7 +20,7 @@ metadata:
 rules:
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
-    verbs: [ "get", "delete" ]
+    verbs: [ "get", "list", "watch", "delete" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

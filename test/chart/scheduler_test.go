@@ -252,8 +252,7 @@ func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
 	set := []string{"--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
 		"--set", "scheduler.platformReservePercent=12", "--set", "scheduler.platformReserveCpu=150m", "--set", "scheduler.platformReserveMemory=384Mi",
 		"--set", "scheduler.packingReservePercent=20", "--set", "scheduler.packingReserveCpu=300m", "--set", "scheduler.packingReserveMemory=1Gi",
-		"--set", "labWorkloads.nodeSelector.lab-node=true",
-		"--set", "labWorkloads.tolerations[0].key=labs", "--set", "labWorkloads.tolerations[0].operator=Exists"}
+		"--set", "pools.lab.tolerations[0].key=labs", "--set", "pools.lab.tolerations[0].operator=Exists"}
 	op := operatorConfig(t, set...)
 	out, err := helmTemplate(t, append(append([]string{}, set...), "-s", "templates/agent/deployment.yaml")...)
 	if err != nil {
@@ -280,7 +279,7 @@ func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
 			t.Errorf("%s: operator %q, agent %q (set %v)", name, op[name], v, ok)
 		}
 	}
-	if op["SCHEDULER_PLATFORM_RESERVE_CPU"] != "150m" || op["SCHEDULER_PACKING_RESERVE_MEMORY"] != "1Gi" || !strings.Contains(op["LAB_NODE_SELECTOR"], "lab-node") {
+	if op["SCHEDULER_PLATFORM_RESERVE_CPU"] != "150m" || op["SCHEDULER_PACKING_RESERVE_MEMORY"] != "1Gi" || !strings.Contains(op["LAB_NODE_SELECTOR"], "cib-pool") || !strings.Contains(op["LAB_TOLERATIONS"], "labs") {
 		t.Errorf("the chart values do not reach the operator: %v", op)
 	}
 }
