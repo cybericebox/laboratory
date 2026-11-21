@@ -77,7 +77,10 @@ jobs:
     needs: version
     if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-latest
-    environment: candidate
+    environment:
+      name: candidate
+      # The environment holds the Docker Hub secrets and their branch rule; it is not a place anything is deployed to
+      deployment: false
     strategy:
       fail-fast: false
       matrix:
@@ -138,7 +141,10 @@ jobs:
     name: Helm chart
     needs: [version, image]
     runs-on: ubuntu-latest
-    environment: candidate
+    environment:
+      name: candidate
+      # The environment holds the Docker Hub secrets and their branch rule; it is not a place anything is deployed to
+      deployment: false
     steps:
       - name: Check repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -117,7 +117,10 @@ jobs:
     needs: verify
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    environment: release
+    environment:
+      name: release
+      # The environment holds the Docker Hub secrets and their branch rule; it is not a place anything is deployed to
+      deployment: false
     permissions:
       contents: write
     env:
