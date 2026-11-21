@@ -146,7 +146,7 @@ func CommandHash(command []string) string { return wire.CommandHash(command) }
 
 func setVar(vars []string, key, value string) []string {
 	prefix := key + "="
-	out := make([]string, 0, len(vars)+1)
+	out := make([]string, 0, len(vars))
 	for _, e := range vars {
 		if !strings.HasPrefix(e, prefix) {
 			out = append(out, e)
