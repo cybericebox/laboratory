@@ -118,6 +118,9 @@ type LabGroupVPNStatus struct {
 	// Registered is true when the VPN deployment has at least one ready replica,
 	// including while Lab devices are suspended.
 	Registered bool `json:"registered,omitempty"`
+	// Backend is "<pod IP>:<port>", the UDP address of the ready VPN pod of the group, written by the operator on every change of that pod;
+	// the demux sends the group's handshakes there and uses no name. Empty while no VPN pod is ready: the demux then drops them.
+	Backend string `json:"backend,omitempty"`
 }
 
 // +genclient

@@ -29,7 +29,6 @@ require (
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/ovn-org/libovsdb v0.7.0
-	github.com/pires/go-proxyproto v0.16.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/ti-mo/conntrack v0.6.0

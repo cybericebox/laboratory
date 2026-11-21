@@ -3,7 +3,7 @@ package l7
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -198,33 +198,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		namespace = ns(claims.Group)
 	}
-	var backendURL, lab string
-	if h.access != nil {
-		if h.serveAccessKind(w, r, task) {
-			return
-		}
-		route, routeErr := h.access.Route(r.Context(), task, namespace)
-		if routeErr != nil {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-		// The grant is for one device (lab and dev). The host binding already says so; a second check against the route the host resolves
-		// to protects against a mistake in parsing a host.
-		if route.Lab != claims.Lab || route.Device != claims.Dev {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-		backendURL, lab = route.URL, route.Lab
-		if !h.access.Allowed(r.Context(), namespace, client, lab) {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
-	} else {
-		var ok bool
-		if backendURL, lab, ok = h.legacyRoute(task, claims.Group, client); !ok {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
-			return
-		}
+	backendURL, lab, ok := h.route(w, r, task, namespace, claims.Group, client, claims.Lab, claims.Dev)
+	if !ok {
+		return
 	}
 	target, err := url.Parse(backendURL)
 	if err != nil {
@@ -369,23 +345,6 @@ func (b *countingBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// ServiceResolver builds a BackendResolver that determines backend URL from Service named port.
-// getServiceProtocol(task, namespace) returns the Service's first port name ("http" or "https").
-func ServiceResolver(getServiceProtocol func(task, namespace string) (string, error)) BackendResolver {
-	return func(task, groupID string) (string, error) {
-		ns := GroupNamespace(groupID)
-		proto, err := getServiceProtocol(task, ns)
-		if err != nil {
-			return "", err
-		}
-		port := 80
-		if proto == schemeHTTPS {
-			port = 443
-		}
-		return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", proto, task, ns, port), nil
-	}
-}
-
 // stripSessionCookie removes the Set-Cookie headers that name the proxy's session cookie, whatever their attributes
 // (domain, path, expiry): the cookie is the proxy's, never the device's to set, replace or clear.
 func stripSessionCookie(hdr http.Header, name string) {
@@ -527,6 +486,34 @@ func (h *Handler) serveAccessKind(w http.ResponseWriter, r *http.Request, task s
 	// the console is served before the cookie is looked at; nothing else is served
 	fail(w, r, http.StatusNotFound, pageGone, "not found")
 	return true
+}
+
+// route finds the backend and the lab of the task and checks that the client may use it. When it cannot it has answered the client itself:
+// the starting page for a device without an address yet, "not found" for everything else (the same answer for an unknown host, a removed
+// lab and a refused client).
+// The grant is for one device (lab and dev): the host binding already says so, and the route the host resolves to must agree with it, which
+// protects against a mistake in parsing a host. claimLab and claimDev are what the grant names.
+func (h *Handler) route(w http.ResponseWriter, r *http.Request, task, namespace, groupID, client, claimLab, claimDev string) (backendURL, lab string, ok bool) {
+	if h.access == nil {
+		if backendURL, lab, ok = h.legacyRoute(task, groupID, client); !ok {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+		}
+		return backendURL, lab, ok
+	}
+	if h.serveAccessKind(w, r, task) {
+		return "", "", false
+	}
+	route, err := h.access.Route(r.Context(), task, namespace)
+	if errors.Is(err, ErrRouteNotReady) {
+		// the device has no usable address yet: the lab is starting, nothing is connected to
+		fail(w, r, http.StatusServiceUnavailable, pageStarting, "lab is starting")
+		return "", "", false
+	}
+	if err != nil || route.Lab != claimLab || route.Device != claimDev || !h.access.Allowed(r.Context(), namespace, client, route.Lab) {
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
+		return "", "", false
+	}
+	return route.URL, route.Lab, true
 }
 
 // legacyRoute is the route of a task without the access reader: the backend the resolver names, the lab the attribution gives and the

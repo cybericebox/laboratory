@@ -179,7 +179,7 @@ func Run() {
 		if err != nil {
 			log.Error(err, "watch the bandwidth annotation")
 		}
-	}, func() { shaper.run(ctx) }, func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
+	}, func() { shaper.run(ctx) }, func() { ct.RunTTLCleanup(stop) }, func() { dmx.Run(stop) }}
 	if fast {
 		stats = func() map[string]uint64 { return fp.Stats() }
 		runs = append(runs, func() { restoreOnce(ctx, mgr, watcher, fp, ct, table) }, func() { resync(ctx, cfg.Resync, fp, ct) })

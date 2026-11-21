@@ -384,6 +384,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
 		lg.Status.VPN.ClientSubnet = clientSubnet
 		lg.Status.VPN.Registered = vpnReady
+		if lg.Status.VPN.Backend, err = r.vpnBackend(ctx, ns, vpnReady); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err = updateStatus(); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -418,6 +421,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.ClientSubnet = clientSubnet
 	wasRegistered := lg.Status.VPN.Registered
 	lg.Status.VPN.Registered = vpnReady
+	if lg.Status.VPN.Backend, err = r.vpnBackend(ctx, ns, vpnReady); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err = updateStatus(); err != nil {
 		return ctrl.Result{}, err
 	}

@@ -40,7 +40,7 @@ func TestAccessReaderOneServiceReadAndDeletingClientDenied(t *testing.T) {
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "https", Port: 443}}}}
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, ClientNames: []string{"p"}, LabNames: []string{"lab"}}}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, readyDevice("legacy", "lab", "web", testPodIP), member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
 	reader := &accessCountingReader{Reader: c, gets: map[string]int{}}
 	access := &AccessReader{Reader: reader}
 	ctx := context.Background()
@@ -49,7 +49,7 @@ func TestAccessReaderOneServiceReadAndDeletingClientDenied(t *testing.T) {
 		t.Fatal(g, err)
 	}
 	route, err := access.Route(ctx, "web", g.Namespace)
-	if err != nil || route.Lab != "lab" || route.URL != "https://web.legacy.svc.cluster.local:443" || reader.gets["web"] != 1 {
+	if err != nil || route.Lab != "lab" || route.URL != "https://"+testPodIP+":443" || reader.gets["web"] != 1 {
 		t.Fatal(route, err, reader.gets)
 	}
 	if !access.Allowed(ctx, g.Namespace, "p", "lab") {
@@ -100,7 +100,7 @@ func TestAccessHandlerUsesOneGroupAndServiceRead(t *testing.T) {
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow, ClientNames: []string{"p-u1"}, LabNames: []string{"lab"}}}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, readyDevice("legacy", "lab", "web", testPodIP), member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
 	reader := &accessCountingReader{Reader: c, gets: map[string]int{}}
 	h, _, _, cookie := liveFixture(t, http.NotFoundHandler())
 	m := NewMeter("b", time.Now())
@@ -189,7 +189,7 @@ func TestStoppedLabClosesNativeUpgradeAndRejectsStaleCookie(t *testing.T) {
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target, group, member, policy, svc).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target, group, member, policy, svc, readyDevice("legacy", "lab", "web", testPodIP)).Build()
 	h.WithAccessReader(&AccessReader{Reader: c})
 	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
 	if err != nil {
@@ -249,7 +249,7 @@ func TestWebGrantMustAgreeWithTheRouteOfTheHost(t *testing.T) {
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web-abc12w", Namespace: "legacy", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"}}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}}
 	member := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p-u1", Namespace: "legacy"}}
 	policy := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "legacy"}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, svc, member, policy, &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "legacy"}}, readyDevice("legacy", "lab", "web", testPodIP)).Build()
 	h, _, _, _ := liveFixture(t, http.NotFoundHandler())
 	h.WithAccessReader(&AccessReader{Reader: c})
 	h.transport = accountingRoundTripper(func(*http.Request) (*http.Response, error) {
