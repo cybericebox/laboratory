@@ -5,7 +5,10 @@ name: Line gate
 # not counted); the label large-fix waives the size limit. The rule is .github/scripts/line_gate.py. The required check is "Line gate".
 #
 # A pull request cannot change its own gate, for three reasons:
-#   1. pull_request_target: the workflow file and the script come from the BASE branch (the line), never from the pull request;
+#   1. pull_request_target: since 2025-12-08 the workflow file and the checkout come from the DEFAULT branch of the repository (develop here),
+#      never from the pull request and not from the line either: the gate of every line is the current one of develop, so this file and
+#      line_gate.py must be on develop for a pull request into a line to be gated (until then the required check "Line gate" never reports
+#      and the merge stays blocked: it fails closed);
 #   2. nothing of the pull request is checked out or run: its changed files are read through the API only, as data;
 #   3. the gate refuses any change to .github/**, mise.toml, mise-tasks/**, hack/**, scripts/** and .golangci.yml, so a pull request into a
 #      line cannot edit check.yml, the tests or this gate either. Those changes go into develop (and reach a line through the next cut).
@@ -41,9 +44,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # A failed call fails the job (set -e, pipefail): an empty answer is never read as "nothing changed".
           view=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")
+          # The check is reported on HEAD_SHA: read the files of that very head. A run that began for an older head (a push came in
+          # between) must not pass or fail the new one on its own reading.
+          [[ "$(jq -r .head.sha <<<"$view")" == "$HEAD_SHA" ]] || { echo "::error::the pull request moved on from ${HEAD_SHA:0:7}: the run of its new head decides"; exit 1; }
           changed=$(jq -r .changed_files <<<"$view")
           labels=$(jq -r '[.labels[].name] | join(",")' <<<"$view")
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | {filename, previous_filename, additions, deletions}' | jq -s . > "$RUNNER_TEMP/files.json"

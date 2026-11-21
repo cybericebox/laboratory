@@ -12,10 +12,18 @@ on:
       dry_run:
         type: boolean
         default: true
+      strict:
+        description: Fail the run when a deletion failed or was refused (false after a promote, the release is already public)
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       dry_run:
         description: Print the list only, delete nothing
+        type: boolean
+        default: true
+      strict:
+        description: Fail the run when a deletion failed or was refused
         type: boolean
         default: true
 
@@ -34,6 +42,7 @@ jobs:
   retention:
     name: Apply the retention policy
     runs-on: ubuntu-latest
+    environment: release # the Docker Hub credentials: deployment branch main only
     permissions:
       contents: write
     steps:
@@ -53,6 +62,7 @@ jobs:
           PRUNE_FROM: "1.10"
           PRUNE_KEEP: "10"
           DRY_RUN: ${{ inputs.dry_run }}
+          STRICT: ${{ inputs.strict }}
           GH_TOKEN: ${{ github.token }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

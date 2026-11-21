@@ -9,10 +9,14 @@ name: Promote
 #            the final version, the git tag and the GitHub release page are created at the commit of the candidate
 #   main     the commit is merged into main with a merge commit
 #   cleanup  retention (cleanup.yml): the candidates of every released version are deleted, then the older patches and minors
-# dry_run verifies and prints the plan, changes nothing and needs no secret.
+# dry_run verifies and prints the plan and changes nothing (it only reads: the retention list is made with the Docker Hub credentials).
 #
-# It runs only from main (the default branch, which is where `gh workflow run` starts it): the scripts that decide are the ones on main,
-# never the ones of the line or of a pull request. The first promote of a repository therefore needs these workflows on main already.
+# It runs only from main: the scripts that decide are the ones on main, never the ones of the line or of a pull request. The default
+# branch of this repository is develop, so it must be started with `gh workflow run promote.yml --ref main` (a run on any other ref stops
+# at the first step). The workflow file has to exist on the default branch too (GitHub lists a dispatchable workflow from there) and on
+# main: the first promote of a repository needs these workflows on both already.
+# Secrets (the Docker Hub credentials and RELEASE_TOKEN) are secrets of the environment "release" (deployment branch: main only), so a
+# run from any other ref, with any edited copy of this file, cannot read them.
 on:
   workflow_dispatch:
     inputs:
@@ -77,6 +81,19 @@ jobs:
             echo "version=$version"
             echo "latest=$latest"
           } >> "$GITHUB_OUTPUT"
+      # Before anything is published: a merge into main that cannot happen would leave a public release behind a red run.
+      - name: main can take the commit
+        env:
+          SHA: ${{ steps.rc.outputs.sha }}
+        run: |
+          if git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "main already has ${SHA:0:7}"
+          elif git merge-tree --write-tree --quiet origin/main "$SHA" >/dev/null; then
+            echo "main takes ${SHA:0:7} with a merge commit, without a conflict"
+          else
+            echo "::error::merging ${SHA:0:7} into main conflicts. Nothing is published yet. Merge main into the line by a pull request first (or merge by hand), then promote"
+            exit 1
+          fi
       - name: The plan
         env:
           VERSION: ${{ steps.rc.outputs.version }}
@@ -96,6 +113,7 @@ jobs:
     needs: verify
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     env:
@@ -103,6 +121,14 @@ jobs:
       SHA: ${{ needs.verify.outputs.sha }}
       LATEST: ${{ needs.verify.outputs.latest }}
     steps:
+      # First, before a single tag is pushed: the last job needs this token, and a release cannot be undone (version tags are immutable).
+      - name: The token that updates main is there and can push
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          [[ -n "$RELEASE_TOKEN" ]] || { echo "::error::the secret RELEASE_TOKEN is not set: main could not be updated after the release. Nothing is published"; exit 1; }
+          push=$(GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$GITHUB_REPOSITORY" --jq .permissions.push)
+          [[ "$push" == true ]] || { echo "::error::RELEASE_TOKEN has no push access to $GITHUB_REPOSITORY. Nothing is published"; exit 1; }
       - name: Check repository (the trusted scripts)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -160,6 +186,7 @@ jobs:
     name: Merge the line into main
     needs: [verify, release]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     env:
@@ -185,8 +212,8 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git merge --no-ff -m "Release $VERSION" "$SHA"
-          git push origin HEAD:main
+          git merge --no-ff -m "Release $VERSION" "$SHA" || { echo "::error::$VERSION is published but merging ${SHA:0:7} into main conflicts: merge it by hand, then run Promote again (it skips what is done) or Retention"; exit 1; }
+          git push origin HEAD:main || { echo "::error::$VERSION is published but main could not be pushed (the ruleset of main must let RELEASE_TOKEN bypass): fix it, then run Promote again"; exit 1; }
 
   cleanup:
     name: Retention
@@ -197,4 +224,5 @@ jobs:
     uses: ./.github/workflows/cleanup.yml
     with:
       dry_run: ${{ inputs.dry_run }}
+      strict: false # the release is public by now; a refused deletion is reported and does not turn this run red
     secrets: inherit
