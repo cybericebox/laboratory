@@ -45,7 +45,10 @@ const (
 	// clockSlack covers the clock of the test against the clock of the operator and the poll interval.
 	clockSlack = 3 * time.Second
 
-	nodeImage = "cybericebox/laboratory-node:e2e"
+	// The node image is also the netconfig image of the labs: the operator pins that tag to a digest asked of its registry (the stand's, as the
+	// registry of a deployment), so it is named by that registry and published there; it is loaded onto the nodes under the same name, so the
+	// node-agent's own pod needs no pull.
+	nodeImage = utils.KindRegistryHost + "/cybericebox/laboratory-node:e2e"
 	labImage  = "cybericebox/laboratory-lab:e2e"
 
 	// pauseImage is the device image: the pause image of Kubernetes, which does nothing, from the upstream registry of the tests (the lab
@@ -76,6 +79,8 @@ var _ = Describe(
 				Expect(err).NotTo(HaveOccurred(), "Failed to build the node and lab images")
 				Expect(utils.LoadImageToKindClusterWithName(nodeImage)).To(Succeed(), "Failed to load %s into Kind", nodeImage)
 				// The lab image (VPN and gateway pods) is pulled by the lab nodes through the registry gate, so it goes to the upstream registry.
+				_, err = utils.PublishToKindRegistry(nodeImage, "cybericebox/laboratory-node")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", nodeImage)
 				_, err = utils.PublishToKindRegistry(labImage, "cybericebox/laboratory-lab")
 				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", labImage)
 				_, err = utils.PublishToKindRegistry(pauseSource, "pause")

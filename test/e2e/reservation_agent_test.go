@@ -79,6 +79,8 @@ var _ = Describe(
 					Expect(utils.LoadImageToKindClusterWithName(img)).To(Succeed(), "Failed to load %s into Kind", img)
 				}
 				// The lab image (VPN and gateway pods) is pulled by the lab nodes through the registry gate, so it goes to the upstream registry.
+				_, err = utils.PublishToKindRegistry(nodeImage, "cybericebox/laboratory-node")
+				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", nodeImage)
 				_, err = utils.PublishToKindRegistry(labImage, "cybericebox/laboratory-lab")
 				Expect(err).NotTo(HaveOccurred(), "Failed to publish %s to the upstream registry", labImage)
 				_, err = utils.PublishToKindRegistry(pauseSource, "pause")
