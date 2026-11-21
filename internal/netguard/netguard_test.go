@@ -2,7 +2,9 @@ package netguard
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -139,4 +141,51 @@ func TestHopDialRefusesWhatANameResolvesTo(t *testing.T) {
 		t.Fatalf("a request that is not a hop is dialed as before: %v", err)
 	}
 	_ = c.Close()
+}
+
+type recordingRT struct{ hops []bool }
+
+func (r *recordingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.hops = append(r.hops, IsHop(req.Context()))
+	return &http.Response{StatusCode: 200, Body: http.NoBody, Request: req}, nil
+}
+
+// chain builds a request that is the n-th hop after first.
+func chain(first string, to ...string) *http.Request {
+	req, _ := http.NewRequest(http.MethodHead, first, nil)
+	for _, next := range to {
+		resp := &http.Response{StatusCode: 307, Request: req}
+		req, _ = http.NewRequest(http.MethodHead, next, nil)
+		req.Response = resp
+	}
+	return req
+}
+
+func TestHops(t *testing.T) {
+	for name, c := range map[string]struct {
+		req     *http.Request
+		wantErr bool
+		wantHop bool
+	}{
+		"the first request goes anywhere":                  {chain("http://127.0.0.1:5000/v2/"), false, false},
+		"a hop to a public name":                           {chain("http://127.0.0.1:5000/v2/", "https://cdn.example.com/x"), false, true},
+		"a hop to its own origin":                          {chain("https://reg.internal:8443/a", "https://reg.internal:8443/b"), false, false},
+		"the same origin, default port":                    {chain("https://reg.example.com/a", "https://reg.example.com:443/b"), false, false},
+		"a hop to an IP address":                           {chain("https://reg.example.com/a", "https://10.0.0.1/b"), true, false},
+		"a hop over plain http":                            {chain("https://reg.example.com/a", "http://cdn.example.com/b"), true, false},
+		"a hop to another port":                            {chain("https://reg.example.com/a", "https://cdn.example.com:8443/b"), true, false},
+		"three hops":                                       {chain("https://reg.example.com/a", "https://a.example.com/", "https://b.example.com/", "https://c.example.com/"), false, true},
+		"four hops with a limit of three":                  {chain("https://reg.example.com/a", "https://a.example.com/", "https://b.example.com/", "https://c.example.com/", "https://d.example.com/"), true, false},
+		"the origin of the first, not of the previous hop": {chain("https://reg.example.com/a", "https://a.example.com/", "https://reg.example.com/b"), false, false},
+	} {
+		base := &recordingRT{}
+		_, err := Hops{Base: base, MaxHops: 3}.RoundTrip(c.req)
+		if (err != nil) != c.wantErr || (err != nil && !errors.Is(err, ErrRedirectRefused)) {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if err == nil && (len(base.hops) != 1 || base.hops[0] != c.wantHop) {
+			t.Errorf("%s: sent as a hop %v, want %v", name, base.hops, c.wantHop)
+		}
+	}
 }
