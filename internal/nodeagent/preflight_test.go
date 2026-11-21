@@ -47,7 +47,7 @@ func goodInput(t *testing.T) PreflightInput {
 	if err := os.WriteFile(filepath.Join(cg, "cgroup.controllers"), []byte("cpu memory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return PreflightInput{Persistence: true, Observation: true, ContainerdRoot: root, CRISock: socket(t), CgroupRoot: cg, RegistryAddr: registry(t, 401)}
+	return PreflightInput{Persistence: true, Observation: true, ContainerdRoot: root, CRISock: socket(t), CgroupRoot: cg, RegistryAddr: registry(t, 401), RegistryInsecureDev: true}
 }
 
 func TestPreflightPassesOnAGoodNode(t *testing.T) {
@@ -69,7 +69,8 @@ func TestPreflightSaysWhatIsWrong(t *testing.T) {
 		"CRI socket missing":                                {mod: func(i *PreflightInput) { i.CRISock = "/nonexistent.sock" }, persist: CodeRuntimeSocket, observe: CodeRuntimeSocket},
 		"registry down":                                     {mod: func(i *PreflightInput) { i.RegistryAddr = "127.0.0.1:1" }, persist: CodeSnapshotRegistry},
 		"registry broken":                                   {mod: func(i *PreflightInput) { i.RegistryAddr = registry(t, 503) }, persist: CodeSnapshotRegistry},
-		"no cgroup v2 tree":                                 {mod: func(i *PreflightInput) { i.CgroupRoot = t.TempDir() }, observe: CodeCgroupV2Missing},
+		"no CA and no development flag (the token would travel in the clear)": {mod: func(i *PreflightInput) { i.RegistryInsecureDev = false }, persist: CodeSnapshotRegistry},
+		"no cgroup v2 tree": {mod: func(i *PreflightInput) { i.CgroupRoot = t.TempDir() }, observe: CodeCgroupV2Missing},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := goodInput(t)

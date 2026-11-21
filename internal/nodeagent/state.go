@@ -28,6 +28,9 @@ func SetupRegistryForwarder(mgr ctrl.Manager, cfg *Config) error {
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		log.Info("registry forwarder", "listen", "127.0.0.1", "port", cfg.StateForwardPort, "target", cfg.StateRegistryAddr)
 		opts := []devicestate.ForwardOption{devicestate.WithNodeToken(cfg.RegistryTokenFile)}
+		if cfg.RegistryInsecureDev {
+			opts = []devicestate.ForwardOption{devicestate.WithPlainDevelopment()}
+		}
 		if cfg.StatePersistence {
 			opts = append(opts, devicestate.WithPushSocket(cfg.StatePushSocket, cfg.StatePushSocketUID))
 		}

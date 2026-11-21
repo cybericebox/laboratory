@@ -38,13 +38,17 @@ func Forward(ctx context.Context, listen, target string, log logr.Logger, opts .
 	for _, f := range opts {
 		f(&o)
 	}
-	if o.token == nil {
-		return errors.New("registry relay: no node token configured (WithNodeToken)")
-	}
-	if o.tlsCAFile != "" {
+	switch {
+	case o.tlsCAFile != "" && o.token != nil:
 		if err := o.loadTLS(target); err != nil {
 			return err
 		}
+	case o.tlsCAFile == "" && o.token != nil && !o.allowClearToken:
+		return errors.New("registry relay: a node token without a certificate authority (WithTLS) would travel in the clear: refusing to start")
+	case o.token == nil && !o.plainDev:
+		return errors.New("registry relay: no node token configured (WithNodeToken); plain http without a token needs WithPlainDevelopment")
+	case o.token != nil && o.plainDev:
+		return errors.New("registry relay: WithPlainDevelopment sends no token and cannot be combined with WithNodeToken")
 	}
 	tr := o.upstreamTransport()
 	scheme := "http"
@@ -106,6 +110,8 @@ type forwardOptions struct {
 	// pushSocket is the path of the unix socket of the snapshot push, pushSocketUID the owner given to it (-1: leave the owner).
 	pushSocket    string
 	pushSocketUID int
+	// plainDev is the explicit development setup: plain http to the registry and no token at all. allowClearToken is for tests only.
+	plainDev, allowClearToken bool
 	// transport is the transport towards the registry (tests); nil builds one from the TLS configuration.
 	transport http.RoundTripper
 }
@@ -127,6 +133,10 @@ func WithNodeToken(tokenFile string) ForwardOption {
 func WithPushSocket(path string, uid int) ForwardOption {
 	return func(o *forwardOptions) { o.pushSocket, o.pushSocketUID = path, uid }
 }
+
+// WithPlainDevelopment is the development setup: the relay speaks plain http to the registry and sends no token, so nothing of the node's
+// identity can travel in the clear. A real setup has a certificate authority (WithTLS) and a token (WithNodeToken).
+func WithPlainDevelopment() ForwardOption { return func(o *forwardOptions) { o.plainDev = true } }
 
 func (o *forwardOptions) loadTLS(target string) error {
 	pem, err := os.ReadFile(o.tlsCAFile)
@@ -225,8 +235,10 @@ func relayHandler(scheme, target string, transport http.RoundTripper, token *ima
 			pr.Out.URL.Scheme, pr.Out.URL.Host, pr.Out.Host = scheme, target, target
 			pr.Out.Header.Del("Authorization")
 			imagecache.StripPlatformHeaders(pr.Out.Header)
-			tok, _ := token.Token() // checked before; a token read again in between that fails leaves the request without it, and the gate refuses it
-			pr.Out.Header.Set(imagecache.HeaderNodeToken, tok)
+			if token != nil {
+				tok, _ := token.Token() // checked before; a token read again in between that fails leaves the request without it, and the gate refuses it
+				pr.Out.Header.Set(imagecache.HeaderNodeToken, tok)
+			}
 		},
 		FlushInterval: -1, // blobs stream
 		ErrorHandler:  func(w http.ResponseWriter, _ *http.Request, _ error) { w.WriteHeader(http.StatusBadGateway) },
@@ -236,9 +248,11 @@ func relayHandler(scheme, target string, transport http.RoundTripper, token *ima
 			http.Error(w, http.StatusText(status), status)
 			return
 		}
-		if _, err := token.Token(); err != nil {
-			http.Error(w, "the node has no token for the registry", http.StatusServiceUnavailable)
-			return
+		if token != nil {
+			if _, err := token.Token(); err != nil {
+				http.Error(w, "the node has no token for the registry", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		proxy.ServeHTTP(w, r)
 	})

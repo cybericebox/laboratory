@@ -224,7 +224,7 @@ func TestForwardServesTheTCPPortAndThePushSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Forward(ctx, listen, strings.TrimPrefix(up.URL, "http://"), logr.Discard(), WithNodeToken(writeToken(t, "tok")), WithPushSocket(sock, -1))
+		done <- Forward(ctx, listen, strings.TrimPrefix(up.URL, "http://"), logr.Discard(), WithNodeToken(writeToken(t, "tok")), withClearTokenForTests(), WithPushSocket(sock, -1))
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 	fi, err := os.Stat(sock)
@@ -298,6 +298,55 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out")
+}
+
+func withClearTokenForTests() ForwardOption {
+	return func(o *forwardOptions) { o.allowClearToken = true }
+}
+
+// A token never travels over plain http: without a certificate authority the relay does not start, unless it is the explicit development
+// setup, which sends no token at all.
+func TestForwardRefusesATokenWithoutTLS(t *testing.T) {
+	err := Forward(context.Background(), "127.0.0.1:0", "x:1", logr.Discard(), WithNodeToken(writeToken(t, "tok")))
+	if err == nil || !strings.Contains(err.Error(), "clear") {
+		t.Fatalf("%v", err)
+	}
+	if err := Forward(context.Background(), "127.0.0.1:0", "x:1", logr.Discard(), WithNodeToken(writeToken(t, "tok")), WithPlainDevelopment()); err == nil {
+		t.Fatal("the development setup sends no token: both options together are refused")
+	}
+}
+
+// The development setup relays without any token, and every client header is still removed.
+func TestForwardPlainDevelopmentSendsNoToken(t *testing.T) {
+	var s seen
+	up := httptest.NewServer(s.handler())
+	defer up.Close()
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	listen := ln.Addr().String()
+	_ = ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = Forward(ctx, listen, strings.TrimPrefix(up.URL, "http://"), logr.Discard(), WithPlainDevelopment())
+	}()
+	var resp *http.Response
+	var err error
+	for i := 0; i < 50; i++ {
+		req, _ := http.NewRequest("GET", "http://"+listen+"/v2/", nil)
+		req.Header.Set("X-Cib-Node-Token", "forged")
+		req.Header.Set("Authorization", "Basic x")
+		if resp, err = http.DefaultClient.Do(req); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if h := s.headers[0]; h.Get("X-Cib-Node-Token") != "" || h.Get("Authorization") != "" {
+		t.Fatalf("%v", h)
+	}
 }
 
 func TestForwardNeedsAToken(t *testing.T) {

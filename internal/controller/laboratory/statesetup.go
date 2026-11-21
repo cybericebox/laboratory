@@ -42,7 +42,11 @@ func SetupState(c operator.StateConfig) (StatePolicy, *snapshot.Registry, error)
 	if !c.Enabled || c.RegistryAddr == "" {
 		return pol, nil, nil
 	}
+	if c.RegistryCAFile == "" && !c.RegistryInsecureDev {
+		return StatePolicy{}, nil, fmt.Errorf("STATE_REGISTRY_CA_FILE is required: the operator's token never travels in the clear (STATE_REGISTRY_INSECURE_DEV is the development setup, with no token)")
+	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
 	if c.RegistryCAFile != "" {
 		pem, err := os.ReadFile(c.RegistryCAFile)
 		if err != nil {
@@ -59,6 +63,8 @@ func SetupState(c operator.StateConfig) (StatePolicy, *snapshot.Registry, error)
 		tr.TLSClientConfig = &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}
 	}
 	// The operator is known to the gate by its own token, on every request; it has no registry account.
-	reg := &snapshot.Registry{Host: c.RegistryAddr, Transport: imagecache.NewTokenFile(c.RegistryTokenFile).RoundTripper(tr)}
-	return pol, reg, nil
+	if c.RegistryCAFile == "" { // development: plain http, no token
+		return pol, &snapshot.Registry{Host: c.RegistryAddr, Transport: tr}, nil
+	}
+	return pol, &snapshot.Registry{Host: c.RegistryAddr, Transport: imagecache.NewTokenFile(c.RegistryTokenFile).RoundTripper(tr)}, nil
 }

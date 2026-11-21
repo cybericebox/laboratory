@@ -22,7 +22,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/grouppods"
-	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
@@ -100,7 +99,7 @@ func Run() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	h.SetRegistryTransport(exportTLS, imagecache.NewTokenFile(cfg.RegistryTokenFile))
+	h.SetRegistryTransport(exportTLS, gateToken(cfg))
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
 	allowedRegistries := cfg.AllowedRegistries
 	if cfg.Cache.Enabled {

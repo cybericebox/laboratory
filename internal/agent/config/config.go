@@ -180,6 +180,9 @@ type Config struct {
 	// RegistryTokenFile is the projected ServiceAccount token (audience laboratory-registry-gate) the agent presents to the registry gate,
 	// for the snapshot export and the prewarm. The agent has no registry account.
 	RegistryTokenFile string `env:"AGENT_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// RegistryInsecureDev (AGENT_REGISTRY_INSECURE_DEV): plain http and no token, for development. Without a CA file
+	// (AGENT_PREWARM_GATE_CA_FILE) and without it the agent refuses to talk to the gate: its token never travels in the clear.
+	RegistryInsecureDev bool `env:"AGENT_REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's
