@@ -43,7 +43,6 @@ internal/proxy/demux/xdp/llvm-strip
 /proxy
 /cni-gate
 /ovs-diag
-/cover.out
 # captured node-agent logs
 laboratory-node-agent-*.log
 # helm dependency lock/vendor

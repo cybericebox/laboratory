@@ -16,7 +16,7 @@ package fastpath
 
 import "errors"
 
-//go:generate sh -c "MULTIARCH=$(dpkg-architecture -q DEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu) && go run github.com/cilium/ebpf/cmd/bpf2go -go-package fastpath -type wg_stat WgFastpath ./wg_fastpath.bpf.c -- -O2 -g -Wall -Werror -target bpf -I/usr/include/$MULTIARCH -I/usr/include"
+//go:generate sh -c "MULTIARCH=$(dpkg-architecture -q DEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu) && go tool bpf2go -go-package fastpath -type wg_stat WgFastpath ./wg_fastpath.bpf.c -- -O2 -g -Wall -Werror -target bpf -I/usr/include/$MULTIARCH -I/usr/include"
 
 // ErrNoByteLimiter says the programs were loaded without the byte limiter (the verifier of the kernel refused it): only the packet
 // bucket of a session limits, and the caller sets that with SetRate.

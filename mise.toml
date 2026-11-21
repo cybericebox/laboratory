@@ -17,7 +17,8 @@ protoc-gen-go-grpc = "1.6.2"
 gh = "2.104.0"           # dev-push
 "github:mokevnin/heavy" = "0.1.2"  # a machine-wide semaphore: heavy commands of every checkout and agent take turns (heavy --status)
 # Built with the pinned Go, not downloaded: a tool built by an older Go cannot parse the newer standard library.
-"go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "0.22.0"
+# golangci-lint stays here and is not a go.mod tool: its authors advise against making it a module dependency (it would pull its
+# whole dependency tree into go.mod). The Go tools of the module (controller-gen, setup-envtest, bpf2go) are tool directives of go.mod.
 "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "2.14.0"
 
 # The registry of the chart (the same version as registry.image in charts/laboratory/values.yaml): the registry gate tests run
@@ -46,8 +47,23 @@ depends = ["cache-guard"]
 run = "heavy -- make build"
 
 [tasks.generate]
-description = "Regenerate the CRDs, the RBAC, the deepcopy code and the API clients"
-run = "make manifests generate generate-api"
+description = "Regenerate everything generated: CRDs and RBAC (and the chart's copies), deepcopy, the API clients, the gRPC code"
+run = [
+  "make manifests generate generate-api",
+  { task = "proto" },
+]
+
+[tasks.generate-check]
+description = "Regenerate everything and fail when that changes the tree (git status --porcelain must be empty; commit first what you changed)"
+run = '''
+mise run generate
+out="$(git status --porcelain)"
+if [ -n "$out" ]; then
+  echo "generated files are out of date or the tree is not clean; run 'mise run generate' and commit:" >&2
+  echo "$out" >&2
+  exit 1
+fi
+'''
 
 [tasks.proto]
 description = "Regenerate the Go code of the gRPC contracts (agent.proto, node_agent.proto)"
@@ -89,8 +105,8 @@ depends = ["cache-guard"]
 run = "heavy -- make test-e2e"
 
 [tasks.check]
-description = "What the CI check runs without Docker: lint and test"
-run = [{ task = "lint" }, { task = "test" }]
+description = "What the CI check runs without Docker: generate-check, lint and test"
+run = [{ task = "generate-check" }, { task = "lint" }, { task = "test" }]
 
 # Branch cycle (scripts/dev.sh, the same in every repository), see CONTRIBUTING.md.
 [tasks.dev-start]

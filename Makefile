@@ -66,18 +66,20 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role paths="./internal/controller/...;./internal/admissioncheck/..." output:rbac:artifacts:config=config/rbac
+	rm -f config/crd/bases/*.yaml
 	$(CONTROLLER_GEN) crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	rm -f charts/laboratory/crds/*.yaml
 	cp config/crd/bases/*.yaml charts/laboratory/crds/
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 .PHONY: generate-api
-generate-api:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) ./hack/update-codegen.sh ## Generate code API client, lister, and informer implementations.
+generate-api: ## Generate the API client, lister, informer and applyconfiguration code (k8s.io/code-generator at the version of client-go).
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) ./hack/update-codegen.sh
 
 ##@ Kind (local testing)
 
@@ -300,8 +302,8 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet ## Run tests.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e)
 
 .PHONY: test-netns
 test-netns: ## Run the real-iptables tests of the VPN and gateway pods in network namespaces (docker, privileged)
@@ -392,59 +394,31 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 ##@ Dependencies
 
-## Location to install dependencies to
-LOCALBIN ?= $(shell pwd)/bin
-$(LOCALBIN):
-	mkdir -p $(LOCALBIN)
-
-## Tool Binaries
+# Tools are of three kinds (see CONTRIBUTING.md, "Tools"): the binaries mise.toml pins (kubectl, kind, kustomize, golangci-lint),
+# and the Go tools go.mod pins with tool directives and runs as `go tool <name>` with the toolchain of go.mod.
+LOCALBIN ?= $(CURDIR)/bin
 KUBECTL ?= kubectl
 KIND ?= kind
-# kustomize, controller-gen and golangci-lint come from mise (mise.toml pins them): run the targets through `mise run ...`.
 KUSTOMIZE ?= kustomize
-CONTROLLER_GEN ?= controller-gen
-ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT ?= golangci-lint
+CONTROLLER_GEN ?= go tool controller-gen
+ENVTEST ?= go tool setup-envtest
 
-## Tool Versions
 # Tools are built with the toolchain of go.mod, not whatever go is installed: a tool
 # built by an older Go cannot parse the newer standard library (generic methods).
 GO_TOOLCHAIN ?= $(shell go env GOVERSION)
-#ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
-ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
-#ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
+# ENVTEST_K8S_VERSION is the Kubernetes version of the envtest binaries (1.<minor> of k8s.io/api in go.mod).
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 
 # The tools mise installs: these targets only check that they are on PATH.
-.PHONY: kustomize controller-gen golangci-lint
-kustomize controller-gen golangci-lint:
+.PHONY: kustomize golangci-lint
+kustomize golangci-lint:
 	@command -v $@ >/dev/null 2>&1 || { echo "$@ is not on PATH: run this target through mise (mise install; mise run make <target>)" >&2; exit 1; }
 
 .PHONY: setup-envtest
-setup-envtest: envtest ## Download the binaries required for ENVTEST in the local bin directory.
+setup-envtest: ## Download the binaries required for ENVTEST into bin/.
 	@echo "Setting up envtest binaries for Kubernetes version $(ENVTEST_K8S_VERSION)..."
 	@$(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path || { \
 		echo "Error: Failed to set up envtest binaries for version $(ENVTEST_K8S_VERSION)."; \
 		exit 1; \
 	}
-
-.PHONY: envtest
-envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
-$(ENVTEST): $(LOCALBIN)
-	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
-
-# go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
-# $1 - target path with name of binary
-# $2 - package url which can be installed
-# $3 - specific version of package
-define go-install-tool
-@[ -f "$(1)-$(3)" ] || { \
-set -e; \
-package=$(2)@$(3) ;\
-echo "Downloading $${package}" ;\
-rm -f $(1) || true ;\
-GOTOOLCHAIN=$(GO_TOOLCHAIN) GOBIN=$(LOCALBIN) go install $${package} ;\
-mv $(1) $(1)-$(3) ;\
-} ;\
-ln -sf $(1)-$(3) $(1)
-endef

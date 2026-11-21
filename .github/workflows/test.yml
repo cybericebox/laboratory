@@ -55,6 +55,17 @@ jobs:
       - name: Program tests and live forwarding in network namespaces (privileged docker, make test-bpf)
         run: make test-bpf
 
+  generate:
+    name: Generated files are current
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      - name: Regenerate everything and fail on a difference (CRDs, RBAC, deepcopy, API clients, gRPC code)
+        run: mise run generate-check
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
