@@ -30,10 +30,10 @@ spec:
     spec:
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       # The gate checks the ServiceAccount tokens of its callers with TokenReview and watches the cluster objects it decides from, so the pod has
-      # its own ServiceAccount and a token. Kubernetes mounts the token per pod, not per container, so zot sees it too: zot never reads it and
-      # runs as another user. The ServiceAccount has no right on Secrets outside the namespace laboratory-upstream (templates/registry/rbac.yaml).
+      # its own ServiceAccount. The token is NOT mounted for the pod (that would give it to zot too): a projected volume (gate-api-access, below)
+      # holds it, the cluster's CA and the namespace, and only the gate container mounts it where a client library looks for them.
       serviceAccountName: laboratory-registry-gate
-      automountServiceAccountToken: true
+      automountServiceAccountToken: false
       # zot runs as an unprivileged user; fsGroup makes the volume writable for it.
       securityContext:
         runAsNonRoot: true
@@ -134,20 +134,20 @@ spec:
               value: {{ $r.gate.apiStaleMax | quote }}
             - name: GATE_AGENT_MAX_FILLS
               value: {{ $r.gate.agentMaxFills | quote }}
-            - name: GATE_UPLOADS_PER_DEVICE
-              value: {{ $r.gate.uploadsPerDevice | quote }}
-            - name: GATE_UPLOADS_PER_NODE
-              value: {{ $r.gate.uploadsPerNode | quote }}
-            - name: GATE_GRANTS_PER_NODE
-              value: {{ $r.gate.grantsPerNode | quote }}
-            - name: GATE_GRANT_MAX_DIGESTS
-              value: {{ $r.gate.grantMaxDigests | quote }}
-            - name: GATE_MANIFEST_MAX_BYTES
-              value: {{ include "laboratory.bytes" $r.gate.manifestMaxBytes | quote }}
             - name: GATE_MANIFEST_HOLD_BYTES
-              value: {{ include "laboratory.bytes" $r.gate.manifestHoldBytes | quote }}
+              value: {{ $r.gate.limits.manifestHoldBytes | int64 | quote }}
+            - name: GATE_MANIFEST_MAX_BYTES
+              value: {{ $r.gate.limits.manifestMaxBytes | int64 | quote }}
+            - name: GATE_GRANTS_PER_NODE
+              value: {{ $r.gate.limits.grantsPerNode | int64 | quote }}
+            - name: GATE_GRANT_MAX_DIGESTS
+              value: {{ $r.gate.limits.grantMaxDigests | int64 | quote }}
             - name: GATE_TOKENREVIEW_CONCURRENCY
-              value: {{ $r.gate.tokenReviewConcurrency | quote }}
+              value: {{ $r.gate.limits.tokenReviewConcurrency | int64 | quote }}
+            - name: GATE_UPLOADS_PER_DEVICE
+              value: {{ $r.gate.limits.uploadsPerDevice | int64 | quote }}
+            - name: GATE_UPLOADS_PER_NODE
+              value: {{ $r.gate.limits.uploadsPerNode | int64 | quote }}
             # registry.allowedRegistries (plus the platform's own images): a registry that is not on it is refused before any upstream call.
             - name: GATE_ALLOWED_REGISTRIES
               value: {{ include "laboratory.allowedRegistries" . | quote }}
@@ -210,6 +210,10 @@ spec:
             capabilities:
               drop: [ ALL ]
           volumeMounts:
+            # The gate's own token for the API server (TokenReview and the watches), with the CA and the namespace: in this container only.
+            - name: gate-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
             - name: gate-config
               mountPath: /etc/gate
               readOnly: true
@@ -234,6 +238,23 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        - name: gate-api-access
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 3607
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
         - name: config
           configMap:
             name: laboratory-registry

@@ -4,7 +4,7 @@ one). Three kinds of Secret, one writer each:
   tenant-<name>   the operator, from the tenant's images.pullSecret;
   lab-<hash>      the management agent, from the registry credentials of a lab's variant call (the operator deletes those of a lab that is gone);
   platform        the operator, from the platform pull secrets of the release (the platform's own images: the VPN, gateway and netconfig images).
-Only the registry gate reads this namespace (templates/registry/rbac.yaml). No lab node, no pod of a lab and no component of the lab pool has a
+Only the registry gate reads this namespace (templates/registry/rbac.yaml), and the admission policy laboratory-upstream-writers keeps each writer to its own names. No lab node, no pod of a lab and no component of the lab pool has a
 right here, and no pod references these Secrets: a credential never reaches a node.
 */ -}}
 apiVersion: v1
@@ -24,7 +24,7 @@ metadata:
 rules:
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
-    verbs: [ "create", "delete", "get", "list", "update", "patch" ]
+    verbs: [ "create", "delete", "get", "list", "update" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -51,7 +51,8 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
-  # The credentials of a lab are written by delete and create (never updated in place) and read back by nobody but the gate.
+  # The agent writes the credentials of a lab (lab-<hash>) by deleting the Secret and creating it again, and never reads one back: no get, no
+  # update, no list. The admission policy laboratory-upstream-writers (upstream-admission-policy.yaml) limits it to the names lab-*.
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
     verbs: [ "create", "delete" ]

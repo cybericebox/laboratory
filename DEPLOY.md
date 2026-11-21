@@ -1524,6 +1524,13 @@ pair, and sends the cluster only public material: a certificate request and the 
    at most `proxy.l7.grantMaxTTL` (8h) apart), plus `group_id`, `lab`, `dev`, `kind` (`web` or `console`) and `host` (the FULL host name of the device access host, `<device>-<code><letter>.<base domain>`, which must equal the request's host without its port: a grant opens one device and no other host of the same group). The platform's page posts it (`grant`, and an optional `next` path) to `https://<host>/_auth` from a new tab; the proxy requires the `Origin` of the post to match `proxy.l7.platformOrigins` (an empty list refuses every grant), verifies the grant and answers `303` with the host-only cookie `cib_grant` (`Secure`, `HttpOnly`, `SameSite=Lax`, no `Domain`; `Max-Age` = `exp - now`); every later request on that host verifies the cookie again, bound to the same host. The grant is in no URL and no `Referer`, and a `GET /_auth` consumes nothing. Every failure (signature, expiry, host, kind, tenant, origin, size) is the same card, `expired` with `401`. The group must belong to the issuer (the tenant
    label of the LabGroup): a tenant cannot open another's labs, even with a perfect signature, and a session stops when its group
    changes owner or the tenant's key is removed (a verified cookie is cached for at most 30 s). There is no renewal and no sliding session: the platform issues a new grant when the user opens the device again. There is no shared lab access key and the proxy holds no secret of its own.
+   **Two lists must be kept as a pair.** `proxy.l7.platformOrigins` says which pages may *post* a grant to `/_auth`, and `terminal.embedding.allow` says which pages may *frame*
+   the console page and open its WebSocket (the `Origin` is matched against it). Both must cover every site that opens a device, including an event site served on per-event hosts
+   (use `https://*.base` entries, with the `deny` list for the hosts under it that must not embed): a site in one list and not the other posts and gets a console that will not frame, or the reverse.
+   **A page that sends `Referrer-Policy: no-referrer` makes the browser send `Origin: null` on the form post, which the proxy refuses (the card `expired`)**: the platform pages that
+   open devices must send a policy that keeps the origin (`strict-origin-when-cross-origin`, the browser default; not `no-referrer`).
+   The cookie is named `__Host-cib_grant` (`proxy.l7.grantCookieName`): the prefix makes a browser accept it only as `Secure`, `Path=/` and without a `Domain`, so a sibling site under the parent
+   domain cannot set or shadow it; a request that carries two cookies of the name carries no grant.
 6. **Without enrollment.** Setting `agent.tenantCertificates.enabled` makes cert-manager issue a client certificate (and key) per tenant into
    the Secret `laboratory-agent-client-<name>-tls`. This is a manual fallback, off by default; the access key must then be
    registered some other way (the agent only writes it through `Enroll` and `RotateAccessKey`).
@@ -2219,6 +2226,8 @@ only and has one account, `gate`, so there is no path to zot that does not pass 
 
 **What it may do in the cluster** (`templates/registry/rbac.yaml`): create `tokenreviews`; read, list and watch `pods` and `nodes`, and the devices, labs, imagepulls, tenants and labgroups of the laboratory (the schedule it decides from); read, list and watch Secrets in the namespace `laboratory-upstream` and nowhere else. It writes nothing in the cluster.
 
+**Tenant label.** The operator stamps `laboratory.cybericebox.com/tenant` on every device pod next to `group-name` (and a digest of the terminal command and user as `terminal-spec`). device-access refuses a grant whose issuer is not the pod's tenant, and a pod without the label is refused. The chart needs nothing for it; a pod made before the upgrade is refused until its device is recreated.
+
 **What it decides.** A node may pull `localhost:5035/c/<tenant>/<registry>/<repo>...` only when a pod bound to that node has exactly that reference (or an `ImagePull` lists the node, the reference and the tenant), the pod's tenant is the tenant of the path segment, and the upstream registry accepts that tenant's credentials; the content is then served from the shared tree `c/<registry>/<repo>` (the tenant segment is not stored, so nothing is duplicated). A blob is served only inside the grant of a manifest the node was served for the same reference. A snapshot `lab/<ns>/<lab>/<device>` is pulled by the node that has the device and pushed by it under the budget, interval, quota and reserve of `devices.statePersistence.*`, which the gate enforces (`GATE_*`); nodes have no delete, and the gate removes superseded snapshots after `supersededGrace`. The operator and the agent may read what they need for the retention sweep, a device reset, the export of a snapshot and the prewarm. Everything else is `403`. A request in the old form `c/<registry>/...` is refused. `registry.cache.requireDigest` (off by default; to be switched on for events) refuses a manifest requested by tag.
 
 What it does for the image cache (requests under `/v2/c/<tenant>/<registry>/<repo>/...`, only `GET` and `HEAD` of manifests and blobs; everything else of that path is refused): for every pull the check of **5.2** of the design (`docs/research/2026-11-16-zot-tenant-cache.md`).
@@ -2235,6 +2244,10 @@ What it does for the image cache (requests under `/v2/c/<tenant>/<registry>/<rep
 The decisions live in the memory of the gate (a restart costs one check per repository and credential, and no grant survives it; it can never allow what was not allowed). If the API server is unreachable the gate decides from the caches it holds for `registry.gate.apiStaleMax` (15m) and then answers `503`. Credentials are in memory only, never in a log, a metric label, a header or on disk, and are read only from the namespace `laboratory-upstream`. The key of the hash and the gate's account in zot are in the registry Secret (`gateKey`, `gatePassword`) and mounted into the gate container alone. Resources: `registry.gate.resources`.
 
 ### The namespace laboratory-upstream
+
+Writers are limited by name with an admission policy (`laboratory-upstream-writers`, rendered with `operator.admissionPolicy.enabled`): the management agent creates and
+deletes only `lab-*` (its Role has `create` and `delete` and no `get`, `update` or `list`: it writes a lab's credentials by deleting and creating the Secret), the operator
+writes only `tenant-*` and `platform` and deletes those and `lab-*`.
 
 It holds the credentials the gate proves a pull with against the upstream registries, in three kinds of Secret with one writer each: `tenant-<name>` (the operator, from `Tenant.spec.images.pullSecret`), `lab-<hash>` (the management agent, from the registry credentials of a variant call; the operator deletes those of a lab that is gone) and `platform` (the operator, from the `imagePullSecrets` of the chart: the credentials of the platform's own VPN, gateway and netconfig images). Only the registry gate has a right to read there (a namespaced Role, no cluster-wide Secret right), no pod references these Secrets, and no lab node holds a credential of any kind: a node cannot pull a private image directly, only through the gate with the node's schedule.
 
@@ -3032,15 +3045,9 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
   is forwarded.
 - `images.tenantDeny` still defaults to empty: the chart cannot know which repositories of an installation are private. Set it to the
   platform's private organizations.
-- **Platform images.** A device image written `platform:<name>@sha256:<64 hex>` names an image of the platform's provider repository by digest: the
-  agent checks the form (a name of lowercase letters, digits, `.`, `_`, `-`, at most 64 characters, one path element; the digest is required, a tag is not a
-  platform reference), skips the tenant's allow list and the platform deny list for it (the platform chose the image), and the cache fetches it like
-  any other image. The platform does not write to the lab registry any more. A reference that starts with `platform:` is never read as a Docker Hub image;
-  one of the wrong form is refused.
-- **Platform-only.** `images.platformOnly: true` (agent variable `AGENT_IMAGE_PLATFORM_ONLY`) or `tenants.<name>.images.platformOnly: true` for one
-  tenant makes a device image valid only as `platform:<name>@sha256:<hex>`: by digest, from the provider repository. Anything else is refused on CreateLabs with
-  `PermissionDenied`, the ErrorInfo reason `IMAGE_NOT_PLATFORM` (`client.IsImageNotPlatform`) and a message that names the variant, the device and the
-  image. A tenant is platform-only when either the platform or its own object says so. Both are off by default.
+- **Platform images are gone.** A device image written `platform:<name>@sha256:...` and the `images.platformOnly` switches (the chart value and
+  `tenants.<name>.images.platformOnly`) are removed: the platform does not write to the lab registry, and its images are fetched through the cache like any
+  other image.
 
 ### Names and system pods (R-19)
 
