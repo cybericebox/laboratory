@@ -99,7 +99,11 @@ jobs:
       - name: Allow user namespaces (device pods run with hostUsers false; Ubuntu's AppArmor restricts them)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Create kind cluster (1 control plane + 2 lab workers, one tainted)
-        run: kind create cluster --config hack/kind/kind-config.yaml
+        run: |
+          kind create cluster --config hack/kind/kind-config.yaml
+          # The pools of the chart: the lab nodes and the control of the laboratory. The label is an administrator's, so it is set here and not by the kubelet.
+          kubectl label node kind-control-plane node-restriction.kubernetes.io/cib-pool=lab-control --overwrite
+          kubectl label node kind-worker kind-worker2 node-restriction.kubernetes.io/cib-pool=lab --overwrite
       - name: Running Test e2e
         run: |
           go mod tidy

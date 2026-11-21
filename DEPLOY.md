@@ -47,7 +47,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 
 ---
 
-> A complete local k0s cluster (Lima VMs, Cilium Gateway, this chart, test lab and checklist) is in
+> A complete local k0s cluster (Lima VMs, Cilium, this chart, test lab and checklist) is in
 > `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infrastructure/providers/local`); `make cluster-up` uses the Kind config `hack/kind/kind-config.yaml` of this repo (`KIND_CONFIG`).
 
 ---
@@ -87,18 +87,11 @@ EOF
 
 The chart never receives secret values: create these Secrets before installing.
 
-The proxy verifies lab access links with the public access keys of the tenants, which a tenant registers by
+The proxy verifies the grants of device web hosts with the public access keys of the tenants, which a tenant registers by
 enrolling (see [Enrollment & access keys](#enrollment--access-keys)); there is no key to create here.
 
-The proxy's own session-cookie key (`SESSION_SECRET`, 32+ bytes, not the access key):
-
-```bash
-kubectl create namespace laboratory-proxy
-kubectl -n laboratory-proxy create secret generic proxy-session \
-  --from-literal=sessionSecret="$(openssl rand -base64 48)"
-```
-
-After rotating it run `kubectl -n laboratory-proxy rollout restart deploy/laboratory-proxy`.
+The proxy holds no secret of its own: a device web host is opened with a **grant** the platform signs with the tenant's access key, and the proxy
+verifies it with the tenant's public key (see "Web access: the grant").
 
 With an ACME issuer (`certManager.selfSigned: false`) the wildcard proxy certificate needs DNS-01: create a
 Cloudflare API token (Zone:Zone:Read + Zone:DNS:Edit on the zone) Secret in the cert-manager namespace and
@@ -121,25 +114,22 @@ What gets installed:
 
 - CRDs (Pools, Tenants, LabGroups, LabGroupClients, LabGroupAccessPolicies, Labs, Devices, Connections, ImagePulls (prepull requests), and the internal
   LabVPNs, LabGateways, LabTrafficReports)
-- `laboratory-system` namespace, the `laboratory-tenants` namespace (enrollment tokens of tenants) and the `laboratory-access-keys` namespace (their access keys) and the `laboratory-images` namespace (credentials of a prepull request)
+- `laboratory-system` namespace, the `laboratory-tenants` namespace (enrollment tokens of tenants) and the `laboratory-access-keys` namespace (their access keys) and the `laboratory-upstream` namespace (the credentials the registry gate proves a pull with; only the gate reads it)
 - One `Tenant` per entry of `tenants:`, and `default`
 - Operator (Deployment + RBAC)
-- Node-agent (DaemonSet + RBAC) on every node
-- Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, only when `registry.cache.enabled`, `devices.statePersistence.enabled` or `registry.platform.enabled` is on, the platform registry (zot)
+- Node-agent (DaemonSet + RBAC) on every node of the lab pool
+- Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, the lab registry (zot and its gate) when `registry.cache.enabled` (the default, and not optional with the node-agent) or `devices.statePersistence.enabled` is on
 - `laboratory-config` ConfigMap with your settings
 
 **The proxy** (`proxy.*`) is the L7 HTTPS proxy, an unprivileged Deployment in `laboratory-proxy`, **two replicas by default**
 (`proxy.replicas`), a PodDisruptionBudget with `minAvailable: 1` (`proxy.podDisruptionBudget`, rendered only with more than one replica) and a
 a **required** pod anti-affinity by hostname: never two replicas on one node (with more replicas than nodes the extra ones stay Pending). For larger clusters
-set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` and `proxy.tolerations` narrow the set; `replicas` and the budget do not apply; the default is
+set `proxy.mode: daemonset`: one proxy pod on every node of the lab pool (`replicas` and the budget do not apply; the default is
 `replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
 (see "Platform reserve"). The WireGuard demux is not in that pod: it is its own DaemonSet `laboratory-proxy-wg` in the namespace `laboratory-wg`, on the nodes
-selected by `proxy.wg.nodeSelector` and `proxy.wg.tolerations` (empty: they follow `labWorkloads`, every node when that is empty too), with its own ServiceAccount, RBAC and the `laboratory-proxy-wg` LoadBalancer Service
-(`proxy.wg.externalTrafficPolicy`; empty by default, which follows the mode: `Cluster` for `userspace`, `Local` for `tc` and `xdp`). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; `userspace` is the default; `tc` and `xdp` are opt-in, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
+on every node of the lab pool, with its own ServiceAccount, RBAC and the `laboratory-proxy-wg` Service (a `NodePort` with `externalTrafficPolicy: Local` in every mode: see "Pools and the entry"). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; `userspace` is the default; `tc` and `xdp` are opt-in, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
 as root with the capabilities `BPF`, `NET_ADMIN` and `PERFMON` only and the host's `/sys/fs/bpf`, in a namespace that admits the privileged Pod Security level;
-`userspace` is unprivileged on the pod network in a restricted namespace. The L7 namespace stays restricted in every mode. The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
-re-issued only when less than `proxy.l7.sessionRenewBefore` (1h) of it remains, so an active user costs about one renewal per hour; and it never
-lives past `proxy.l7.sessionMaxTTL` (168h) from the handoff or past the link's own session end. The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
+`userspace` is unprivileged on the pod network in a restricted namespace. The L7 namespace stays restricted in every mode. A visitor's session is the grant: the host-only cookie the proxy sets on `POST /_auth` lasts as long as the grant (`proxy.l7.grantMaxTTL`, 8h, is the longest `exp - iat` it accepts) and the proxy checks the grant's tenant key again every `liveCheckInterval`. The L7 proxy is stateless, so a request
 may land on any replica. In `userspace` mode the demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
 the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. In `tc` and `xdp` the kernel keeps the sessions across a restart of the pod. Both pods are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
 demux `250m`/`128Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;
@@ -208,7 +198,7 @@ A LabGroup runs two servers of its own: the **VPN server** (WireGuard for the cl
 **Slim install: what changed in the defaults (upgrade notes).**
 - **The agent runs one replica** (`agent.replicas: 1`, was 2). A values file that sets more than one is refused until `agent.multiReplicaAck=true` states that the backend does not use reservations through the agent (the quota and fit checks are serialized inside one process); the PodDisruptionBudget is rendered only with more than one replica.
 - **A group's VPN server and internet gateway run only while their switches are on** (`LabGroup.spec.vpn.enabled`, `spec.gateway.enabled`, see above). Existing groups keep what they have (an absent switch is on; a disabled VPN stays off) and the VPN pod of a disabled group, which was a Deployment at zero replicas, is now deleted. A caller that sends neither switch (the daemon of today) still gets the old shape; a caller that sends either gets the explicit meaning (the other off).
-- **The registry (zot) is installed only when `registry.cache.enabled`, `devices.statePersistence.enabled` or `registry.platform.enabled` is on.** An install that had none of them on loses the zot Deployment, Service, ConfigMap, Secret and network policy on upgrade; the volume claim stays (`helm.sh/resource-policy: keep`). The node-agent stops the `127.0.0.1:5035` relay, the agent and the operator lose their registry settings.
+- **The registry (zot and its gate) is installed only when `registry.cache.enabled` or `devices.statePersistence.enabled` is on**, and with the node-agent the cache is not optional (a lab node has no registry credential and pulls only through the gate; the chart refuses `nodeAgent.enabled` with `registry.cache.enabled=false`). An install with neither and no node-agent has no zot Deployment, Service, ConfigMap, Secret or network policy; the volume claim stays (`helm.sh/resource-policy: keep`).
 
 ### Feature switches of the laboratory
 
@@ -395,13 +385,12 @@ The rules:
 
 **Before the first pod of a group** its images (those of all its Labs) are pulled onto the eligible nodes. The
 scheduler makes a cluster-scoped `ImagePull` request `prepull-<hash>` listing the images and the nodes of
-`labWorkloads.nodeSelector`/`tolerations`; the node-agent of each listed node pulls them through the container
-runtime's image service (CRI `PullImage`) and writes its own entry in `status.nodes`. **No tenant code runs and no
+the lab pool; the node-agent of each listed node pulls them through the container
+runtime's image service (CRI `PullImage`) from `localhost:5035/c/<tenant>/...`, that is through the registry gate, which allows the pull because the `ImagePull` lists this node, this exact reference and this tenant and writes its own entry in `status.nodes`. **No tenant code runs and no
 pod is made**: the runtime only fetches and unpacks the image, so a tenant image with a hostile `/bin/sh` gets
 nothing from the prepull.
-Credentials are the tenant's own (see "Tenant images" below), never the platform's: the operator copies the
-tenant's registry Secret into the `laboratory-images` namespace for the life of the request, the node-agent
-(whose Role there is `get` on Secrets only) reads it, and the copy goes with the request. A request is one per
+Credentials are the tenant's own (see "Tenant images" below), never the platform's, and no node ever holds them: the gate reads them
+in the namespace `laboratory-upstream` (the operator writes `tenant-<name>` there from the tenant's `images.pullSecret`) and proves the pull upstream itself. A request is one per
 tenant and launch class. The group's pods wait until every listed node has resolved all images, then the request
 is deleted. An image that **cannot be pulled** (a wrong name or tag, no access: the runtime refuses it) is
 given up on at once, within seconds: the group goes on without it and its pods that use that image fail
@@ -991,7 +980,7 @@ A device whose pod is not Ready, or whose bootstrap is not `done`, is not checke
 | `checks.networkPolicy.enabled` (true) | CiliumNetworkPolicy: no ingress, egress to the API server only. **The chart refuses to render with the checker on and this off**, and likewise with `operator.admissionPolicy.enabled=false` or `terminal.networkPolicy.enabled=false` |
 | `checks.resources` | requests and limits of the checker (a trimmed copy of every Lab of the cluster and the pods of its node are cached) |
 
-The placement is that of the node-agent (`labWorkloads`); the image is the node image (`/node checker`).
+The checker runs on the lab pool, like the node-agent; the image is the node image (`/node checker`).
 
 **How a check reaches a device.** The checker holds **no container runtime socket** and reads **no file of a container from the node**. Every observation of every
 device (container or micro-VM) is one run of the in-device probe (`/.cib/probe/probe check-file|check-exec|check-observe`, the static program every device mounts read-only)
@@ -1055,15 +1044,15 @@ The same service also carries the lab checker's way to the devices (see "Lab che
 network ingress at all (the checker uses a unix socket), no proxy secret and no proxy Role.
 
 Path of a console: participant, L7 proxy (authorization), the service on the node of the device, a shell in the device. The browser opens
-`https://<device>-<code>t.<operator.baseDomain>` (a host of its own per device; the last character of the first label is the kind of access; the platform issues the handoff link for that host like for any device host). Nothing about the device is in a path or a query. The console has **no cookie**. `/_auth?t=<handoff>` on the console host is verified like any handoff (full host name, 60 s) and answered with the page itself (no redirect, no `Set-Cookie`), which holds a console session token: the proxy's own HS256 token with the claims of a session (group, client, tenant, `host` = this console host, `use` = `console`, abs/exp). The page script removes `?t=` from the address (`history.replaceState`) and opens the WebSocket with `Sec-WebSocket-Protocol: cib.console.v1, <token>`; the proxy verifies the token (signature, use, expiry, host equal to the request host), runs the same checks as for a web request (the group still belongs to the tenant, the access policy allows the lab, the lab is running) and adds that the device has a console, and answers with `cib.console.v1` only. The token is in a JSON data block of the page (the script-src stays `'self'`, no inline script or handler), never in a URL after the load and never in a log. There is no renewal in the connection: the token is checked when a console opens (it lives as long as a web session would: `proxy.l7.sessionIdleTTL`, never past the link's `sess` or `sessionMaxTTL`); an open console runs to its idle and lifetime limits or until the live check cuts it; Reconnect on the page reuses the token the page holds while it is valid; a reload (no `?t=`) or an expired token shows "session over" and the user opens a new link. The WebSocket accepts the console host's own `Origin` and the origins the embedding lists allow (the same match as `frame-ancestors`); the live re-check
+`https://<device>-<code>t.<operator.baseDomain>` (a host of its own per device; the last character of the first label is the kind of access; the platform page posts the grant for that host like for any device host). Nothing about the device is in a path or a query. The console has **no cookie**. `POST /_auth` on the console host carries a **console grant** (`kind: console`, audiences `laboratory-proxy` and `laboratory-device-access`, the host, the group, the lab and the device in it), is verified like any grant (the tenant's public key, the full host name, `exp - iat` within `proxy.l7.grantMaxTTL`) and is answered with the page itself (no redirect, no `Set-Cookie`). The grant is in a JSON data block of the page (the script-src stays `'self'`, no inline script or handler), never in a URL and never in a log. The page opens the WebSocket with `Sec-WebSocket-Protocol: cib.console.v1, <grant>`; the proxy verifies the grant, runs the same checks as for a web request (the group still belongs to the tenant, the access policy allows the lab, the lab is running), adds that the device has a console, and answers with `cib.console.v1` only. The service then verifies the same grant itself (see "Console grant and keys") and checks that it names this client, group, lab and device and that the tenant is the tenant of the device pod. There is no renewal in the connection: the grant is checked when a console opens; an open console runs to its idle and lifetime limits, to the grant's `exp` or until the live check cuts it; a reload shows "session over" and the user opens the device again from the platform. The WebSocket accepts the console host's own `Origin` and the origins the embedding lists allow (the same match as `frame-ancestors`); the live re-check
 (`proxy.l7.liveCheckInterval`) closes a console whose client lost access. The proxy serves the terminal page itself (xterm.js 6 is embedded in
 the binary, no CDN; no clipboard write, links only `http(s)` on a click, the title is ignored).
 
 | Setting | Meaning |
 |---|---|
 | `terminal.enabled` | the option; renders the DaemonSet, its ServiceAccount, the Cilium policy; gives the proxy the console settings and its two read rights |
-| `terminal.namespace` (`laboratory-device-access`) | the namespace of the service: its own (privileged Pod Security level for the hostPath; the proxy's one Role covers only it). Create the `imagePullSecrets` there too, as for the proxy. It must not be the release or the proxy namespace |
-| `terminal.sharedSecret.value`, `.accept` | the secret shared by the proxy and the service (see "Shared secret and rotation"); empty `value` = made by the chart and kept in the cluster |
+| `terminal.namespace` (`laboratory-device-access`) | the namespace of the service: its own (privileged Pod Security level for the hostPath; the proxy's one Role covers only it). The pod holds no image pull secret. It must not be the release or the proxy namespace |
+| `terminal.grantMaxTTL` (8h), `terminal.keyReload` (15s) | the longest `exp - iat` of a console grant the service accepts (the agent reports the smaller of it and `proxy.l7.grantMaxTTL` to the backend), and how often the service rereads the mirrored tenant keys (see "Console grant and keys") |
 | `terminal.embedding.allow`, `.deny` | the sites that may show the console page in a frame (see "Embedding"); empty = none |
 | `terminal.port` (8080), `terminal.metricsPort` (9102) | stream and metrics ports of the service pod (plain HTTP on the pod network) |
 | `terminal.containerdSocket` (empty = `nodeAgent.criSocket`), `terminal.containerdNamespace` (`k8s.io`) | the runtime socket of the node and the kubelet's containerd namespace |
@@ -1116,27 +1105,12 @@ next start remove execs and FIFOs a crash left behind (containerd does not kill 
 | L7 proxy: Role in the service's own namespace, `endpointslices` get/list/watch | the address of the service pod on that node (the headless Service `laboratory-device-access` has one EndpointSlice per ready pod: an address and a node name). The proxy reads **no pod**: pod specs of the operator or the registry never become readable by the internet-facing proxy. The namespace holds nothing else |
 
 **Network.** The listener is bound to the pod IP only (downward API), not to every interface. The Cilium policy of the service admits ingress only from the pods `app=laboratory-proxy-l7` of the proxy namespace on `terminal.port`, and has no
-egress. The egress of the L7 proxy is narrowed to: DNS, the API server, the **device pods** of lab group namespaces (the namespace's group label *and* the pod's
+egress. The egress of the L7 proxy is narrowed to: the API server, the **device pods** of lab group namespaces (the namespace's group label *and* the pod's
 `laboratory.cybericebox.com/device` label, no longer every pod of the namespace) and, with the console on, the service pods on their one port. What the proxy
 dials in those namespaces is the web port of the pod behind the Service of an exposed device and nothing else (its traffic reports and the report preparation go
 through the API server).
 
-**Shared secret and rotation.** On top of the network policy every open request (the console) carries an HMAC-SHA256 made by the proxy with a secret only
-the proxy and the service hold, over every field of the request, a timestamp and a random nonce. The service checks it first, in constant time, then that the
-timestamp is within 30 s of its own clock (keep the node clocks in sync) and that the nonce was not seen in that window, before it does anything else with the
-request. A failure is answered `unauthorized` without saying which check failed, and the secret is never logged, never in an environment variable and never in a metric:
-it is mounted as files from a Secret in each of the two namespaces (`laboratory-device-access-auth` and `laboratory-proxy-device-access-auth`). The service has no
-Kubernetes API token even so. There is no mode without a secret: the service does not start without `current`, and the proxy does not start the console without it.
-
-The chart makes the secret (48 random characters) and keeps it across upgrades by finding the existing Secret with `lookup`. **Where the chart is rendered without a
-cluster** (`helm template`, a dry run, GitOps tools such as Argo CD or Flux's renderer) `lookup` returns nothing and every render would make a new secret: set
-`terminal.sharedSecret.value` from a sealed secret or the like there. The chart refuses a value shorter than 32 characters.
-
-Rotation (no simultaneous restart: the service reads the files again every 10 s, and a mounted Secret changes in place in a minute or two):
-1. Set `terminal.sharedSecret.value=<old>` (explicitly) and `terminal.sharedSecret.accept=<new>`; upgrade. The service accepts both; the proxy still signs with the old one.
-2. Wait until every service pod has it (`kubectl -n laboratory-device-access exec <pod> -- ls /etc/device-access/auth` shows `accept`; allow a few minutes).
-3. Set `value=<new>` and `accept=<old>`; upgrade. The proxy signs with the new one; the service accepts both.
-4. After the proxy pods have the new secret, clear `accept`; upgrade.
+**Console grant and keys.** On top of the network policy a console is opened with a **grant** the platform signs for the one device host with the tenant's access key (EdDSA; `kind: console`, the group, the lab and the device in it). The proxy forwards it; it signs nothing and holds no secret shared with the service. The service verifies it with the tenant's **public** key, which the operator mirrors from the Secrets of `laboratory-access-keys` into the ConfigMap `laboratory-access-keys` of the service's namespace (public data; the service mounts it as files, `KEY_DIR`, optional so the pod starts before the operator has made it) and which the service rereads every `terminal.keyReload`. A grant for another group, device or tenant, an expired one, one with a bad signature and one longer than `terminal.grantMaxTTL` is answered `unauthorized` without saying which check failed. Removing a tenant key (`RemoveAccessKey`) stops console access within the kubelet's volume refresh (about a minute) plus `keyReload`. The service has no Kubernetes API token; the only Secret-like object it reads is that ConfigMap. Keep the node clocks in sync: the grant's `exp` and `iat` are checked against the service's clock.
 
 **Embedding.** The console page may be shown in a frame of a platform page. Two lists decide and nothing is implied: the origin of the page's `Referer` must match an
 `allow` entry and no `deny` entry (deny wins), otherwise the page says `frame-ancestors 'none'`. An entry is `https://host[:port]` or `https://*.base[:port]` where `*` is
@@ -1152,8 +1126,7 @@ embed: the landing, the controller, the VPN host and the labs base domain (nothi
 and `<kind>` is ONE character that only says which access it is: `w` web, `t` console, `v` vnc, `r` rdp; any other character stands for nothing yet and the proxy answers
 "not found". Internally, the web host of a device is `<device>-<code>w` (also the name of its web Service) and the console of the same device is `<device>-<code>t`. Parsing splits the label at its
 last hyphen; it does not depend on the length of the code. The letters are the lab's private encoding (an internal note, not an interface): A client never parses the host: it takes the link and its kind from the access entry of the lab (`LabAccessEntry.protocol` + `url`), and frames a console link only if the entry says `terminal` and the host is one label under the labs domain (a CSP cannot say more, so `frame-src` is `https://*.<labs domain>`). The web host of a device never reads as its console, because its kind letter is `w`. The management agent puts the link in the `terminal` entry of
-the lab's access list (`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing. The link is opened through the handoff
-of the platform like a device link (`/_auth?t=<handoff token for the host label>`). The proxy reads the device and the kind from the label, looks the device up among the devices of
+the lab's access list (`LabAccessEntry.url`, same source as the web host, empty until the device has its code), so the daemon builds nothing. The link is opened by the platform page like a device link: a form `POST` of the grant for that host to the host's `/_auth`. The proxy reads the device and the kind from the label, looks the device up among the devices of
 the session's own group only and compares full hosts (Origin, lookup): the console host of another group, or of a lab the client may not use, is the same "not found" page,
 and so is a kind that is not served (vnc, rdp, reserved). The page and the WebSocket (`/ws`) are on that host. **Older devices:** the stored code is
 only the random part, so a Device keeps its code whatever its length; a Service named before the kind character existed (`<device>-<code>`) is read as an unknown kind until its lab is
@@ -1189,7 +1162,7 @@ kubectl delete crd \
   labgateways.laboratory.cybericebox.com \
   labtrafficreports.laboratory.cybericebox.com \
   imagepulls.laboratory.cybericebox.com
-kubectl delete namespace laboratory-tenants laboratory-images
+kubectl delete namespace laboratory-tenants laboratory-upstream
 ```
 
 ---
@@ -1358,7 +1331,7 @@ tenants:
       maxFileSize: 128Mi     # optional, capped by devices.statePersistence.maxFileSize (the default)
     quota:                   # optional; absent = no limit
       cpu: "50%"             # the sum of the CPU requests of the tenant's pods: "32", "500m" or a percentage
-      memory: "40Gi"         #   of what the lab nodes (labWorkloads selector and tolerations) allocate
+      memory: "40Gi"         #   of what the nodes of the lab pool allocate
 ```
 
 Quote a quota value ("32", "50%"): it is a string. `default` may be listed to change its policy; unless it is, it may use
@@ -1389,7 +1362,7 @@ images:
   is restarted by its Deployment). A missing or non-registry Secret keeps the group from reconciling, with the reason in the
   operator log.
 - **Image cache.** A tenant with `images.pullSecret` (and a lab with credentials of its own) uses the cache like every tenant: the
-  operator re-keys the credentials for the cache path (see "Upstream credentials" under "The platform registry"), and the registry
+  operator writes the credentials into the namespace `laboratory-upstream` (see "The namespace laboratory-upstream"), and the registry
   gate proves every pull against the upstream registry with them, so a private image is never fetched with anyone else's
   credentials and never served to a pod that cannot prove access. The platform's own credentials are never used for a tenant's images.
   Keep the platform's private repositories out of reach with `images.tenantDeny` (and the tenant's `allow`).
@@ -1446,7 +1419,7 @@ images:
   heartbeat at the latest, so the backend needs no polling). The answer is the caller's tenant view:
   `state_persistence` (`available` = the cluster enables it AND the Tenant is allowed; the default debounce; the write quota and
   maximum file size, the tenant's limit capped by the cluster's; the excluded paths), `image_cache` (enabled, registries),
-  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`access_token_max_ttl_seconds`: the longest exp - iat of a handoff link the proxy accepts, 60s; `session_idle_ttl_seconds`: the session expires after this much inactivity, 24h; `session_max_ttl_seconds`: the absolute cap from the handoff, 168h; chart `proxy.l7.accessTokenMaxTTL`, `sessionIdleTTL`, `sessionMaxTTL`) and `certificate` (`not_after_unix` of the client
+  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`grant_max_ttl_seconds`: the longest exp - iat of a web grant the proxy accepts, 8h, chart `proxy.l7.grantMaxTTL`; the terminal's is `terminal.grantMaxTTL`) and `certificate` (`not_after_unix` of the client
   certificate the call came with, `issued_ttl_seconds` of new ones: the backend schedules `RenewCertificate` from the expiry, and the
   expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
@@ -1474,7 +1447,7 @@ operator as `VPN_IMAGE` and `NETCONFIG_IMAGE` (the gateway is the VPN image, one
 **One name for one setting**: what both the operator and the agent read (the scheduler, the device limits, the state persistence and image cache
 settings, the lab node selector and tolerations, the pod sizes, the pull secrets, the lab domain) is rendered once by the chart
 (`laboratory.sharedEnv`) under the operator's names (`SCHEDULER_*`, `DEVICE_*`, `STATE_*`, `IMAGE_CACHE_*`, `LAB_NODE_SELECTOR`, ...), and the agent
-reads the proxy's limits under the proxy's names (`ACCESS_TOKEN_MAX_TTL`, `SESSION_IDLE_TTL`, `SESSION_MAX_TTL`).
+reads the grant limits under the proxy's names (`GRANT_MAX_TTL`, `TERMINAL_GRANT_MAX_TTL`).
 **Constants of the platform** are only ports INSIDE the cluster network, baked into the images and not values: the WireGuard port 51820 (the
 VPN pods, the wg-demux and the `targetPort` of its LoadBalancer Service), the HTTPS port 8443, the probe ports of the proxy (8081 for L7, 8082 for the wg-demux), the metrics port of the wg-demux (8083), and
 the registry relay port 5035 on every node. Everything else that is a tuning knob stays an **optional value** (and an optional environment
@@ -1546,12 +1519,11 @@ pair, and sends the cluster only public material: a certificate request and the 
    never the last. A rotation overlaps: add the new key, switch the backend to it, remove the old one.
 4. **Where the keys are.** The agent keeps them in the Secret `tenant-<name>-access-keys` of `laboratory-access-keys` (one entry per key id,
    the PEM public key); the proxy reads them from there (it watches that namespace and nothing else). The agent has no role in `laboratory-tenants`.
-5. **Handoff links.** The proxy accepts a lab access link only if it is a JWT signed with EdDSA by an access key of the tenant it
-   names: `iss` = the tenant, the header `kid` = the key id, `aud` = `laboratory-proxy`, `sub` = the LabGroupClient, `iat`, `nbf` and `exp`
-   (at most 5 minutes apart), plus `group_id`, `host` (the FULL host name of the device access host, `<device>-<code><letter>.<base domain>`, which must equal the request's host without its port: a link opens one device and no other host of the same group; it lives 60 s, there is no replay cache) and `sess` (the end of the session, unix time). The session cookie the proxy sets is host-only (no `Domain`), so it belongs to that device host and a browser holds one per host: sessions of several groups coexist. The cookie also carries a `host` claim (the full host name it was issued for) that must equal the request's host on every request, renewals included, so a leaked cookie opens one device at most; a cookie without the claim is refused and the user opens the link again. This includes the old cookie with `Domain=<base domain>` that a browser may still send from before the change: it is rejected (it has no `host` claim), never accepted until it expires, and the user re-opens the link to get a host-only cookie. An unknown
-   issuer or key id, another audience, an expired or not yet valid link is refused. The group must belong to the issuer (the tenant
+5. **Grants.** The proxy accepts a device web session only as a **grant**: a compact JWS signed with EdDSA by an access key of the tenant it
+   names (header `kid` = the key id, `typ` = `cib-grant`; `iss` = the tenant, `aud` = `laboratory-proxy` (and `laboratory-device-access` for a console), `sub` = the LabGroupClient, `iat`, `nbf` and `exp`
+   at most `proxy.l7.grantMaxTTL` (8h) apart), plus `group_id`, `lab`, `dev`, `kind` (`web` or `console`) and `host` (the FULL host name of the device access host, `<device>-<code><letter>.<base domain>`, which must equal the request's host without its port: a grant opens one device and no other host of the same group). The platform's page posts it (`grant`, and an optional `next` path) to `https://<host>/_auth` from a new tab; the proxy requires the `Origin` of the post to match `proxy.l7.platformOrigins` (an empty list refuses every grant), verifies the grant and answers `303` with the host-only cookie `cib_grant` (`Secure`, `HttpOnly`, `SameSite=Lax`, no `Domain`; `Max-Age` = `exp - now`); every later request on that host verifies the cookie again, bound to the same host. The grant is in no URL and no `Referer`, and a `GET /_auth` consumes nothing. Every failure (signature, expiry, host, kind, tenant, origin, size) is the same card, `expired` with `401`. The group must belong to the issuer (the tenant
    label of the LabGroup): a tenant cannot open another's labs, even with a perfect signature, and a session stops when its group
-   changes owner. There is no shared lab access key any more.
+   changes owner or the tenant's key is removed (a verified cookie is cached for at most 30 s). There is no renewal and no sliding session: the platform issues a new grant when the user opens the device again. There is no shared lab access key and the proxy holds no secret of its own.
 6. **Without enrollment.** Setting `agent.tenantCertificates.enabled` makes cert-manager issue a client certificate (and key) per tenant into
    the Secret `laboratory-agent-client-<name>-tls`. This is a manual fallback, off by default; the access key must then be
    registered some other way (the agent only writes it through `Enroll` and `RotateAccessKey`).
@@ -1661,11 +1633,9 @@ A lab pod (device, VPN, gateway) needs the node-agent of its node: the node-agen
 what gives the pod its interfaces. A pod that lands on a node without a working node-agent gets a plain Cilium address and no OVS wiring: a lab outside the
 layer-2 isolation model. Two rules keep that from happening:
 
-1. **The node-agent runs on exactly the nodes that can host lab pods.** Its DaemonSet has the same node selector and tolerations as the lab pods
-   (`labWorkloads.nodeSelector`, `labWorkloads.tolerations`) and, in addition, tolerates Cilium's `node.cilium.io/agent-not-ready` taint so that it starts while the CNI
-   comes up. There is no `excludeControlPlane` any more. A schedulable control-plane node (a controller+worker topology) gets a node-agent and takes labs when
-   its taint is soft (`PreferNoSchedule`, as the stand and the AWS cluster role set it) or when `labWorkloads.tolerations` tolerate its taint, for example
-   `{key: node-role.kubernetes.io/control-plane, operator: Exists}`. A node that labs avoid (a hard taint they do not tolerate, or another node selector) has no node-agent.
+1. **The node-agent runs on exactly the nodes that can host lab pods: the lab pool.** Its DaemonSet has the pool's selector (`node-restriction.kubernetes.io/cib-pool=lab`, a constant of the chart) and the pool's tolerations (`pools.lab.tolerations`) and, in addition, tolerates Cilium's `node.cilium.io/agent-not-ready` taint so that it starts while the CNI
+   comes up. There is no `excludeControlPlane`. A schedulable control-plane node takes labs only when infrastructure labels it into the lab pool and `pools.lab.tolerations` tolerate its taint, for example
+   `{key: node-role.kubernetes.io/control-plane, operator: Exists}`. A node outside the lab pool has no node-agent and takes no lab.
 2. **A lab pod is placed only on a node whose node-agent is ready.** The node-agent sets the label `laboratory.cybericebox.com/node-agent-ready=true` on its own node once
    it is up (Open vSwitch is programmed, the gRPC socket listens) and removes it when it stops. The chart adds this label to the lab node selector (`LAB_NODE_SELECTOR` of the
    operator, `LAB_NODE_SELECTOR` of the agent too: the same value under the same name), so it is a required node selector of every VPN, gateway and device pod, and the scheduler and the capacity numbers count only
@@ -1677,6 +1647,40 @@ layer-2 isolation model. Two rules keep that from happening:
 Check a node: `kubectl get nodes -L laboratory.cybericebox.com/node-agent-ready` and `kubectl -n laboratory-system get pods -l app=node-agent -o wide`. A new node takes labs only after its
 node-agent is `Running`.
 
+### Pools and the entry
+
+**Pools.** The cluster is split into pools of nodes told apart by the label `node-restriction.kubernetes.io/cib-pool` (a label a node cannot set on itself, so a rooted
+node cannot move into another pool). The selector of a pool is a **constant of the chart**: there is no value to point a component at another pool, and a values file that
+sets a `nodeSelector` of a component is refused. Infrastructure labels the nodes before the chart is installed (a node without the label takes no pod and the install
+leaves them Pending) and owns the taints; the only values are the tolerations of the two pools, `pools.lab.tolerations` and `pools.labControl.tolerations`.
+
+| Pool (`cib-pool=`) | Runs |
+| --- | --- |
+| `lab` | the device, VPN and gateway pods (made by the operator), the node-agent, node-state, the device access service, the checker, the WireGuard demux and the L7 proxy |
+| `lab-control` | the operator, the management agent, the lab scheduler and the registry (zot and its gate) |
+
+The pods of the lab pool hold no registry credential and no image pull secret; the pods of the lab-control pool keep the platform's `imagePullSecrets`. The firewall
+between the pools (a lab node reaches nothing of the control pool) is infrastructure's.
+
+**The entry** has no Gateway: three components are reached from outside the cluster through `NodePort` Services with `externalTrafficPolicy: Local`, behind load balancers
+that infrastructure makes. The client's address reaches the pod as the TCP peer (the load balancer must preserve it), and each load balancer health-checks the nodes it targets,
+so a node without a pod of the component takes no traffic.
+
+| Service | Port | Values |
+| --- | --- | --- |
+| `laboratory-proxy-l7` (namespace `laboratory-proxy`) | TCP 443 to the proxy's own TLS (`proxy-tls`) | `proxy.l7.service.nodePort`, `proxy.l7.service.annotations` |
+| `laboratory-agent` | `agent.grpcPort` (mTLS stays) | `agent.service.nodePort`, `agent.service.annotations` |
+| `laboratory-proxy-wg` (namespace `laboratory-wg`) | UDP `proxy.wg.publicPort` to 51820, in every demux mode | `proxy.wg.nodePort`, `proxy.wg.service.annotations` |
+| `laboratory-registry` | TCP 5443, the gate (nodes, by `registry.gate.address`) | `registry.gate.service.nodePort`, `registry.gate.service.annotations` |
+
+The pod policies admit the `world` entity on the container port of the proxy and the agent. Whether Cilium classes a `Local` NodePort client as `world`, and whether `host` or `remote-node`
+must be added for the node health check, is proved on the staging cluster (`docs/laboratory/specs/pools-release.md`, S3). The proxy and the demux use **no cluster DNS**: the proxy takes the
+address of a device pod from the Device it watches, the demux the VPN pod's address from `LabGroup.status.vpn.backend`, and both fail closed (`404`, `503`, no table entry) when it is missing or stale. The
+agent and the operator keep one DNS rule each, for the gate's Service name and the upstream registries.
+
+What infrastructure sets: `registry.gate.address` (the internal load balancer of the gate), the node ports above when the load balancer needs fixed ones, `proxy.l7.platformOrigins` (the
+origins of the platform's pages, from its domain), `pools.lab.tolerations` and `pools.labControl.tolerations` (the taints), and `operator.baseDomain`, the agent's domain and `proxy.wg.publicPort` as before.
+
 ### Label keys
 
 Every key we own is under our domain `cybericebox.com`; the retired `cybericebox.io/*` is not ours and nothing here reads or tolerates it.
@@ -1686,8 +1690,7 @@ own keys stay: `laboratory.cybericebox.com/*` (node-agent-ready, lab-uid, device
 is in `docs/specs/LABEL-KEYS.md` of the platform repository.
 
 This is a clean switch, with no old-key compatibility, done while no labs run: infra moves the node labels, the taints and the autoscaler's
-`--startup-taint` to the new keys in the same pass, right before the laboratory upgrade, and `labWorkloads.nodeSelector` and
-`labWorkloads.tolerations` use `cybericebox.com/lab`. A lab node still labelled or tainted with the old keys takes no labs.
+`--startup-taint` to the new keys in the same pass, right before the laboratory upgrade, and the lab pool's taint (`pools.lab.tolerations`) uses `cybericebox.com/lab`. A lab node still labelled or tainted with the old keys takes no labs.
 
 ### The startup taint of a new lab worker
 
@@ -1806,7 +1809,7 @@ A lab with an Internet gateway leaves through the gateway pod of its group, and 
 - Per lab: download `bandwidth.caps.labInternetMbit` (50 Mbit/s), upload `bandwidth.caps.labUploadKbps` (2 Mbit/s, pure ACKs not counted), and
   a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`, which is on by default).
 - The proxy keeps per-minute summaries (lab, host name, connections, bytes, refusals; no content, no user address). The operator pulls them
-  every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy) and keeps the **connection
+  every minute from the gateways, which write them into a `LabEgressReport` (one object named `gateway` per group namespace, at most 30 minutes and a bounded number of rows; the operator logs it and acknowledges it in `spec.ackedThrough`, and the gateway then drops what was taken; no port is served and no pod is called) and keeps the **connection
   log** for the cluster's administrator only (it is never sent to the daemon or any other client): by default on a PersistentVolumeClaim of
   the operator (`internetEgress.log.persistence`: 10Gi, `helm.sh/resource-policy: keep`; ReadWriteOnce, so the operator Deployment is `Recreate`), in daily files
   `egress-YYYY-MM-DD.jsonl`, gzipped when the day (UTC) is over and deleted after `internetEgress.log.retentionDays` (30) days. A restarted
@@ -1939,10 +1942,11 @@ namespace from the group name must read `status.namespace` instead.
   authentication: a client that dribbles its headers or body, or opens connections and says nothing, is cut instead of holding a connection forever (an
   unauthenticated slowloris could otherwise exhaust the proxy). There is no write timeout, because responses stream; an upgraded (WebSocket) connection has
   its deadlines cleared and lives at most `LIVE_MAX_LIFETIME` (12h), with the access policy re-checked every 10 s.
-- **The handoff link** is valid for 60 s at most (`proxy.l7.accessTokenMaxTTL`; the backend's token lifetime must not be longer). It is a bearer link that the
-  proxy cannot make single-use, because its replicas share no memory; the short life is the control.
-- **The session cookie belongs to the proxy.** Any `Set-Cookie` of the session cookie's name in a device's response is removed, so a device cannot set,
-  replace or clear it; the device's own cookies pass.
+- **The grant** lives as long as `proxy.l7.grantMaxTTL` allows (8h; the backend caps `exp` with the value the agent reports). It is a bearer for one host; the proxy cannot make it single-use,
+  because its replicas share no memory, and the host binding, the tenant's key, the `Origin` check on delivery and the limit on its life are the controls.
+- **The grant cookie belongs to the proxy.** Any `Set-Cookie` of its name in a device's response is removed, so a device cannot set,
+  replace or clear it; the device's own cookies pass. The grant never goes to the device: the cookie, any header, the query and the `Referer`
+  are stripped from the request, and a WebSocket upgrade carries none of it.
 
 ### The lab that is starting
 
@@ -1981,9 +1985,9 @@ backend that never finishes the response) and reads the process's heap and stack
 is a slow answer; a pod killed for memory cuts every request in flight on it. If you raise `maxConnections`, raise the memory by about 130 KiB per connection (the measured
 cost with 25% headroom) and keep `liveTotal` at or below it. A request in flight is also a connection for the proxy, so `liveTotal` above `maxConnections` has no effect.
 
-**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (its session cookie is signed with the shared secret): `proxy.replicas`
-(each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). The demux's table is per pod
-and the demux is a DaemonSet, so its capacity is the number of entry nodes (`proxy.wg.nodeSelector`) times the numbers above; a WireGuard client whose packets land on another demux
+**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (a session is the grant in the cookie): `proxy.replicas`
+(each replica takes its share of the connections the load balancer sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). The demux's table is per pod
+and the demux is a DaemonSet on the lab pool, so its capacity is the number of lab nodes times the numbers above; a WireGuard client whose packets land on another demux
 re-handshakes (about 25-35 s, see the proxy rollout below), so change the entry nodes outside an event.
 
 ### Probes and rollouts
@@ -2004,7 +2008,7 @@ Every long-running component says when it really serves, and a rollout waits for
   WireGuard clients whose packets reach a new demux pod re-handshake (they keep their sessions on the other replica as long as it is up), so expect the clients of a replaced pod to reconnect within about 25-35 s
   (their keepalive and rekey timers), and do not upgrade the proxy during an event if that matters.
 - **Shutdown.** After SIGTERM the proxy's HTTP server stops taking connections and lets requests in flight finish, up to `proxy.terminationGracePeriodSeconds` (45), after a preStop sleep of
-  `proxy.preStopSleepSeconds` (5) that lets the Gateway and the Service stop sending connections to the pod. The agent does the same with its calls: it stops taking new ones and finishes the running ones for up to
+  `proxy.preStopSleepSeconds` (5) that lets the load balancer and the Service stop sending connections to the pod. The agent does the same with its calls: it stops taking new ones and finishes the running ones for up to
   `agent.shutdownGrace` (30s), so a `CreateLabGroupClients` that has made a participant's WireGuard key (returned only in the answer) is not cut; what is left after the grace (long streams such as Monitoring) is
   closed, and its client resumes. `agent.terminationGracePeriodSeconds` (45) is above the preStop sleep plus the grace.
 - A pod that is not Ready is taken out of its Service, so a node-agent or proxy that cannot serve gets no traffic; a pod that fails liveness is restarted by the kubelet.
@@ -2103,12 +2107,9 @@ holds no NAT or conntrack state for the tunnel clients (the stand checks it is e
 
 - **The server sees the node, not the client.** In `tc` and `xdp` the VPN pod sees the packets from the node's `cilium_host` address (in `userspace`, from the demux pod's address). Roaming
   still works, the demux moves the session.
-- **LB-IPAM and `externalTrafficPolicy`.** In `tc` and `xdp` the policy defaults to `Local` (a packet must reach a node whose kernel holds its session), and then the demux
-  Service gets an address of its own: LB-IPAM shares an address only between Services with the same policy, and the gateway's Service has no pod selector to match. With `Cluster`
-  (the `userspace` default, or set by `proxy.wg.externalTrafficPolicy`) the two share one address, but only once the second Service is created again after the change (an address
-  already handed out is not moved). A stand or an on-prem edge that runs `tc` or `xdp` and wants UDP 51820 and TCP 443 on one address therefore sets
-  `proxy.wg.externalTrafficPolicy: Cluster` (clients' source addresses are then the nodes' ones) or gives the demux Service its own address. The fast path picks the LoadBalancer address up as soon as the Service has it
-  and drops it when the Service loses it (checked on the stand).
+- **`externalTrafficPolicy: Local`.** The VPN Service is a `NodePort` with `Local` in every mode (the client's address reaches the demux, and a
+  packet arrives on a node that runs a demux pod, which the load balancer's health check of the nodes enforces). The fast path picks the Service's
+  external addresses up as soon as the Service has them and drops them when it loses them (checked on the stand).
 
 **Limits of `xdp`.**
 
@@ -2209,23 +2210,33 @@ and FOWNER capabilities and a read-only root file system, and does nothing else.
 
 ### The registry gate
 
-The registry pod has two containers: **zot** (the storage) and the **gate** (`/node registry-gate`, the image of the node). The Service `laboratory-registry` targets the gate; zot listens on `127.0.0.1:5001` of the pod
-only, so there is no path to zot that does not pass the gate (and no kubelet probe on zot: the gate's `/readyz`, on port 5002, answers only while zot accepts a connection, and its `/healthz` only while zot answers `/v2/`).
-The relay on the nodes (`127.0.0.1:5035`), the operator and the agent reach the same Service name; with the image cache on the relay uses the TLS port 5443, the others the plain port 5000.
+The registry pod has two containers: **zot** (the storage) and the **gate** (`/node registry-gate`, the image of the node). The Service `laboratory-registry` is a `NodePort` with `externalTrafficPolicy: Local` and has one port, the gate's **TLS** port 5443 (`registry-tls`); there is no plain port. zot listens on `127.0.0.1:5001` of the pod
+only and has one account, `gate`, so there is no path to zot that does not pass the gate (and no kubelet probe on zot: the gate's `/readyz`, on port 5002, answers only while zot accepts a connection, and its `/healthz` only while zot answers `/v2/`).
 
-What the gate does for every request outside the cache: it passes it under `/v2` to zot unchanged, with the client's own `Authorization` (zot's accounts decide), keeping the client's `Host` (zot builds the `Location` of an upload from it), streaming blobs and never buffering them. It answers `400` to a path that two components could read differently (a `.` or `..` segment, an empty segment, an encoded slash, backslash or dot, a control character, anything outside `/v2`) and `502` when zot is down.
+**Who may call, and how they are known.** Nobody holds a registry password: there is no reader, writer or platform account outside the pod. Every request carries the header `X-Cib-Node-Token`, a projected ServiceAccount token with the audience `laboratory-registry-gate`, which the gate checks with a `TokenReview` (the API server checks signature, expiry, audience and that the pod still exists) and remembers for at most `registry.gate.tokenCacheTTL` (5m). Three accounts may call: the **node-agent** of a lab node (its relay sets the header from the token mounted in its pod and removes every `X-Cib-*` and `Authorization` header a client sent; containerd and the kubelet send nothing the gate reads), the **operator** and the **management agent**. The gate learns the node of a node-agent token from the pod the token belongs to, and with `registry.gate.bindSource` (on) the peer address of a node's token must be one of that node's addresses, so a token read from one node cannot be used from another (this needs the client address to survive the internal load balancer: the target group must preserve it).
 
-What it does for the image cache (`registry.cache.enabled`, requests under `/v2/c/<registry>/<repo>/...`, only `GET` and `HEAD` of manifests and blobs; everything else of that path is refused): for every pull the check of **5.2** of the design (`docs/research/2026-11-16-zot-tenant-cache.md`).
+**How a node reaches it.** The nodes have no cluster DNS. They dial `registry.gate.address` (`host:port`, required), the internal load balancer of infrastructure whose target group points at the node port of the Service (`registry.gate.service.nodePort`; the chart makes the certificate of the gate for that name or address, plus the Service names). The authority is published as the ConfigMap `laboratory-registry-ca` (public data: `ca.crt`) in the release namespace and the agent's, and every caller trusts only it. The Secret that holds the server key, `laboratory-registry-tls`, is mounted by the registry pod alone: a node can read every Secret a pod bound to it mounts, so no node-side pod mounts one. The operator and the agent use the Service name (`laboratory-registry.laboratory-system.svc:5443`).
+
+**What it may do in the cluster** (`templates/registry/rbac.yaml`): create `tokenreviews`; read, list and watch `pods` and `nodes`, and the devices, labs, imagepulls, tenants and labgroups of the laboratory (the schedule it decides from); read, list and watch Secrets in the namespace `laboratory-upstream` and nowhere else. It writes nothing in the cluster.
+
+**What it decides.** A node may pull `localhost:5035/c/<tenant>/<registry>/<repo>...` only when a pod bound to that node has exactly that reference (or an `ImagePull` lists the node, the reference and the tenant), the pod's tenant is the tenant of the path segment, and the upstream registry accepts that tenant's credentials; the content is then served from the shared tree `c/<registry>/<repo>` (the tenant segment is not stored, so nothing is duplicated). A blob is served only inside the grant of a manifest the node was served for the same reference. A snapshot `lab/<ns>/<lab>/<device>` is pulled by the node that has the device and pushed by it under the budget, interval, quota and reserve of `devices.statePersistence.*`, which the gate enforces (`GATE_*`); nodes have no delete, and the gate removes superseded snapshots after `supersededGrace`. The operator and the agent may read what they need for the retention sweep, a device reset, the export of a snapshot and the prewarm. Everything else is `403`. A request in the old form `c/<registry>/...` is refused. `registry.cache.requireDigest` (off by default; to be switched on for events) refuses a manifest requested by tag.
+
+What it does for the image cache (requests under `/v2/c/<tenant>/<registry>/<repo>/...`, only `GET` and `HEAD` of manifests and blobs; everything else of that path is refused): for every pull the check of **5.2** of the design (`docs/research/2026-11-16-zot-tenant-cache.md`).
 
 | Request | The gate does |
 | --- | --- |
 | registry not in the list | `403`, `IMAGE_REGISTRY_NOT_ALLOWED` |
-| no `Authorization` | asks the upstream registry anonymously (token, then `HEAD`); public: serves; not public: `401` with a Basic challenge, so containerd comes back with the pod's credentials |
-| Basic `<tenant>~<user>:<secret>` | `HMAC(key, registry, user, secret)` and the repository give the decision; a verified tenant is served for `decisionMaxAge` (2m) and then served while it is checked again in the background; a new tenant for the same credentials is always checked first; a refusal is repeated for `deniedFor` (30s) and clears every tenant of those credentials at once |
-| a check | one token request (when the registry asks for one) and one `HEAD` of the object with the pull's credentials: `200` allowed, `401`/`403`/`404` denied, `429`/`5xx`/timeout unreachable (not a denial: see `staleIfError`) |
-| a tag | resolved upstream with the pull's credentials on every request (one `HEAD`); the answer carries the digest |
+| tenant segment that maps to no tenant, or a reference no pod of that tenant on the node has | `403`, `DENIED` |
+| a registry for which the tenant has no credential | asks the upstream registry anonymously (token, then `HEAD`); public: serves; not public: refused |
+| a credential | `HMAC(key, registry, user, secret)` and the repository give the decision; a verified tenant is served for `decisionMaxAge` (2m) and then served while it is checked again in the background; a new tenant for the same credentials is always checked first; a refusal is repeated for `deniedFor` (30s) and clears every tenant of those credentials at once |
+| a check | one token request (when the registry asks for one) and one `HEAD` of the object with the tenant's credentials: `200` allowed, `401`/`403`/`404` denied, `429`/`5xx`/timeout unreachable (not a denial: see `staleIfError`) |
+| a tag | resolved upstream with the tenant's credentials on every request (one `HEAD`); the answer carries the digest |
 
-The decisions live in the memory of the gate (a restart costs one check per repository and credential; it can never allow what was not allowed). Credentials are in memory only, never in a log, a metric label, a header or on disk. The key of the hash and the gate's account in zot are in the registry Secret (`gateKey`, `gatePassword`) and mounted into the gate container alone. Resources: `registry.gate.resources`.
+The decisions live in the memory of the gate (a restart costs one check per repository and credential, and no grant survives it; it can never allow what was not allowed). If the API server is unreachable the gate decides from the caches it holds for `registry.gate.apiStaleMax` (15m) and then answers `503`. Credentials are in memory only, never in a log, a metric label, a header or on disk, and are read only from the namespace `laboratory-upstream`. The key of the hash and the gate's account in zot are in the registry Secret (`gateKey`, `gatePassword`) and mounted into the gate container alone. Resources: `registry.gate.resources`.
+
+### The namespace laboratory-upstream
+
+It holds the credentials the gate proves a pull with against the upstream registries, in three kinds of Secret with one writer each: `tenant-<name>` (the operator, from `Tenant.spec.images.pullSecret`), `lab-<hash>` (the management agent, from the registry credentials of a variant call; the operator deletes those of a lab that is gone) and `platform` (the operator, from the `imagePullSecrets` of the chart: the credentials of the platform's own VPN, gateway and netconfig images). Only the registry gate has a right to read there (a namespaced Role, no cluster-wide Secret right), no pod references these Secrets, and no lab node holds a credential of any kind: a node cannot pull a private image directly, only through the gate with the node's schedule.
 
 ### Registry volume: keep the data when the claim goes
 
@@ -2233,8 +2244,8 @@ The registry volume (`laboratory-registry`, `registry.size`) holds every device 
 `helm uninstall` only. When the claim or the namespace is deleted, the fate of the data is decided by the **reclaim policy of the PersistentVolume**, which
 it takes from its StorageClass: `Delete` (the default of local-path and of the AWS EBS class) deletes the volume and every snapshot with it. Use a class
 with `reclaimPolicy: Retain`. The volume is ReadWriteOnce and, bound with `WaitForFirstConsumer`, stays on the node it was made on:
-moving the registry to other nodes (a lab label or taint on `labWorkloads`, a new lab node pool) leaves its pod Pending until the
-snapshots are moved to a new volume there, or `registry.nodeSelector` pins it to the node that holds the volume. The chart can create it:
+moving the registry to other nodes of the lab-control pool leaves its pod Pending until the
+snapshots are moved to a new volume there, or the node that holds the volume is the only one labelled into the pool. The chart can create it:
 
 ```yaml
 registry:
@@ -2259,54 +2270,12 @@ the volume is only as durable as the class you name in `registry.storageClass`.
 
 ### Who may read the registry
 
-zot is shared by every team and the image cache, so what it serves is split by repository (no catch-all pattern: a repository that matches none is
-denied to everyone but the writer):
+zot is shared by every team and the image cache, but only the gate talks to it (one account, `gate`, on the loopback of the pod); what a caller may read is the gate's decision (above), split by repository:
 
-- **The public image cache** (`docker.io/**`, `ghcr.io/**`, `quay.io/**`, `registry.k8s.io/**`, and the extra registries you list): anonymous read.
-- **The snapshots of the labs (`lab/**`) and the shared `base` repository: not anonymous.** The `reader` account may read them, the `writer` account
-  everything. Both live in the Secret `laboratory-registry` (generated once and kept across upgrades). The node-agent forwarder (`127.0.0.1:5035`) adds the reader to the node runtime's **GET and HEAD** requests of those repositories
-  that carry no credentials of their own, so pulling a snapshot needs no host configuration; writes are never given the reader. The agent exports a snapshot
-  with the reader too (the Secret `laboratory-registry-reader` in the agent namespace).
-- **The platform images (`platform/**`), only with `registry.platform.enabled`:** private like the snapshots, see "Platform images" below.
-- The network policy still lets the node-agents and the platform pods reach zot; the accounts are what keeps another team's snapshots (which can hold
-  solutions) from any other process that can reach it. A process on a node can still reach the forwarder on that node's loopback: the node-agent is the
-  trusted path.
-
-### Platform images (`registry.platform`)
-
-The images a lab runs can live in the registry itself, in the repository namespace `platform/**`, instead of on a public or private registry outside the
-cluster. A component of the platform (the backend that uploads or copies a task image) writes them; the labs pull them by digest as
-`localhost:5035/platform/<name>@sha256:<digest>`, with no credentials of their own. This chart only prepares the registry; nothing in the laboratory
-writes or reads `platform/**` by itself. It is **off by default** and then changes nothing: no pattern, no account, no Secret.
-
-```yaml
-registry:
-  platform:
-    enabled: true
-    writerNamespaces: [platform]     # the namespace of the writer; it must exist when the chart is installed
-    writerPodLabels: {}              # optional: only pods with these labels may reach the registry
-```
-
-What it adds:
-
-- **Access control.** The pattern `platform/**` is private: the `reader` account reads, the account `platform-writer` reads, writes and deletes. The snapshot
-  `writer` (the account of the operator and of every node-agent) has **no** right there, and `platform-writer` has none in `lab/**`, `base` or the cache, so a
-  compromised node cannot alter a platform image and the writer of platform images cannot touch a snapshot.
-- **The pull on the nodes.** The node-agent forwarder adds the `reader` account to GET and HEAD requests of `/v2/platform/...` that carry no credentials, like
-  for `lab/**` and `base`, only for the exact `Host` `localhost:5035` and never for a path with `..` or `//`. As with the snapshots, a process that can open the
-  node's loopback can read the platform images: the node-agent is the trusted path.
-- **The writer's Secret.** `laboratory-registry-platform` (keys `username`, `password`, `host`; the host is the in-cluster address
-  `laboratory-registry.<release namespace>.svc:5000`, plain http) in the release namespace and a copy in each namespace of `writerNamespaces`. The password
-  is generated once and kept across upgrades (read back with `lookup`, like the other accounts); it stays when the feature is switched off, so that switching it on
-  again changes nothing. Rotating it is not done by the chart yet (the other accounts have the same limit): delete the registry Secrets and the platform Secrets, then upgrade and restart the consumers.
-- **The network.** With `registry.networkPolicy.enabled`, the pods of `writerNamespaces` (narrowed by `writerPodLabels`) may reach the registry Service on port
-  5000. Nothing else is let in. The policy is a CiliumNetworkPolicy like the rest of the registry's.
-- **The cache does not touch it.** The retention of the pull-through cache and its on-demand sync name only the cache's own registries. An upstream
-  registry named `platform`, `lab` or `base` is refused by the chart, because those names belong to the registry itself. zot's garbage collection removes only blobs that no
-  manifest references.
-
-Plan the volume: `platform/**` shares the registry volume (`registry.size`, 20Gi by default) with the snapshots and the cache, and the volume is the only
-copy of what is pushed there. Use a `Retain` class (`registry.retainClass`), take volume snapshots, and size it for the task images, not only for the snapshots.
+- **The image cache** (`c/<registry>/<repo>`): a pod's pull, by the node that runs it, for its tenant, after the upstream proof. Public images are cached per tenant (the proof is made for each tenant), the bytes once.
+- **The snapshots of the labs (`lab/**`) and the shared `base` repository:** pulled by the node that hosts the device (the pods that pull a snapshot name it by digest), pushed by it under the gate's limits; read by the agent (export) and the operator (retention, reset, `RetainedBytes`).
+- **The platform never writes to the registry.** There is no `platform/**` repository, no writer account and no network path from the platform's namespaces: the platform asks the management agent to prewarm the cache (`PrewarmImages`), and the agent pulls through the gate.
+- The network policy admits the lab nodes (the Cilium entities `host` and `remote-node`, for the internal load balancer), the operator and the agent on the gate port, and nothing else.
 
 ### The laboratory's error journal
 
@@ -2377,8 +2346,8 @@ It has **no cluster-wide access to Secrets**, and no cluster-wide write access t
 a namespace (Secrets, Services, ServiceAccounts, Deployments, bare pods, NetworkPolicies, CiliumNetworkPolicies, PodDisruptionBudgets) comes
 from RoleBindings to the ClusterRole `laboratory-operator-namespaced`, which exist only in: each LabGroup namespace (the operator creates
 the binding itself right after the namespace, with the RoleBinding rights and the `bind` verb above), the release namespace (made by this
-chart: the platform pull secrets it copies and the snapshot registry credentials) and, as narrower Roles, `laboratory-tenants` (Secrets only) and
-`laboratory-images` (Secrets only: the credentials of a prepull request). The manager reads Secrets
+chart: the platform pull secrets it copies into `laboratory-upstream`) and, as narrower Roles, `laboratory-tenants` (Secrets only), `laboratory-upstream` (Secrets only: the upstream credentials the gate reads) and
+`laboratory-access-keys` (the tenants' public keys, which it mirrors into a ConfigMap of the device access service). The manager reads Secrets
 straight from the API server instead of caching them, because an informer would need cluster-wide list and watch.
 
 What remains, and why: the operator can still create a RoleBinding in any namespace to the three roles it may bind, so on its own RBAC cannot
@@ -2406,27 +2375,26 @@ deployed ones.
 
 `laboratory-node-state` is a DaemonSet of its own, apart from the node-agent, rendered only while `devices.statePersistence.enabled` or
 `lifecycle.runtimeObservation.enabled` is on (and `nodeAgent.enabled`; `lifecycle.profile: full` switches both on). It runs the same image
-(`/node node-state`) on the same nodes (`labWorkloads`), and takes over from the node-agent the work that needs the container runtime's files
+(`/node node-state`) on the same nodes (the lab pool), and takes over from the node-agent the work that needs the container runtime's files
 and the host cgroups and is not pod networking:
 
 | What | Where it runs |
 | --- | --- |
 | the snapshot engine of device state, its start-up check and retry, the Node annotation `cybericebox.com/state-persistence` | node-state, only with `devices.statePersistence.enabled` |
 | the CPU throttle monitor (`Device.status.cpuThrottle`) | node-state, whenever it is rendered |
-| the registry relay on `127.0.0.1:5035` (it adds the reader account to the runtime's pulls) | node-agent, always |
+| the registry relay on `127.0.0.1:5035` and its push socket (it sets the node's own token on every request; there is no account on the node) | node-agent, always |
 | the runtime observer and its journal, the annotation `cybericebox.com/runtime-observation` | node-agent, with `lifecycle.runtimeObservation.enabled` (it is part of the OVS port and VNI retirement there) |
 
 Why: the node-agent wires every new pod and is `system-node-critical`; the privileges of the snapshot engine are not its. node-state has
 `appArmorProfile: Unconfined`, `DAC_READ_SEARCH`, `SYS_ADMIN`, the containerd root (read-only) and the cgroup tree; the node-agent has none of
 these any more except the cgroup tree and the journal directory of the observer (only with the observation on). node-state is on the host
-network and reaches the registry **only through the node-agent's relay** on `127.0.0.1:5035` (there is no network path from it to zot, and the
-registry check of its start-up uses the relay too). It has its own ServiceAccount: it may read devices, labs, pods and (with persistence) Secrets
-for the pull credentials of a source image, write the status of devices, patch the capture annotation of a Device-owned Pod, and annotate its own
+network and reaches the registry **only through the node-agent's relay** (a unix socket in the directory the two share, `/run/cybericebox/registry-push.sock`;
+there is no network path from it to zot, no registry credential on the pod, and the push rules are the gate's). It has its own ServiceAccount: it may read devices, labs and pods, write the status of devices, patch the capture annotation of a Device-owned Pod, and annotate its own
 node; the node and Pod writes are confined by the admission policies `laboratory-node-state-annotation` and `laboratory-node-state-capture`, and
 the `devices/status` guard of native reports (`laboratory-node-agent-device-runtime`) covers it too. Its priority is the platform class (below
 the node-agent's `system-node-critical`), the probe port `nodeState.healthPort` (9441, the loopback of the node), and `nodeState.resources`.
 
-It needs the platform registry and the node-agent (the chart refuses `devices.statePersistence.enabled` without them). If the node-agent (the
+It needs the lab registry and the node-agent (the chart refuses `devices.statePersistence.enabled` without them). If the node-agent (the
 relay) is not up when node-state starts, the persistence check fails with `SNAPSHOT_REGISTRY_UNREACHABLE` and is repeated every 30 s until it
 passes; no snapshot is taken meanwhile. If node-state is down, devices keep running and nothing is snapshotted; a device that ends in that time
 has no exit snapshot. A node that is ready for pods but has not got its `state-persistence` annotation from node-state yet counts as
@@ -2454,7 +2422,9 @@ of a node. Planned reboots of a whole OS are out of scope (such tasks belong in 
 ### Enable
 
 ```yaml
-registry:                     # the platform registry, shared with the image cache (below)
+registry:                     # the lab registry (zot and its gate), shared with the image cache (below)
+  gate:
+    address: registry.lab.internal:5443   # required: the internal load balancer the nodes dial
   storageClass: ""            # empty = cluster default
   size: 20Gi
 devices:
@@ -2471,9 +2441,9 @@ devices:
 
 `enabled: false` (the default) renders nothing of the feature and keeps today's behaviour. With `true`:
 
-- the chart deploys the platform registry ([zot](https://zotregistry.dev)) in `laboratory-system`: a
+- the chart deploys the lab registry ([zot](https://zotregistry.dev) behind the gate) in `laboratory-system`: a
   PersistentVolumeClaim (`registry.storageClass`, `registry.size`; it is kept on `helm uninstall`), a Service, and a
-  Secret with generated `htpasswd` credentials for the single writer;
+  Secret with the generated gate account (the only one);
 - the switch only **allows** persistence. Each device decides for itself with `persistence.enabled` in its topology
   (see "State persistence" in the agent API): such a device runs as a bare Pod (`restartPolicy: Never`) that the operator owns
   and recreates, every other device as a Deployment, and one lab may mix both. The choice is stamped on the Device
@@ -2664,10 +2634,10 @@ of the chart's `crds/`, `helm upgrade` does not apply them) and the new agent pr
 ## Image cache (optional)
 
 Every lab pulls its images (device images, the VPN and gateway images, the netconfig init container) from their
-registries on every node. With the image cache on, the platform registry sits in between as a shared cache: the
+registries on every node. With the image cache on, the lab registry sits in between as a shared cache: the
 first pull of an image makes the **registry gate** fetch it from the upstream registry and store it in zot, and every
-other node pulls it from zot, inside the cluster. Every pull is proved against the upstream registry with **its own
-credentials** (the pull secret of the lab), so a cached private image is never served to a credential that has no
+other node pulls it from zot, inside the cluster. Every pull is proved against the upstream registry with **the tenant's
+credentials**, which only the gate holds, so a cached private image is never served to a tenant that has no
 right to it. It saves upstream bandwidth and rate limits (Docker Hub) and speeds up a burst of labs. The gate and the
 decisions it makes are described in "The registry gate" above.
 
@@ -2681,17 +2651,16 @@ registry:
                             #   url: https://registry.example.com
 ```
 
-**The registry is installed only when something needs it:** at least one of `registry.cache.enabled`, `devices.statePersistence.enabled` and `registry.platform.enabled`. With all three off (the default) the chart renders no zot Deployment, Service, Secret, ConfigMap or network policy, the node-agent starts no `127.0.0.1:5035` relay (`REGISTRY_ENABLED=false`), the agent has no registry address (a snapshot export is refused, PrewarmImages is off), the operator and the agent get no registry Secret reference, and their network policies have no rule for it. Switching the last feature off removes the zot Deployment but not the volume claim (`helm.sh/resource-policy: keep`), so the snapshots and the cache are found again when a feature is switched back on; delete the claim by hand when the data is not wanted. The registry Secret (the generated passwords) is removed and made again with new passwords: a writer outside the release that holds the old `laboratory-registry-platform` password gets the new one from the Secret the chart renders again. `statePersistence.enabled` turns the device snapshots on, `cache.enabled` the image cache (the full zot image, about 70 MB
-compressed on amd64 and arm64), `platform.enabled` the platform images; any of them can be on together. Needs `nodeAgent.enabled`.
+**The registry is installed only when something needs it:** `registry.cache.enabled` or `devices.statePersistence.enabled`, and a lab node has no other way to get an image, so the chart refuses `nodeAgent.enabled` without the cache (the cache is on by default). With both off and no node-agent the chart renders no zot Deployment, Service, Secret, ConfigMap or network policy, the agent has no registry address (a snapshot export is refused, PrewarmImages is off), and the operator and the agent get no registry setting. Switching the last feature off removes the zot Deployment but not the volume claim (`helm.sh/resource-policy: keep`), so the snapshots and the cache are found again when a feature is switched back on; delete the claim by hand when the data is not wanted. The registry Secret (the generated gate account) is made again with new values. `statePersistence.enabled` turns the device snapshots on, `cache.enabled` the image cache (the full zot image, about 70 MB
+compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.address`.
 
-- **How the nodes reach it.** As for snapshots: the node-agent relays `127.0.0.1:5035` on every node
-  to the registry Service, and containerd reads `localhost:<port>` as a plain-HTTP registry, so nothing is configured
-  on the host. With the cache on, the relay dials the gate's **TLS** port (5443 of the Service) and trusts only the
-  authority the chart made for it (`laboratory-registry-tls`, key `ca.crt`): the credentials of a pull cross the
-  cluster network in that hop. The gate serves the cache on that port only. To rotate the certificate, delete the
-  Secret `laboratory-registry-tls` and upgrade the release.
+- **How the nodes reach it.** The node-agent relays `127.0.0.1:5035` on every node to the gate at `registry.gate.address` (TLS, the node's own
+  ServiceAccount token), and containerd reads `localhost:<port>` as a plain-HTTP registry, so nothing is configured on the host. The relay has two
+  listeners: TCP `127.0.0.1:5035` for containerd and the kubelet (`GET` and `HEAD` of `/v2/c/**` and `/v2/lab/**` only: no push, no mount, no delete can arrive
+  through it) and a unix socket `/run/cybericebox/registry-push.sock` (mode 0600) for node-state's snapshot push, in the host directory the two share. To
+  rotate the certificate, delete the Secret `laboratory-registry-tls` and upgrade the release.
 - **What is rewritten.** The operator rewrites `REG/repo:tag` (and `@sha256:` references) into
-  `localhost:<port>/c/REG/repo:tag`, for registries in `registry.cache.registries` and `extraRegistries` only. Names
+  `localhost:<port>/c/<tenant>/REG/repo:tag` (the tenant is the one of the lab, never anything a caller sends; `default` when there is no label; a name outside `[a-z0-9-]` or the reserved `platform` is encoded as `t-<12 hex>`), for registries in `registry.cache.registries` and `extraRegistries` only. Names
   follow Docker rules: `nginx` is `docker.io/library/nginx:latest`. With the cache on **every** image of a lab goes
   through it: an image of a registry the cache does not serve, or a reference that does not parse, is **refused**, never
   pulled directly (the agent refuses it at `CreateLabs`, the operator for a Lab made by hand and when a device starts). So the
@@ -2700,27 +2669,19 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
   `"*"` there; add the others to `registry.cache.extraRegistries` with their URL. Snapshot images are not rewritten. The gate maps `REG` back to the upstream registry of its list (the ConfigMap
   `laboratory-registry-gate`, reloaded within seconds when it changes: no restart of the gate and none of zot); a
   registry that is not in the list is refused with `403` (`IMAGE_REGISTRY_NOT_ALLOWED`). zot keeps the cache under the
-  repositories `c/REG/repo`, readable and writable by the gate's account alone.
+  repositories `c/REG/repo` (the tenant segment is dropped), readable and writable by the gate's account alone. **No pod of a lab carries an image pull
+  secret**, and every container with such an address pulls with `imagePullPolicy: Always`, so the gate authorises every start.
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.
 - **Scheduler.** With the cache on, the prepull request lists the rewritten images, so the first node warms
   zot and the others pull from it.
-- **Snapshots.** The cache tree `c/` belongs to the gate alone, so the snapshot account cannot read it: the base layers
-  of a device snapshot are uploaded once to the shared `base` repository (and linked from there), not linked from the
-  cached repository of the base image.
-- **Upstream credentials.** They are the pull's own: containerd sends them to the gate after its `401` challenge, and the gate
-  uses them for the check and for the fill. The chart keeps no credentials of its own and `imagePullSecrets` of the chart do
-  not feed the cache for tenants (`registry.cache.credentialsSecret` is refused). The **operator** writes the pull secret of a
-  device on the cache from the raw ones (the tenant's `images.pullSecret`, copied to the group namespace as `tenant-registry`,
-  and the lab's own `<lab>-registry` that the agent writes from the `registry_credentials` of `CreateLabs`): the Secret
-  `<lab>-cache-registry`, with one key per registry, `localhost:5035/c/<registry>`, and the username `<tenant>~<user>`. The
-  tenant is the tenant label of the lab (set from the caller's certificate), never anything a caller sends; the lab's own
-  credentials win over the tenant's for one registry; a credential for a registry the cache does not serve, or without a
-  username, is dropped. The device pods reference only this Secret (the raw ones are not mounted or referenced) and pull with
-  `Always`; it is owned by the Lab and goes with it. The platform's own pods (VPN, gateway) get `platform-cache-registry` in
-  their group namespace, made the same way from the operator's `imagePullSecrets` with the tenant name `platform`. For
-  rate-limit relief on **public** images set `registry.cache.anonymousFill` to the name of a
+- **Snapshots.** The cache tree `c/` is the gate's: the base layers of a device snapshot are uploaded once to the shared `base` repository (and linked
+  from there), or mounted by the gate from the cached repository of the device's own image on that node.
+- **Upstream credentials.** They are the tenant's, kept in the namespace `laboratory-upstream` and read only by the gate (see above); the pod carries
+  none. The tenant of a pull comes from the path of the image address. For one registry the lab's own credentials win over the tenant's, and several
+  labs of one tenant that name the same reference are tried in turn (the trust boundary is the tenant). The platform's own pods (VPN, gateway) use the tenant
+  segment `platform` and the Secret `platform`. For rate-limit relief on **public** images set `registry.cache.anonymousFill` to the name of a
   `kubernetes.io/dockerconfigjson` Secret of the release namespace: the gate uses it only to fill an image it proved
   readable without credentials (never for a private image, never to prove anything).
 - **Digest pinning.** A tag can move upstream during an event. When a lab is created with the cache on, the operator
@@ -2767,37 +2728,23 @@ compressed on amd64 and arm64), `platform.enabled` the platform images; any of t
 - **Size.** The registry volume (`registry.size`) holds the cached images as well: plan for the images of the labs you
   run, next to the snapshots.
 
-#### Migrating to the credentialed cache
+#### Upgrading to the pools release
 
-From the earlier cache (zot syncing with the platform's credentials, anonymous pulls only, tenants with credentials pulling
-directly) to this one:
+The laboratory, the platform's backend and frontends and infrastructure are released together; there is no shim for an old counterpart.
 
-1. **Values.** Every registry of `registry.allowedRegistries` and the registry of every platform image must be served by the
-   cache: add the missing ones to `registry.cache.extraRegistries` (name and URL); `docker.io` is needed as soon as one platform
-   image names no registry. `"*"` is refused with the cache on. `helm upgrade` fails at once with the name of the registry when
-   one is missing. `registry.cache.credentialsSecret` and the chart's `imagePullSecrets` for the cache are gone (refused / unused).
-2. **Existing labs keep their mode.** A lab created with `Lab.status.imageCache: false` (a tenant or lab with credentials of
-   its own, before this release) keeps pulling directly with the raw Secrets until it is recreated; a lab created from now on
-   goes through the cache, with credentials too. Nothing is rewritten under a running lab, and `Device.spec.imageMirror` of an
-   existing device is not changed. A device that was created for the cache and whose registry is later removed from the list
-   does not start (refused), instead of pulling directly.
-3. **The platform's own pods.** The group's VPN and gateway Deployments are converged by the operator: with the cache on their
-   image becomes the cache path and their `imagePullSecrets` become `platform-cache-registry` (made from the operator's
-   `imagePullSecrets`). A private registry of a platform image therefore needs the registry listed in the cache and
-   credentials in one of those Secrets.
-4. **Agent.** The Secret `laboratory-registry-ca` is created in the agent's namespace by the chart and mounted at
-   `/registry-ca`; the agent's `PrewarmImages` uses the gate's TLS port. An agent from before this release still reads zot on
-   port 5000, which refuses the cache path.
-5. **Credentials without a username** are refused while the cache is on, with the stable reason `CREDENTIAL_NOT_SUPPORTED`
-   (`InvalidArgument`, the registry named): in `CreateLabs` and `PrewarmImages` for a credential of the call, and for a tenant
-   whose `images.pullSecret` has such an entry. The operator reads that Secret (and again every 5 minutes, it cannot watch
-   Secrets) and sets the Tenant condition `ImageCredentials=False` (reason `CredentialNotSupported`, a message that names the
-   registry) with a Warning event; the agent refuses the tenant's labs at creation with the same reason, and the operator
-   refuses a Lab made by hand (it starts by itself once the Secret is fixed). Fix the Secret (a username is part of every
-   credential the cache carries: a token-only login does not work through it) and the condition goes away.
-6. **Cached data.** Nothing to migrate: the gate fills the cache itself, from the first pull on. Objects the old cache stored
-   under `REG/repo` (without `c/`) are not read; delete them with the registry's garbage collection or leave them to the volume.
-
+1. **Label the nodes first.** Every pod selects its pool by the constant label `node-restriction.kubernetes.io/cib-pool` (`lab`, `lab-control`); a node
+   without it takes no pod and the install leaves them Pending. Infrastructure sets the label and the taints of the pools.
+2. **Values.** `registry.gate.address` is required; `registry.cache.enabled` is on and not optional with the node-agent; every registry of
+   `registry.allowedRegistries` and the registry of every platform image must be served by the cache (`registry.cache.extraRegistries`, name and URL; `"*"`
+   is refused). The values of the earlier layouts (`gateway.*`, `proxy.sharingKey`, `proxy.sharedNamespaces`, `proxy.service`, the old session and traffic
+   policy values) are refused or ignored as the chart says; a nodeSelector of a component is refused.
+3. **Image references change.** Every cache reference gains the tenant segment and pods lose their `imagePullSecrets`; the new gate refuses the old form and
+   the old gate does not know the new one. Labs and VPN and gateway pods made before the upgrade keep the old reference in their spec and fail at their next
+   pull (every pull is `Always`): upgrade between events, and recreate them. Never roll the node-agent DaemonSet before the registry pod is ready (one
+   `helm upgrade` installs both).
+4. **The entry changes.** The proxy, the agent and the VPN are NodePort Services with `externalTrafficPolicy: Local` behind a load balancer of infrastructure
+   (see "Pools and the entry"); the proxy takes the client address as the TCP peer.
+5. **Rollback** restores the old behaviour only together with the old backend and frontends.
 
 ### Cache prewarm
 
@@ -2821,24 +2768,25 @@ management agent only (the operator and the scheduler take no part), through one
   platform manifest too), and only then reports `DONE` with the digest. A lab created later pins the same digest and its
   nodes pull from the cache with no upstream traffic.
 - **Images that need credentials.** Send `registry_credentials` with the call (one per registry, as for `CreateLabs`). The agent
-  warms such an image through the gate with the username `<tenant>~<user>` (the tenant of the caller's certificate): the gate
-  proves access against the registry with them, exactly as for a pod, and resolves a tag itself (a lab with credentials is not
-  pinned). No platform or operator credential ever reaches the upstream registry. The state of such an image is kept for those
+  warms such an image through the gate with the call's own credentials (`Authorization: Basic <user>:<secret>`, no tenant prefix) and the
+  tenant of the caller's certificate: the gate proves access against the registry with them, exactly as for a pod, and resolves a tag itself
+  (a lab with credentials is not pinned). The gate trusts the agent without a schedule match (it is an account it knows) but limits it to
+  `registry.allowedRegistries`, the disk high-water mark and `registry.gate.agentMaxFills` fills at once. No platform or operator credential
+  ever reaches the upstream registry, and the gate reads no Secret for a prewarm. A prewarm gives no node an image: a node still needs its
+  own schedule match to pull from the cache. The state of such an image is kept for those
   credentials only (a hash is part of its key), is not in the list an empty request returns and is not shown to a call that brings
   other credentials. An image that needs credentials and is named without them is `FAILED` with the gate's answer.
 - **Concurrency and time.** `registry.cache.prewarm.concurrency` images at once (4), at most `registry.cache.prewarm.timeout`
   (10m) for one; every image has its own error.
 - **`FAILED` for a registry the cache does not serve:** an image of a registry that is not in the cache list
   (`registry.cache.registries`, `extraRegistries`), or a reference that does not parse, is refused, as it would be at
-  `CreateLabs`. `SKIPPED` remains for a platform image (it is in the platform registry already). The whole call fails with
-  `FailedPrecondition` when the cache is not enabled.
+  `CreateLabs`. The whole call fails with `FailedPrecondition` when the cache is not enabled.
 - **Retention.** The manifest request counts as a pull for the cache's `unusedTTL` (48h), as does every later check.
   Prewarm within 48 hours before the event, or repeat the call: an image nobody pulled for 48 hours is deleted.
-- **Requirements.** `agent.enabled` and `registry.cache.enabled`. The chart gives the agent the address of the gate's TLS port
-  (`AGENT_PREWARM_GATE_ADDR`) and the authority it trusts there, a copy of `ca.crt` only as the Secret `laboratory-registry-ca`
-  in the agent's namespace (`AGENT_PREWARM_GATE_CA_FILE`), the registry list, and read access to exactly the `imagePullSecrets`
-  Secrets of the release namespace (used to ask upstream registries for the digest of a public image), and opens the network
-  policies between the agent, the gate and the upstream registries.
+- **Requirements.** `agent.enabled` and `registry.cache.enabled`. The chart gives the agent the Service address of the gate's TLS port
+  (`AGENT_PREWARM_GATE_ADDR`), the authority it trusts there (the ConfigMap `laboratory-registry-ca` in the agent's namespace,
+  `AGENT_PREWARM_GATE_CA_FILE`), its own projected token for the gate, the registry list, and opens the network
+  policies between the agent, the gate and the upstream registries. The agent reads no Secret.
 
 ---
 
@@ -2932,8 +2880,8 @@ extended attributes are those of the snapshot. Paths excluded from snapshots (`/
 mount points) are not in it. To look at the files: `tar xzf archive.tgz` (the `.wh.` entries show as regular empty
 files); to apply it to a base image rootfs, use any OCI layer applier.
 
-**How.** The agent reads the snapshot image from the platform registry (the chart passes its address as
-`AGENT_REGISTRY_ADDR` whenever persistence or the cache is on), squashes the layers while it streams (they are read
+**How.** The agent reads the snapshot image through the registry gate (the chart passes its address as
+`AGENT_REGISTRY_ADDR` whenever persistence or the cache is on, and the agent shows the gate its own token), squashes the layers while it streams (they are read
 twice from the registry; nothing is stored on the agent) and compresses with gzip. A caller that goes away stops the
 export.
 
@@ -3078,26 +3026,21 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
   A tenant names the original image on a public registry; the operator routes it through the cache.
 - Registry hosts are compared canonically: lowercase, no trailing dot, default ports `:443` / `:80` dropped, and `index.docker.io`,
   `registry-1.docker.io`, `registry.hub.docker.com` and `docker.io` are one registry. The deny list (`images.tenantDeny`) matches the host
-  whatever the port, so `ghcr.io:8443/platform/x` is denied with `ghcr.io/platform`. The platform registry and cache hosts are refused by
+  whatever the port, so `ghcr.io:8443/platform/x` is denied with `ghcr.io/platform`. The cache host is refused by
   host, not by prefix. Allow-list entries are canonicalised the same way.
-- The node-agent's forwarder adds the zot reader account only to a request whose `Host` is exactly `localhost:<state forward port>` (the
-  address the node's runtime pulls from), and not to a path with `..` or `//`.
+- The node-agent's relay answers `405` to anything but `GET` and `HEAD` on its TCP port and shows the gate only the node's own token; no client header
+  is forwarded.
 - `images.tenantDeny` still defaults to empty: the chart cannot know which repositories of an installation are private. Set it to the
   platform's private organizations.
-- **Platform images.** A device image written `platform:<name>@sha256:<64 hex>` is an image of the platform's own registry
-  (`registry.platform`, "Platform images" above): the agent checks the form (a name of lowercase letters, digits, `.`, `_`, `-`, at most 64 characters,
-  one path element; the digest is required, a tag is not a platform reference), skips the tenant's allow list and the platform deny list for it (the
-  platform chose the image), and writes the Lab with the node address `localhost:5035/platform/<name>@sha256:<hex>`. The nodes pull it through the
-  node-agent forwarder, which adds the reader account: **no pull credentials are sent or created for platform images**. A reference that starts with
-  `platform:` is never read as a Docker Hub image; one of the wrong form is refused. The node form itself is accepted only where only platform
-  images run (below); elsewhere it stays refused like every reference that names the platform registry. The image cache and its digest pinning leave a
-  platform image alone, and the pre-pull (`PrewarmImages`) skips it.
+- **Platform images.** A device image written `platform:<name>@sha256:<64 hex>` names an image of the platform's provider repository by digest: the
+  agent checks the form (a name of lowercase letters, digits, `.`, `_`, `-`, at most 64 characters, one path element; the digest is required, a tag is not a
+  platform reference), skips the tenant's allow list and the platform deny list for it (the platform chose the image), and the cache fetches it like
+  any other image. The platform does not write to the lab registry any more. A reference that starts with `platform:` is never read as a Docker Hub image;
+  one of the wrong form is refused.
 - **Platform-only.** `images.platformOnly: true` (agent variable `AGENT_IMAGE_PLATFORM_ONLY`) or `tenants.<name>.images.platformOnly: true` for one
-  tenant makes a device image valid only as `platform:<name>@sha256:<hex>` or `localhost:5035/platform/<name>@sha256:<hex>`: exactly the repositories
-  `platform/**`, by digest. Anything else (a public image, a tag, `lab/**`, `base`, the cache, another host) is refused on CreateLabs with
+  tenant makes a device image valid only as `platform:<name>@sha256:<hex>`: by digest, from the provider repository. Anything else is refused on CreateLabs with
   `PermissionDenied`, the ErrorInfo reason `IMAGE_NOT_PLATFORM` (`client.IsImageNotPlatform`) and a message that names the variant, the device and the
-  image. A tenant is platform-only when either the platform or its own object says so. Both are off by default. The registry address the nodes pull from
-  is the constant `localhost:5035` of the images; there is nothing to configure.
+  image. A tenant is platform-only when either the platform or its own object says so. Both are off by default.
 
 ### Names and system pods (R-19)
 
@@ -3144,8 +3087,8 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 
 - **The L7 proxy filters what a device's response does to the site.** A cookie that is host-only, or whose `Domain` is exactly the device's own host, passes unchanged; a cookie whose `Domain` is the labs
   base domain or any parent of it is removed; a cookie named like the proxy's session cookie is removed whatever its domain (also in 1xx responses); `Clear-Site-Data`, `Strict-Transport-Security` and
-  `Content-Security-Policy` are removed. Requests to a device never carry the session cookie. Not done: binding the `/_auth` handoff to the browser (a login-CSRF defence) needs a nonce the backend sets
-  before it redirects, so it is a backend change, not a proxy one.
+  `Content-Security-Policy` are removed. Requests to a device never carry the grant (cookie, headers, query, `Referer`). The delivery of the grant on `/_auth` is a `POST` whose `Origin` must be one of
+  `proxy.l7.platformOrigins`: an attacker's page cannot post its own grant into a victim's browser (login CSRF).
 - **The agent and the operator refuse to start on CRDs older than the release** (they read the published OpenAPI schema and look for `Tenant.status.certificateEpoch`), retrying for a minute, then exit
   with `kubectl apply --server-side -f charts/laboratory/crds/` in the message. So Enroll can never burn a token against an old CRD. No extra permission is needed (discovery).
 
