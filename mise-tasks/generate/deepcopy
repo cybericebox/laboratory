@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="DeepCopy, DeepCopyInto and DeepCopyObject methods of the API types"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+heavy -- go tool controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="The API client, lister, informer and applyconfiguration code (k8s.io/code-generator at the version of client-go)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+# Built with the toolchain of the pinned Go, not whatever go is installed: a tool built by an older Go cannot parse the newer standard library.
+GOTOOLCHAIN="$(go env GOVERSION)" heavy -- ./hack/update-codegen.sh

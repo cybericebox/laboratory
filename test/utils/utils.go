@@ -49,7 +49,10 @@ func Run(cmd *exec.Cmd) (string, error) {
 		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %s\n", err)
 	}
 
-	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, "GO111MODULE=on")
 	command := strings.Join(cmd.Args, " ")
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
 	output, err := cmd.CombinedOutput()
@@ -58,6 +61,13 @@ func Run(cmd *exec.Cmd) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// MiseRun runs a mise task of the repository with extra environment variables (NAME=value), such as the image names of the image:build task.
+func MiseRun(env []string, task string, args ...string) (string, error) {
+	cmd := exec.Command("mise", append([]string{"run", task}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
+	return Run(cmd)
 }
 
 // InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.

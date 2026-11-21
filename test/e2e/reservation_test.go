@@ -70,11 +70,8 @@ var _ = Describe(
 		BeforeAll(
 			func() {
 				By("building and loading the node and lab images")
-				_, err := utils.Run(
-					exec.Command(
-						"make", "docker-build-node", "docker-build-lab",
-						fmt.Sprintf("NODE_IMG=%s", nodeImage), fmt.Sprintf("LAB_IMG=%s", labImage),
-					),
+				_, err := utils.MiseRun(
+					[]string{"NODE_IMG=" + nodeImage, "LAB_IMG=" + labImage}, "image:build", "node", "lab",
 				)
 				Expect(err).NotTo(HaveOccurred(), "Failed to build the node and lab images")
 				Expect(utils.LoadImageToKindClusterWithName(nodeImage)).To(Succeed(), "Failed to load %s into Kind", nodeImage)

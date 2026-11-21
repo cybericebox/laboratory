@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Deploy the operator (config/default: CRDs, RBAC, manager, metrics) to the cluster of the current kubectl context; used by the manager e2e suite. Env: CONTROLLER_IMG (default example.com/laboratory:v0.0.1)"
+#MISE depends=["generate:manifests"]
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+# The image is set in config/manager/kustomization.yaml for the build and put back after it, so the tree stays clean.
+trap 'git checkout -- config/manager/kustomization.yaml' EXIT
+(cd config/manager && kustomize edit set image controller="${CONTROLLER_IMG:-example.com/laboratory:v0.0.1}")
+kustomize build config/default | kubectl apply -f -

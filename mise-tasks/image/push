@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Push images (all five, or the named ones). Usage: mise run image:push [controller|agent|proxy|node|lab ...]. Env: CONTROLLER_IMG, AGENT_IMG, PROXY_IMG, NODE_IMG, LAB_IMG (default cybericebox/laboratory-<name>:$BUILD_TAG), BUILD_TAG (default: timestamp, so set it to push what image:build made), CONTAINER_TOOL (docker)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+# shellcheck source=hack/images.sh
+. hack/images.sh
+
+names=("$@")
+[[ ${#names[@]} -gt 0 ]] || names=("${ALL_IMAGES[@]}")
+for name in "${names[@]}"; do
+  ref=$(image_ref "$name")
+  echo "== $name: $ref"
+  "$CONTAINER_TOOL" push "$ref"
+done

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Install the CRDs into the cluster of the current kubectl context (kustomize build config/crd)"
+#MISE depends=["generate:manifests"]
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+kustomize build config/crd | kubectl apply -f -

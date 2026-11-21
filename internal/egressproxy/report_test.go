@@ -329,7 +329,7 @@ func TestReportBoundsMatchTheCRD(t *testing.T) {
 	base := read("../../config/crd/bases/laboratory.cybericebox.com_labegressreports.yaml")
 	chart := read("../../charts/laboratory/crds/laboratory.cybericebox.com_labegressreports.yaml")
 	if string(base) != string(chart) {
-		t.Fatal("charts/laboratory/crds and config/crd/bases differ: run make manifests")
+		t.Fatal("charts/laboratory/crds and config/crd/bases differ: run mise run generate")
 	}
 	var crd struct {
 		Spec struct {

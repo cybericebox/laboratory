@@ -2,7 +2,7 @@
 
 // Package nstest builds small network topologies out of Linux network namespaces for tests of real iptables rules.
 //
-// The test process is the pod: it runs in a network namespace of its own (`unshare -n`, see the Makefile target test-netns), and
+// The test process is the pod: it runs in a network namespace of its own (`unshare -n`, see the mise task test-netns), and
 // its rules are installed with the real iptables binary. The other sides (a lab device, a participant, the pod network) are
 // namespaces made with `ip netns`; probes in them run as the test binary itself (the helper process pattern), so the tests need
 // no netcat. The namespace of the pod is called "" in every function here.
@@ -26,7 +26,7 @@ const helperEnv = "CICE_NSTEST_HELPER"
 func Require(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CICE_NETNS_TESTS") != "1" {
-		t.Skip("set CICE_NETNS_TESTS=1 (make test-netns) to run the real-iptables namespace tests")
+		t.Skip("set CICE_NETNS_TESTS=1 (mise run test-netns) to run the real-iptables namespace tests")
 	}
 	if os.Geteuid() != 0 {
 		t.Skip("needs root")

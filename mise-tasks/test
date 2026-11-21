@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Unit and envtest tests (everything but e2e); the registry gate tests run against the real zot"
+#MISE depends=["cache-guard", "prepare"]
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+KUBEBUILDER_ASSETS="$(mise-tasks/setup-envtest)"
+export KUBEBUILDER_ASSETS
+ZOT_BIN="$(command -v zot)"
+export ZOT_BIN
+# shellcheck disable=SC2046 # the package list is meant to split
+heavy -- go test $(go list ./... | grep -v /e2e)

@@ -19,7 +19,7 @@ registry:
         url: http://registry.e2e.test
   gate:
     # The registry gate is reached through a node port of the control-plane node (where the lab-control pool runs on Kind); kind containers resolve each
-    # other by name on their docker network. The cluster is named kind here (make cluster-up KIND_CLUSTER_NAME=kind, the CI step); the tests give
+    # other by name on their docker network. The cluster is named kind here (mise run cluster-up, the CI step; KIND_CLUSTER_NAME); the tests give
     # the address of the cluster they run on (test/utils GateAddress: KIND_CLUSTER), so a cluster of another name needs no edit of this file.
     address: kind-control-plane:30543
     service:
