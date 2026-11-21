@@ -1001,3 +1001,39 @@ func TestGrantNeverReachesTheDevice(t *testing.T) {
 		t.Errorf("the second Cookie header's own cookie was lost: %q", seen[0].Get("Cookie"))
 	}
 }
+
+// A browser follows a Location by dropping tabs and line breaks, then reading "//" or "/\" at the start as an authority. No byte in the
+// second place, raw or percent-encoded (once or twice), may make handoffDestination answer anything but a path on the same host.
+func TestHandoffDestination_NeverLeavesTheOrigin(t *testing.T) {
+	base, err := url.Parse("https://device.lab.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(target string) {
+		t.Helper()
+		got := handoffDestination(target)
+		seen := strings.NewReplacer("\t", "", "\r", "", "\n", "").Replace(got)
+		if !strings.HasPrefix(seen, "/") || strings.HasPrefix(seen, "//") || strings.HasPrefix(seen, "/\\") {
+			t.Fatalf("handoffDestination(%q) = %q reads as an authority", target, got)
+		}
+		u, err := url.Parse(seen)
+		if err != nil {
+			t.Fatalf("handoffDestination(%q) = %q does not parse: %v", target, got, err)
+		}
+		if r := base.ResolveReference(u); r.Host != base.Host || r.Scheme != base.Scheme {
+			t.Fatalf("handoffDestination(%q) = %q leaves the origin: %s", target, got, r)
+		}
+	}
+	for c := 0; c < 256; c++ {
+		b := string([]byte{byte(c)})
+		enc := fmt.Sprintf("%%%02x", c)
+		enc2 := fmt.Sprintf("%%25%02x", c)
+		for _, second := range []string{b, enc, strings.ToUpper(enc), enc2} {
+			for _, tail := range []string{"", "evil.example", "/evil.example", "\\\\evil.example"} {
+				check("/" + second + tail)
+				check("/" + second + "/" + tail)
+				check("/a/.." + second + tail)
+			}
+		}
+	}
+}
