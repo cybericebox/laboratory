@@ -884,7 +884,7 @@ func (c *Cache) fillBlob(ctx context.Context, reg Registry, o objectRef, who cal
 		c.M.fills.WithLabelValues("blob", "no_length").Inc()
 		if client != nil {
 			*sent = true
-			streamFrom(client, r, resp, o.Ref)
+			c.streamVerified(client, r, resp, o.Ref)
 			return nil
 		}
 		return errFillFailed
@@ -905,7 +905,15 @@ func (c *Cache) fillBlob(ctx context.Context, reg Registry, o objectRef, who cal
 		*sent = true
 		sinks = append(sinks, &lenient{w: client})
 	}
-	n, copyErr := io.Copy(io.MultiWriter(sinks...), resp.Body)
+	// the bytes are hashed while they stream and the last one is held back until the hash matches the digest asked for: on a mismatch
+	// zot never receives a complete body (so nothing is stored, whatever zot itself checks) and the client's download stays short
+	n, copyErr := copyVerified(io.MultiWriter(sinks...), resp.Body, o.Ref)
+	if errors.Is(copyErr, errBlobDigest) {
+		_ = pw.CloseWithError(copyErr)
+		<-stored //nolint:errcheck // the error of a refused upload is the refusal itself
+		c.M.fills.WithLabelValues("blob", "digest_mismatch").Inc()
+		return errFillFailed
+	}
 	if copyErr != nil || n != size {
 		_ = pw.CloseWithError(errors.New("the upstream stream was cut"))
 		<-stored //nolint:errcheck // the error of a cut upload is the cut itself
@@ -949,7 +957,23 @@ func (c *Cache) streamThrough(w http.ResponseWriter, r *http.Request, reg Regist
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	streamFrom(w, r, resp, digest)
+	c.streamVerified(w, r, resp, digest)
+}
+
+// streamVerified is streamFrom for bytes that come from upstream: a whole blob (not a range, not a HEAD) is checked against its digest as
+// it streams, and one that does not match is cut before its last byte and the connection is aborted (also when the length was not known).
+func (c *Cache) streamVerified(w http.ResponseWriter, r *http.Request, resp *http.Response, digest string) {
+	if r.Method == http.MethodHead || resp.StatusCode != http.StatusOK {
+		streamFrom(w, r, resp, digest)
+		return
+	}
+	copyHeaders(w, resp.Header, "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges")
+	w.Header().Set("Docker-Content-Digest", digest)
+	w.WriteHeader(resp.StatusCode)
+	if _, err := copyVerified(w, resp.Body, digest); errors.Is(err, errBlobDigest) {
+		c.M.fills.WithLabelValues("blob", "digest_mismatch").Inc()
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // registryAllowed says whether the registry is on the laboratory's allowed list (the same canonical spelling as the operator and the agent).
