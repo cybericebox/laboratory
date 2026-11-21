@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="The e2e tests on the kind cluster (mise run cluster-up first). Env: KIND_CLUSTER_NAME (default kind)"
+#MISE depends=["cache-guard", "prepare"]
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+cluster="${KIND_CLUSTER_NAME:-kind}"
+kind get clusters | grep -qx "$cluster" || {
+  echo "No kind cluster '$cluster' is running: run 'mise run cluster-up' first." >&2
+  exit 1
+}
+export KIND_CLUSTER="${KIND_CLUSTER:-$cluster}" # the name the tests read
+# The suites install the chart several times and wait for reservation windows: far longer than go test's default 10 min.
+heavy -- go test ./test/e2e/ -v -ginkgo.v -timeout 30m

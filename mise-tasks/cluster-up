@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Create the kind cluster of the e2e tests (1 control plane + 2 lab workers). Env: KIND_CLUSTER_NAME (default kind)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+cluster="${KIND_CLUSTER_NAME:-kind}"
+kind create cluster --config hack/kind/kind-config.yaml --name "$cluster"
+kubectl label node "$cluster-control-plane" node-restriction.kubernetes.io/cib-pool=lab-control --overwrite
+kubectl label node "$cluster-worker" "$cluster-worker2" node-restriction.kubernetes.io/cib-pool=lab --overwrite
+kubectl create namespace lab-system --dry-run=client -o yaml | kubectl apply -f -

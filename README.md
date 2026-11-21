@@ -479,10 +479,10 @@ The chart uses the image tag of its own version. It refuses the tag `latest`. Th
 
 ## Development
 
-To build from source you need [mise](https://mise.jdx.dev), Docker and `make`. `mise install` puts the pinned tools in place (Go, kind,
+To build from source you need [mise](https://mise.jdx.dev), and Docker. `mise install` puts the pinned tools in place (Go, kind,
 kubectl, helm, kustomize, protoc, golangci-lint, zot); `mise tasks` lists the commands. The Go tools of the module (controller-gen, setup-envtest,
-bpf2go) are `tool` directives of `go.mod`, run as `go tool <name>`. The Makefile holds the targets; run them through mise so that they see
-the pinned tools. How to change things and what to run before a pull request: [CONTRIBUTING.md](CONTRIBUTING.md).
+bpf2go) are `tool` directives of `go.mod`, run as `go tool <name>`. Every command is a mise task (`mise.toml`, and executable files under
+`mise-tasks/`), so it sees the pinned tools. How to change things and what to run before a pull request: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 mise run generate        # regenerate everything generated: CRDs, access rules, deepcopy, API clients, gRPC code
@@ -495,9 +495,10 @@ mise run test-netns      # the iptables tests in network namespaces (Docker)
 mise run test-bpf        # the eBPF tests of the WireGuard demultiplexer (Docker)
 mise run cluster-up      # the kind cluster of the end-to-end tests
 mise run e2e             # end-to-end tests on that cluster
-mise run make help       # every other Makefile target: mise run make <target>
-mise run make docker-build    # build all images
-mise run make kind-deploy     # build, load into a kind cluster and install
+mise run cluster-down   # delete that cluster
+mise run image:build     # build all five images (or name some: mise run image:build proxy node)
+mise run run             # run the operator from this machine against the current kubectl context
+mise tasks               # every task, with its description and the environment variables it reads
 ```
 
 | Path | Contents |
@@ -509,7 +510,7 @@ mise run make kind-deploy     # build, load into a kind cluster and install
 | `clientset/` | Generated typed client for the custom resources |
 | `charts/laboratory/` | The Helm chart |
 | `kernel/` | Kernel configuration of the micro-VM profile |
-| `config/` | Kustomize manifests, the generated CRDs (`config/crd/bases`) and RBAC |
+| `config/` | The generated CRDs (`config/crd/bases`) and RBAC, and the kustomize manifests of the operator alone that the manager e2e suite deploys |
 | `hack/`, `scripts/` | Development and check scripts |
 | `test/` | Chart rendering tests and end-to-end tests |
 

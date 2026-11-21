@@ -31,7 +31,7 @@ func envtestAssets(t *testing.T) string {
 			return dirs[len(dirs)-1]
 		}
 	}
-	t.Skip("no envtest assets: set KUBEBUILDER_ASSETS or run make setup-envtest")
+	t.Skip("no envtest assets: set KUBEBUILDER_ASSETS or run mise run test (or mise run setup-envtest)")
 	return ""
 }
 

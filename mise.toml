@@ -2,8 +2,8 @@
 #   mise install            install exactly these tool versions (once, and after this file changes)
 #   mise tasks              list the commands
 #   mise run <task> ...     run one; extra arguments go to the command
-# The Makefile stays the implementation (the kubebuilder layout, about 80 targets). The tasks below are the common entry points;
-# every other target runs as `mise run make <target> [VAR=value ...]`, so that it sees the pinned tools.
+# Short commands are tasks below; longer ones are executable files under mise-tasks/ (a subdirectory is a group: image/build is image:build).
+# Settings that were make variables are environment variables with defaults, described in the description of the task that reads them.
 
 [tools]
 go = "1.27.4"            # the same as the toolchain line of go.mod
@@ -37,19 +37,48 @@ hide = true
 description = "Local caches stay under a size limit (the workspace script of infrastructure; does nothing in CI or without it)"
 run = 'd="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"; for up in .. ../..; do g="$d/$up/infrastructure/scripts/cache-guard.sh"; [ -x "$g" ] && break; done; if [ -z "${CI:-}" ] && [ -x "$g" ]; then "$g"; fi'
 
-[tasks.make]
-description = "Any Makefile target with the pinned tools. Usage: mise run make <target> [VAR=value ...]; mise run make help lists them"
-run = "make"
+[tasks.prepare]
+hide = true
+description = "What build, test, run and e2e start with, in this order: CRDs and RBAC, deepcopy, go fmt, go vet"
+run = [{ task = "generate:manifests" }, { task = "generate:deepcopy" }, { task = "fmt" }, { task = "vet" }]
+
+[tasks.fmt]
+description = "go fmt"
+run = "go fmt ./..."
+
+[tasks.vet]
+description = "go vet"
+run = "heavy -- go vet ./..."
 
 [tasks.build]
-description = "Generate, vet and build the manager binary"
-depends = ["cache-guard"]
-run = "heavy -- make build"
+description = "Generate, vet and build the manager binary into bin/manager"
+depends = ["cache-guard", "prepare"]
+run = "heavy -- go build -o bin/manager ./cmd/manager"
+
+[tasks.run]
+description = "Run the operator from this machine against the current kubectl context (one manager, no admission policies of the chart to require)"
+depends = ["prepare"]
+env = { OPERATOR_REQUIRE_ADMISSION_POLICY = "false" }
+run = "go run ./cmd/manager --leader-elect=false"
+
+[tasks.generate-bpf]
+description = "Regenerate the eBPF objects of the WireGuard demux fast path (Docker; clang and libbpf in the container)"
+run = "hack/generate-bpf.sh"
+
+[tasks."kind-demux:up"]
+description = "Create the demux kind cluster (icebox-demux, Cilium 1.20.2, no kube-proxy) with the CRDs"
+run = "hack/kind-demux/up.sh"
+
+[tasks."kind-demux:down"]
+description = "Delete the demux kind cluster and its client containers"
+run = "hack/kind-demux/down.sh"
 
 [tasks.generate]
 description = "Regenerate everything generated: CRDs and RBAC (and the chart's copies), deepcopy, the API clients, the gRPC code"
 run = [
-  "make manifests generate generate-api",
+  { task = "generate:manifests" },
+  { task = "generate:deepcopy" },
+  { task = "generate:clients" },
   { task = "proto" },
 ]
 
@@ -76,33 +105,15 @@ run = [
 description = "golangci-lint, for Linux as in CI (on macOS the Linux-only files would be left out and their helpers reported unused)"
 depends = ["cache-guard"]
 env = { GOOS = "linux" }
-run = "heavy -- make lint"
-
-[tasks.test]
-description = "Unit and envtest tests (everything but e2e); the registry gate tests run against the real zot"
-depends = ["cache-guard"]
-run = 'ZOT_BIN="$(command -v zot)" heavy -- make test'
+run = "heavy -- golangci-lint run"
 
 [tasks.test-netns]
 description = "The real-iptables tests in network namespaces (Docker, privileged)"
-run = "heavy -- make test-netns"
+run = "heavy -- hack/test-netns.sh"
 
 [tasks.test-bpf]
 description = "The eBPF tests of the WireGuard demux fast path (Docker, privileged)"
-run = "heavy -- make test-bpf"
-
-[tasks.cluster-up]
-description = "Create the kind cluster of the e2e tests (1 control plane + 2 lab workers)"
-run = "make cluster-up KIND_CLUSTER_NAME=kind"
-
-[tasks.cluster-down]
-description = "Delete the kind cluster of the e2e tests"
-run = "make cluster-down KIND_CLUSTER_NAME=kind"
-
-[tasks.e2e]
-description = "The e2e tests on the kind cluster (mise run cluster-up first)"
-depends = ["cache-guard"]
-run = "heavy -- make test-e2e"
+run = "heavy -- hack/test-bpf.sh"
 
 [tasks.check]
 description = "What the CI check runs without Docker: generate-check, lint and test"

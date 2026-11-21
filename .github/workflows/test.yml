@@ -33,8 +33,10 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: VPN and gateway pod firewalls in network namespaces (privileged docker, make test-netns)
-        run: make test-netns
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      - name: VPN and gateway pod firewalls in network namespaces (privileged docker, mise run test-netns)
+        run: mise run test-netns
 
   bpf:
     name: eBPF fast path of the WireGuard demux
@@ -48,12 +50,14 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: The committed objects match wg_fastpath.bpf.c (make generate-bpf is reproducible)
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      - name: The committed objects match wg_fastpath.bpf.c (mise run generate-bpf is reproducible)
         run: |
-          make generate-bpf
+          mise run generate-bpf
           git diff --exit-code -- internal/proxy/demux/fastpath
-      - name: Program tests and live forwarding in network namespaces (privileged docker, make test-bpf)
-        run: make test-bpf
+      - name: Program tests and live forwarding in network namespaces (privileged docker, mise run test-bpf)
+        run: mise run test-bpf
 
   generate:
     name: Generated files are current

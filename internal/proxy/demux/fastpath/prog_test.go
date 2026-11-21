@@ -26,7 +26,7 @@ import (
 //	ns bpfcl  cl0 192.0.2.2 (the client)  <->  ext0 192.0.2.1 (the external device; entry 192.0.2.1:31820)
 //	ns bpfsv  sv0 10.0.0.2  (the server)  <->  srv0 10.0.0.1  (towards the server; the demux socket's source 10.0.0.1:51820)
 //
-// The test process is the node, in a network namespace of its own (`unshare -n`, make test-bpf). Both neighbours are
+// The test process is the node, in a network namespace of its own (`unshare -n`, mise run test-bpf). Both neighbours are
 // permanent, so the route lookups of the programs succeed without ARP.
 
 const (
@@ -62,7 +62,7 @@ type topo struct{ ext, srv int }
 func requireBPF(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CICE_BPF_TESTS") != "1" {
-		t.Skip("set CICE_BPF_TESTS=1 (make test-bpf) to run the eBPF program tests")
+		t.Skip("set CICE_BPF_TESTS=1 (mise run test-bpf) to run the eBPF program tests")
 	}
 	if os.Geteuid() != 0 {
 		t.Skip("needs root")

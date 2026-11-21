@@ -6,7 +6,7 @@
 *.dylib
 # Everything our tasks write outside the tree: the manager binary, the envtest assets, the code generators
 bin/*
-# make build-installer
+# helm package output of the release workflow
 /dist/
 /graphify-out/*
 

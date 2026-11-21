@@ -3,9 +3,9 @@
 # Cilium 1.20.2 as the only CNI, in the datapath setup of the cloud (kube-proxy replacement, VXLAN tunnel, tcx), and installs the
 # laboratory CRDs. Idempotent: an existing cluster is reused.
 #
-#   make kind-demux-up              # or hack/kind-demux/up.sh
-#   make kind-demux-e2e KIND_DEMUX_MODE=userspace   # or kind-demux-e2e-all: upgrade, userspace, tc, xdp, detach
-#   make kind-demux-down
+#   mise run kind-demux:up              # or hack/kind-demux/up.sh
+#   KIND_DEMUX_MODE=userspace mise run kind-demux:e2e   # or kind-demux:e2e-all: upgrade, userspace, tc, xdp, detach
+#   mise run kind-demux:down
 #
 # Needs docker, kind, kubectl and helm. The kubectl context is kind-icebox-demux; other kind clusters are not touched.
 set -euo pipefail

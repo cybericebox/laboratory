@@ -21,7 +21,7 @@ func TestAccessIncludeValidation(t *testing.T) {
 	if dir == "" {
 		dirs, _ := filepath.Glob("../../../bin/k8s/*")
 		if len(dirs) == 0 {
-			t.Fatal("no envtest assets: set KUBEBUILDER_ASSETS or run make setup-envtest")
+			t.Fatal("no envtest assets: set KUBEBUILDER_ASSETS or run mise run test (or mise run setup-envtest)")
 		}
 		dir = dirs[len(dirs)-1]
 	}

@@ -2,8 +2,8 @@
 # End-to-end test of the WireGuard demux on the kind cluster of up.sh, in one mode (userspace, tc or xdp), or the switch back from a
 # fast path to userspace (detach):
 #
-#   make kind-demux-e2e KIND_DEMUX_MODE=tc   # builds the proxy image, then runs hack/kind-demux/e2e.sh tc
-#   make kind-demux-e2e-all                  # builds once, then e2e.sh upgrade, userspace, tc, xdp and detach
+#   KIND_DEMUX_MODE=tc mise run kind-demux:e2e   # builds the proxy image, then runs hack/kind-demux/e2e.sh tc
+#   mise run kind-demux:e2e-all                  # builds once, then e2e.sh upgrade, userspace, tc, xdp and detach
 #
 # A mode run deploys the demux part of the chart (templates/wg and its network policy, rendered with helm template -s: the rest of the
 # chart needs the operator and cert-manager), two groups whose VPN servers are plain kernel WireGuard pods
@@ -24,7 +24,7 @@
 #   - tc and xdp: Cilium holds no NAT entry and no conntrack entry beyond the handshakes for the clients' tunnels, and the transport
 #     packets leave its conntrack untouched.
 #
-# A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux-e2e-all runs userspace, tc, xdp in that order).
+# A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux:e2e-all runs userspace, tc, xdp in that order).
 #
 # upgrade (on a cluster where no release laboratory exists, or one this step made) installs the chart of KIND_DEMUX_UPGRADE_FROM
 # (the last release tag) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
