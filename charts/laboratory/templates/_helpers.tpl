@@ -170,14 +170,22 @@ prometheus.io/path: /metrics
 
 {{/* The audience of the ServiceAccount tokens the registry gate accepts (the relay of a node, the operator and the agent present one). */}}
 {{- define "laboratory.registryGateAudience" -}}laboratory-registry-gate{{- end }}
+{{- /* The host:port the nodes pull cache images from: the node-agent's relay, a constant of the images (names.RegistryNodePrefix). */ -}}
+{{- define "laboratory.registryNodePrefix" -}}localhost:5035{{- end }}
+{{- /* A Kubernetes quantity of bytes ("2Gi", "500M", "1048576") as a plain number of bytes, for a binary that reads an integer. */ -}}
+{{- define "laboratory.bytes" -}}
+{{- $s := toString . -}}
+{{- $bin := dict "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+{{- $dec := dict "K" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 -}}
+{{- if regexMatch "^[0-9]+$" $s -}}{{ $s }}
+{{- else if regexMatch "^[0-9]+(Ki|Mi|Gi|Ti)$" $s -}}{{ mul (int64 (regexFind "^[0-9]+" $s)) (index $bin (regexFind "[A-Za-z]+$" $s)) }}
+{{- else if regexMatch "^[0-9]+(K|M|G|T)$" $s -}}{{ mul (int64 (regexFind "^[0-9]+" $s)) (index $dec (regexFind "[A-Za-z]+$" $s)) }}
+{{- else -}}{{ fail (printf "%q is not a quantity of bytes (a number, or a number with Ki, Mi, Gi, Ti, K, M, G or T)" $s) }}
+{{- end -}}
+{{- end }}
 
 {{- define "laboratory.sharedEnv" -}}
 {{- include "laboratory.lifecycleProfile" . -}}
-LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
-LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
-LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}
-LIFECYCLE_RETAINED_RESTART_AVAILABLE: {{ .Values.lifecycle.capabilities.retainedRestart | quote }}
-LIFECYCLE_FULL_GROUP_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.fullGroupStop | quote }}
 RUNTIME_OBSERVATION_ENABLED: {{ .Values.lifecycle.runtimeObservation.enabled | quote }}
 REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.requiredSnapshotAvailable | quote }}
 {{- /* The ending notice of reservations: the operator gives it, the agent reports it and computes the end of the groups. */}}
@@ -185,7 +193,6 @@ RESERVATION_ENDING_NOTICE_SECONDS: {{ .Values.reservations.endingNoticeSeconds |
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
 {{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}
-WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (ne (include "laboratory.wgEnabled" .) "") | quote }}
 IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
 LAB_TOLERATIONS: {{ .Values.pools.lab.tolerations | toJson | quote }}
@@ -218,7 +225,6 @@ DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
 DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
-DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
 PROFILE_LABELS_ENABLED: {{ .Values.profileLabels.enabled | quote }}
 MICROVM_ENABLED: {{ .Values.microvm.enabled | quote }}
 MICROVM_RUNTIME_CLASS: {{ .Values.microvm.runtimeClassName | quote }}
@@ -232,9 +238,36 @@ GROUP_DEFAULT_USERS: {{ .Values.groupLimits.defaultUsers | quote }}
 GROUP_DEFAULT_LABS: {{ .Values.groupLimits.defaultLabs | quote }}
 GROUP_VPN_GATEWAYS_PER_LAB: {{ .Values.groupLimits.vpnGatewaysPerLab | quote }}
 GROUP_INTERNET_GATEWAYS_PER_LAB: {{ .Values.groupLimits.internetGatewaysPerLab | quote }}
+VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
+MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
+{{- /* The feature switches of the laboratory: what the operator and the agent refuse when it is off (see "Feature switches" in DEPLOY.md). */}}
+VPN_ENABLED: {{ .Values.vpn.enabled | quote }}
+INTERNET_ENABLED: {{ .Values.inetGateway.enabled | quote }}
+PROXY_L7_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled | quote }}
+PROXY_RDP_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.rdp.enabled | quote }}
+PROXY_VNC_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.vnc.enabled | quote }}
+CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
+ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
+TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
+STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
+STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
+STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
+STATE_WRITE_QUOTA: {{ .Values.devices.statePersistence.writeQuota | quote }}
+STATE_MAX_FILE_SIZE: {{ .Values.devices.statePersistence.maxFileSize | quote }}
+STATE_MAX_ENTRIES: {{ .Values.devices.statePersistence.maxEntries | quote }}
+STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
+IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
+IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
+IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
+ALLOWED_REGISTRIES: {{ include "laboratory.allowedRegistries" . | quote }}
+{{- end }}
+
+{{- /* What only the operator reads of the settings above (the agent's settings and the operator's are one map except for these). */}}
+{{- define "laboratory.operatorOnlyEnv" -}}
+WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (ne (include "laboratory.wgEnabled" .) "") | quote }}
+DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
 GATEWAY_MAX_CONNECTIONS_PER_LAB: {{ .Values.inetGateway.limits.maxConnectionsPerLab | quote }}
 GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB: {{ .Values.inetGateway.limits.newConnectionsPerSecondPerLab | quote }}
-VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
 VNI_QUARANTINE: {{ .Values.vni.quarantine | quote }}
 VNI_SWEEP_INTERVAL: {{ .Values.vni.sweepInterval | quote }}
 EGRESS_MONITOR_ENABLED: {{ .Values.internetEgress.monitor.enabled | quote }}
@@ -255,33 +288,21 @@ DEVICE_RECONCILE_WORKERS: {{ .Values.operator.workers.device | quote }}
 CONNECTION_RECONCILE_WORKERS: {{ .Values.operator.workers.connection | quote }}
 API_QPS: {{ .Values.operator.api.qps | quote }}
 API_BURST: {{ .Values.operator.api.burst | quote }}
-MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
-{{- /* The feature switches of the laboratory: what the operator and the agent refuse when it is off (see "Feature switches" in DEPLOY.md). */}}
-VPN_ENABLED: {{ .Values.vpn.enabled | quote }}
-INTERNET_ENABLED: {{ .Values.inetGateway.enabled | quote }}
-PROXY_L7_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled | quote }}
-PROXY_RDP_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.rdp.enabled | quote }}
-PROXY_VNC_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.vnc.enabled | quote }}
-CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
-ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
+IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
+IMAGE_CACHE_REQUIRE_DIGEST: {{ .Values.registry.cache.requireDigest | quote }}
+{{- end }}
+
+{{- /* What only the management agent reads. */}}
+{{- define "laboratory.agentOnlyEnv" -}}
+LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
+LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
+LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}
+LIFECYCLE_RETAINED_RESTART_AVAILABLE: {{ .Values.lifecycle.capabilities.retainedRestart | quote }}
+LIFECYCLE_FULL_GROUP_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.fullGroupStop | quote }}
 TERMINAL_MAX_LIFETIME: {{ .Values.terminal.limits.maxLifetime | quote }}
-TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
 TERMINAL_SERVED: {{ .Values.terminal.enabled | quote }}
 CHECKS_MAX_TIME_LIMIT_SECONDS: {{ .Values.checks.maxTimeLimitSeconds | quote }}
 CHECKS_MANUAL_COOLDOWN: {{ .Values.checks.manualCooldown | quote }}
-STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
-STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
-STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
-STATE_WRITE_QUOTA: {{ .Values.devices.statePersistence.writeQuota | quote }}
-STATE_MAX_FILE_SIZE: {{ .Values.devices.statePersistence.maxFileSize | quote }}
-STATE_MAX_ENTRIES: {{ .Values.devices.statePersistence.maxEntries | quote }}
-STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
-IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
-IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
-IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
-IMAGE_CACHE_REQUIRE_DIGEST: {{ .Values.registry.cache.requireDigest | quote }}
-IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
-ALLOWED_REGISTRIES: {{ include "laboratory.allowedRegistries" . | quote }}
 {{- end }}
 
 {{/*
@@ -368,7 +389,7 @@ rendered only then. When both are off there is no registry: no Deployment, Servi
 {{- end }}
 
 {{/*
-Upstream registries of the image cache as a JSON list of {name, url}: the built-in
+Upstream registries of the image cache as a JSON list of {name, url, authHosts}: the built-in
 ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 */}}
 {{- define "laboratory.cacheUpstreams" -}}
@@ -377,10 +398,12 @@ ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 {{- range .Values.registry.cache.registries -}}
 {{- $url := index $known . -}}
 {{- if not $url -}}{{- fail (printf "registry.cache.registries: %q is not built in; add it to registry.cache.extraRegistries with its url" .) -}}{{- end -}}
-{{- $out = append $out (dict "name" . "url" $url) -}}
+{{- /* The hosts whose token endpoint the registry's challenge may name besides its own (the gate follows no other realm): Docker Hub's token service. */ -}}
+{{- $auth := dict "docker.io" (list "auth.docker.io") "ghcr.io" (list "ghcr.io") "quay.io" (list "quay.io") -}}
+{{- $out = append $out (dict "name" . "url" $url "authHosts" (default (list) (index $auth .))) -}}
 {{- end -}}
 {{- range .Values.registry.cache.extraRegistries -}}
-{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url)) -}}
+{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url) "authHosts" (default (list) .authHosts)) -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}

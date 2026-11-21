@@ -179,9 +179,9 @@ func TestRegistryGateWiring(t *testing.T) {
 	vars := envOf(*gate)
 	for k, want := range map[string]string{
 		"GATE_CACHE_ENABLED": "true", "GATE_STALE_IF_ERROR": "7m", "GATE_DECISION_MAX_AGE": "2m", "GATE_DENIED_FOR": "30s", "GATE_DISK_HIGH_WATER": "90",
-		"GATE_TOKEN_AUDIENCE": "laboratory-registry-gate", "GATE_UPSTREAM_NAMESPACE": "laboratory-upstream", "GATE_NAMESPACE": "laboratory-system",
-		"GATE_OPERATOR_SERVICE_ACCOUNT": "laboratory-system:laboratory-controller-manager", "GATE_NODE_AGENT_SERVICE_ACCOUNT": "laboratory-system:laboratory-node-agent",
-		"GATE_AGENT_SERVICE_ACCOUNT": "laboratory-agent:laboratory-agent", "GATE_REQUIRE_DIGEST": "false", "GATE_BIND_SOURCE": "true",
+		"GATE_IMAGE_HOST": "localhost:5035", "GATE_SNAPSHOTS_ENABLED": "true",
+		"GATE_OPERATOR_ACCOUNT": "laboratory-system/laboratory-controller-manager", "GATE_NODE_ACCOUNT": "laboratory-system/laboratory-node-agent",
+		"GATE_AGENT_ACCOUNT": "laboratory-agent/laboratory-agent", "GATE_REQUIRE_DIGEST": "false", "GATE_BIND_SOURCE": "true",
 		"GATE_TOKEN_CACHE_TTL": "5m", "GATE_PULL_GRACE": "2m", "GATE_GRANT_MAX_AGE": "1h", "GATE_API_STALE_MAX": "15m", "GATE_AGENT_MAX_FILLS": "8",
 	} {
 		if vars[k].Value != want {
@@ -206,16 +206,16 @@ func TestRegistryGateWiring(t *testing.T) {
 		t.Error("requireDigest is off by default")
 	}
 	// the push rules are the gate's, not node-state's: rendered only with state persistence
-	for _, k := range []string{"GATE_MIN_PUSH_INTERVAL", "GATE_PUSH_BUDGET", "GATE_PUSH_BUDGET_WINDOW", "GATE_TENANT_QUOTA", "GATE_REGISTRY_RESERVE", "GATE_SUPERSEDED_GRACE"} {
+	for _, k := range []string{"GATE_MIN_PUSH_INTERVAL", "GATE_PUSH_BUDGET_BYTES", "GATE_PUSH_BUDGET_WINDOW", "GATE_TENANT_QUOTA_BYTES", "GATE_REGISTRY_RESERVE", "GATE_SUPERSEDED_GRACE", "GATE_EXIT_MAX_BYTES", "GATE_EXIT_PUSHES_PER_HOUR"} {
 		if vars[k].Value == "" {
 			t.Errorf("%s is missing with state persistence on", k)
 		}
 	}
-	if vars["GATE_MIN_PUSH_INTERVAL"].Value != "60s" || vars["GATE_PUSH_BUDGET"].Value != "2Gi" || vars["GATE_TENANT_QUOTA"].Value != "10Gi" || vars["GATE_REGISTRY_RESERVE"].Value != "0.1" {
+	if vars["GATE_MIN_PUSH_INTERVAL"].Value != "60s" || vars["GATE_PUSH_BUDGET_BYTES"].Value != "2147483648" || vars["GATE_TENANT_QUOTA_BYTES"].Value != "10737418240" || vars["GATE_EXIT_PUSHES_PER_HOUR"].Value != "6" || vars["GATE_REGISTRY_RESERVE"].Value != "0.1" {
 		t.Errorf("the push rules do not carry the chart's values")
 	}
 	noState := envOf(*containerNamed(registryPod(t, "--set", statePath+"enabled=false"), "gate"))
-	if _, set := noState["GATE_PUSH_BUDGET"]; set {
+	if _, set := noState["GATE_PUSH_BUDGET_BYTES"]; set || noState["GATE_SNAPSHOTS_ENABLED"].Value != "" {
 		t.Error("push rules without state persistence")
 	}
 	state := envOf(nodeState(t, "--set", statePath+"enabled=true").Spec.Template.Spec.Containers[0])
@@ -302,7 +302,7 @@ func TestRegistryGateTLSHop(t *testing.T) {
 	agent := nodeAgent(t, "--set", "registry.gate.address=reg.example.com:7443").Spec.Template.Spec
 	vars := envOf(agent.Containers[0])
 	for k, want := range map[string]string{"STATE_REGISTRY_ADDR": "reg.example.com:7443", "STATE_REGISTRY_CA_FILE": "/etc/registry-ca/ca.crt",
-		"STATE_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token"} {
+		"REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token"} {
 		if vars[k].Value != want {
 			t.Errorf("%s = %q, want %q", k, vars[k].Value, want)
 		}

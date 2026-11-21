@@ -75,7 +75,7 @@ spec:
             # No registry credential and no push limit here: the gate counts what it sees (the push interval, the budget, the tenant quota, the
             # reserve and the superseded snapshots are gate settings, see templates/registry/deployment.yaml). The snapshots are pushed through
             # a unix socket the node-agent serves in the directory below; node-state answers a 429 or a CIB_* refusal with its deferral.
-            - name: STATE_REGISTRY_PUSH_SOCKET
+            - name: STATE_PUSH_SOCKET
               value: /run/cybericebox/registry-push.sock
           {{- end }}
           securityContext:

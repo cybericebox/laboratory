@@ -178,7 +178,7 @@ func TestTuningKnobsStayValues(t *testing.T) {
 	agentEnv := envOf(dep.Spec.Template.Spec.Containers[0])
 	for k, want := range map[string]string{"AGENT_MONITORING_JOURNAL_SIZE": "77", "AGENT_MONITORING_JOURNAL_AGE": "3m", "AGENT_MONITORING_POLL_INTERVAL": "2s",
 		"AGENT_MONITORING_SUBSCRIBER_BUFFER": "9", "AGENT_MONITORING_MAX_STREAMS_PER_TENANT": "3", "AGENT_RELEASE_NAMESPACE": "laboratory-system",
-		"AGENT_PULL_SECRET_NAMESPACE": "laboratory-upstream", "AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443"} {
+		"AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443"} {
 		if agentEnv[k].Value != want {
 			t.Errorf("agent %s = %q, want %q", k, agentEnv[k].Value, want)
 		}

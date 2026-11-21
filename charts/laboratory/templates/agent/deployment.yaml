@@ -121,15 +121,16 @@ spec:
             {{- /* The TLS and CA files (/tls, /ca) are the image's defaults: the chart mounts the Secrets there. */}}
             - name: AGENT_RELEASE_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            # The credentials of a lab's own registry go to the namespace only the registry gate reads, never into a lab namespace.
-            - name: AGENT_PULL_SECRET_NAMESPACE
-              value: {{ include "laboratory.upstreamNamespace" . | quote }}
+            # The credentials of a lab's own registry go to the namespace only the registry gate reads (names.UpstreamNamespace, a constant of the
+            # agent), never into a lab namespace.
           {{- if include "laboratory.registryEnabled" . }}
             # ExportDeviceSnapshot reads the snapshots through the registry gate, PrewarmImages makes the cache fetch through it. The agent
             # shows the gate its own projected ServiceAccount token (no registry password exists) and trusts the registry's own authority.
             - name: AGENT_REGISTRY_ADDR
               value: {{ include "laboratory.registryServiceAddr" . | quote }}
-            - name: AGENT_REGISTRY_CA_FILE
+            - name: AGENT_PREWARM_GATE_ADDR
+              value: {{ include "laboratory.registryServiceAddr" . | quote }}
+            - name: AGENT_PREWARM_GATE_CA_FILE
               value: /registry-ca/ca.crt
             - name: AGENT_REGISTRY_TOKEN_FILE
               value: /var/run/secrets/registry-gate/token
@@ -150,7 +151,7 @@ spec:
             - name: AGENT_MONITORING_MAX_STREAMS_PER_TENANT
               value: {{ .Values.agent.monitoring.maxStreamsPerTenant | quote }}
             {{- /* The settings the operator also reads: the same map under the same names (laboratory.sharedEnv). */}}
-          {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+          {{- range $name, $value := merge (include "laboratory.sharedEnv" . | fromYaml) (include "laboratory.agentOnlyEnv" . | fromYaml) }}
           {{- if or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled }}
             - name: {{ $name }}
               value: {{ $value | quote }}
@@ -162,11 +163,7 @@ spec:
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT
               value: {{ .Values.registry.cache.prewarm.timeout | quote }}
-            # ... through the gate's TLS port, with the credentials of the call.
-            - name: AGENT_PREWARM_GATE_ADDR
-              value: {{ include "laboratory.registryServiceAddr" . | quote }}
-            - name: AGENT_PREWARM_GATE_CA_FILE
-              value: /registry-ca/ca.crt
+            # ... through the gate's TLS port (AGENT_PREWARM_GATE_ADDR and _CA_FILE above), with the credentials of the call.
           {{- end }}
           {{- with .Values.images.tenantDeny }}
             # Repositories no tenant may use (Tenant.spec.images.allow narrows the rest).

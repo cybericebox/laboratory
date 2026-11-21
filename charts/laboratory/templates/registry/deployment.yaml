@@ -108,24 +108,20 @@ spec:
             - name: GATE_ZOT_ADDR
               value: "127.0.0.1:5001"
             # Every pull goes through the cache: /v2/c/<tenant>/<registry>/<repo>/... is proved against the upstream registry with the tenant's
-            # credentials (read from the namespace {{ include "laboratory.upstreamNamespace" . }}) and served from zot.
+            # credentials (read from the namespace {{ include "laboratory.upstreamNamespace" . }}, a constant of the gate) and served from zot.
             - name: GATE_CACHE_ENABLED
               value: "true"
-            - name: GATE_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
-            - name: GATE_UPSTREAM_NAMESPACE
-              value: {{ include "laboratory.upstreamNamespace" . | quote }}
-            # The callers: the audience of the ServiceAccount tokens, and the two in-cluster accounts besides the node-agent's.
-            - name: GATE_TOKEN_AUDIENCE
-              value: {{ include "laboratory.registryGateAudience" . | quote }}
-            - name: GATE_OPERATOR_SERVICE_ACCOUNT
-              value: {{ printf "%s:laboratory-controller-manager" .Release.Namespace | quote }}
-            - name: GATE_NODE_AGENT_SERVICE_ACCOUNT
-              value: {{ printf "%s:laboratory-node-agent" .Release.Namespace | quote }}
-            {{- if .Values.agent.enabled }}
-            - name: GATE_AGENT_SERVICE_ACCOUNT
-              value: {{ printf "%s:laboratory-agent" .Values.agent.namespace | quote }}
-            {{- end }}
+            # The host nodes pull cache images from: a reference under any other host in front of /c/ is no cache reference. Mandatory.
+            - name: GATE_IMAGE_HOST
+              value: {{ include "laboratory.registryNodePrefix" . | quote }}
+            # The callers, as <namespace>/<name>: the node-agent (the relay of a node), the operator and the agent. The audience of their tokens
+            # is a constant of the gate (laboratory-registry-gate).
+            - name: GATE_NODE_ACCOUNT
+              value: {{ printf "%s/laboratory-node-agent" .Release.Namespace | quote }}
+            - name: GATE_OPERATOR_ACCOUNT
+              value: {{ printf "%s/laboratory-controller-manager" .Release.Namespace | quote }}
+            - name: GATE_AGENT_ACCOUNT
+              value: {{ printf "%s/laboratory-agent" .Values.agent.namespace | quote }}
             - name: GATE_TOKEN_CACHE_TTL
               value: {{ $r.gate.tokenCacheTTL | quote }}
             - name: GATE_BIND_SOURCE
@@ -138,6 +134,20 @@ spec:
               value: {{ $r.gate.apiStaleMax | quote }}
             - name: GATE_AGENT_MAX_FILLS
               value: {{ $r.gate.agentMaxFills | quote }}
+            - name: GATE_UPLOADS_PER_DEVICE
+              value: {{ $r.gate.uploadsPerDevice | quote }}
+            - name: GATE_UPLOADS_PER_NODE
+              value: {{ $r.gate.uploadsPerNode | quote }}
+            - name: GATE_GRANTS_PER_NODE
+              value: {{ $r.gate.grantsPerNode | quote }}
+            - name: GATE_GRANT_MAX_DIGESTS
+              value: {{ $r.gate.grantMaxDigests | quote }}
+            - name: GATE_MANIFEST_MAX_BYTES
+              value: {{ include "laboratory.bytes" $r.gate.manifestMaxBytes | quote }}
+            - name: GATE_MANIFEST_HOLD_BYTES
+              value: {{ include "laboratory.bytes" $r.gate.manifestHoldBytes | quote }}
+            - name: GATE_TOKENREVIEW_CONCURRENCY
+              value: {{ $r.gate.tokenReviewConcurrency | quote }}
             # registry.allowedRegistries (plus the platform's own images): a registry that is not on it is refused before any upstream call.
             - name: GATE_ALLOWED_REGISTRIES
               value: {{ include "laboratory.allowedRegistries" . | quote }}
@@ -160,12 +170,18 @@ spec:
             # The push rules of the device snapshots (devices.statePersistence.*): the gate measures what it sees and does not trust the node's word.
             - name: GATE_MIN_PUSH_INTERVAL
               value: {{ .minPushInterval | quote }}
-            - name: GATE_PUSH_BUDGET
-              value: {{ .pushBudget | quote }}
+            - name: GATE_EXIT_MAX_BYTES
+              value: {{ include "laboratory.bytes" .exitMaxBytes | quote }}
+            - name: GATE_EXIT_PUSHES_PER_HOUR
+              value: {{ .exitPushesPerHour | quote }}
+            - name: GATE_SNAPSHOTS_ENABLED
+              value: "true"
+            - name: GATE_PUSH_BUDGET_BYTES
+              value: {{ include "laboratory.bytes" .pushBudget | quote }}
             - name: GATE_PUSH_BUDGET_WINDOW
               value: {{ .pushBudgetWindow | quote }}
-            - name: GATE_TENANT_QUOTA
-              value: {{ .tenantQuota | quote }}
+            - name: GATE_TENANT_QUOTA_BYTES
+              value: {{ include "laboratory.bytes" .tenantQuota | quote }}
             - name: GATE_REGISTRY_RESERVE
               value: {{ .registryReserve | quote }}
             - name: GATE_SUPERSEDED_GRACE

@@ -855,6 +855,16 @@ registry:
     apiStaleMax: 15m
     # The most images the management agent's prewarm makes the gate fetch at once.
     agentMaxFills: 8
+    # Bounds of the gate's own memory and tables (the defaults of the gate; a node or a tenant cannot make it grow past them). Open upload
+    # sessions per device and per node (the oldest-used of the same owner gives way); pull grants per node (the oldest gives way) and digests
+    # per grant; the largest manifest and the most manifest bytes held in memory at once; token reviews in flight at once.
+    uploadsPerDevice: 4
+    uploadsPerNode: 64
+    grantsPerNode: 2000
+    grantMaxDigests: 512
+    manifestMaxBytes: 4Mi
+    manifestHoldBytes: 64Mi
+    tokenReviewConcurrency: 8
     resources:
       requests:
         cpu: 100m
@@ -948,6 +958,7 @@ registry:
       - registry.k8s.io
     # Additional upstream registries: - name: registry.example.com
     #                                   url: https://registry.example.com
+    #                                   authHosts: [auth.example.com]   # optional: token services besides the registry's own host (https only)
     extraRegistries: []
     # The credentials for an upstream registry are the tenant's (tenants.<name>.images.pullSecret), the lab's own (the registry credentials of
     # a variant call) and the platform's (imagePullSecrets). They sit in the namespace laboratory-upstream, which only the gate reads: no pod of
@@ -1052,6 +1063,10 @@ devices:
     # used) that a new snapshot replaces is deleted supersededGrace after the push (the grace lets a pod that was just created from
     # it still pull it). A change that comes sooner than minPushInterval after the last push, or over pushBudget of state within
     # pushBudgetWindow, waits for the next snapshot; the exit snapshot is never held back. "0" = no budget.
+    # The exit snapshot (a pod that ended pushes outside the interval and the budget) is bounded per device: exitMaxBytes at most per push
+    # ("0" = the device's write quota above) and exitPushesPerHour in a sliding hour, whatever the pod UIDs.
+    exitMaxBytes: "0"
+    exitPushesPerHour: 6
     minPushInterval: 60s
     pushBudget: 2Gi
     pushBudgetWindow: 1h

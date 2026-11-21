@@ -139,7 +139,7 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 	// The operator dials the gate by its Service name with its own projected token (the registry has no password); the node-agent dials the
 	// address of the internal load balancer. The relay port 5035, the cgroup root and the work directory are the images' own.
 	for k, want := range map[string]string{"STATE_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443", "STATE_REGISTRY_CA_FILE": "/etc/registry-ca/ca.crt",
-		"STATE_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token", "UPSTREAM_NAMESPACE": "laboratory-upstream"} {
+		"STATE_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token"} {
 		if opCfg.Data[k] != want {
 			t.Errorf("the operator is passed %s = %q, want %q", k, opCfg.Data[k], want)
 		}
@@ -192,8 +192,8 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 			t.Errorf("node-state %s comes from a Secret: a node holds no registry credential", e.Name)
 		}
 	}
-	if envOf(engine)["STATE_REGISTRY_PUSH_SOCKET"].Value != "/run/cybericebox/registry-push.sock" {
-		t.Errorf("node-state pushes through the unix socket of the relay: %v", envOf(engine)["STATE_REGISTRY_PUSH_SOCKET"])
+	if envOf(engine)["STATE_PUSH_SOCKET"].Value != "/run/cybericebox/registry-push.sock" {
+		t.Errorf("node-state pushes through the unix socket of the relay: %v", envOf(engine)["STATE_PUSH_SOCKET"])
 	}
 	if m := mounts["registry-push"]; m.MountPath != "/run/cybericebox" {
 		t.Errorf("node-state mounts the directory it shares with the node-agent: %+v", m)
@@ -475,8 +475,8 @@ func TestAgentShowsTheGateItsOwnTokenForSnapshotExport(t *testing.T) {
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(agent, extra...)...)
 		env := envOf(dep.Spec.Template.Spec.Containers[0])
-		for k, want := range map[string]string{"AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443", "AGENT_REGISTRY_CA_FILE": "/registry-ca/ca.crt",
-			"AGENT_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token", "AGENT_PULL_SECRET_NAMESPACE": "laboratory-upstream"} {
+		for k, want := range map[string]string{"AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5443", "AGENT_PREWARM_GATE_CA_FILE": "/registry-ca/ca.crt",
+			"AGENT_PREWARM_GATE_ADDR": "laboratory-registry.laboratory-system.svc:5443", "AGENT_REGISTRY_TOKEN_FILE": "/var/run/secrets/registry-gate/token"} {
 			if env[k].Value != want {
 				t.Errorf("%s: %s = %q, want %q", name, k, env[k].Value, want)
 			}

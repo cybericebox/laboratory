@@ -224,10 +224,10 @@ spec:
               value: {{ .Values.registry.gate.address | quote }}
             - name: STATE_REGISTRY_CA_FILE
               value: /etc/registry-ca/ca.crt
-            - name: STATE_REGISTRY_TOKEN_FILE
+            - name: REGISTRY_TOKEN_FILE
               value: /var/run/secrets/registry-gate/token
             # The unix socket of the push listener, in the directory shared with node-state (the snapshot engine).
-            - name: STATE_REGISTRY_PUSH_SOCKET
+            - name: STATE_PUSH_SOCKET
               value: /run/cybericebox/registry-push.sock
           {{- else }}
             # No lab registry in this release (no cache, no state persistence): no relay on the node.

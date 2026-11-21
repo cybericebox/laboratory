@@ -15,7 +15,7 @@ func TestActivityReportsAreOffByDefaultAndOneValueTurnsThemOn(t *testing.T) {
 		t.Fatalf("enabled ACTIVITY_REPORTS = %q", v)
 	}
 	// what the agent reports about the console and the touches comes from two settings the chart already has
-	if v := operatorConfig(t)["TERMINAL_MAX_LIFETIME"]; v != "8h" {
+	if v := agentConfig(t)["TERMINAL_MAX_LIFETIME"]; v != "8h" {
 		t.Fatalf("TERMINAL_MAX_LIFETIME = %q, want terminal.limits.maxLifetime", v)
 	}
 	if v := operatorConfig(t, "--set", "vpn.firewall=nft")["VPN_FIREWALL"]; v != "nft" {

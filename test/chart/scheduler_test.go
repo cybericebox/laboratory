@@ -349,3 +349,21 @@ func TestOperatorMayEndReservations(t *testing.T) {
 		}
 	}
 }
+
+// agentConfig is the settings of the management agent as its Deployment renders them: what it reads of the shared map.
+func agentConfig(t *testing.T, extra ...string) map[string]string {
+	t.Helper()
+	out, err := helmTemplate(t, append(append([]string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}, extra...), "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var dep appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(out), &dep); err != nil {
+		t.Fatalf("decode Deployment: %v\n%s", err, out)
+	}
+	res := map[string]string{}
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		res[e.Name] = e.Value
+	}
+	return res
+}

@@ -9,7 +9,7 @@ metadata:
 data:
   # What the operator and the management agent both read: one map, written once (laboratory.sharedEnv).
   # The state persistence and image cache settings are rendered only with their feature on, so that the operator gets nothing about a feature that is off.
-  {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+  {{- range $name, $value := merge (include "laboratory.sharedEnv" . | fromYaml) (include "laboratory.operatorOnlyEnv" . | fromYaml) }}
   {{- if and (or (not (hasPrefix "STATE_" $name)) $.Values.devices.statePersistence.enabled) (or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled) }}
   {{ $name }}: {{ $value | quote }}
   {{- end }}
@@ -63,14 +63,8 @@ data:
   # device access service mounts.
   DEVICE_ACCESS_NAMESPACE: {{ include "laboratory.deviceAccess.namespace" . | quote }}
   {{- end }}
-  {{- if include "laboratory.registryEnabled" . }}
-  # The registry gate: the operator presents its own projected ServiceAccount token to it (no registry password exists), and writes the
-  # upstream credentials (tenant-<name>, platform) into the namespace only the gate reads.
-  REGISTRY_GATE_ADDR: {{ include "laboratory.registryServiceAddr" . | quote }}
-  REGISTRY_GATE_CA_FILE: /etc/registry-ca/ca.crt
-  REGISTRY_GATE_TOKEN_FILE: /var/run/secrets/registry-gate/token
-  UPSTREAM_NAMESPACE: {{ include "laboratory.upstreamNamespace" . | quote }}
-  {{- end }}
+  {{- /* The operator writes the upstream credentials (tenant-<name>, platform) into the namespace only the gate reads (names.UpstreamNamespace, a
+  constant of both). Its calls to the gate (the snapshot sweep, the device reset) are the STATE_REGISTRY_* settings below. */}}
   # State persistence.
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
