@@ -23,9 +23,10 @@ type LabSpec struct {
 	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
-	// ImagePullSecret names a kubernetes.io/dockerconfigjson Secret in the lab's namespace with
-	// the pull credentials of this lab's private images. Only the management agent sets it,
-	// from the credentials the platform sends with the deploy; a value in a client's spec is
+	// ImagePullSecret says that this lab brought pull credentials for its private images. The Secret
+	// (kubernetes.io/dockerconfigjson) is in the namespace laboratory-upstream, where only the registry gate reads it, and
+	// its name is computed from the namespace and the name of the lab; no pod references it. Only the management
+	// agent sets the field, from the credentials the platform sends with the deploy; a value in a client's spec is
 	// ignored.
 	// +optional
 	ImagePullSecret string `json:"imagePullSecret,omitempty"`

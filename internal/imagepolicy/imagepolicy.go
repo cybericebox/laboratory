@@ -43,7 +43,7 @@ var ErrRegistryNotAllowed = errors.New("registry is not allowed")
 const AnyRegistry = "*"
 
 // RegistryAllowed says whether the registry of an image reference ("host[:port]" in its canonical form, Docker Hub spelled in any
-// way) is on the list. An empty list and "*" allow everything. The platform's own images (platform:..., the node form) are not looked at here.
+// way) is on the list. An empty list and "*" allow everything. A platform: reference is refused by Check before this is asked.
 func RegistryAllowed(registries []string, ref string) error {
 	if len(registries) == 0 {
 		return nil

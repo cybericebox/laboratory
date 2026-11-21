@@ -127,6 +127,9 @@ func TestCreateLabWritesRegistrySecret(t *testing.T) {
 	if want := `{"auths":{"index.docker.io":{"username":"u","password":"p","auth":"dTpw"}}}`; string(s.Data[corev1.DockerConfigJsonKey]) != want {
 		t.Fatalf("data %s", s.Data[corev1.DockerConfigJsonKey])
 	}
+	if s.Annotations[names.AnnotationUpstreamLabNamespace] != "team-lab" || s.Annotations[names.AnnotationUpstreamLab] != "l1" {
+		t.Fatalf("the Secret says whose it is: %v", s.Annotations)
+	}
 	if len(s.OwnerReferences) != 0 {
 		t.Fatalf("a Secret of another namespace cannot be owned by the Lab (the operator deletes it): %+v", s.OwnerReferences)
 	}

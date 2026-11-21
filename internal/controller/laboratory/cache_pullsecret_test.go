@@ -188,7 +188,7 @@ func TestLabCannotNameAnotherTenantsCachePath(t *testing.T) {
 	mk := func(img string) *laboratoryv1alpha1.Lab {
 		return &laboratoryv1alpha1.Lab{
 			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{names.LabelTenant: "acme"}},
-			Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{{Name: "a", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: img}}},
+			Spec:       laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{{Name: "a", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: img}}},
 		}
 	}
 	if err := r.validateRegistries(mk("localhost:5035/c/acme/docker.io/library/nginx:1")); err != nil {

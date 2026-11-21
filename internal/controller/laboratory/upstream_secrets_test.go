@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -153,5 +154,48 @@ func TestSecretOfAGoneLabIsDeletedAndLegacyPullSecretsAreRemoved(t *testing.T) {
 	}
 	if len(left) != 2 {
 		t.Fatalf("only the unlabelled registry Secret and the opaque one stay: %v", left)
+	}
+}
+
+// The sweep removes the credentials Secret of a lab that is gone, and only that: a lab that exists, a Secret too young to judge, one with no
+// owner annotations and one that is not a lab's stay.
+func TestUpstreamSweepRemovesOnlyTheSecretsOfGoneLabs(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	old := metav1.NewTime(now.Add(-time.Hour))
+	young := metav1.NewTime(now.Add(-time.Minute))
+	mk := func(ns, lab string, created metav1.Time, annotated bool) *corev1.Secret {
+		s := dockerSecret(names.UpstreamLabSecret(ns, lab), names.UpstreamNamespace, nil)
+		s.CreationTimestamp = created
+		if annotated {
+			s.Annotations = map[string]string{names.AnnotationUpstreamLabNamespace: ns, names.AnnotationUpstreamLab: lab}
+		}
+		return s
+	}
+	live := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "live", Namespace: "team"}}
+	tenantSecret := dockerSecret("tenant-acme", names.UpstreamNamespace, nil)
+	tenantSecret.CreationTimestamp = old
+	c := fake.NewClientBuilder().WithScheme(secretScheme(t)).WithObjects(live, mk("team", "gone", old, true), mk("team", "live", old, true), mk("team", "young", young, true),
+		mk("team", "bare", old, false), tenantSecret).Build()
+	s := &UpstreamSweeper{Client: c, Now: func() time.Time { return now }}
+	n, err := s.Sweep(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("%d %v", n, err)
+	}
+	var list corev1.SecretList
+	if err := c.List(ctx, &list); err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, x := range list.Items {
+		left = append(left, x.Name)
+	}
+	if len(left) != 4 {
+		t.Fatalf("%v", left)
+	}
+	for _, x := range left {
+		if x == names.UpstreamLabSecret("team", "gone") {
+			t.Fatal("the Secret of the gone lab must be removed")
+		}
 	}
 }

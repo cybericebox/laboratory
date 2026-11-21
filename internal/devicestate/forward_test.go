@@ -443,11 +443,10 @@ func selfSigned(t *testing.T) tls.Certificate {
 // On the push socket only the query parameters of the snapshot client reach the gate; the pull listener forwards the query as it is.
 func TestPushSocketDropsQueryParametersTheClientDoesNotUse(t *testing.T) {
 	var s seen
-	h, _ := handlerFor(t, &s, pushAllowed)
 	up := httptest.NewServer(s.handler())
 	defer up.Close()
 	tf := imagecache.NewTokenFile(writeToken(t, "tok"))
-	h = relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, pushAllowed, pushQuery)
+	h := relayHandler("http", strings.TrimPrefix(up.URL, "http://"), http.DefaultTransport, tf, pushAllowed, pushQuery)
 	do(h, "POST", "/v2/lab/ns/lab/dev/blobs/uploads/?mount=sha256%3Aabc&from=c%2Fdocker.io%2Flibrary%2Fapp&sneaky=1&_state=x", nil)
 	do(h, "PUT", "/v2/lab/ns/lab/dev/blobs/uploads/id?digest=sha256%3Aabc&other=1", nil)
 	q := s.queries

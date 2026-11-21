@@ -213,8 +213,9 @@ func (r *LabReconciler) pinSource(ctx context.Context, lab *laboratoryv1alpha1.L
 		docs = append(docs, s.Data[corev1.DockerConfigJsonKey])
 	}
 	if lab.Spec.ImagePullSecret != "" {
+		// The Secret is the one the agent writes for this lab: its name is computed, whatever the field of the Lab says.
 		var s corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Name: lab.Spec.ImagePullSecret, Namespace: names.UpstreamNamespace}, &s); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: names.UpstreamLabSecret(lab.Namespace, lab.Name), Namespace: names.UpstreamNamespace}, &s); err != nil {
 			if apierrors.IsNotFound(err) {
 				return "", true, nil
 			}
