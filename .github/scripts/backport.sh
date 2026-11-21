@@ -2,12 +2,17 @@
 # After a merge into a release line, brings the same change into develop as a pull request, so a fix never exists only in the line.
 #   backport.sh     LINE_BRANCH=release/X.Y  BEFORE=<head of the line before the push>  AFTER=<head after>
 # The commits that the push put on the first-parent path of the line (BEFORE..AFTER: one merge commit, one squash commit, or the commits of
-# a rebase merge) are cherry-picked, in order, on the head of develop into the branch backport/X.Y/<7 hex of AFTER>, and one pull request into
-# develop is opened for them (a merge commit is picked as one change, with -m 1).
+# a rebase merge) are cherry-picked, in order, on the head of develop in a scratch clone (git, nothing of it is pushed). The result is
+# then committed through the GitHub API (backport_commit.py: GraphQL createCommitOnBranch with the token of the job), because the branches
+# require signed commits and only a commit made by GitHub is signed; one commit with the whole change goes on the new branch
+# backport/X.Y/<7 hex of AFTER>, and one pull request into develop is opened for it.
 #   - a commit already in develop, or whose change is already there (an empty pick), is left out; when nothing is left, nothing is opened;
-#   - the branch exists: this push was brought back before (a re-run does not open it twice);
-#   - a pick does not apply cleanly: no branch is pushed; an issue is opened that says so and how to do it by hand
-#     (a branch with no commits cannot be a pull request, so the issue stands where the draft pull request would be).
+#   - the branch exists with a commit on it: this push was brought back before (a re-run does not open it twice); an empty branch left by
+#     a failed run is made again;
+#   - a pick does not apply cleanly, or the change cannot be sent through the API (a file mode, a symlink, a submodule, too large): no
+#     branch; an issue is opened that says why and how to do it by hand (a branch with no commits cannot be a pull request);
+#   - the commit that GitHub made must have the tree that the cherry-picks made and must be verified; otherwise the branch is deleted, an
+#     issue is opened and the job fails.
 # The token is the job's GITHUB_TOKEN (contents, pull requests, issues write); the checks of the pull request wait for the owner's approval
 # ("Approve workflows to run"), see CONTRIBUTING.md. The repository setting "Allow GitHub Actions to create and approve pull requests" is needed.
 # Environment: GH_TOKEN (gh), REMOTE (default origin), BASE (default develop).
@@ -75,11 +80,6 @@ if [[ ${#todo[@]} -eq 0 ]]; then
   echo "nothing to bring back into $base"
   exit 0
 fi
-if git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
-  echo "$branch exists: this push was brought back before"
-  exit 0
-fi
-
 subject=$(git log -1 --format=%s "$after")
 git checkout --quiet --detach "$remote/$base"
 picked=0
@@ -101,9 +101,74 @@ if [[ "$picked" -eq 0 ]]; then
   echo "nothing to bring back into $base"
   exit 0
 fi
-git push --quiet "$remote" "HEAD:refs/heads/$branch"
+tree=$(git rev-parse 'HEAD^{tree}')
+base_oid=$(git rev-parse "$remote/$base")
+if [[ "$tree" == "$(git rev-parse "$remote/$base^{tree}")" ]]; then
+  echo "the picks leave $base as it is: nothing to bring back"
+  exit 0
+fi
+
+# the branch: new, or left empty by a failed run (made again at the head of develop), or already carrying the commit (done)
+state=new
+if git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
+  git fetch --quiet "$remote" "$branch"
+  if git merge-base --is-ancestor "$remote/$branch" "$remote/$base"; then
+    echo "$branch has no commit of its own (a failed run): making it again"
+    gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch" >/dev/null
+  else
+    echo "$branch exists with its commit: this push was brought back before"
+    state=done
+  fi
+fi
+
+if [[ "$state" == new ]]; then
+  msg=$(mktemp)
+  req=$(mktemp)
+  err=$(mktemp)
+  trap 'rm -f "$msg" "$req" "$err"' EXIT
+  {
+    echo "Brought back from $line_branch by the Backport workflow:"
+    for c in "${todo[@]}"; do echo "- ${c:0:7} $(git log -1 --format=%s "$c")"; done
+  } >"$msg"
+  rc=0
+  python3 "$here/backport_commit.py" body --base "$base_oid" --tree "$tree" --repo "$GITHUB_REPOSITORY" --branch "$branch" --head "$base_oid" \
+    --headline "$subject" --message-file "$msg" >"$req" 2>"$err" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) open_issue "$subject" "it cannot be sent through the GitHub commit API: $(cat "$err")"; exit 0 ;;
+    4) echo "the picks leave $base as it is: nothing to bring back"; exit 0 ;;
+    *) cat "$err" >&2; echo "::error::backport_commit.py failed"; exit 1 ;;
+  esac
+  gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/heads/$branch" -f "sha=$base_oid" >/dev/null
+  if ! res=$(gh api graphql --input "$req") || ! jq -e '.data.createCommitOnBranch.commit.oid' <<<"$res" >/dev/null; then
+    echo "::error::the API commit on $branch failed; the empty branch stays and the next run makes it again"
+    exit 1
+  fi
+  git fetch --quiet "$remote" "$branch"
+  made=$(git rev-parse FETCH_HEAD)
+  verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$made" --jq .commit.verification.verified)
+  if [[ "$(git rev-parse "$made^{tree}")" != "$tree" ]]; then
+    gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch" >/dev/null
+    open_issue "$subject" "the commit that GitHub made is not the same as the cherry-pick (a file that the API cannot reproduce exactly)."
+    echo "::error::the API commit differs from the cherry-pick: $branch was deleted, an issue was opened"
+    exit 1
+  fi
+  if [[ "$verified" != true ]]; then
+    gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch" >/dev/null
+    open_issue "$subject" "the commit that GitHub made is not verified, and the branches require signed commits."
+    echo "::error::the API commit on $branch is not verified (verification.verified=$verified): the branch was deleted, an issue was opened"
+    exit 1
+  fi
+  echo "$branch: commit ${made:0:7} (verified)"
+fi
+
+pr=$(gh pr list --head "$branch" --base "$base" --state all --json number --jq '.[0].number // empty')
+if [[ -n "$pr" ]]; then
+  echo "pull request #$pr for $branch exists"
+  exit 0
+fi
 origin_pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$after/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
-body="The same change as ${short} in $line_branch${origin_pr:+ (pull request #$origin_pr)}, cherry-picked onto $base by the Backport workflow, so the fix is not lost when the line is replaced. Merge it with a merge commit."
+body="The same change as ${short} in $line_branch${origin_pr:+ (pull request #$origin_pr)}, cherry-picked onto $base by the Backport workflow and committed through the GitHub API (so it is signed), so the fix is not lost when the line is replaced. Merge it with a merge commit."
 gh pr create --base "$base" --head "$branch" --title "Backport to $base: $subject" --body "$body"
 pr=$(gh pr list --head "$branch" --base "$base" --state open --json number --jq '.[0].number // empty')
 if [[ -n "$pr" ]]; then

@@ -3,6 +3,10 @@ name: Backport
 # After every push to a release line (a merged pull request), open a pull request with the same change into develop (a cherry-pick), so a
 # fix never exists only in the line. A change that does not apply cleanly gets an issue that says so (.github/scripts/backport.sh).
 #
+# The branches require signed commits and a commit made with git on a runner is not signed, so the commit is made through the GitHub API
+# (GraphQL createCommitOnBranch, which GitHub signs and shows as verified): git only computes the cherry-pick in a scratch clone, and
+# nothing made by git is pushed (.github/scripts/backport_commit.py). A change the API cannot express (a file mode, a symlink, a
+# submodule, too large) gets an issue instead.
 # It uses only the token of the job (contents, pull requests and issues write, in this job alone): no other credential, no environment.
 # Events made with GITHUB_TOKEN do not start workflows, except workflow_dispatch and repository_dispatch; a pull request it opens does
 # start a pull_request run of check.yml, but in an "approval-required" state: the owner presses "Approve workflows to run" on the pull

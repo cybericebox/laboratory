@@ -42,6 +42,12 @@ only_ours() {
 drop_release() {
   local tag=$1 with_tag=$2
   [[ "$tag" =~ $VERSION_SHAPE ]] || { echo "refusing to delete the release page of odd tag $tag"; return 0; }
+  # A final tag is never deleted or moved (the ruleset "Protect release tags" forbids it, and the policy keeps it forever): only a
+  # candidate tag may go with its page.
+  if [[ "$with_tag" == true && "$tag" != *-rc.* ]]; then
+    echo "refusing to delete the git tag of the final release $tag"
+    return 0
+  fi
   if [[ "$DRY_RUN" == true ]]; then
     echo "would delete the release page of $tag$([[ "$with_tag" == true ]] && echo ' and its git tag')"
     return 0

@@ -82,4 +82,22 @@ summary=$tmp/summary
 GITHUB_STEP_SUMMARY=$summary STRICT=false retention >/dev/null 2>&1
 check "refused: the step summary lists it" 1 "$(grep -c 'img1:v1.10.0-rc.1' "$summary")"
 
+# --- a final tag is never deleted or moved, even if a caller asks for it
+: >"$tmp/gh.calls"
+# shellcheck disable=SC2329
+gh() { echo "gh $*" >>"$tmp/gh.calls"; }
+# shellcheck disable=SC2329
+git() { if [[ "$1" == push ]]; then echo "git $*" >>"$tmp/gh.calls"; return 0; fi; command git "$@"; }
+# shellcheck disable=SC2034
+DRY_RUN=false
+out=$(drop_release v1.11.0 true)
+check "drop_release refuses the git tag of a final release" 1 "$(grep -c 'refusing to delete the git tag' <<<"$out")"
+check "drop_release of a final tag runs no gh and no git push" 0 "$(wc -l <"$tmp/gh.calls" | tr -d ' ')"
+drop_release v1.12.0-rc.1 true >/dev/null
+check "a candidate tag may go with its page" 1 "$(grep -c 'release delete v1.12.0-rc.1 --cleanup-tag' "$tmp/gh.calls")"
+# the whole run: no command ever deletes or moves a final tag
+DRY_RUN=false
+: >"$tmp/gh.calls"
+retention >/dev/null 2>&1
+check "retention never deletes the tag of a final release" 0 "$(grep -cE 'release delete v[0-9.]+ --cleanup-tag|push origin --delete refs/tags/v[0-9.]+$|tag -f|push.*--force' "$tmp/gh.calls")"
 exit $fail
