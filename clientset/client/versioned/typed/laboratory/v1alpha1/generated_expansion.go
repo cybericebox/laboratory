@@ -25,6 +25,8 @@ type LabExpansion interface{}
 
 type LabActivityReportExpansion interface{}
 
+type LabEgressReportExpansion interface{}
+
 type LabGatewayExpansion interface{}
 
 type LabGroupExpansion interface{}

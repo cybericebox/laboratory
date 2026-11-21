@@ -31,6 +31,8 @@ type Interface interface {
 	Labs() TypedLabInformer
 	// LabActivityReports returns a LabActivityReportInformer.
 	LabActivityReports() TypedLabActivityReportInformer
+	// LabEgressReports returns a LabEgressReportInformer.
+	LabEgressReports() TypedLabEgressReportInformer
 	// LabGateways returns a LabGatewayInformer.
 	LabGateways() TypedLabGatewayInformer
 	// LabGroups returns a LabGroupInformer.
@@ -80,6 +82,11 @@ func (v *version) Labs() TypedLabInformer {
 // LabActivityReports returns a TypedLabActivityReportInformer.
 func (v *version) LabActivityReports() TypedLabActivityReportInformer {
 	return &labActivityReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// LabEgressReports returns a TypedLabEgressReportInformer.
+func (v *version) LabEgressReports() TypedLabEgressReportInformer {
+	return &labEgressReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // LabGateways returns a TypedLabGatewayInformer.

@@ -46,9 +46,11 @@ rules:
     verbs: [ get, list, watch ]
   # Marks its own node ready for lab pods (laboratory.cybericebox.com/node-agent-ready). The patch is limited to that one label of
   # its own node (and the removal of the startup taint cybericebox.com/node-starting) by the admission policy laboratory-node-agent-label.
+  {{- if .Values.operator.admissionPolicy.enabled }}
   - apiGroups: [ "" ]
     resources: [ nodes ]
     verbs: [ patch ]
+  {{- end }}
   - apiGroups: [ "" ]
     resources: [ pods ]
     verbs: [ get, list, watch ]

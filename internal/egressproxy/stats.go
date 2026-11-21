@@ -1,8 +1,6 @@
 package egressproxy
 
 import (
-	"encoding/json"
-	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -60,7 +58,7 @@ type Minute struct {
 	Denials []Denial  `json:"denials,omitempty"`
 }
 
-// Summaries is what the gateway serves.
+// Summaries is a set of finished minutes with the pod that made them (the shape the operator reads, built from a LabEgressReport).
 type Summaries struct {
 	// Gateway is the pod that answered (an identifier of the source, so a pulled minute is not counted twice when pods are renamed).
 	Gateway string   `json:"gateway"`
@@ -75,7 +73,7 @@ type flowKey struct {
 type capKey struct{ lab, reason string }
 
 // Collector keeps per-minute summaries and serves the finished ones. It keeps the last Keep minutes (default 60, an hour) and nothing else:
-// the operator pulls them every minute and keeps the log.
+// the ReportWriter takes them into the LabEgressReport and the operator keeps the log.
 type Collector struct {
 	Gateway string
 	Keep    int
@@ -239,24 +237,4 @@ func (c *Collector) Since(t time.Time) Summaries {
 		}
 	}
 	return out
-}
-
-// Handler serves GET /summaries?since=<RFC 3339>. It is plain HTTP on the pod network: the network policy of the group lets the operator
-// in, and the lab side of the pod answers nothing (the INPUT policy).
-func (c *Collector) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/summaries", func(w http.ResponseWriter, r *http.Request) {
-		var since time.Time
-		if s := r.URL.Query().Get("since"); s != "" {
-			t, err := time.Parse(time.RFC3339, s)
-			if err != nil {
-				http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			since = t
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(c.Since(since))
-	})
-	return mux
 }

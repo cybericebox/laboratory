@@ -65,6 +65,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Laboratory().V1alpha1().Labs().Informer()}, nil
 	case laboratoryv1alpha1.SchemeGroupVersion.WithResource("labactivityreports"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Laboratory().V1alpha1().LabActivityReports().Informer()}, nil
+	case laboratoryv1alpha1.SchemeGroupVersion.WithResource("labegressreports"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Laboratory().V1alpha1().LabEgressReports().Informer()}, nil
 	case laboratoryv1alpha1.SchemeGroupVersion.WithResource("labgateways"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Laboratory().V1alpha1().LabGateways().Informer()}, nil
 	case laboratoryv1alpha1.SchemeGroupVersion.WithResource("labgroups"):

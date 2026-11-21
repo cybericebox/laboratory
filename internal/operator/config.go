@@ -82,7 +82,7 @@ type Config struct {
 	APIQPS   float32 `env:"API_QPS" envDefault:"200"`
 	APIBurst int     `env:"API_BURST" envDefault:"400"`
 
-	// The egress monitor pulls the per-minute summaries of the gateways (EGRESS_MONITOR_ENABLED), on their summaries port (EGRESS_STATS_PORT),
+	// The egress monitor reads the per-minute summaries that the gateways write to their LabEgressReports (EGRESS_MONITOR_ENABLED),
 	// keeps the connection log in the operator log and, with EGRESS_LOG_DIR, in daily files for EGRESS_LOG_RETENTION, and flags a lab when
 	// EGRESS_SIGNAL_HOST_LABS labs hit one host name or it sat at its caps for EGRESS_SIGNAL_CAP_MINUTES minutes of ten.
 	// The egress settings a NEW gateway pod gets (empty = the default of the gateway): EGRESS_DNS_UPSTREAMS (comma separated),
@@ -96,7 +96,6 @@ type Config struct {
 	EgressTunnelSuffixes          string        `env:"EGRESS_TUNNEL_SUFFIXES"`
 	EgressICMPPerSecond           string        `env:"EGRESS_ICMP_PER_SECOND"`
 	EgressMonitorEnabled          bool          `env:"EGRESS_MONITOR_ENABLED" envDefault:"true"`
-	EgressStatsPort               int           `env:"EGRESS_STATS_PORT" envDefault:"9188"`
 	EgressLogDir                  string        `env:"EGRESS_LOG_DIR"`
 	EgressLogRetention            time.Duration `env:"EGRESS_LOG_RETENTION" envDefault:"720h"`
 	EgressSignalHostLabs          int           `env:"EGRESS_SIGNAL_HOST_LABS" envDefault:"20"`

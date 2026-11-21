@@ -76,18 +76,18 @@ func TestEgressLogDaysAreCompressedPrunedAndSearchable(t *testing.T) {
 	}
 }
 
-// After a restart the operator goes on where the log ends: the minutes the gateways kept meanwhile are pulled once, none twice.
+// After a restart the operator goes on where the log ends: the minutes the gateway kept in its report meanwhile are read once, none twice.
 func TestEgressMonitorTakesUpWhereTheLogEnds(t *testing.T) {
 	f := newMonitorFixture(t, "l1")
 	dir := t.TempDir()
 	f.m.LogDir = dir
 	base := time.Date(2026, 11, 1, 11, 30, 0, 0, time.UTC)
 	writeDay(t, dir, "2026-11-01", EgressLogRow{Minute: base, Namespace: "lg-a", Lab: "l1", Host: "pypi.org", Conns: 3})
-	*f.minutes = []egressproxy.Minute{
-		{Start: base, Rows: []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 3}}},                       // already in the log
-		{Start: base.Add(time.Minute), Rows: []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 4}}},      // missed while the operator was down
-		{Start: base.Add(20 * time.Minute), Rows: []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 5}}}, // the later part of the gap
-	}
+	f.setMinutes(t, "lg-a", "gateway",
+		egressproxy.Minute{Start: base, Rows: []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 3}}},                       // already in the log
+		egressproxy.Minute{Start: base.Add(time.Minute), Rows: []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 4}}},      // missed while the operator was down
+		egressproxy.Minute{Start: base.Add(20 * time.Minute), Rows: []egressproxy.Row{{Lab: "l1", Host: "pypi.org", Conns: 5}}}, // the later part of the gap
+	)
 	if err := f.m.Pull(context.Background()); err != nil {
 		t.Fatal(err)
 	}
