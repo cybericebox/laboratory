@@ -166,12 +166,21 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
+// KindCluster is the name of the kind cluster of the tests (KIND_CLUSTER, default "kind").
+func KindCluster() string {
+	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok && v != "" {
+		return v
+	}
+	return "kind"
+}
+
+// GateAddress is where the lab nodes dial the registry gate on the kind cluster: a node port of the control-plane node (where the lab-control
+// pool runs), by the name of its container on the docker network of kind. It follows the cluster's name, so a cluster of another name works.
+func GateAddress() string { return KindCluster() + "-control-plane:30543" }
+
 // LoadImageToKindClusterWithName loads a local docker image to the kind cluster
 func LoadImageToKindClusterWithName(name string) error {
-	cluster := "kind"
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
-	}
+	cluster := KindCluster()
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)

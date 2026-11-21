@@ -14,7 +14,8 @@ registry:
     enabled: false
   gate:
     # The registry gate is reached through a node port of the control-plane node (where the lab-control pool runs on Kind); kind containers resolve each
-    # other by name on their docker network. The cluster is named kind (make cluster-up KIND_CLUSTER_NAME=kind, the CI step).
+    # other by name on their docker network. The cluster is named kind here (make cluster-up KIND_CLUSTER_NAME=kind, the CI step); the tests give
+    # the address of the cluster they run on (test/utils GateAddress: KIND_CLUSTER), so a cluster of another name needs no edit of this file.
     address: kind-control-plane:30543
     service:
       nodePort: 30543

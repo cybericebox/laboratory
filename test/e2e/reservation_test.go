@@ -91,6 +91,7 @@ var _ = Describe(
 						"helm", "upgrade", "--install", reservationRelease, "charts/laboratory",
 						"--namespace", namespace, "--create-namespace",
 						"-f", "hack/kind/e2e-values.yaml",
+						"--set", "registry.gate.address="+utils.GateAddress(),
 						"--set", "operator.image.repository="+repository,
 						"--set", "operator.image.tag="+tag,
 						"--set", fmt.Sprintf("reservations.endingNoticeSeconds=%d", int(endingNotice.Seconds())),
