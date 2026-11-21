@@ -396,11 +396,15 @@ func (c *Cache) serveManifestAndGrant(w http.ResponseWriter, r *http.Request, re
 			return
 		}
 		c.Grants.NoteSizes(p.Node, o.Tenant, o.fullRepo(), childSizes(body))
+		c.Grants.NoteIndex(p.Node, o.Tenant, o.fullRepo(), indexDigests(body))
 	case grantStale:
 		c.Grants.Renew(p.Node, o.Tenant, o.fullRepo(), root)
 	case grantUnder:
 		if c.Grants.Expand(p.Node, o.Tenant, o.fullRepo(), root, children) {
 			c.Grants.NoteSizes(p.Node, o.Tenant, o.fullRepo(), childSizes(body))
+			c.Grants.NoteIndex(p.Node, o.Tenant, o.fullRepo(), indexDigests(body))
+		} else {
+			c.Grants.Renew(p.Node, o.Tenant, o.fullRepo(), root) // a root asked for again by digest: only the expiry moves
 		}
 	}
 	hw.release()

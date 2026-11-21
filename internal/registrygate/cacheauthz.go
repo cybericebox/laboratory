@@ -230,3 +230,20 @@ func childSizes(body []byte) map[string]int64 {
 	}
 	return out
 }
+
+// indexDigests are the digests a manifest lists under "manifests" (an index): the manifests that may be served under its grant.
+func indexDigests(body []byte) []string {
+	var m struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
+	}
+	if json.Unmarshal(body, &m) != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range m.Manifests {
+		out = append(out, c.Digest)
+	}
+	return out
+}

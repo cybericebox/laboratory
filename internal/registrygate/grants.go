@@ -24,7 +24,9 @@ type grant struct {
 	// order lists the roots oldest first: when the grant is full the oldest root gives way, never the whole grant.
 	order []string
 	// sizes are the descriptor sizes of the digests the manifests listed (the size an upload of that digest may have).
-	sizes   map[string]int64
+	sizes map[string]int64
+	// subs are the digests that an index listed under "manifests": only they are manifests that may be served under the grant and expand it.
+	subs    map[string]struct{}
 	creds   Creds
 	created time.Time
 	expires time.Time
@@ -126,7 +128,7 @@ func (g *Grants) Add(node, seg, repo string, creds Creds, tag, root string, chil
 		if len(mine) >= g.perNode() {
 			g.dropOldestLocked(mine, now)
 		}
-		gr = &grant{digests: map[string]struct{}{}, roots: map[string]map[string]struct{}{}, tags: map[string]string{}, sizes: map[string]int64{}, created: now, podSeen: now}
+		gr = &grant{digests: map[string]struct{}{}, roots: map[string]map[string]struct{}{}, tags: map[string]string{}, sizes: map[string]int64{}, subs: map[string]struct{}{}, created: now, podSeen: now}
 		mine[k] = gr
 	}
 	gr.creds = creds
@@ -148,7 +150,7 @@ func (g *Grants) Expand(node, seg, repo, root string, children []string) bool {
 	if gr == nil || !now.Before(gr.expires) {
 		return false
 	}
-	if _, ok := gr.digests[root]; !ok {
+	if _, ok := gr.subs[root]; !ok { // only a manifest that an index of the grant listed
 		return false
 	}
 	g.putRootLocked(gr, "", root, children)
@@ -173,7 +175,23 @@ func (g *Grants) Renew(node, seg, repo, root string) bool {
 	return true
 }
 
-// NoteSizes records the descriptor sizes of digests of a live grant (what an upload of such a digest may weigh).
+// NoteIndex records which digests an index (root, or a child served under the grant) listed under "manifests": Expand acts on those only.
+func (g *Grants) NoteIndex(node, seg, repo string, subs []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gr := g.m[node][grantKey{seg, repo}]
+	if gr == nil {
+		return
+	}
+	for _, d := range subs {
+		if _, ok := gr.digests[d]; ok {
+			gr.subs[d] = struct{}{}
+		}
+	}
+}
+
+// NoteSizes records the descriptor sizes of digests of a live grant (what an upload of such a digest may weigh). A size once recorded is
+// never raised by a later manifest: the smallest ever declared stands.
 func (g *Grants) NoteSizes(node, seg, repo string, sizes map[string]int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -182,7 +200,10 @@ func (g *Grants) NoteSizes(node, seg, repo string, sizes map[string]int64) {
 		return
 	}
 	for d, n := range sizes {
-		if _, ok := gr.digests[d]; ok && n >= 0 {
+		if _, ok := gr.digests[d]; !ok || n < 0 {
+			continue
+		}
+		if old, have := gr.sizes[d]; !have || n < old {
 			gr.sizes[d] = n
 		}
 	}
@@ -250,6 +271,11 @@ func (g *Grants) putRootLocked(gr *grant, tag, root string, children []string) {
 		for d := range gr.sizes {
 			if _, ok := gr.digests[d]; !ok {
 				delete(gr.sizes, d)
+			}
+		}
+		for d := range gr.subs {
+			if _, ok := gr.digests[d]; !ok {
+				delete(gr.subs, d)
 			}
 		}
 	}

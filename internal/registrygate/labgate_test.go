@@ -516,6 +516,7 @@ func TestUploadOfAGrantedDigestIsNotBudgeted(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.lab.Cache.Grants.NoteSizes("node-a", "acme", "docker.io/library/x", map[string]int64{dg("2"): 5000})
+	r.store.blobs["c/docker.io/library/x|"+dg("2")] = 5000
 	w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
 	loc := w.Header().Get("Location")
 	s1 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
@@ -545,6 +546,48 @@ func TestUploadOfAGrantedDigestIsNotBudgeted(t *testing.T) {
 	s2 := "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
 	if w := r.do(tokA, "PUT", s2+"?digest="+dg("9"), bytes.NewReader(make([]byte, 5000)), nil); w.Code != 429 {
 		t.Fatalf("the snapshot's own layer over the budget: %d", w.Code)
+	}
+}
+
+// Third review, item 1: chunks sent with a granted digest are budgeted (zot ignores "digest" on a PATCH), and the PUT of a session that
+// received PATCH bytes is never exempt. Item 2: the length is capped by the size the registry really holds for the source blob.
+func TestPatchesWithAGrantedDigestAreChargedAndThePutAfterThemIsNot(t *testing.T) {
+	r := newLabRig(t) // budget 1000
+	r.lab.Cache = &Cache{Grants: &Grants{Now: func() time.Time { return *r.clk }}, Schedule: r.sch}
+	r.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "p1", UID: "u1", Node: "node-a", Phase: "Running", Images: []string{"localhost:5035/c/acme/docker.io/library/x@" + dg("1")},
+		Labels: map[string]string{names.LabelLab: "lab1", names.LabelDevice: "dev1"}})
+	if err := r.lab.Cache.Grants.Add("node-a", "acme", "docker.io/library/x", Creds{}, "", dg("1"), []string{dg("2"), dg("3")}); err != nil {
+		t.Fatal(err)
+	}
+	r.lab.Cache.Grants.NoteSizes("node-a", "acme", "docker.io/library/x", map[string]int64{dg("2"): 5000, dg("3"): 5000000})
+	r.store.blobs["c/docker.io/library/x|"+dg("2")] = 5000
+	r.store.blobs["c/docker.io/library/x|"+dg("3")] = 300 // the real blob is far smaller than the descriptor a tenant declared
+	session := func() string {
+		w := r.do(tokA, "POST", upPath(repoD1), nil, nil)
+		loc := w.Header().Get("Location")
+		return "/v2/" + repoD1 + "/blobs/uploads/" + loc[strings.LastIndex(loc, "/")+1:]
+	}
+	s := session()
+	codes := []int{}
+	for i := 0; i < 5; i++ {
+		codes = append(codes, r.do(tokA, "PATCH", s+"?digest="+dg("2"), bytes.NewReader(make([]byte, 400)), nil).Code)
+	}
+	if used, _ := r.lab.used(repoD1, false, *r.clk); used == 0 {
+		t.Fatalf("PATCH chunks of a granted digest must be charged: %v", codes)
+	}
+	if codes[len(codes)-1] != 429 {
+		t.Fatalf("2000 bytes of chunks pass a 1000 budget: %v", codes)
+	}
+	s = session()
+	if c := r.do(tokA, "PATCH", s, bytes.NewReader(make([]byte, 10)), nil).Code; c != 202 {
+		t.Fatalf("a small chunk: %d", c)
+	}
+	if c := r.do(tokA, "PUT", s+"?digest="+dg("2"), bytes.NewReader(make([]byte, 5000)), nil).Code; c != 429 {
+		t.Fatalf("the PUT of a session that had PATCH bytes is budgeted: %d", c)
+	}
+	s = session()
+	if c := r.do(tokA, "PUT", s+"?digest="+dg("3"), bytes.NewReader(make([]byte, 400)), nil).Code; c != 429 {
+		t.Fatalf("longer than the real blob (descriptor said 5000000): %d", c)
 	}
 }
 

@@ -90,8 +90,20 @@ func TestRenewAndExpandNeverWidenWhatWasProven(t *testing.T) {
 	if g.Expand("n", "acme", "r/x", hexd(9), []string{hexd(3)}) {
 		t.Fatal("a root the grant does not hold cannot be expanded")
 	}
+	if g.Expand("n", "acme", "r/x", hexd(2), []string{hexd(3)}) {
+		t.Fatal("a digest no index listed under manifests cannot be expanded")
+	}
+	g.NoteIndex("n", "acme", "r/x", []string{hexd(2), hexd(7)})
+	if g.Expand("n", "acme", "r/x", hexd(7), []string{hexd(3)}) {
+		t.Fatal("an index entry that is not in the grant cannot be expanded")
+	}
 	if !g.Expand("n", "acme", "r/x", hexd(2), []string{hexd(3)}) {
 		t.Fatal("a child under the grant adds its listing")
+	}
+	g.NoteSizes("n", "acme", "r/x", map[string]int64{hexd(3): 100})
+	g.NoteSizes("n", "acme", "r/x", map[string]int64{hexd(3): 900000})
+	if n, _ := g.Size("n", "acme", "r/x", hexd(1), hexd(3)); n != 100 {
+		t.Fatal("a later manifest must not raise a recorded size:", n)
 	}
 	if !g.Covers("n", "acme", "r/x", hexd(1), hexd(3)) {
 		t.Fatal("and it is reachable from the pod's reference")
