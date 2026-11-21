@@ -57,6 +57,14 @@ def plan(items, read_blob, max_bytes=MAX_BYTES, max_files=MAX_FILES, size_of=Non
         raise Unsupported(f"{len(items)} files changed, more than the {max_files} one API commit takes")
     bad = []
     for src, dst, status, path in items:
+        try:
+            path.encode("utf-8")
+        except UnicodeEncodeError:
+            bad.append(f"{path.encode('utf-8', 'backslashreplace').decode('ascii')}: the name is not valid UTF-8, which the API cannot carry")
+            continue
+        if path.startswith(".github/workflows/"):
+            bad.append(f"{path}: a workflow file cannot be changed with the job token (no workflows permission)")
+            continue
         if status == "A" and dst != PLAIN:
             bad.append(f"{path}: new file with mode {dst}")
         elif status == "M" and (src != PLAIN or dst != PLAIN):

@@ -19,6 +19,7 @@ echo "gh $*" >>"$ST/calls"
 sub=$2; shift 2
 case "$sub" in
   view)
+    [[ ! -f "$ST/flaky" ]] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     [[ -f "$ST/exists" ]] || { echo "release not found" >&2; exit 1; }
     if [[ "$*" == *assets* ]]; then
       if [[ -f "$ST/asset" ]]; then echo "chart.tgz"; fi
@@ -117,4 +118,12 @@ reset; touch "$ST/exists"; echo false >"$ST/draft"; echo "$sha" >"$ST/target"; c
 git tag -f v1.10.0 "$other" >/dev/null
 run >/dev/null; rc=$?
 check "published, tag at another commit: refused" 1 "$rc"
+# a failed lookup is not "no release": no second draft of the same tag is made
+reset
+touch "$ST/exists" "$ST/flaky"; echo true >"$ST/draft"; echo "$sha" >"$ST/target"
+out=$(run); rc=$?
+check "flaky lookup: fails" 1 "$rc"
+check "flaky lookup: nothing was created" 0 "$(calls 'release create')"
+check "flaky lookup: nothing was uploaded or published" 0 "$(calls 'release upload')"
+
 exit $fail

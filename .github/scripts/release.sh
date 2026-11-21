@@ -29,15 +29,22 @@ publish_release() {
   name=$(basename "$asset")
   [[ -f "$asset" ]] || die "$asset does not exist"
   want=$(sha256_of "$asset")
-  if view=$(gh release view "$version" --json isDraft,targetCommitish 2>/dev/null); then
+  err=$(mktemp)
+  if view=$(gh release view "$version" --json isDraft,targetCommitish 2>"$err"); then
     draft=$(jq -r .isDraft <<<"$view")
     target=$(jq -r .targetCommitish <<<"$view")
-  else
+  elif grep -qi 'release not found' "$err"; then
+    # Only "not found" means there is none: any other failure (network, 5xx, permission) must not make a second draft of the same tag.
     gh release create "$version" --draft --target "$sha" --title "$version" --generate-notes
     echo "draft release $version created"
     draft=true
     target=$sha
+  else
+    cat "$err" >&2
+    rm -f "$err"
+    die "cannot tell whether release $version exists"
   fi
+  rm -f "$err"
   if [[ "$draft" == true ]]; then
     [[ "$target" == "$sha" ]] || die "the draft $version targets $target, not $sha"
     have=$(remote_asset_sha "$version" "$name")

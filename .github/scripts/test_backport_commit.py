@@ -151,5 +151,24 @@ class PlanTests(unittest.TestCase):
                 bc.plan(items, lambda p: b"x")
 
 
+class PathTests(unittest.TestCase):
+    def blob(self, path):
+        return b"x"
+
+    def test_a_name_that_is_not_utf8_is_refused_not_sent_broken(self):
+        with self.assertRaises(bc.Unsupported) as cm:
+            bc.plan([("000000", "100644", "A", "bad\udcff.txt")], self.blob)
+        self.assertIn("not valid UTF-8", str(cm.exception))
+
+    def test_a_workflow_file_is_refused(self):
+        with self.assertRaises(bc.Unsupported) as cm:
+            bc.plan([("100644", "100644", "M", ".github/workflows/x.yml")], self.blob)
+        self.assertIn("workflow", str(cm.exception))
+
+    def test_an_ordinary_name_with_odd_characters_is_carried_as_data(self):
+        p = bc.plan([("000000", "100644", "A", "a b\nc.txt")], self.blob)
+        self.assertEqual(p["additions"][0]["path"], "a b\nc.txt")
+
+
 if __name__ == "__main__":
     unittest.main()
