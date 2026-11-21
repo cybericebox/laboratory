@@ -117,8 +117,10 @@ func TestRedirectAllowedTargetIsFollowedAndJudgedAsDirect(t *testing.T) {
 	}
 }
 
+// A refusal from the redirect target says nothing about the caller's credentials (none were sent), and a ref of the caller's choice could
+// make a CDN answer 403 for everybody sharing the key: after a redirect only a 200 or a 404 is an answer, as for the data transfers (classify).
 func TestRedirectFinalAnswerIsJudgedLikeADirectOne(t *testing.T) {
-	for code, want := range map[int]Outcome{200: Allowed, 401: Denied, 403: Denied, 404: NotFound, 500: Unreachable, 429: Unreachable, 204: Unreachable} {
+	for code, want := range map[int]Outcome{200: Allowed, 401: Unreachable, 403: Unreachable, 404: NotFound, 500: Unreachable, 429: Unreachable, 204: Unreachable} {
 		r := newRedirectRig(t, []string{"*.pkg.test"})
 		r.target = func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }
 		if o, _, _ := r.proof("https://a.pkg.test/v2/x/manifests/1", kindManifests); o != want {
@@ -264,7 +266,9 @@ func TestParseRedirectPatterns(t *testing.T) {
 	}
 	bad := []string{"", " ", "*", "*.", "**", "*.*.pkg.dev", "a.*.pkg.dev", "pkg.*", "*pkg.dev", "*.com", "*.co.uk", "com", "dev", "*.dev",
 		"*.localhost", "localhost", "https://a.pkg.dev", "a.pkg.dev:443", "a.pkg.dev/x", "u@a.pkg.dev", "127.0.0.1", "*.127.0.0.1", "::1", "[::1]",
-		"a..pkg.dev", ".pkg.dev", "a.pkg.dev.", "-a.pkg.dev", "a_b.pkg.dev", "a b.pkg.dev"}
+		"a..pkg.dev", ".pkg.dev", "a.pkg.dev.", "-a.pkg.dev", "a_b.pkg.dev", "a b.pkg.dev",
+		// a wildcard whose subdomains are themselves public suffixes (EC2 host names: anyone's instance), and numeric last labels (IPv4 forms)
+		"*.compute.amazonaws.com", "*.1", "0x7f.1", "a.0x7f.1", "*.0x7f.1"}
 	for _, b := range bad {
 		if _, err := ParseRedirectPatterns([]string{b}); err == nil {
 			t.Errorf("%q accepted", b)

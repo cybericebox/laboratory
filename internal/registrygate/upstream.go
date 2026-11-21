@@ -133,20 +133,27 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 	if err != nil {
 		return Unreachable, nil, err
 	}
+	redirected := false
 	if follows {
-		// Only for a registry that lists redirect hosts: a redirect to a listed host is followed and the final answer is judged as a direct one.
+		// Only for a registry that lists redirect hosts: a redirect to a listed host is followed. The final answer is judged as a direct one,
+		// except that a refusal from the target is not a denial (see below).
 		var ok bool
+		first := resp
 		if resp, ok, err = u.followProof(ctx, reg, resp, http.MethodHead, o); err != nil {
 			return Unreachable, nil, err
 		} else if !ok {
 			return Unreachable, nil, nil
 		}
+		redirected = resp != first
 	}
 	defer drain(resp)
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return Allowed, resp.Header.Clone(), nil
 	case http.StatusUnauthorized, http.StatusForbidden:
+		if redirected {
+			return Unreachable, nil, nil // the target never saw the credentials: its refusal is an outage of the transport, not a denial (classify)
+		}
 		return Denied, nil, nil
 	case http.StatusNotFound:
 		return NotFound, nil, nil

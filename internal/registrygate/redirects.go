@@ -50,6 +50,14 @@ func parseRedirectPattern(p string) (string, error) {
 	if suffix, _ := publicsuffix.PublicSuffix(host); suffix == host {
 		return "", errors.New("a public suffix alone (it would match unrelated owners)")
 	}
+	if p != host { // "*.h": a subdomain of h that is itself a public suffix (a wildcard rule, "*.compute.amazonaws.com") names every owner under it
+		if suffix, _ := publicsuffix.PublicSuffix("x." + host); suffix == "x."+host {
+			return "", errors.New("its subdomains are public suffixes (they would match unrelated owners)")
+		}
+	}
+	if l := host[strings.LastIndexByte(host, '.')+1:]; strings.Trim(l, "0123456789") == "" {
+		return "", errors.New("a numeric last label (an IPv4 address in a short form), not a host name")
+	}
 	return p, nil
 }
 

@@ -2694,8 +2694,8 @@ compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.ad
   no redirect. The gate follows a redirect (301, 302, 303, 307, 308; at most 3 in a row, each checked again against the original registry's patterns)
   only when its `Location` (a relative one is resolved first) is `https`, has no userinfo and no port, names a host (not an IP address) that matches the
   patterns; the request to it carries the method and `Accept` only. The pull's credentials are sent to the registry's own URL and its token realm
-  (`authHosts`) and to no redirect target. The final answer is judged as a direct one (200 proves, 401 and 403 refuse, 404 as before, anything else is
-  inconclusive), within the one time limit of a direct request (`GATE_UPSTREAM_TIMEOUT`). A bare `*`, an IP address, a port, a scheme, and a pattern
+  (`authHosts`) and to no redirect target. The final answer is judged as a direct one (200 proves, 404 as before, anything else is
+  inconclusive, a 401 or 403 from the target included: it never saw the credentials, so it is no denial), within the one time limit of a direct request (`GATE_UPSTREAM_TIMEOUT`). A bare `*`, an IP address, a port, a scheme, and a pattern
   that is a public suffix alone (`*.com`, `*.co.uk`) are refused: the chart rejects malformed entries when it renders, and the gate refuses to start with a
   list it cannot enforce (a changed list that is bad is not loaded and the old one stays in force, with an error in the log). The same list reaches the gate
   in `registries.json` of the ConfigMap `laboratory-registry-gate`. Only the gate calls upstream registries (zot has no sync of its own), and the registry
