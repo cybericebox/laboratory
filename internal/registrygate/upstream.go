@@ -21,6 +21,9 @@ type Registry struct {
 	// AuthHosts are the hosts besides the registry's own whose token endpoint this registry's challenge may name (Docker Hub:
 	// auth.docker.io). A realm anywhere else is refused: the credentials of a pull are never sent to a host the entry does not name.
 	AuthHosts []string
+	// Redirects are the host patterns (normalized by ParseRedirectPatterns) a MANIFEST request to this registry may be redirected to
+	// (registry.k8s.io answers every manifest with a 307 to a regional Artifact Registry host). Empty: no redirect is followed, as always.
+	Redirects []string
 }
 
 // realmAllowed says whether a token realm may receive the pull's credentials: https, on the registry's own host or one of its AuthHosts;
@@ -56,6 +59,9 @@ func (c Creds) anonymous() bool { return c.User == "" && c.Pass == "" }
 // Upstream calls the upstream registries: the token dance, the HEAD that proves access, the GET that fills.
 type Upstream struct {
 	HTTP *http.Client
+	// Timeout is the one deadline of a manifest proof that follows redirects, the whole chain included (the header timeout of a direct
+	// request). Zero: none besides the transport's.
+	Timeout time.Duration
 	// Now is the clock of the token cache (tests).
 	Now func() time.Time
 
@@ -74,6 +80,7 @@ func NewUpstream(headerTimeout time.Duration) *Upstream {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = headerTimeout
 	return &Upstream{
+		Timeout: headerTimeout,
 		HTTP: &http.Client{
 			Transport:     tr,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -95,7 +102,7 @@ type Object struct {
 func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.Ref }
 
 // Check is the proof of 5.2: the HEAD of the object with the pull's credentials (a token for repository:<repo>:pull first when the
-// registry asks for one). Only a DIRECT 200 from the registry is Allowed. 401, 403 and a refused token are Denied. A 404 is NotFound:
+// registry asks for one). Only a DIRECT 200 from the registry is Allowed (or, for a manifest of a registry with Redirects, the 200 at the end of redirects to the hosts that list allows, judged as a direct answer, credentials never sent to them). 401, 403 and a refused token are Denied. A 404 is NotFound:
 // GHCR, Docker Hub and others answer 404, not 401, for a private repository the caller cannot read, but the same 404 answers a ref that
 // is only missing, and the ref is the caller's choice, so the proof alone cannot tell them apart: the cache decides (a 404 on a ref that
 // was already proven is a revocation; a 404 on any other ref is recorded for that ref only). 429, 5xx, a timeout, DNS and anything
@@ -110,6 +117,12 @@ func (u *Upstream) Check(ctx context.Context, reg Registry, o Object, c Creds, c
 
 // Proof is Check that also returns the headers of the answer (Docker-Content-Digest of a tag).
 func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, http.Header, error) {
+	follows := len(reg.Redirects) > 0 && o.Kind == kindManifests
+	if follows && u.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, u.Timeout)
+		defer cancel()
+	}
 	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
 		return Denied, nil, nil
@@ -119,6 +132,15 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 	}
 	if err != nil {
 		return Unreachable, nil, err
+	}
+	if follows {
+		// Only for a registry that lists redirect hosts: a redirect to a listed host is followed and the final answer is judged as a direct one.
+		var ok bool
+		if resp, ok, err = u.followProof(ctx, reg, resp, http.MethodHead, o); err != nil {
+			return Unreachable, nil, err
+		} else if !ok {
+			return Unreachable, nil, nil
+		}
 	}
 	defer drain(resp)
 	switch resp.StatusCode {
