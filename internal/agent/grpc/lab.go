@@ -106,7 +106,6 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if err := h.admitVariant(v, policy); err != nil {
 			return nil, err
 		}
-		mapSpecImages(policy, &v.spec)
 	}
 	refs := make([]*protobuf.ItemRef, len(items))
 	envs := make([]deviceVars, len(items))

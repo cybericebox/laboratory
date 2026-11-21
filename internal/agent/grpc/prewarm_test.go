@@ -552,8 +552,8 @@ func TestPrewarmEvictsOldestFinishedEntry(t *testing.T) {
 	}
 }
 
-// A platform image is in the platform registry already: a prewarm skips it and says why; a malformed one is refused.
-func TestPrewarmSkipsPlatformImages(t *testing.T) {
+// A platform: reference is no longer served: a prewarm of it fails with the refusal's message, and a malformed one fails too.
+func TestPrewarmRefusesPlatformImages(t *testing.T) {
 	z := newFakeZot(t)
 	ten := &laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	h := tenantPolicyHandler(t, z, &fakeResolver{}, ten, nil)
@@ -562,11 +562,10 @@ func TestPrewarmSkipsPlatformImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Images[0].State != protobuf.PrewarmState_PREWARM_STATE_SKIPPED || !strings.Contains(r.Images[0].Error, "platform") {
-		t.Errorf("a platform image is skipped: %+v", r.Images[0])
-	}
-	if r.Images[1].State != protobuf.PrewarmState_PREWARM_STATE_FAILED {
-		t.Errorf("a malformed platform reference is refused: %+v", r.Images[1])
+	for _, st := range r.Images {
+		if st.State != protobuf.PrewarmState_PREWARM_STATE_FAILED || !strings.Contains(st.Error, "platform images are not served") {
+			t.Errorf("%+v", st)
+		}
 	}
 }
 

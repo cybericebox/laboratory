@@ -75,7 +75,7 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 func (r *LabReconciler) validateRegistries(lab *laboratoryv1alpha1.Lab) error {
 	for i := range lab.Spec.Devices {
 		img := lab.Spec.Devices[i].Image
-		if img == "" || strings.HasPrefix(img, names.RegistryNodePrefix+"/") || imagepolicy.IsPlatformScheme(img) {
+		if img == "" || strings.HasPrefix(img, names.RegistryNodePrefix+"/") {
 			continue
 		}
 		if err := imagepolicy.RegistryAllowed(r.AllowedRegistries, img); err != nil {

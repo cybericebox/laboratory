@@ -45,24 +45,6 @@ func createdImages(t *testing.T, h *Handler, image string) []string {
 	return out
 }
 
-// A platform reference is the platform's own image: it passes with no policy of any kind, and the Lab runs the node form.
-func TestCreateLabsMapsAPlatformImageToTheNodeAddress(t *testing.T) {
-	h, _ := contractHandler(t, Features{})
-	h.SetImagePolicy([]string{"ghcr.io/acme/private"}, "localhost:5035")
-	if got := createdImages(t, h, platformImage); len(got) != 1 || got[0] != nodePlatform {
-		t.Fatalf("the Lab runs %v, want %s", got, nodePlatform)
-	}
-}
-
-// The node address is the registry as the nodes see it, set once for the agent.
-func TestPlatformImagesUseTheConfiguredNodePrefix(t *testing.T) {
-	h, _ := contractHandler(t, Features{})
-	h.SetPlatformImages("localhost:6000", false)
-	if got := createdImages(t, h, platformImage); len(got) != 1 || got[0] != "localhost:6000/platform/tools@"+platformDigest {
-		t.Fatalf("the Lab runs %v", got)
-	}
-}
-
 // Other images are left exactly as they are.
 func TestOrdinaryImagesAreNotMapped(t *testing.T) {
 	h, _ := contractHandler(t, Features{})
@@ -91,69 +73,19 @@ func TestMalformedPlatformReferencesAreRefused(t *testing.T) {
 	}
 }
 
-func platformOnlyHandler(t *testing.T, tenantFlag, platformWide bool) *Handler {
-	t.Helper()
-	ten := newTenantTenant("acme", false, nil)
-	ten.Spec.Images.PlatformOnly = tenantFlag
-	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{ten})
+// The platform: scheme is gone: a reference of it is refused with IMAGE_NOT_PLATFORM, and the old node form is just a reference to the
+// cache, which a tenant may not name.
+func TestPlatformSchemeIsRefusedAndTheNodeFormStaysRefused(t *testing.T) {
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("acme", false, nil)})
 	h.SetImagePolicy([]string{"ghcr.io/acme/private"}, "localhost:5035")
-	h.SetPlatformImages("", platformWide)
-	return h
-}
-
-// PlatformOnly, set by the tenant or for the whole platform, lets exactly platform/** by digest through.
-func TestPlatformOnlyRefusesEverythingButPlatformImagesByDigest(t *testing.T) {
-	for name, h := range map[string]*Handler{
-		"tenant": platformOnlyHandler(t, true, false),
-		"agent":  platformOnlyHandler(t, false, true),
-	} {
-		for _, bad := range []string{
-			"nginx",
-			"ghcr.io/acme/app:1",
-			"ghcr.io/acme/app@" + platformDigest,
-			"localhost:5035/ghcr.io/acme/app:1",                  // the cache
-			"localhost:5035/lab/ns/lab/dev@" + platformDigest,    // a snapshot
-			"localhost:5035/base@" + platformDigest,              // the shared base image
-			"localhost:5035/platform/tools:1",                    // platform, but a tag
-			"localhost:5035/platform/a/b@" + platformDigest,      // platform, but not one name
-			"localhost:5000/platform/tools@" + platformDigest,    // another registry
-			"other.example.com/platform/tools@" + platformDigest, // another host
-			"localhost:5035/platformx/tools@" + platformDigest,   // another namespace
-		} {
-			err := createLabsWithImage(t, h, "acme", bad)
-			if status.Code(err) != codes.PermissionDenied || !client.IsImageNotPlatform(err) {
-				t.Errorf("%s, %q: want PermissionDenied with IMAGE_NOT_PLATFORM, got %v", name, bad, err)
-			}
-			if err != nil && !strings.Contains(err.Error(), `device "web"`) {
-				t.Errorf("%s, %q: the message must name the device: %v", name, bad, err)
-			}
-		}
-		for _, good := range []string{platformImage, nodePlatform} {
-			if err := createLabsWithImage(t, h, "acme", good); status.Code(err) == codes.PermissionDenied {
-				t.Errorf("%s, %q: %v", name, good, err)
-			}
-		}
+	err := createLabsWithImage(t, h, "acme", platformImage)
+	if status.Code(err) != codes.PermissionDenied || !client.IsImageNotPlatform(err) || !strings.Contains(err.Error(), `device "web"`) {
+		t.Fatalf("%v", err)
 	}
-}
-
-// With PlatformOnly set for the whole agent, the node form is mapped to itself and the Lab runs it.
-func TestPlatformOnlyAgentRunsTheNodeForm(t *testing.T) {
-	h, _ := contractHandler(t, Features{})
-	h.SetPlatformImages("", true)
-	if got := createdImages(t, h, nodePlatform); len(got) != 1 || got[0] != nodePlatform {
-		t.Fatalf("the Lab runs %v", got)
-	}
-}
-
-// Without PlatformOnly the node form of a platform image stays refused, like every reference that names the platform registry: a tenant
-// names the logical form, which the platform checks and maps.
-func TestWithoutPlatformOnlyTheNodeFormStaysRefused(t *testing.T) {
-	h := platformOnlyHandler(t, false, false)
-	err := createLabsWithImage(t, h, "acme", nodePlatform)
+	err = createLabsWithImage(t, h, "acme", nodePlatform)
 	if status.Code(err) != codes.PermissionDenied || client.IsImageNotPlatform(err) {
-		t.Fatalf("the node form without platform-only: want the cache refusal, got %v", err)
+		t.Fatalf("the node form: want the cache refusal, got %v", err)
 	}
-	// and an ordinary image still runs
 	if err := createLabsWithImage(t, h, "acme", "nginx"); status.Code(err) == codes.PermissionDenied {
 		t.Fatalf("an ordinary image: %v", err)
 	}

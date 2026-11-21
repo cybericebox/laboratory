@@ -102,7 +102,6 @@ func Run() {
 	}
 	h.SetRegistryTransport(exportTLS, imagecache.NewTokenFile(cfg.RegistryTokenFile))
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
-	h.SetPlatformImages(cfg.Cache.NodePrefix, cfg.ImagePlatformOnly)
 	allowedRegistries := cfg.AllowedRegistries
 	if cfg.Cache.Enabled {
 		// The image cache is on: an image goes through it or is refused, so only the registries it serves may be named. An empty

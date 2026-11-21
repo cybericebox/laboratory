@@ -35,12 +35,12 @@ func TestRegistryAllowed(t *testing.T) {
 			t.Errorf("%s: the error must say the registry is not allowed: %v", c.name, err)
 		}
 	}
-	// Check applies it in front of the tenant's own list and never to the platform's references
+	// Check applies it in front of the tenant's own list
 	p := Policy{Registries: list, Allow: []string{"gcr.io"}}
 	if err := p.Check("gcr.io/x/y"); !errors.Is(err, ErrRegistryNotAllowed) {
 		t.Errorf("the tenant's list cannot widen the laboratory's: %v", err)
 	}
-	if err := p.Check("platform:tool@sha256:" + zeros()); err != nil {
-		t.Errorf("platform images pass: %v", err)
+	if err := p.Check("platform:tool@sha256:" + zeros()); !errors.Is(err, ErrNotPlatform) {
+		t.Errorf("platform images are refused: %v", err)
 	}
 }
