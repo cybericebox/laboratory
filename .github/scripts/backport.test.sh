@@ -218,6 +218,7 @@ t11=$(head_of HEAD)
 git push -q origin release/1.10
 reset
 out=$(FAKE_VERIFIED=false run "$b7" "$t11"); rc=$?
+check "unverified: the job fails" "1" "$rc"
 check "unverified: branch deleted" "0" "$(remote_branch "backport/1.10/${t11:0:7}" | grep -c .)"
 check "unverified: an issue" "1" "$(calls 'issue create')"
 check "unverified: no pull request" "0" "$(calls 'pr create')"

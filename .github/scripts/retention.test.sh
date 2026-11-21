@@ -96,6 +96,7 @@ check "drop_release of a final tag runs no gh and no git push" 0 "$(wc -l <"$tmp
 drop_release v1.12.0-rc.1 true >/dev/null
 check "a candidate tag may go with its page" 1 "$(grep -c 'release delete v1.12.0-rc.1 --cleanup-tag' "$tmp/gh.calls")"
 # the whole run: no command ever deletes or moves a final tag
+# shellcheck disable=SC2034 # read by retention()
 DRY_RUN=false
 : >"$tmp/gh.calls"
 retention >/dev/null 2>&1

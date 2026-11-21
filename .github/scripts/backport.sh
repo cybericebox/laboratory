@@ -108,7 +108,7 @@ if [[ "$tree" == "$(git rev-parse "$remote/$base^{tree}")" ]]; then
   exit 0
 fi
 
-# the branch: new, or left empty by a failed run (made again at the head of develop), or already carrying the commit (done)
+# the branch: new, or left empty by a failed run (made again at the head of develop), or already carrying the commit (have)
 state=new
 if git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
   git fetch --quiet "$remote" "$branch"
@@ -117,7 +117,7 @@ if git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
     gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch" >/dev/null
   else
     echo "$branch exists with its commit: this push was brought back before"
-    state=done
+    state=have
   fi
 fi
 
