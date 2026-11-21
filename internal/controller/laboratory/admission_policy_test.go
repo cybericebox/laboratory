@@ -37,7 +37,7 @@ var _ = Describe("operator admission policy", Ordered, func() {
 			Skip("helm is not installed")
 		}
 		out, err := exec.Command("helm", "template", "x", "../../../charts/laboratory", "--namespace", "laboratory-system", "--kube-version", "1.35.0",
-			"--set", "operator.baseDomain=lab.example.com", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820", "--set", "operator.supportEmail=a@example.com",
+			"--set", "operator.baseDomain=lab.example.com", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820", "--set", "operator.supportEmail=a@example.com", "--set", "registry.gate.address=registry.lab.internal:5443",
 			"-s", "templates/operator/admission-policy.yaml").CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(out))
 		applied := 0
