@@ -61,6 +61,10 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections/status, devices/status, labactivityreports/status, labgateways/status, labgroupclients/status, labgroups/status, labs/status, labvpns/status]
   verbs: [get, patch, update]
+# The egress reports the gateways write; the operator logs them and acknowledges them (spec.ackedThrough), it never writes the status.
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [labegressreports]
+  verbs: [get, list, watch, update, patch]
 # Tenants: the persistence policy of a lab's tenant, the quotas the scheduler enforces, and the
 # enrollment token (its hash goes to the status; the annotation asking for a new one is removed).
 - apiGroups: [laboratory.cybericebox.com]
@@ -99,8 +103,8 @@ rules:
   resources: [events]
   verbs: [create, patch]
 # The `bind` verb authorizes creating RoleBindings that reference these ClusterRoles without the operator holding every
-# permission they grant: the agent, VPN pod and proxy report roles, and its own working role in a namespace.
+# permission they grant: the agent, VPN pod, gateway pod and proxy report roles, and its own working role in a namespace.
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles]
-  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-operator-namespaced, laboratory-proxy-reports]
+  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-gateway-role, laboratory-operator-namespaced, laboratory-proxy-reports]
   verbs: [bind]

@@ -11,7 +11,6 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 )
 
@@ -26,14 +25,10 @@ func (h *Handler) imagePolicy(ctx context.Context) (imagepolicy.Policy, error) {
 			return imagepolicy.Policy{}, err
 		}
 	}
-	p := imagepolicy.Policy{Deny: h.imageDeny, CachePrefixes: h.imageCache, PlatformOnly: h.platformOnly, PlatformPrefix: h.platformPrefix,
+	p := imagepolicy.Policy{Deny: h.imageDeny, CachePrefixes: h.imageCache,
 		Registries: h.allowedRegistries}
-	if p.PlatformPrefix == "" {
-		p.PlatformPrefix = names.RegistryNodePrefix
-	}
 	if ten != nil {
 		p.Allow = ten.Spec.Images.Allow
-		p.PlatformOnly = p.PlatformOnly || ten.Spec.Images.PlatformOnly
 	}
 	return p, nil
 }
@@ -52,17 +47,8 @@ func checkSpecImages(p imagepolicy.Policy, spec *laboratoryv1alpha1.LabSpec) err
 	return nil
 }
 
-// mapSpecImages turns the platform references of a spec that passed checkSpecImages into the references the nodes pull
-// (localhost:<port>/platform/<name>@sha256:...). Nothing else is changed, and a platform image needs no pull credentials: the node's
-// registry forwarder reads platform/** with the platform's reader account.
-func mapSpecImages(p imagepolicy.Policy, spec *laboratoryv1alpha1.LabSpec) {
-	for i := range spec.Devices {
-		spec.Devices[i].Image = p.Map(spec.Devices[i].Image)
-	}
-}
-
-// imageRefusal is the gRPC status of an image the policy refuses: PermissionDenied, and for an image that is not a platform image
-// where only those run, the reason IMAGE_NOT_PLATFORM (the message names the variant, the device and the image).
+// imageRefusal is the gRPC status of an image the policy refuses: PermissionDenied, and for a platform: reference (no longer served) the
+// reason IMAGE_NOT_PLATFORM (the message names the variant, the device and the image).
 func imageRefusal(prefix string, err error) error {
 	st := status.New(codes.PermissionDenied, prefix+err.Error())
 	reason := ""

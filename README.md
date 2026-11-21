@@ -387,7 +387,8 @@ A backend reads the current state with `GetFeatures` before it offers a feature 
 
 ## Requirements
 
-- **Kubernetes 1.35 or newer** with the Gateway API, **containerd 2.x**, and **Cilium** as the cluster network.
+- **Kubernetes 1.35 or newer**, **containerd 2.x**, and **Cilium** as the cluster network. Nodes are split into two pools by the label
+  `node-restriction.kubernetes.io/cib-pool` (`lab` for the nodes that run labs, `lab-control` for the control of the laboratory), set before the install.
   The chart refuses an older cluster.
 - **Linux nodes** with kernel 6.3 or newer, cgroup v2, and these modules available: `openvswitch`, `geneve`,
   `wireguard`, `br_netfilter`, `nf_conntrack`, `nf_conntrack_netlink`. Nothing else is installed on the host: Open
@@ -395,6 +396,8 @@ A backend reads the current state with `GetFeatures` before it offers a feature 
 - **cert-manager**, for the wildcard certificate of the proxy and the server certificate of the agent. With a public
   certificate authority the wildcard certificate needs a DNS challenge; a self-signed issuer is enough for development.
 - **DNS**: a wildcard record for the lab domain, a name for the VPN endpoint and a name for the agent.
+- **Load balancers** made by the infrastructure: the proxy (TCP 443), the agent, the VPN (UDP 51820) and the registry gate (internal, for the lab nodes)
+  target `NodePort` Services with `externalTrafficPolicy: Local`, so the client address reaches the pod.
 - `kubectl` 1.35 or newer and `helm` 3.12 or newer.
 
 Laboratory targets plain Linux machines and is developed against k0s. A `kind` cluster works for local development.
@@ -410,13 +413,8 @@ Laboratory targets plain Linux machines and is developed against k0s. A `kind` c
 The chart is in [`charts/laboratory`](charts/laboratory). It must be installed into the namespace
 `laboratory-system`; it fails early when a required value is missing.
 
-1. Create the session secret of the proxy:
-
-   ```bash
-   kubectl create namespace laboratory-proxy
-   kubectl -n laboratory-proxy create secret generic proxy-session \
-     --from-literal=sessionSecret="$(openssl rand -base64 48)"
-   ```
+1. Label the nodes into their pools (`kubectl label node <node> node-restriction.kubernetes.io/cib-pool=lab` or `=lab-control`). The proxy holds no
+   secret of its own: a web session is a grant signed by the tenant, which the proxy verifies with the tenant's public key.
 
 2. Write a values file. These are the only values an installation has to give:
 
@@ -426,6 +424,12 @@ The chart is in [`charts/laboratory`](charts/laboratory). It must be installed i
      baseDomain: labs.example.com        # base domain of the lab hosts
      publicVPNEndpoint: vpn.example.com  # the address WireGuard clients connect to
      supportEmail: support@example.com
+   registry:
+     gate:
+       address: registry.lab.internal:5443   # the internal load balancer the lab nodes dial to reach the registry gate
+   proxy:
+     l7:
+       platformOrigins: [https://app.example.com]   # the origins of the platform pages that post a grant
    agent:
      enabled: true
    tenants:
@@ -449,8 +453,8 @@ The chart is in [`charts/laboratory`](charts/laboratory). It must be installed i
 
 Notes:
 
-- Images in a private registry need pull secrets, listed under `imagePullSecrets`. The operator copies them into
-  every team namespace.
+- Images in a private registry need pull secrets, listed under `imagePullSecrets`. The operator copies them into the namespace
+  `laboratory-upstream`, where only the registry gate reads them; no pod of a lab and no lab node holds a registry credential.
 - `helm upgrade` does not update custom resource definitions. Apply the definitions from `charts/laboratory/crds`
   with `kubectl` before an upgrade.
 - `helm uninstall` does not remove the definitions or the labs. Delete the labs first, then the definitions.
@@ -475,19 +479,21 @@ The chart uses the image tag of its own version. It refuses the tag `latest`. Th
 
 ## Development
 
-To build from source you need the Go version named in `go.mod`, Docker and `make`.
+To build from source you need [mise](https://mise.jdx.dev), Docker and `make`. `mise install` puts the pinned tools in place (Go, kind,
+kubectl, helm, kustomize, controller-gen, golangci-lint, protoc); `mise tasks` lists the commands. The Makefile holds the targets; run
+them through mise so that they see those tools.
 
 ```bash
-make help            # list all targets
-make manifests       # regenerate resource definitions and access rules
-make generate        # regenerate generated code
-make fmt vet         # format and vet
-make lint            # run the linter
-make build           # build the operator binary into ./bin/manager
-make test            # unit tests and tests against a real API server
-make test-e2e        # end-to-end tests on a kind cluster
-make docker-build    # build all images
-make kind-deploy     # build, load into a kind cluster and install
+mise run generate    # regenerate resource definitions, access rules, generated code and API clients
+mise run proto       # regenerate the Go code of the gRPC contracts
+mise run lint        # run the linter (for Linux, as CI does)
+mise run build       # build the operator binary into ./bin/manager
+mise run test        # unit tests and tests against a real API server
+mise run cluster-up  # the kind cluster of the end-to-end tests
+mise run e2e         # end-to-end tests on that cluster
+mise run make help   # every other Makefile target: mise run make <target>
+mise run make docker-build    # build all images
+mise run make kind-deploy     # build, load into a kind cluster and install
 ```
 
 | Path | Contents |

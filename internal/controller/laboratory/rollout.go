@@ -84,12 +84,6 @@ func (g *rolloutGuard) release(ns string) {
 	}
 }
 
-// pullPolicyFor is the image pull policy of the images the platform runs in a group: every one has an exact tag or a digest (the
-// operator refuses to start otherwise), so a node pulls it only when it does not have it.
-func pullPolicyFor(string) corev1.PullPolicy {
-	return corev1.PullIfNotPresent
-}
-
 // convergeGroupPod brings the container of an existing VPN or gateway Deployment to the configured image and pull policy, and to nothing
 // else: the size of a group's pods is the one it was created with (the platform chose it for that group and never resizes it), and the
 // command is the one of its image's day. A difference is a rolling update of the group's pod, so it is applied only when the group has
@@ -112,10 +106,9 @@ func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d 
 		log.FromContext(ctx).Info("group image left as it is: it cannot be pulled through the image cache", "image", image, "err", err.Error())
 		return false
 	}
-	policy := pullPolicyFor(want)
-	// With the cache on the pods carry the re-keyed secret (a Deployment made before the cache was switched on still has the raw ones).
-	secrets := r.groupPullSecretRefs()
-	secretsOK := !r.Mirror.Enabled() || equalPullSecretRefs(d.Spec.Template.Spec.ImagePullSecrets, secrets)
+	policy := pullPolicyFor(want, r.Mirror.Prefix)
+	// A pod has no image pull secret: a Deployment made by an earlier version still has some, and is rolled to lose them.
+	secretsOK := len(d.Spec.Template.Spec.ImagePullSecrets) == 0
 	if c.Image == want && c.ImagePullPolicy == policy && secretsOK {
 		return false
 	}
@@ -123,9 +116,7 @@ func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d 
 		return false
 	}
 	c.Image, c.ImagePullPolicy = want, policy
-	if r.Mirror.Enabled() {
-		d.Spec.Template.Spec.ImagePullSecrets = secrets
-	}
+	d.Spec.Template.Spec.ImagePullSecrets = nil
 	return true
 }
 
@@ -162,17 +153,4 @@ func rolledOut(d *appsv1.Deployment) bool {
 	}
 	s := d.Status
 	return s.ObservedGeneration >= d.Generation && s.UpdatedReplicas == want && s.Replicas == want && s.AvailableReplicas == want
-}
-
-// equalPullSecretRefs compares two lists of pull secret references by name; nil and empty are the same.
-func equalPullSecretRefs(a, b []corev1.LocalObjectReference) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Name != b[i].Name {
-			return false
-		}
-	}
-	return true
 }

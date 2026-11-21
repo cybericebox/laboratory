@@ -32,7 +32,11 @@ type Config struct {
 	// BandwidthEntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy: each gets the ConfigMap with the entry
 	// limits of every node (BANDWIDTH_ENTRY_NAMESPACES, comma separated).
 	BandwidthEntryNamespaces []string `env:"BANDWIDTH_ENTRY_NAMESPACES" envSeparator:","`
-	RuntimeObservation       bool     `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// DeviceAccessNamespace is the namespace of the device access service (DEVICE_ACCESS_NAMESPACE): the operator mirrors the tenants'
+	// access public keys into the ConfigMap names.AccessKeysConfigMap there, which the service verifies console grants with. Empty: no
+	// mirror (the console is off).
+	DeviceAccessNamespace string `env:"DEVICE_ACCESS_NAMESPACE"`
+	RuntimeObservation    bool   `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
 	// ChecksEnabled and TerminalEnabled are the chart's checks.enabled and terminal.enabled (the same two the management agent reads):
 	// the options of lab checks and the browser terminal. Nothing in the operator acts on them yet; the checker and the terminal
 	// components will.
@@ -78,7 +82,7 @@ type Config struct {
 	APIQPS   float32 `env:"API_QPS" envDefault:"200"`
 	APIBurst int     `env:"API_BURST" envDefault:"400"`
 
-	// The egress monitor pulls the per-minute summaries of the gateways (EGRESS_MONITOR_ENABLED), on their summaries port (EGRESS_STATS_PORT),
+	// The egress monitor reads the per-minute summaries that the gateways write to their LabEgressReports (EGRESS_MONITOR_ENABLED),
 	// keeps the connection log in the operator log and, with EGRESS_LOG_DIR, in daily files for EGRESS_LOG_RETENTION, and flags a lab when
 	// EGRESS_SIGNAL_HOST_LABS labs hit one host name or it sat at its caps for EGRESS_SIGNAL_CAP_MINUTES minutes of ten.
 	// The egress settings a NEW gateway pod gets (empty = the default of the gateway): EGRESS_DNS_UPSTREAMS (comma separated),
@@ -92,7 +96,6 @@ type Config struct {
 	EgressTunnelSuffixes          string        `env:"EGRESS_TUNNEL_SUFFIXES"`
 	EgressICMPPerSecond           string        `env:"EGRESS_ICMP_PER_SECOND"`
 	EgressMonitorEnabled          bool          `env:"EGRESS_MONITOR_ENABLED" envDefault:"true"`
-	EgressStatsPort               int           `env:"EGRESS_STATS_PORT" envDefault:"9188"`
 	EgressLogDir                  string        `env:"EGRESS_LOG_DIR"`
 	EgressLogRetention            time.Duration `env:"EGRESS_LOG_RETENTION" envDefault:"720h"`
 	EgressSignalHostLabs          int           `env:"EGRESS_SIGNAL_HOST_LABS" envDefault:"20"`
@@ -283,8 +286,11 @@ type CacheConfig struct {
 	// the same wave run the same image even when the upstream tag moves.
 	PinTTL time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	// PinConcurrency is how many image tags are resolved at once, in the background, for new labs (IMAGE_CACHE_PIN_CONCURRENCY).
-	PinConcurrency int      `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
-	Registries     []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	PinConcurrency int `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
+	// RequireDigest (IMAGE_CACHE_REQUIRE_DIGEST, the chart's registry.cache.requireDigest, like GATE_REQUIRE_DIGEST of the gate): a tag
+	// that cannot be resolved to a digest fails the creation of the lab.
+	RequireDigest bool     `env:"IMAGE_CACHE_REQUIRE_DIGEST" envDefault:"false"`
+	Registries    []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)
@@ -301,11 +307,16 @@ func (c CacheConfig) Rewriter() imagecache.Rewriter {
 // snapshot registry.
 type StateConfig struct {
 	Enabled bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
-	// RegistryAddr is host:port of the snapshot registry Service, used by the operator to drop snapshots (device reset, retention);
-	// empty = names.RegistryServiceAddr (the chart always installs the registry there).
-	RegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
-	RegistryUser     string `env:"STATE_REGISTRY_USER"`
-	RegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
+	// RegistryAddr is host:port of the registry gate's TLS port, used by the operator to drop snapshots (device reset, retention);
+	// empty = names.RegistryGateAddr. The operator is known to the gate by its own projected ServiceAccount token (RegistryTokenFile,
+	// audience laboratory-registry-gate) and trusts the certificate authority in RegistryCAFile (the chart mounts the ConfigMap
+	// laboratory-registry-ca); it has no registry account. Without a CA file the operator speaks plain http (a development setup).
+	RegistryAddr      string `env:"STATE_REGISTRY_ADDR"`
+	RegistryCAFile    string `env:"STATE_REGISTRY_CA_FILE"`
+	RegistryTokenFile string `env:"STATE_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// RegistryInsecureDev (STATE_REGISTRY_INSECURE_DEV): plain http and no token, for development. Without a CA file and without it the
+	// operator refuses to talk to the registry: its token never travels in the clear.
+	RegistryInsecureDev bool `env:"STATE_REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// Debounce is how long a device's writable layer must stay quiet before a snapshot.
 	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
 	// ExcludePaths are never snapshotted (comma-separated absolute paths).
@@ -370,7 +381,7 @@ func (cfg *Config) applyDefaults() {
 		&cfg.OperatorServiceAccount: names.OperatorServiceAccount,
 		&cfg.OperatorNamespace:      names.SystemNamespace,
 		&cfg.Cache.Prefix:           names.RegistryNodePrefix,
-		&cfg.State.RegistryAddr:     names.RegistryServiceAddr,
+		&cfg.State.RegistryAddr:     names.RegistryGateAddr,
 	} {
 		if *dst == "" {
 			*dst = def

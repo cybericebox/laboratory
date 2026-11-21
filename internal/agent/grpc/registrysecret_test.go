@@ -17,7 +17,6 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
-	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -68,10 +67,10 @@ func TestValidateRegistryCredentials(t *testing.T) {
 	}
 }
 
-// registrySecret reads the per-lab registry Secret (nil when absent).
+// registrySecret reads the credentials Secret of a lab (nil when absent); it is in the upstream namespace.
 func registrySecret(ctx context.Context, t *testing.T, h *Handler, ns, lab string) *corev1.Secret {
 	t.Helper()
-	s, err := h.k8s.CoreV1().Secrets(ns).Get(ctx, names.LabRegistrySecret(lab), metav1.GetOptions{})
+	s, err := h.k8s.CoreV1().Secrets(names.UpstreamNamespace).Get(ctx, names.UpstreamLabSecret(ns, lab), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -115,7 +114,7 @@ func TestCreateLabWritesRegistrySecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l1.Spec.ImagePullSecret != names.LabRegistrySecret("l1") {
+	if l1.Spec.ImagePullSecret != names.UpstreamLabSecret("team-lab", "l1") {
 		t.Fatalf("l1 imagePullSecret = %q", l1.Spec.ImagePullSecret)
 	}
 	s := registrySecret(ctx, t, h, "team-lab", "l1")
@@ -128,8 +127,11 @@ func TestCreateLabWritesRegistrySecret(t *testing.T) {
 	if want := `{"auths":{"index.docker.io":{"username":"u","password":"p","auth":"dTpw"}}}`; string(s.Data[corev1.DockerConfigJsonKey]) != want {
 		t.Fatalf("data %s", s.Data[corev1.DockerConfigJsonKey])
 	}
-	if len(s.OwnerReferences) != 1 || s.OwnerReferences[0].Kind != "Lab" || s.OwnerReferences[0].UID != l1.UID {
-		t.Fatalf("owner %+v", s.OwnerReferences)
+	if s.Annotations[names.AnnotationUpstreamLabNamespace] != "team-lab" || s.Annotations[names.AnnotationUpstreamLab] != "l1" {
+		t.Fatalf("the Secret says whose it is: %v", s.Annotations)
+	}
+	if len(s.OwnerReferences) != 0 {
+		t.Fatalf("a Secret of another namespace cannot be owned by the Lab (the operator deletes it): %+v", s.OwnerReferences)
 	}
 
 	l2, err := h.cs.LaboratoryV1alpha1().Labs("team-lab").Get(ctx, "l2", metav1.GetOptions{})
@@ -189,7 +191,7 @@ func TestUpdateLabReplacesRegistrySecret(t *testing.T) {
 		t.Fatalf("new credentials: %v", err)
 	}
 	// Removed behind the agent's back: a resend brings it back.
-	if err := k8s.CoreV1().Secrets("team-lab").Delete(ctx, names.LabRegistrySecret("l1"), metav1.DeleteOptions{}); err != nil {
+	if err := k8s.CoreV1().Secrets(names.UpstreamNamespace).Delete(ctx, names.UpstreamLabSecret("team-lab", "l1"), metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	send("new")
@@ -200,7 +202,7 @@ func TestUpdateLabReplacesRegistrySecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lab.Spec.ImagePullSecret != names.LabRegistrySecret("l1") {
+	if lab.Spec.ImagePullSecret != names.UpstreamLabSecret("team-lab", "l1") {
 		t.Fatalf("imagePullSecret = %q", lab.Spec.ImagePullSecret)
 	}
 }
@@ -253,7 +255,7 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	k.PrependReactor("create", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		creates++
 		if creates == 1 {
-			return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.LabRegistrySecret("l1"))
+			return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.UpstreamLabSecret("ns", "l1"))
 		}
 		return false, nil, nil
 	})
@@ -265,7 +267,7 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	if creates != 2 {
 		t.Fatalf("creates = %d, want 2", creates)
 	}
-	s, err := k.CoreV1().Secrets("ns").Get(context.Background(), names.LabRegistrySecret("l1"), metav1.GetOptions{})
+	s, err := k.CoreV1().Secrets(names.UpstreamNamespace).Get(context.Background(), names.UpstreamLabSecret("ns", "l1"), metav1.GetOptions{})
 	if err != nil || s.Type != corev1.SecretTypeDockerConfigJson {
 		t.Fatalf("secret %v %v", s, err)
 	}
@@ -273,66 +275,9 @@ func TestWriteRegistrySecretRetriesAlreadyExists(t *testing.T) {
 	// A second conflict in a row is reported.
 	k2 := k8sfake.NewClientset()
 	k2.PrependReactor("create", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.LabRegistrySecret("l1"))
+		return true, nil, apierrors.NewAlreadyExists(corev1.Resource("secrets"), names.UpstreamLabSecret("ns", "l1"))
 	})
 	if err := NewHandler(nil, k2, nil).writeRegistrySecret(context.Background(), lab, []*protobuf.RegistryCredential{regCred("ghcr.io", "u", "p")}); !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("persistent conflict: %v", err)
-	}
-}
-
-// With the image cache on a credential without a username is refused where the lab is created, with a stable reason that names the
-// registry: the cache writes the tenant into the username, so such a credential could never pull, and the pod would only fail later.
-func TestCredentialsWithoutAUsernameAreRefusedWhileTheCacheIsOn(t *testing.T) {
-	h, k8s := newTestHandler(t)
-	ctx := context.Background()
-	readyGroup(t, h, k8s, "team-lab", "team-lab", nil)
-	req := &protobuf.CreateLabsRequest{
-		Variants: []*protobuf.LabVariant{{VariantId: "tok", SpecJson: specJSON("web"), RegistryCredentials: []*protobuf.RegistryCredential{regCred("ghcr.io", "", "token-only")}}},
-		Items:    []*protobuf.LabItem{{LabGroup: "team-lab", Name: "l1", VariantId: "tok"}},
-	}
-	if res, err := h.CreateLabs(ctx, req); err != nil {
-		t.Fatalf("with the cache off a token-only credential is accepted as before: %v %v", res, err)
-	}
-	h.features.CacheEnabled = true
-	req.Items[0].Name = "l2"
-	_, err := h.CreateLabs(ctx, req)
-	if status.Code(err) != codes.InvalidArgument || !client.IsCredentialNotSupported(err) ||
-		!strings.Contains(err.Error(), "registry ghcr.io") || !strings.Contains(err.Error(), `variant "tok"`) {
-		t.Fatalf("%v", err)
-	}
-	if strings.Contains(err.Error(), "token-only") {
-		t.Fatal("the secret never appears in an error")
-	}
-	if _, err := h.cs.LaboratoryV1alpha1().Labs("team-lab").Get(ctx, "l2", metav1.GetOptions{}); err == nil {
-		t.Fatal("nothing was created")
-	}
-	// the same for a prewarm call
-	h.SetPrewarm(PrewarmConfig{Enabled: true, RegistryAddr: "127.0.0.1:1", Registries: []string{"ghcr.io"}})
-	if _, err := h.PrewarmImages(ctx, &protobuf.PrewarmImagesRequest{Images: []string{"ghcr.io/o/a:1"}, RegistryCredentials: req.Variants[0].RegistryCredentials}); !client.IsCredentialNotSupported(err) {
-		t.Fatalf("prewarm: %v", err)
-	}
-}
-
-// A tenant whose images.pullSecret has an entry without a username (the operator says so in the Tenant's condition ImageCredentials) has
-// its labs refused at creation while the cache is on, with the same reason, and not when the cache is off.
-func TestCreateLabsRefusesATenantWhoseCredentialsTheCacheCannotCarry(t *testing.T) {
-	ten := newTenantTenant("acme", false, nil)
-	ten.Status.Conditions = []metav1.Condition{{
-		Type: laboratoryv1alpha1.TenantConditionImageCredentials, Status: metav1.ConditionFalse, Reason: "CredentialNotSupported",
-		Message: "CREDENTIAL_NOT_SUPPORTED: registry ghcr.io: credentials need a username for the image cache",
-	}}
-	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{ten})
-	if err := createLabsWithImage(t, h, "acme", "ghcr.io/acme/web:1"); client.IsCredentialNotSupported(err) {
-		t.Fatalf("with the cache off nothing is refused for it: %v", err)
-	}
-	h.features.CacheEnabled = true
-	err := createLabsWithImage(t, h, "acme", "ghcr.io/acme/web:1")
-	if status.Code(err) != codes.InvalidArgument || !client.IsCredentialNotSupported(err) || !strings.Contains(err.Error(), "registry ghcr.io") {
-		t.Fatalf("%v", err)
-	}
-	other := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("fine", false, nil)})
-	other.features.CacheEnabled = true
-	if err := createLabsWithImage(t, other, "fine", "ghcr.io/acme/web:1"); client.IsCredentialNotSupported(err) {
-		t.Fatalf("a tenant without the condition is not refused: %v", err)
 	}
 }

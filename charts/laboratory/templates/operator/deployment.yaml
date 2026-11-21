@@ -44,9 +44,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with include "laboratory.placement" (dict "own" .Values.operator "root" $) }}
-      {{- . | nindent 6 }}
-      {{- end }}
+      {{- include "laboratory.pool" (dict "pool" "labControl" "root" $) | nindent 6 }}
       containers:
         - name: manager
           image: {{ include "laboratory.imageRef" (dict "image" .Values.operator.image "root" $) | quote }}
@@ -73,19 +71,7 @@ spec:
           envFrom:
             - configMapRef:
                 name: laboratory-config
-        {{- if .Values.devices.statePersistence.enabled }}
-          env:
-            - name: STATE_REGISTRY_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: username
-            - name: STATE_REGISTRY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: password
-        {{- end }}
+
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -113,12 +99,37 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
-        {{- if include "laboratory.egressLogPVC" . }}
+        {{- if or (include "laboratory.egressLogPVC" .) (include "laboratory.registryEnabled" .) }}
           volumeMounts:
+          {{- if include "laboratory.egressLogPVC" . }}
             - name: egress-log
               mountPath: /var/lib/egress-log
+          {{- end }}
+          {{- if include "laboratory.registryEnabled" . }}
+            # The registry gate: its authority (public data) and the operator's own token for it (retention, device reset, the sweep).
+            - name: registry-ca
+              mountPath: /etc/registry-ca
+              readOnly: true
+            - name: registry-gate-token
+              mountPath: /var/run/secrets/registry-gate
+              readOnly: true
+          {{- end }}
       volumes:
+        {{- if include "laboratory.egressLogPVC" . }}
         - name: egress-log
           persistentVolumeClaim:
             claimName: laboratory-egress-log
+        {{- end }}
+        {{- if include "laboratory.registryEnabled" . }}
+        - name: registry-ca
+          configMap:
+            name: laboratory-registry-ca
+        - name: registry-gate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ include "laboratory.registryGateAudience" . }}
+                  expirationSeconds: 3600
+                  path: token
+        {{- end }}
         {{- end }}

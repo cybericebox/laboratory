@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func testHandler() *Handler { return NewHandler(nil, nil, "example.test", "c", nil) }
+func testHandler() *Handler { return NewHandler(nil, "example.test", "c", nil) }
 
 func TestNoPacerWithoutLimits(t *testing.T) {
 	h := testHandler()

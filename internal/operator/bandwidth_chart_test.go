@@ -22,7 +22,7 @@ func renderAll(t *testing.T, extra ...string) map[string]map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"template", "bandwidth-contract", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test"}
+	args := []string{"template", "bandwidth-contract", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test", "--set", "registry.gate.address=registry.lab.internal:5443"}
 	data, err := exec.Command(helm, append(args, extra...)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("render: %v %s", err, data)

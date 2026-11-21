@@ -7,24 +7,34 @@ import (
 	"github.com/cybericebox/laboratory/internal/proxy/demux/fastpath"
 )
 
-func TestLoadL7Config_ShortSessionSecretIsRefused(t *testing.T) {
+// The proxy holds no secret of its own: the grant settings are a lifetime bound, the cookie name and the pages that may post a grant.
+func TestLoadL7Config_GrantSettings(t *testing.T) {
 	t.Setenv("TLS_CERT_PATH", "a")
 	t.Setenv("TLS_KEY_PATH", "b")
 	t.Setenv("BASE_DOMAIN", "example.com")
-	t.Setenv("SESSION_SECRET", "too-short")
-	if _, err := LoadL7Config(); err == nil {
-		t.Fatal("a short SESSION_SECRET must be refused")
-	}
-	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
-	if _, err := LoadL7Config(); err != nil {
+	cfg, err := LoadL7Config()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.GrantMaxTTL != 8*time.Hour || cfg.CookieName != "__Host-cib_grant" || len(cfg.PlatformOrigins) != 0 {
+		t.Fatalf("defaults: %v %q %v", cfg.GrantMaxTTL, cfg.CookieName, cfg.PlatformOrigins)
+	}
+	t.Setenv("PLATFORM_ORIGINS", "https://app.example.com,https://*.example.org")
+	t.Setenv("GRANT_MAX_TTL", "2h")
+	t.Setenv("GRANT_COOKIE_NAME", "g")
+	cfg, err = LoadL7Config()
+	if err != nil || cfg.GrantMaxTTL != 2*time.Hour || cfg.CookieName != "g" || len(cfg.PlatformOrigins) != 2 || cfg.PlatformOrigins[1] != "https://*.example.org" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	t.Setenv("GRANT_MAX_TTL", "0s")
+	if _, err := LoadL7Config(); err == nil {
+		t.Fatal("a zero grant lifetime must be refused")
 	}
 }
 
 func TestLoadL7Config_BaseDomainIsRequired(t *testing.T) {
 	t.Setenv("TLS_CERT_PATH", "a")
 	t.Setenv("TLS_KEY_PATH", "b")
-	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
 	for _, v := range []string{"unset", ""} {
 		if v == "" {
 			t.Setenv("BASE_DOMAIN", "")
@@ -40,7 +50,6 @@ func TestLoadL7Config_ListenDefaultMirrorsTheChart(t *testing.T) {
 	t.Setenv("TLS_CERT_PATH", "a")
 	t.Setenv("TLS_KEY_PATH", "b")
 	t.Setenv("BASE_DOMAIN", "example.com")
-	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
 	cfg, err := LoadL7Config()
 	if err != nil || cfg.Listen != ":8443" {
 		t.Fatalf("%+v %v", cfg, err)

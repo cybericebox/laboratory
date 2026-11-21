@@ -217,13 +217,11 @@ func Run() {
 	}
 	defer func() { _ = puller.Close() }()
 	if err := (&nodeagent.ImagePullReconciler{
-		Client:          mgr.GetClient(),
-		Reader:          mgr.GetAPIReader(),
-		NodeName:        cfg.NodeName,
-		ImagesNamespace: names.ImagesNamespace,
-		Puller:          puller,
-		Concurrency:     cfg.ImagePullConcurrency,
-		Timeout:         cfg.ImagePullTimeout,
+		Client:      mgr.GetClient(),
+		NodeName:    cfg.NodeName,
+		Puller:      puller,
+		Concurrency: cfg.ImagePullConcurrency,
+		Timeout:     cfg.ImagePullTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup ImagePullReconciler")
 		os.Exit(1)

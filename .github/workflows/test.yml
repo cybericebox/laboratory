@@ -14,14 +14,12 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: Running Tests
         run: |
           go mod tidy
-          make test
+          mise run test
 
   netns:
     name: Real-iptables tests (network namespaces)
@@ -63,14 +61,10 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: Run linter
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: v2.14.0
+        run: mise run lint
 
   e2e:
     name: E2E tests
@@ -78,18 +72,8 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-      - name: Install kind (a pinned version, verified against a checksum kept here)
-        run: |
-          curl -fsSLo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
-          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-      - name: Verify kind installation
-        run: kind version
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: Login to Docker Hub for container tests
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -99,8 +83,8 @@ jobs:
       - name: Allow user namespaces (device pods run with hostUsers false; Ubuntu's AppArmor restricts them)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Create kind cluster (1 control plane + 2 lab workers, one tainted)
-        run: kind create cluster --config hack/kind/kind-config.yaml
+        run: mise run cluster-up
       - name: Running Test e2e
         run: |
           go mod tidy
-          make test-e2e
+          mise run e2e

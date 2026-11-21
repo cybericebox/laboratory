@@ -112,9 +112,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with include "laboratory.placement" (dict "own" .Values.labScheduler "root" $) }}
-      {{- . | nindent 6 }}
-      {{- end }}
+      {{- include "laboratory.pool" (dict "pool" "labControl" "root" $) | nindent 6 }}
       containers:
         - name: kube-scheduler
           # The tag follows the cluster's own version (the scheduler must not be newer than the API server).

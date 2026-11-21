@@ -38,22 +38,16 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      # Where the node-agent runs: the lab nodes (labWorkloads), with the same tolerations for the startup taints.
-      {{- with .Values.labWorkloads.nodeSelector }}
+      # The lab pool, with the same tolerations for the startup taints. No image pull secret: a lab pod holds no registry credential.
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        node-restriction.kubernetes.io/cib-pool: lab
       tolerations:
         - key: node.cilium.io/agent-not-ready
           operator: Exists
           effect: NoSchedule
-        {{- with .Values.labWorkloads.tolerations }}
+        {{- with .Values.pools.lab.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
         {{- include "laboratory.checker.container" . | nindent 8 }}
         {{- with include "laboratory.checker.extraContainers" . }}

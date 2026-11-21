@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -366,7 +367,7 @@ func TestRequiredCaptureDeferredPushIsFailure(t *testing.T) {
 	if err := tr.snapshot(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	r.e.MinPushInterval = time.Hour
+	r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushInterval, retry: 3600, msg: "too soon"})
 	r.rt.setDiff(tarOf(map[string]string{"work": "new data"}))
 	result, err := r.e.CaptureRequired(context.Background(), r.pod, req)
 	if err == nil || result.Result == "Succeeded" {

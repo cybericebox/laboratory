@@ -1,12 +1,14 @@
 package registrygate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +28,7 @@ type rig struct {
 	cache *Cache
 	gate  *httptest.Server
 	clock *clock
+	sch   *Schedule
 }
 
 func freePort(t *testing.T) int {
@@ -109,37 +112,41 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the callers: the agent (the prewarm path, credentials of the call) is the one the registry tests use; nodes have their own tests
+	sch := NewSchedule()
+	sch.Confirm()
+	cache.Schedule, cache.Creds, cache.Grants, cache.AgentMaxFills = sch, NewSecretView(), &Grants{}, 128
 	g.Cache = cache
+	g.Auth = &Authenticator{Reviewer: testReviewer{}, Accounts: testAccounts, Schedule: sch, Precheck: anyShape}
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
-	return &rig{t: t, up: f, zot: z, cache: cache, gate: srv, clock: clk}
+	return &rig{t: t, up: f, zot: z, cache: cache, gate: srv, clock: clk, sch: sch}
 }
 
-// pull does what containerd does: a request without credentials, and, after a 401 with a Basic challenge, the same request with the
-// credentials of the pod (user is "<tenant>~<upstream user>"). It returns the final status and body.
+// pull is a request of the agent: the path has no tenant segment (the helper adds the one of user, "<tenant>~<upstream user>", or "t0" for
+// an anonymous request), the credentials go in a Basic header, the token of the agent in X-Cib-Node-Token. It returns the status and body.
 func (r *rig) pull(method, path, user, pass string, hdr map[string]string) (int, []byte, http.Header) {
 	r.t.Helper()
-	do := func(withAuth bool) (*http.Response, []byte) {
-		req, _ := http.NewRequest(method, r.gate.URL+path, nil)
-		for k, v := range hdr {
-			req.Header.Set(k, v)
-		}
-		if withAuth {
-			req.SetBasicAuth(user, pass)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		return resp, b
+	seg, up := "t0", ""
+	if user != "" {
+		seg, up, _ = strings.Cut(user, "~")
 	}
-	resp, body := do(false)
-	if resp.StatusCode == http.StatusUnauthorized && user != "" && strings.HasPrefix(resp.Header.Get("Www-Authenticate"), "Basic") {
-		resp, body = do(true)
+	path = strings.Replace(path, "/v2/c/", "/v2/c/"+seg+"/", 1)
+	req, _ := http.NewRequest(method, r.gate.URL+path, nil)
+	for k, v := range hdr {
+		req.Header.Set(k, v)
 	}
-	return resp.StatusCode, body, resp.Header
+	req.Header.Set(HeaderNodeToken, "agent-token")
+	if up != "" {
+		req.SetBasicAuth(up, pass)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b, resp.Header
 }
 
 func manifestBody(config string, layers ...string) []byte {
@@ -166,4 +173,38 @@ func (r *rig) inZot(repo, kind, ref string) bool {
 		r.t.Fatal(err)
 	}
 	return ok
+}
+
+// The callers of the gate in the tests: the three accounts, and a reviewer that knows a few tokens.
+var testAccounts = Accounts{
+	Node:     Account{"laboratory-system", "laboratory-node-agent"},
+	Operator: Account{"laboratory-system", "laboratory-controller-manager"},
+	Agent:    Account{"laboratory-agent", "laboratory-agent"},
+}
+
+type testReviewer struct{}
+
+func (testReviewer) Review(_ context.Context, token string, aud []string) (Review, error) {
+	switch {
+	case token == "agent-token":
+		return Review{Authenticated: true, Username: "system:serviceaccount:laboratory-agent:laboratory-agent", Audiences: aud}, nil
+	case token == "operator-token":
+		return Review{Authenticated: true, Username: "system:serviceaccount:laboratory-system:laboratory-controller-manager", Audiences: aud}, nil
+	case token == "other-token": // a valid token of an account the gate does not serve
+		return Review{Authenticated: true, Username: "system:serviceaccount:default:somebody", Audiences: aud}, nil
+	case strings.HasPrefix(token, "node-token-"): // node-token-<pod name>/<pod uid>
+		name, uid, _ := strings.Cut(strings.TrimPrefix(token, "node-token-"), "/")
+		return Review{Authenticated: true, Username: "system:serviceaccount:laboratory-system:laboratory-node-agent", Audiences: aud,
+			Extra: map[string][]string{extraPodName: {name}, extraPodUID: {uid}}}, nil
+	}
+	return Review{Authenticated: false}, nil
+}
+
+func mustURL(t *testing.T, s string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

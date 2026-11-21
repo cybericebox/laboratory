@@ -24,7 +24,7 @@ func TestGatewayRoleReadsLabsInItsNamespace(t *testing.T) {
 	if err := lab.AddToScheme(scheme.Scheme); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("helm", "template", "laboratory", filepath.Join("..", "..", "..", "charts", "laboratory"), "--namespace", "laboratory-system", "-s", "templates/operator/clusterrole-gateway.yaml", "--set", "operator.baseDomain=lab.example.com", "--set", "operator.supportEmail=support@example.com", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820").CombinedOutput()
+	out, err := exec.Command("helm", "template", "laboratory", filepath.Join("..", "..", "..", "charts", "laboratory"), "--namespace", "laboratory-system", "-s", "templates/operator/clusterrole-gateway.yaml", "--set", "operator.baseDomain=lab.example.com", "--set", "operator.supportEmail=support@example.com", "--set", "registry.gate.address=registry.lab.internal:5443", "--set", "operator.publicVPNEndpoint=vpn.example.com:51820").CombinedOutput()
 	if err != nil {
 		t.Fatalf("render role: %v %s", err, out)
 	}

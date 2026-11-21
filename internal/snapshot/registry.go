@@ -2,7 +2,6 @@ package snapshot
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
@@ -26,25 +24,166 @@ import (
 // registry's garbage collection.
 const Latest = "latest"
 
-// Registry is a client of the snapshot registry (zot) with write access.
+// Registry is a client of the snapshot registry: the registry gate, as a node reaches it through the relay of the node-agent, or as the
+// operator reaches it with its own token. It has no credentials of its own: the identity is the transport's (the relay gives the node's
+// token, the operator's transport the operator's).
 type Registry struct {
-	// Host is host:port of the registry, e.g. "localhost:5035". Hosts on the
-	// loopback or a private network are spoken to over plain HTTP.
+	// Host is host:port of the registry as it appears in every name and reference, e.g. "localhost:5035". Hosts on the loopback or a
+	// private network are spoken to over plain HTTP.
 	Host string
-	Auth authn.Authenticator
-	// Transport overrides the HTTP transport (tests).
+	// Transport is the HTTP transport: on a node it dials the unix socket of the relay's push listener (devicestate.UnixTransport); for
+	// the operator it adds the operator's token; tests use their own. Nil: http.DefaultTransport.
 	Transport http.RoundTripper
 }
 
+// The stable codes of the pushes the registry gate refuses by a rule of its own (the OCI error "code"); the gate defines them.
+const (
+	CodePushInterval = "CIB_PUSH_INTERVAL"
+	CodePushBudget   = "CIB_PUSH_BUDGET"
+	CodeExitLimit    = "CIB_EXIT_LIMIT"
+	CodeTenantQuota  = "CIB_TENANT_QUOTA"
+	CodeRegistryFull = "CIB_REGISTRY_FULL"
+	CodeUploadLimit  = "CIB_UPLOAD_LIMIT"
+)
+
+// The standard registry codes that mean "start the operation again from its first request": a blob the gate has no live grant for (the
+// kubelet and the clients ask for the manifest first, which makes the grant), an upload session the gate cancelled, a manifest whose blob is
+// not there yet.
+const (
+	CodeBlobUnknown         = "BLOB_UNKNOWN"
+	CodeBlobUploadUnknown   = "BLOB_UPLOAD_UNKNOWN"
+	CodeManifestBlobUnknown = "MANIFEST_BLOB_UNKNOWN"
+)
+
+// Refusal is an answer of the gate that is not a failure: 429 or 503 with Retry-After (the interval, the budget, the exit and upload limits, a
+// cluster view that is not in contact), 403 CIB_TENANT_QUOTA, 507 CIB_REGISTRY_FULL, and the codes that ask for a restart of the operation
+// (BLOB_UNKNOWN, BLOB_UPLOAD_UNKNOWN, MANIFEST_BLOB_UNKNOWN).
+type Refusal struct {
+	Status int
+	// Code is the CIB_* code, "" when the answer had none.
+	Code string
+	// RetryAfter is the Retry-After the gate sent (0: none).
+	RetryAfter time.Duration
+	Message    string
+}
+
+func (r *Refusal) Error() string {
+	msg := r.Message
+	if msg == "" {
+		msg = http.StatusText(r.Status)
+	}
+	if r.Code != "" {
+		return fmt.Sprintf("the registry refused the push (%d %s): %s", r.Status, r.Code, msg)
+	}
+	return fmt.Sprintf("the registry refused the push (%d): %s", r.Status, msg)
+}
+
+// Restart says the operation is to be started again from its first request: a blob without a live grant, a cancelled upload session.
+func (r *Refusal) Restart() bool {
+	return r.Code == CodeBlobUnknown || r.Code == CodeBlobUploadUnknown || r.Code == CodeManifestBlobUnknown
+}
+
+type noteKey struct{}
+
+// Note carries the Retry-After of the last 429 or 503 of one operation: the error of the client library does not have the headers.
+type Note = note
+
+// NewNote returns a context in which Observe records the Retry-After under the returned note.
+func NewNote(ctx context.Context) (context.Context, *Note) {
+	n := &note{}
+	return context.WithValue(ctx, noteKey{}, n), n
+}
+
+// Observe wraps a transport so that the Retry-After of every 429 and 503 is recorded under the note of the request's context.
+func Observe(rt http.RoundTripper) http.RoundTripper { return observe{rt} }
+
+// Classify is refusal for other packages: the error as a *Refusal when it is an answer of the gate that is not a failure.
+func Classify(err error, n *Note) error { return refusal(err, n) }
+
+// note carries the Retry-After of the last refused request of one operation: the error of the client library does not have the headers.
+type note struct {
+	mu    sync.Mutex
+	retry time.Duration
+}
+
+// observe records the Retry-After of every 429 under the operation's note.
+type observe struct{ next http.RoundTripper }
+
+func (o observe) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := o.next.RoundTrip(req)
+	if err == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
+		if n, ok := req.Context().Value(noteKey{}).(*note); ok {
+			if secs, perr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("Retry-After")), 10, 64); perr == nil && secs > 0 {
+				secs = min(secs, 24*3600) // a huge value must not overflow the duration
+				n.mu.Lock()
+				n.retry = time.Duration(secs) * time.Second
+				n.mu.Unlock()
+			}
+		}
+	}
+	return resp, err
+}
+
 func (r *Registry) opts(ctx context.Context) []remote.Option {
-	o := []remote.Option{remote.WithContext(ctx)}
-	if r.Auth != nil {
-		o = append(o, remote.WithAuth(r.Auth))
+	return []remote.Option{remote.WithContext(ctx), remote.WithTransport(r.roundTripper()), remote.WithRetryPredicate(retryable)}
+}
+
+// retryable says whether the client library asks again by itself: a transient failure of the network or the server, but never a refusal
+// by a rule of the gate (429 or a CIB_* code), whose answer says when to come back; asking again at once would only count against the limit.
+func retryable(err error) bool {
+	var terr *transport.Error
+	if errors.As(err, &terr) {
+		if terr.StatusCode == http.StatusTooManyRequests || terr.StatusCode == http.StatusInsufficientStorage || terr.StatusCode == http.StatusServiceUnavailable {
+			return false
+		}
+		for _, d := range terr.Errors {
+			if strings.HasPrefix(string(d.Code), "CIB_") {
+				return false
+			}
+		}
 	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var t interface{ Temporary() bool }
+	return errors.As(err, &t) && t.Temporary()
+}
+
+func (r *Registry) roundTripper() http.RoundTripper {
 	if r.Transport != nil {
-		o = append(o, remote.WithTransport(r.Transport))
+		return observe{r.Transport}
 	}
-	return o
+	return observe{http.DefaultTransport}
+}
+
+// refusal turns the error of a push into a *Refusal when the gate refused it by a rule of its own (429, or a CIB_* code); any other error
+// is returned as it is.
+func refusal(err error, n *note) error {
+	var terr *transport.Error
+	if err == nil || !errors.As(err, &terr) {
+		return err
+	}
+	code, msg := "", ""
+	for _, d := range terr.Errors {
+		if c := string(d.Code); strings.HasPrefix(c, "CIB_") || c == CodeBlobUnknown || c == CodeBlobUploadUnknown || c == CodeManifestBlobUnknown {
+			code, msg = c, d.Message
+			break
+		}
+	}
+	switch terr.StatusCode {
+	case http.StatusTooManyRequests, http.StatusInsufficientStorage, http.StatusServiceUnavailable:
+	default:
+		if code == "" {
+			return err
+		}
+	}
+	if msg == "" && len(terr.Errors) > 0 {
+		msg = terr.Errors[0].Message
+	}
+	n.mu.Lock()
+	retry := n.retry
+	n.mu.Unlock()
+	return &Refusal{Status: terr.StatusCode, Code: code, RetryAfter: retry, Message: msg}
 }
 
 func (r *Registry) repo(repo string) (name.Repository, error) {
@@ -63,6 +202,8 @@ func (r *Registry) Ref(repo string, digest v1.Hash) string {
 // image cache's repository of the base image): they are mounted from it, so
 // nothing is uploaded at all. It returns the pullable reference by digest.
 func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLayers int, sourceRepo string) (string, v1.Hash, error) {
+	n := &note{}
+	ctx = context.WithValue(ctx, noteKey{}, n)
 	target, err := r.repo(repo)
 	if err != nil {
 		return "", v1.Hash{}, err
@@ -76,12 +217,12 @@ func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLaye
 	}
 	for _, l := range layers[:baseLayers] {
 		if err := r.ensureBaseLayer(ctx, target, l, sourceRepo); err != nil {
-			return "", v1.Hash{}, err
+			return "", v1.Hash{}, refusal(err, n)
 		}
 	}
 	tag := target.Tag(Latest)
 	if err := remote.Write(tag, img, r.opts(ctx)...); err != nil {
-		return "", v1.Hash{}, fmt.Errorf("push %s: %w", tag, err)
+		return "", v1.Hash{}, refusal(fmt.Errorf("push %s: %w", tag, err), n)
 	}
 	digest, err := img.Digest()
 	if err != nil {
@@ -90,9 +231,9 @@ func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLaye
 	return r.Ref(repo, digest), digest, nil
 }
 
-// ensureBaseLayer guarantees that target holds layer l: already there, mounted
-// from the shared base repository, or (registries without mount support)
-// uploaded.
+// ensureBaseLayer guarantees that target holds layer l: already there, mounted from sourceRepo (the cache repository of the base image,
+// which the gate allows as the source of a mount), or uploaded. The node has no access to a shared repository of its own: it
+// reads the cache and writes its own device repository.
 func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, l v1.Layer, sourceRepo string) error {
 	d, err := l.Digest()
 	if err != nil {
@@ -102,23 +243,11 @@ func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, 
 		return nil
 	}
 	if sourceRepo != "" {
-		if src, err := r.repo(sourceRepo); err == nil && r.HasBlob(ctx, src, d) {
+		if src, err := r.repo(sourceRepo); err == nil {
 			if ok, err := r.mountBlob(ctx, target, src, d); err == nil && ok {
 				return nil
 			}
 		}
-	}
-	baseRepo, err := r.repo(BaseRepo)
-	if err != nil {
-		return err
-	}
-	if !r.HasBlob(ctx, baseRepo, d) {
-		if err := remote.WriteLayer(baseRepo, l, r.opts(ctx)...); err != nil {
-			return fmt.Errorf("upload base layer %s: %w", d, err)
-		}
-	}
-	if ok, err := r.mountBlob(ctx, target, baseRepo, d); err == nil && ok {
-		return nil
 	}
 	if err := remote.WriteLayer(target, l, r.opts(ctx)...); err != nil {
 		return fmt.Errorf("upload layer %s: %w", d, err)
@@ -159,15 +288,7 @@ func (r *Registry) blobRequest(ctx context.Context, method string, repo name.Rep
 	if other != nil {
 		scopes = append(scopes, other.Scope(transport.PullScope))
 	}
-	auth := r.Auth
-	if auth == nil {
-		auth = authn.Anonymous
-	}
-	rt := r.Transport
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	tr, err := transport.NewWithContext(ctx, repo.Registry, auth, rt, scopes)
+	tr, err := transport.NewWithContext(ctx, repo.Registry, authn.Anonymous, r.roundTripper(), scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -250,222 +371,6 @@ func (r *Registry) HasBlobIn(ctx context.Context, repo string, d v1.Hash) bool {
 		return false
 	}
 	return r.HasBlob(ctx, target, d)
-}
-
-// The annotations of a snapshot manifest: whose it is and how much state it holds (the uncompressed bytes the quota counts).
-// They let the registry itself say what a repository of a lab that is gone still takes from whom.
-const (
-	AnnotationTenant     = "cybericebox.com/tenant"
-	AnnotationStateBytes = "cybericebox.com/state-bytes"
-)
-
-// Annotated is img with the tenant and state size annotated on its manifest.
-func Annotated(img v1.Image, tenant string, stateBytes int64) v1.Image {
-	return mutate.Annotations(img, map[string]string{AnnotationTenant: tenant, AnnotationStateBytes: strconv.FormatInt(stateBytes, 10)}).(v1.Image)
-}
-
-// Supersede removes what a new snapshot has replaced: the old manifest of the repository, and the blobs only it used, at once
-// instead of after the registry's garbage collection (which keeps unreferenced blobs for hours). oldRef is the pullable reference
-// ("host/repo@sha256:...") of the manifest that was current before keep. A missing manifest or blob is fine, and so is a registry that
-// does not allow deleting blobs: the garbage collection then does it.
-func (r *Registry) Supersede(ctx context.Context, repo, oldRef string, keep v1.Image) error {
-	_, digestStr, ok := strings.Cut(oldRef, "@")
-	if !ok {
-		return nil // the base image: it is not ours to delete
-	}
-	old, err := v1.NewHash(digestStr)
-	if err != nil {
-		return nil
-	}
-	if kd, err := keep.Digest(); err == nil && kd == old {
-		return nil
-	}
-	target, err := r.repo(repo)
-	if err != nil {
-		return err
-	}
-	img, err := remote.Image(target.Digest(old.String()), r.opts(ctx)...)
-	if err != nil {
-		if isNotFound(err) {
-			return nil
-		}
-		return err
-	}
-	m, err := img.Manifest()
-	if err != nil {
-		return err
-	}
-	kept := map[v1.Hash]bool{}
-	if layers, err := keep.Layers(); err == nil {
-		for _, l := range layers {
-			if d, err := l.Digest(); err == nil {
-				kept[d] = true
-			}
-		}
-	}
-	if cfg, err := keep.ConfigName(); err == nil {
-		kept[cfg] = true
-	}
-	if err := remote.Delete(target.Digest(old.String()), r.opts(ctx)...); err != nil && !isNotFound(err) {
-		return fmt.Errorf("delete superseded manifest %s: %w", old, err)
-	}
-	blobs := []v1.Hash{m.Config.Digest}
-	for _, l := range m.Layers {
-		blobs = append(blobs, l.Digest)
-	}
-	for _, d := range blobs {
-		if kept[d] {
-			continue
-		}
-		resp, err := r.blobRequest(ctx, http.MethodDelete, target, nil, "blobs/"+d.String(), nil)
-		if err != nil {
-			return fmt.Errorf("delete superseded blob %s: %w", d, err)
-		}
-		_ = resp.Body.Close() // 202 deleted; 404 gone; 405 the registry does not delete blobs: its garbage collection will
-	}
-	return nil
-}
-
-// ErrRegistryFull is the refusal of a push while the registry has too little room left.
-var ErrRegistryFull = errors.New("the snapshot registry is nearly full")
-
-// Usage is what the registry stores for the images it has a name for: every blob once, however many repositories mount it, summed
-// over every tag of every repository (the snapshots, the shared base, the image cache).
-func (r *Registry) Usage(ctx context.Context) (int64, error) {
-	repos, err := r.Repos(ctx)
-	if err != nil {
-		return 0, err
-	}
-	seen := map[v1.Hash]int64{}
-	add := func(img v1.Image) error {
-		m, err := img.Manifest()
-		if err != nil {
-			return err
-		}
-		seen[m.Config.Digest] = m.Config.Size
-		for _, l := range m.Layers {
-			seen[l.Digest] = l.Size
-		}
-		return nil
-	}
-	for _, repo := range repos {
-		target, err := r.repo(repo)
-		if err != nil {
-			continue
-		}
-		tags, err := remote.List(target, r.opts(ctx)...)
-		if err != nil {
-			continue // a repository that vanished or is empty
-		}
-		for _, tag := range tags {
-			desc, err := remote.Get(target.Tag(tag), r.opts(ctx)...)
-			if err != nil {
-				continue
-			}
-			if desc.MediaType.IsIndex() {
-				idx, err := desc.ImageIndex()
-				if err != nil {
-					continue
-				}
-				im, err := idx.IndexManifest()
-				if err != nil {
-					continue
-				}
-				for _, child := range im.Manifests {
-					if img, err := idx.Image(child.Digest); err == nil {
-						_ = add(img)
-					}
-				}
-				continue
-			}
-			if img, err := desc.Image(); err == nil {
-				_ = add(img)
-			}
-		}
-	}
-	var total int64
-	for _, n := range seen {
-		total += n
-	}
-	return total, nil
-}
-
-// RetainedBytes is the state a tenant still has in the repositories no live device owns (live is the set of repository names of
-// the existing devices): the snapshots of labs that are gone and wait out their retention. It reads the annotations of each
-// repository's latest manifest, so a repository pushed before they existed counts for nothing.
-func (r *Registry) RetainedBytes(ctx context.Context, tenant string, live map[string]bool) (int64, error) {
-	repos, err := r.Repos(ctx)
-	if err != nil {
-		return 0, err
-	}
-	var total int64
-	for _, repo := range repos {
-		if !strings.HasPrefix(repo, RepoPrefix+"/") || live[repo] {
-			continue
-		}
-		target, err := r.repo(repo)
-		if err != nil {
-			continue
-		}
-		desc, err := remote.Get(target.Tag(Latest), r.opts(ctx)...)
-		if err != nil {
-			continue
-		}
-		var m v1.Manifest
-		if err := json.Unmarshal(desc.Manifest, &m); err != nil || m.Annotations[AnnotationTenant] != tenant {
-			continue
-		}
-		if n, err := strconv.ParseInt(m.Annotations[AnnotationStateBytes], 10, 64); err == nil && n > 0 {
-			total += n
-		}
-	}
-	return total, nil
-}
-
-// Capacity says whether the registry has room for a push: its volume is Total bytes, and a push is refused once what is stored plus
-// what the push adds would take more than all but ReserveFraction of it. Usage is measured at most once per TTL (it reads every
-// manifest).
-type Capacity struct {
-	Registry        *Registry
-	Total           int64
-	ReserveFraction float64
-	TTL             time.Duration
-
-	mu   sync.Mutex
-	used int64
-	at   time.Time
-	now  func() time.Time
-}
-
-// Check returns ErrRegistryFull (wrapped with the numbers) when adding bytes would pass the line. With no Total it never refuses.
-func (c *Capacity) Check(ctx context.Context, bytes int64) error {
-	if c == nil || c.Total <= 0 {
-		return nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now
-	if c.now != nil {
-		now = c.now
-	}
-	ttl := c.TTL
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
-	if c.at.IsZero() || now().Sub(c.at) > ttl {
-		used, err := c.Registry.Usage(ctx)
-		if err != nil {
-			return fmt.Errorf("measure the registry: %w", err)
-		}
-		c.used, c.at = used, now()
-	}
-	limit := int64(float64(c.Total) * (1 - c.ReserveFraction))
-	if c.used+bytes > limit {
-		return fmt.Errorf("%w: it holds %d of %d bytes and keeps %.0f%% free, this snapshot adds up to %d", ErrRegistryFull, c.used, c.Total, c.ReserveFraction*100, bytes)
-	}
-	// What this push adds is counted until the next measurement.
-	c.used += bytes
-	return nil
 }
 
 // Repo and Options expose the repository name and request options to tests of other packages.

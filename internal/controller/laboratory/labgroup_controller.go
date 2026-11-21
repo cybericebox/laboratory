@@ -121,8 +121,8 @@ type LabGroupReconciler struct {
 	OperatorSA types.NamespacedName
 	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
 	VPNStatsInterval time.Duration
-	// ImagePullSecrets names registry Secrets of the operator namespace. They are
-	// copied into every group namespace and referenced by the VPN and gateway pods.
+	// ImagePullSecrets names registry Secrets of the operator namespace, the credentials of the platform's own images. The operator copies
+	// them into the Secret "platform" of the namespace laboratory-upstream, which only the registry gate reads; no pod references them.
 	ImagePullSecrets []string
 	// BandwidthEnabled gives the gateway pods made from now on the file with their bandwidth ceiling (see mountOwnAnnotations).
 	BandwidthEnabled bool
@@ -213,19 +213,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if err := copyPullSecrets(ctx, r.Client, r.ImagePullSecrets, ns); err != nil {
-		logger.Error(err, "copy image pull secrets")
+	if err := syncUpstreamPlatform(ctx, r.Client, r.Mirror.Enabled(), r.ImagePullSecrets); err != nil {
+		logger.Error(err, "write the platform's image credentials for the registry gate")
 		return ctrl.Result{}, err
 	}
-	if err := syncPlatformCacheSecret(ctx, r.Client, r.Mirror, r.ImagePullSecrets, ns); err != nil {
-		logger.Error(err, "write the platform pull secret of the image cache")
-		return ctrl.Result{}, err
-	}
-	if err := syncTenantPullSecret(ctx, r.Client, names.TenantOf(lg.Labels), ns); err != nil {
-		logger.Error(err, "copy the tenant's image pull secret")
-		return ctrl.Result{}, err
-	}
-
 	if err := r.ensureDefaultDeny(ctx, ns); err != nil {
 		logger.Error(err, "ensure default-deny network policy")
 		return ctrl.Result{}, err
@@ -325,6 +316,14 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "check the rollout of the VPN and gateway pods")
 		return ctrl.Result{}, err
 	}
+	// The pull secrets of an earlier version go only when no pod of the group references them any more: the VPN and gateway Deployments are
+	// converged (a group waiting for its turn in the rollout keeps them until it has had it).
+	if !rolloutRequeue {
+		if err = r.removeLegacyPullSecretsWhenConverged(ctx, ns); err != nil {
+			logger.Error(err, "remove the image pull secrets of an earlier version")
+			return ctrl.Result{}, err
+		}
+	}
 	later := func(res ctrl.Result) ctrl.Result {
 		if rolloutRequeue && (res.RequeueAfter == 0 || res.RequeueAfter > rolloutPoll) {
 			res.RequeueAfter = rolloutPoll
@@ -384,6 +383,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
 		lg.Status.VPN.ClientSubnet = clientSubnet
 		lg.Status.VPN.Registered = vpnReady
+		if lg.Status.VPN.Backend, err = r.vpnBackend(ctx, ns, vpnReady); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err = updateStatus(); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -418,6 +420,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.ClientSubnet = clientSubnet
 	wasRegistered := lg.Status.VPN.Registered
 	lg.Status.VPN.Registered = vpnReady
+	if lg.Status.VPN.Backend, err = r.vpnBackend(ctx, ns, vpnReady); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err = updateStatus(); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -854,7 +859,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ServiceAccountName: names.ComponentVPN,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   r.groupPullSecretRefs(),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -863,7 +867,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 						Resources:       r.GroupPods.VPNFor(size),
 						Image:           vpnImage,
 						Command:         []string{"/lab", names.ComponentVPN},
-						ImagePullPolicy: pullPolicyFor(vpnImage),
+						ImagePullPolicy: pullPolicyFor(vpnImage, r.Mirror.Prefix),
 						Env: append([]corev1.EnvVar{
 							{
 								Name: "PRIVATE_KEY",
@@ -982,7 +986,6 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					ServiceAccountName: names.ComponentGateway,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
-					ImagePullSecrets:   r.groupPullSecretRefs(),
 					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
@@ -991,7 +994,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
-						ImagePullPolicy: pullPolicyFor(gatewayImage),
+						ImagePullPolicy: pullPolicyFor(gatewayImage, r.Mirror.Prefix),
 						Env:             append(append(r.gatewayEnv(ns), r.gatewayLimitsEnv()...), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
 					}},
 				},
@@ -1262,7 +1265,7 @@ func apiServerEgress() map[string]interface{} {
 // the private ranges, CGNAT, the cluster and node networks). Never in-cluster pods, no DNS. The kube-apiserver entity is
 // not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they send to those
 // ranges. No ingress rule is needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *unstructured.Unstructured {
+func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
 	toAny := func(list []string) []interface{} {
 		out := make([]interface{}, len(list))
 		for i, c := range list {
@@ -1290,31 +1293,13 @@ func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *
 					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": egressRules,
-				// The operator pulls the per-minute egress summaries of the gateway on one port, and nothing else reaches the pod.
-				"ingress": []interface{}{map[string]interface{}{
-					"fromEndpoints": []interface{}{map[string]interface{}{"matchLabels": map[string]interface{}{
-						"k8s:io.kubernetes.pod.namespace": names.SystemNamespace,
-						"control-plane":                   "controller-manager",
-					}}},
-					"toPorts": []interface{}{map[string]interface{}{"ports": []interface{}{
-						map[string]interface{}{"port": strconv.Itoa(statsPort), "protocol": "TCP"},
-					}}},
-				}},
+				// Nothing reaches the gateway pod: the egress summaries go out as a LabEgressReport, written by the pod itself. In a
+				// CiliumNetworkPolicy (not a Kubernetes one) an empty rule allows nothing and puts the pod in default deny for ingress
+				// (docs.cilium.io, "Ingress/Egress Default Deny"); the group's default-deny NetworkPolicy does the same, this keeps it so alone.
+				"ingress": []interface{}{map[string]interface{}{}},
 			},
 		},
 	}
-}
-
-// egressStatsPort is the port of the summaries page of the gateways (default 9188).
-func (r *LabGroupReconciler) egressStatsPort() int {
-	for _, e := range r.GatewayEgressEnv {
-		if e.Name == "EGRESS_STATS_PORT" {
-			if p, err := strconv.Atoi(e.Value); err == nil && p > 0 {
-				return p
-			}
-		}
-	}
-	return 9188
 }
 
 // ensureVPNGatewayPolicies applies the vpn-egress and gateway-egress
@@ -1338,7 +1323,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if err != nil {
 		return err
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel, r.egressStatsPort())} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
@@ -1462,10 +1447,11 @@ func isVPNPod(pod *corev1.Pod) bool {
 // group status (and the log). With the cache on an image the cache cannot serve is
 // refused (imagecache.ErrNotCacheable), never pulled directly.
 func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) (string, error) {
-	if _, err := r.Mirror.RewriteRequired(image); err != nil {
+	platform := r.Mirror.ForPlatform()
+	if _, err := platform.RewriteRequired(image); err != nil {
 		return "", fmt.Errorf("group image: %w", err)
 	}
-	if r.Mirror.Prefix == "" || r.Mirror.Rewrite(image) == image {
+	if r.Mirror.Prefix == "" || platform.Rewrite(image) == image {
 		return image, nil // the cache is off, or the image is already the cache's own
 	}
 	digest := ""
@@ -1478,7 +1464,7 @@ func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) 
 			digest = d
 		}
 	}
-	return r.Mirror.RewritePinned(image, digest), nil
+	return platform.RewritePinned(image, digest), nil
 }
 
 func (r *LabGroupReconciler) notePinFailure(ns, what string) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The local branch cycle, the same file in every CyberICEBox repository (no cross-repo import).
-#   dev.sh start NAME     feature/NAME from the fresh develop
+#   dev.sh start NAME     feature/NAME from the fresh develop (mise run dev-start NAME)
 #   dev.sh push           push the branch, open or update the PR into develop, turn on auto-merge
 #                         (MINOR=1 labels the PR "minor"; scripts/dev-pre-push.sh, when present, runs before the push)
 #   dev.sh done           back to develop, pull it, delete the merged local branch
@@ -15,13 +15,13 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 
 refuse_protected() {
   case "$branch" in
-    develop | main) die "you are on $branch; work in a feature branch (make dev-start NAME=<x>)" ;;
+    develop | main) die "you are on $branch; work in a feature branch (mise run dev-start <name>)" ;;
   esac
 }
 
 start() {
-  local name=${NAME:-}
-  [[ -n "$name" ]] || die "NAME is required: make dev-start NAME=<x>"
+  local name=${1:-${NAME:-}}
+  [[ -n "$name" ]] || die "a name is required: mise run dev-start <name>"
   [[ "$name" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "NAME must be lowercase letters, digits, '.', '_' or '-'"
   git show-ref --verify --quiet "refs/heads/feature/$name" && die "branch feature/$name already exists"
   git fetch origin develop
@@ -63,7 +63,7 @@ finish() {
 }
 
 case "${1:-}" in
-  start) start ;;
+  start) start "${2:-}" ;;
   push) push ;;
   done) finish ;;
   *) die "usage: dev.sh start|push|done" ;;

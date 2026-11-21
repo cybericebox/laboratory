@@ -17,6 +17,14 @@ rules:
   - apiGroups: [ allocation.cybericebox.com ]
     resources: [ pools ]
     verbs: [ get, list, watch ]
+  # The per-minute egress report of the gateway: one object named gateway in the group namespace, written by the gateway pod, read and
+  # acknowledged by the operator (nothing pulls it from the pod).
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labegressreports ]
+    verbs: [ get, create, update ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labegressreports/status ]
+    verbs: [ get, patch, update ]
 
   # Events for reconciler diagnostics (kubectl describe / get events).
   - apiGroups: [ "" ]

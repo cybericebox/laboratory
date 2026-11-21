@@ -7,5 +7,5 @@ import (
 )
 
 func routingInputsChanged(old, next *lab.LabGroup) bool {
-	return old == nil || next == nil || old.UID != next.UID || !reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp) || lab.LabGroupNamespaceOf(old) != lab.LabGroupNamespaceOf(next) || old.Status.VPN.PublicKey != next.Status.VPN.PublicKey || old.Status.VPN.Registered != next.Status.VPN.Registered || old.Spec.VPN.Disabled != next.Spec.VPN.Disabled
+	return old == nil || next == nil || old.UID != next.UID || !reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp) || lab.LabGroupNamespaceOf(old) != lab.LabGroupNamespaceOf(next) || old.Status.VPN.PublicKey != next.Status.VPN.PublicKey || old.Status.VPN.Registered != next.Status.VPN.Registered || old.Status.VPN.Backend != next.Status.VPN.Backend || old.Spec.VPN.Disabled != next.Spec.VPN.Disabled
 }

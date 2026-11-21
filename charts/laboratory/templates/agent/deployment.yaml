@@ -63,9 +63,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with include "laboratory.placement" (dict "own" .Values.agent "root" $) }}
-      {{- . | nindent 6 }}
-      {{- end }}
+      {{- include "laboratory.pool" (dict "pool" "labControl" "root" $) | nindent 6 }}
       containers:
         - name: agent
           image: {{ include "laboratory.imageRef" (dict "image" .Values.agent.image "root" $) | quote }}
@@ -123,12 +121,19 @@ spec:
             {{- /* The TLS and CA files (/tls, /ca) are the image's defaults: the chart mounts the Secrets there. */}}
             - name: AGENT_RELEASE_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            - name: AGENT_PULL_SECRET_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+            # The credentials of a lab's own registry go to the namespace only the registry gate reads (names.UpstreamNamespace, a constant of the
+            # agent), never into a lab namespace.
           {{- if include "laboratory.registryEnabled" . }}
-            # ExportDeviceSnapshot reads the snapshots from the platform registry, PrewarmImages makes the cache fetch through it.
+            # ExportDeviceSnapshot reads the snapshots through the registry gate, PrewarmImages makes the cache fetch through it. The agent
+            # shows the gate its own projected ServiceAccount token (no registry password exists) and trusts the registry's own authority.
             - name: AGENT_REGISTRY_ADDR
-              value: {{ include "laboratory.registryAddr" . | quote }}
+              value: {{ include "laboratory.registryServiceAddr" . | quote }}
+            - name: AGENT_PREWARM_GATE_ADDR
+              value: {{ include "laboratory.registryServiceAddr" . | quote }}
+            - name: AGENT_PREWARM_GATE_CA_FILE
+              value: /registry-ca/ca.crt
+            - name: AGENT_REGISTRY_TOKEN_FILE
+              value: /var/run/secrets/registry-gate/token
           {{- else }}
             # No platform registry in this release: no export, no prewarm.
             - name: AGENT_REGISTRY_ENABLED
@@ -146,24 +151,11 @@ spec:
             - name: AGENT_MONITORING_MAX_STREAMS_PER_TENANT
               value: {{ .Values.agent.monitoring.maxStreamsPerTenant | quote }}
             {{- /* The settings the operator also reads: the same map under the same names (laboratory.sharedEnv). */}}
-          {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+          {{- range $name, $value := merge (include "laboratory.sharedEnv" . | fromYaml) (include "laboratory.agentOnlyEnv" . | fromYaml) }}
           {{- if or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled }}
             - name: {{ $name }}
               value: {{ $value | quote }}
           {{- end }}
-          {{- end }}
-          {{- if include "laboratory.registryEnabled" . }}
-            # The snapshots are not anonymous: the agent reads them with the reader account.
-            - name: AGENT_REGISTRY_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry-reader
-                  key: username
-            - name: AGENT_REGISTRY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry-reader
-                  key: password
           {{- end }}
           {{- if .Values.registry.cache.enabled }}
             # PrewarmImages: the agent makes the image cache fetch images ahead of time.
@@ -171,21 +163,12 @@ spec:
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT
               value: {{ .Values.registry.cache.prewarm.timeout | quote }}
-            # ... through the gate's TLS port, with the credentials of the call, trusting the registry's own authority only.
-            - name: AGENT_PREWARM_GATE_ADDR
-              value: {{ include "laboratory.registryTLSAddr" . | quote }}
-            - name: AGENT_PREWARM_GATE_CA_FILE
-              value: /registry-ca/ca.crt
+            # ... through the gate's TLS port (AGENT_PREWARM_GATE_ADDR and _CA_FILE above), with the credentials of the call.
           {{- end }}
           {{- with .Values.images.tenantDeny }}
             # Repositories no tenant may use (Tenant.spec.images.allow narrows the rest).
             - name: AGENT_IMAGE_DENY
               value: {{ join "," . | quote }}
-          {{- end }}
-          {{- if .Values.images.platformOnly }}
-            # Every tenant runs only platform images pinned by digest (platform:<name>@sha256:<hex>).
-            - name: AGENT_IMAGE_PLATFORM_ONLY
-              value: "true"
           {{- end }}
             - name: AGENT_DEVICE_PROFILES
               value: {{ join "," .Values.devices.security.profiles | quote }}
@@ -199,13 +182,11 @@ spec:
               value: {{ .Values.limits.group.maxMemory | quote }}
             - name: AGENT_LIMIT_TENANT_MAX_LABS
               value: {{ .Values.limits.tenant.maxLabs | quote }}
-            # The L7 proxy's limits, under the proxy's own names (the same chart values): GetFeatures reports them.
-            - name: ACCESS_TOKEN_MAX_TTL
-              value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
-            - name: SESSION_IDLE_TTL
-              value: {{ .Values.proxy.l7.sessionIdleTTL | quote }}
-            - name: SESSION_MAX_TTL
-              value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
+            # The longest grants the L7 proxy and the device access service accept (the same chart values): GetFeatures reports them.
+            - name: GRANT_MAX_TTL
+              value: {{ .Values.proxy.l7.grantMaxTTL | quote }}
+            - name: TERMINAL_GRANT_MAX_TTL
+              value: {{ .Values.terminal.grantMaxTTL | quote }}
             # The one development switch: no client certificate is asked for, every caller is the default tenant. TLS stays on.
             - name: AGENT_ALLOW_INSECURE
               value: {{ .Values.agent.allowInsecure | quote }}
@@ -245,9 +226,12 @@ spec:
             - name: client-ca
               mountPath: /ca
               readOnly: true
-            {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+            {{- if include "laboratory.registryEnabled" . }}
             - name: registry-ca
               mountPath: /registry-ca
+              readOnly: true
+            - name: registry-gate-token
+              mountPath: /var/run/secrets/registry-gate
               readOnly: true
             {{- end }}
           resources:
@@ -261,9 +245,17 @@ spec:
         - name: client-ca
           secret:
             secretName: laboratory-agent-ca
-        {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+        {{- if include "laboratory.registryEnabled" . }}
+        # The authority of the registry gate: a ConfigMap (public data), copied here by the chart.
         - name: registry-ca
-          secret:
-            secretName: laboratory-registry-ca
+          configMap:
+            name: laboratory-registry-ca
+        - name: registry-gate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ include "laboratory.registryGateAudience" . }}
+                  expirationSeconds: 3600
+                  path: token
         {{- end }}
 {{- end }}

@@ -93,12 +93,16 @@ func TestAllowedRegistriesReachTheComponents(t *testing.T) {
 	if got := operatorConfig(t)["ALLOWED_REGISTRIES"]; got != "docker.io,ghcr.io,quay.io,registry.k8s.io" {
 		t.Errorf("default list: %q", got)
 	}
+	// The cache is on and every allowed registry must be one it serves.
 	got := operatorConfig(t, "--set", "registry.allowedRegistries={Index.docker.io,reg.example.com:5000}",
+		"--set", "registry.cache.extraRegistries[0].name=reg.example.com:5000", "--set", "registry.cache.extraRegistries[0].url=https://reg.example.com:5000",
+		"--set", "registry.cache.extraRegistries[1].name=own.example.com", "--set", "registry.cache.extraRegistries[1].url=https://own.example.com",
 		"--set", "vpn.image.repository=ghcr.io/own/lab", "--set", "nodeAgent.image.repository=own.example.com/node")["ALLOWED_REGISTRIES"]
 	if got != "docker.io,ghcr.io,own.example.com,reg.example.com:5000" {
 		t.Errorf("own registries are added and the Hub spelling is docker.io: %q", got)
 	}
-	if got := operatorConfig(t, "--set", "registry.allowedRegistries={docker.io,*}")["ALLOWED_REGISTRIES"]; got != "*" {
+	noCache := []string{"--set", "registry.cache.enabled=false", "--set", "nodeAgent.enabled=false"}
+	if got := operatorConfig(t, append(noCache, "--set", "registry.allowedRegistries={docker.io,*}")...)["ALLOWED_REGISTRIES"]; got != "*" {
 		t.Errorf("star: %q", got)
 	}
 	policy := func(extra ...string) string {
@@ -111,7 +115,7 @@ func TestAllowedRegistriesReachTheComponents(t *testing.T) {
 	if p := policy(); !strings.Contains(p, "REGISTRY_NOT_ALLOWED") || !strings.Contains(p, "'ghcr.io'") || !strings.Contains(p, "localhost:5035") {
 		t.Error("the pod policy must carry the list and the node's forwarder")
 	}
-	if p := policy("--set", "registry.allowedRegistries={*}"); strings.Contains(p, "REGISTRY_NOT_ALLOWED") {
+	if p := policy(append(noCache, "--set", "registry.allowedRegistries={*}")...); strings.Contains(p, "REGISTRY_NOT_ALLOWED") {
 		t.Error("with * there is no image rule")
 	}
 }

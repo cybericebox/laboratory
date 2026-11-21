@@ -2,14 +2,18 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	pubnames "github.com/cybericebox/laboratory/pkg/names"
 )
@@ -96,6 +100,11 @@ type PreflightInput struct {
 	ContainerdRoot, CRISock  string
 	CgroupRoot               string
 	RegistryAddr             string
+	// RegistryCAFile and RegistryTokenFile: how the check speaks to the gate (TLS trusting that authority, the node-agent's own token);
+	// empty: plain http without a token (a development setup, the tests).
+	RegistryCAFile, RegistryTokenFile string
+	// RegistryInsecureDev: plain http and no token (a development setup); without it a missing CA file is a failed check.
+	RegistryInsecureDev bool
 }
 
 // PreflightResult is what the node supports.
@@ -155,22 +164,51 @@ func checkPersistence(ctx context.Context, cfg PreflightInput) error {
 	if err := checkSocket(cfg.CRISock); err != nil {
 		return err
 	}
-	return checkRegistry(ctx, cfg.RegistryAddr)
+	if cfg.RegistryCAFile == "" && !cfg.RegistryInsecureDev {
+		return fail(CodeSnapshotRegistry, "no certificate authority for the registry (STATE_REGISTRY_CA_FILE): the node's token would travel in the clear")
+	}
+	if cfg.RegistryInsecureDev {
+		return checkRegistry(ctx, cfg.RegistryAddr, "", "")
+	}
+	return checkRegistry(ctx, cfg.RegistryAddr, cfg.RegistryCAFile, cfg.RegistryTokenFile)
 }
 
 // checkRegistry asks the snapshot registry for its API root: any HTTP answer that is not a server error shows it is there (401 is
 // the registry asking for the credentials the node-agent has).
-func checkRegistry(ctx context.Context, addr string) error {
+func checkRegistry(ctx context.Context, addr, caFile, tokenFile string) error {
 	if addr == "" {
 		return fail(CodeSnapshotRegistry, "the snapshot registry address is not set")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v2/", nil)
+	scheme, client := "http", http.DefaultClient
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return fail(CodeSnapshotRegistry, "the registry certificate authority %s cannot be read: %v", caFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return fail(CodeSnapshotRegistry, "the registry certificate authority %s holds no certificate", caFile)
+		}
+		host, _, herr := net.SplitHostPort(addr)
+		if herr != nil {
+			host = addr
+		}
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}
+		scheme, client = "https", &http.Client{Transport: tr}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+addr+"/v2/", nil)
 	if err != nil {
 		return fail(CodeSnapshotRegistry, "the snapshot registry address %q: %v", addr, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	if tokenFile != "" && caFile != "" { // the token is sent over TLS only
+		if err := imagecache.NewTokenFile(tokenFile).SetNodeToken(req.Header); err != nil {
+			return fail(CodeSnapshotRegistry, "the node's registry token cannot be read: %v", err)
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fail(CodeSnapshotRegistry, "the snapshot registry %s cannot be reached from this node: %v", addr, err)
 	}

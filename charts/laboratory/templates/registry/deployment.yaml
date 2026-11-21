@@ -29,7 +29,10 @@ spec:
         {{- end }}
     spec:
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
-      # zot never talks to the Kubernetes API: no ServiceAccount token in the pod.
+      # The gate checks the ServiceAccount tokens of its callers with TokenReview and watches the cluster objects it decides from, so the pod has
+      # its own ServiceAccount. The token is NOT mounted for the pod (that would give it to zot too): a projected volume (gate-api-access, below)
+      # holds it, the cluster's CA and the namespace, and only the gate container mounts it where a client library looks for them.
+      serviceAccountName: laboratory-registry-gate
       automountServiceAccountToken: false
       # zot runs as an unprivileged user; fsGroup makes the volume writable for it.
       securityContext:
@@ -43,9 +46,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with include "laboratory.placement" (dict "own" $r "root" $) }}
-      {{- . | nindent 6 }}
-      {{- end }}
+      {{- include "laboratory.pool" (dict "pool" "labControl" "root" $) | nindent 6 }}
       initContainers:
         # A volume that is not made by a provisioner that honours fsGroup (hostPath, local-path, or a volume that an earlier version
         # filled as root) keeps its owner, and zot, which is not root, could not write to it. This hands the data directory to zot's user
@@ -92,27 +93,66 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         # The gate: every request to the registry (the nodes' relay, the operator, the agent) reaches this container, and only it reaches zot.
-        # It runs the image of the node (/node registry-gate), as a plain user with no capability and a read-only root file system.
+        # It has ONE listener, TLS on 5443 (no plain port: a token must not cross the network in the clear), and decides every request from
+        # the caller's token and the cluster's objects (see DEPLOY.md, "The registry gate"). It runs the image of the node
+        # (/node registry-gate), as a plain user with no capability and a read-only root file system.
         - name: gate
           image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/node", "registry-gate" ]
           env:
-            - name: GATE_LISTEN
-              value: ":5000"
+            - name: GATE_TLS_LISTEN
+              value: ":5443"
             - name: GATE_HEALTH_LISTEN
               value: ":5002"
             - name: GATE_ZOT_ADDR
               value: "127.0.0.1:5001"
-            {{- if $r.cache.enabled }}
-            # The image cache: on, /v2/c/<registry>/... is proved against the upstream registry with the pull's own credentials and served from zot.
+            # Every pull goes through the cache: /v2/c/<tenant>/<registry>/<repo>/... is proved against the upstream registry with the tenant's
+            # credentials (read from the namespace {{ include "laboratory.upstreamNamespace" . }}, a constant of the gate) and served from zot.
             - name: GATE_CACHE_ENABLED
               value: "true"
-            - name: GATE_TLS_LISTEN
-              value: ":5443"
+            # The host nodes pull cache images from: a reference under any other host in front of /c/ is no cache reference. Mandatory.
+            - name: GATE_IMAGE_HOST
+              value: {{ include "laboratory.registryNodePrefix" . | quote }}
+            # The callers, as <namespace>/<name>: the node-agent (the relay of a node), the operator and the agent. The audience of their tokens
+            # is a constant of the gate (laboratory-registry-gate).
+            - name: GATE_NODE_ACCOUNT
+              value: {{ printf "%s/laboratory-node-agent" .Release.Namespace | quote }}
+            - name: GATE_OPERATOR_ACCOUNT
+              value: {{ printf "%s/laboratory-controller-manager" .Release.Namespace | quote }}
+            - name: GATE_AGENT_ACCOUNT
+              value: {{ printf "%s/laboratory-agent" .Values.agent.namespace | quote }}
+            - name: GATE_TOKEN_CACHE_TTL
+              value: {{ $r.gate.tokenCacheTTL | quote }}
+            - name: GATE_BIND_SOURCE
+              value: {{ $r.gate.bindSource | quote }}
+            - name: GATE_PULL_GRACE
+              value: {{ $r.gate.pullGrace | quote }}
+            - name: GATE_GRANT_MAX_AGE
+              value: {{ $r.gate.grantMaxAge | quote }}
+            - name: GATE_API_STALE_MAX
+              value: {{ $r.gate.apiStaleMax | quote }}
+            - name: GATE_AGENT_MAX_FILLS
+              value: {{ $r.gate.agentMaxFills | quote }}
+            - name: GATE_MANIFEST_HOLD_BYTES
+              value: {{ $r.gate.limits.manifestHoldBytes | int64 | quote }}
+            - name: GATE_MANIFEST_MAX_BYTES
+              value: {{ $r.gate.limits.manifestMaxBytes | int64 | quote }}
+            - name: GATE_GRANTS_PER_NODE
+              value: {{ $r.gate.limits.grantsPerNode | int64 | quote }}
+            - name: GATE_GRANT_MAX_DIGESTS
+              value: {{ $r.gate.limits.grantMaxDigests | int64 | quote }}
+            - name: GATE_TOKENREVIEW_CONCURRENCY
+              value: {{ $r.gate.limits.tokenReviewConcurrency | int64 | quote }}
+            - name: GATE_UPLOADS_PER_DEVICE
+              value: {{ $r.gate.limits.uploadsPerDevice | int64 | quote }}
+            - name: GATE_UPLOADS_PER_NODE
+              value: {{ $r.gate.limits.uploadsPerNode | int64 | quote }}
             # registry.allowedRegistries (plus the platform's own images): a registry that is not on it is refused before any upstream call.
             - name: GATE_ALLOWED_REGISTRIES
               value: {{ include "laboratory.allowedRegistries" . | quote }}
+            - name: GATE_REQUIRE_DIGEST
+              value: {{ $r.cache.requireDigest | quote }}
             - name: GATE_DECISION_MAX_AGE
               value: {{ $r.cache.decisionMaxAge | quote }}
             - name: GATE_DENIED_FOR
@@ -125,16 +165,34 @@ spec:
             - name: GATE_ANONYMOUS_FILL_FILE
               value: /etc/gate-anonymous-fill/.dockerconfigjson
             {{- end }}
+            {{- with .Values.devices.statePersistence }}
+            {{- if .enabled }}
+            # The push rules of the device snapshots (devices.statePersistence.*): the gate measures what it sees and does not trust the node's word.
+            - name: GATE_MIN_PUSH_INTERVAL
+              value: {{ .minPushInterval | quote }}
+            - name: GATE_EXIT_MAX_BYTES
+              value: {{ include "laboratory.bytes" .exitMaxBytes | quote }}
+            - name: GATE_EXIT_PUSHES_PER_HOUR
+              value: {{ .exitPushesPerHour | quote }}
+            - name: GATE_SNAPSHOTS_ENABLED
+              value: "true"
+            - name: GATE_PUSH_BUDGET_BYTES
+              value: {{ include "laboratory.bytes" .pushBudget | quote }}
+            - name: GATE_PUSH_BUDGET_WINDOW
+              value: {{ .pushBudgetWindow | quote }}
+            - name: GATE_TENANT_QUOTA_BYTES
+              value: {{ include "laboratory.bytes" .tenantQuota | quote }}
+            - name: GATE_REGISTRY_RESERVE
+              value: {{ .registryReserve | quote }}
+            - name: GATE_SUPERSEDED_GRACE
+              value: {{ .supersededGrace | quote }}
+            {{- end }}
             {{- end }}
           ports:
-            - name: registry
-              containerPort: 5000
             - name: gate-health
               containerPort: 5002
-            {{- if $r.cache.enabled }}
             - name: registry-tls
               containerPort: 5443
-            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -151,8 +209,11 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ ALL ]
-          {{- if $r.cache.enabled }}
           volumeMounts:
+            # The gate's own token for the API server (TokenReview and the watches), with the CA and the namespace: in this container only.
+            - name: gate-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
             - name: gate-config
               mountPath: /etc/gate
               readOnly: true
@@ -172,12 +233,28 @@ spec:
               mountPath: /etc/gate-anonymous-fill
               readOnly: true
             {{- end }}
-          {{- end }}
           {{- with $r.gate.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        - name: gate-api-access
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 3607
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
         - name: config
           configMap:
             name: laboratory-registry
@@ -190,7 +267,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: laboratory-registry
-        {{- if $r.cache.enabled }}
         - name: gate-config
           configMap:
             name: laboratory-registry-gate
@@ -217,6 +293,5 @@ spec:
             items:
               - key: .dockerconfigjson
                 path: .dockerconfigjson
-        {{- end }}
         {{- end }}
 {{- end }}

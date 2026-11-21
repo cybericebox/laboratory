@@ -2,158 +2,152 @@ package l7
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/rsa"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/cybericebox/laboratory/internal/grant"
+	"github.com/cybericebox/laboratory/internal/grant/granttest"
 )
 
-const labHost = "web-abc12w.challenges.example.com"
+const platformOrigin = "https://app.example.com"
 
-// staticKeys is a KeyLookup with one key.
-func staticKeys(tenant, kid string, pub ed25519.PublicKey) KeyLookup {
-	return func(t, k string) (ed25519.PublicKey, bool) {
-		if t == tenant && k == kid {
-			return pub, true
-		}
-		return nil, false
-	}
-}
-
-// baseHandoff is a valid handoff of tenant acme for group g1.
-func baseHandoff(now time.Time) handoffClaims {
-	return handoffClaims{
-		GroupID: "g1", Host: labHost, Session: now.Add(24 * time.Hour).Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: "acme", Subject: "p-u1", Audience: jwt.ClaimStrings{HandoffAudience},
-			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
-		},
-	}
-}
-
-func signHandoff(t *testing.T, priv ed25519.PrivateKey, kid string, claims handoffClaims) string {
-	t.Helper()
-	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
-	tok.Header["kid"] = kid
-	signed, err := tok.SignedString(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signed
-}
-
-type handoffFixture struct {
-	priv    ed25519.PrivateKey
-	pub     ed25519.PublicKey
+type grantFixture struct {
+	key     granttest.Key
 	groups  map[string]string // group id -> owning tenant
-	owner   func(string) (string, bool)
 	handler *Handler
 	backend *httptest.Server
 	now     time.Time
 }
 
-func newHandoffFixture(t *testing.T) *handoffFixture {
+func newGrantFixture(t *testing.T) *grantFixture {
 	t.Helper()
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/cookies" { // a device that tries to set the proxy's session cookie, and one of its own
+		if r.URL.Path == "/cookies" { // a device that tries to set the proxy's grant cookie, and one of its own
 			http.SetCookie(w, &http.Cookie{Name: "challenge", Value: "forged", Path: "/"})
 			http.SetCookie(w, &http.Cookie{Name: "app", Value: "1", Path: "/"})
 		}
 		_, _ = w.Write([]byte("lab"))
 	}))
 	t.Cleanup(backend.Close)
-	f := &handoffFixture{priv: priv, backend: backend, now: time.Now(), groups: map[string]string{"g1": "acme"}}
-	f.owner = func(g string) (string, bool) { t, ok := f.groups[g]; return t, ok }
-	f.pub = pub
-	f.handler = NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+	f := &grantFixture{key: testKey, backend: backend, now: time.Now(), groups: map[string]string{"g1": "acme"}}
+	origins, err := NewEmbedMatcher([]string{platformOrigin}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.handler = NewHandler(testKeys(), "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
-		WithGroupTenant(func(groupID string) (string, bool) { return f.owner(groupID) })
+		WithPlatformOrigins(origins).
+		WithGroupTenant(func(groupID string) (string, bool) { owner, ok := f.groups[groupID]; return owner, ok })
 	f.handler.now = func() time.Time { return f.now }
 	return f
 }
 
-func (f *handoffFixture) link(t *testing.T, mutate func(*handoffClaims)) string {
-	t.Helper()
-	claims := baseHandoff(f.now)
-	if mutate != nil {
-		mutate(&claims)
-	}
-	return signHandoff(t, f.priv, "k1", claims)
+// baseGrant is a valid web grant of tenant acme for group g1 and the lab host, valid for an hour from f.now.
+func (f *grantFixture) baseGrant() grant.Claims {
+	c := f.key.Claims(f.now, time.Hour, labHost)
+	c.Group, c.Subject = "g1", "p-u1"
+	return c
 }
 
-func (f *handoffFixture) open(token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("GET", "https://"+labHost+AuthPath+"?t="+url.QueryEscape(token), nil)
-	req.Host = labHost
+func (f *grantFixture) grant(t *testing.T, mutate func(*grant.Claims)) string {
+	t.Helper()
+	c := f.baseGrant()
+	if mutate != nil {
+		mutate(&c)
+	}
+	return f.key.Sign(t, c)
+}
+
+// postTo posts the form a platform page submits: the grant and the destination, with the Origin of the platform page.
+func (f *grantFixture) postTo(host, raw, next string, edit func(*http.Request)) *httptest.ResponseRecorder {
+	form := url.Values{"grant": {raw}}
+	if next != "" {
+		form.Set("next", next)
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://"+host+AuthPath, strings.NewReader(form.Encode()))
+	req.Host = host
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", platformOrigin)
+	if edit != nil {
+		edit(req)
+	}
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
 	return rec
 }
 
-func TestHandoff_SetsTheProxyCookieAndRedirects(t *testing.T) {
-	f := newHandoffFixture(t)
-	rec := f.open(f.link(t, nil))
+func (f *grantFixture) open(raw string) *httptest.ResponseRecorder {
+	return f.postTo(labHost, raw, "", nil)
+}
+
+func (f *grantFixture) openFrom(addr, raw string) *httptest.ResponseRecorder {
+	return f.postTo(labHost, raw, "", func(r *http.Request) { r.RemoteAddr = addr })
+}
+
+func (f *grantFixture) get(host string, c *http.Cookie, path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", "https://"+host+path, nil)
+	req.Host = host
+	if c != nil {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAuthPost_SetsTheGrantCookieAndRedirects(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	rec := f.open(raw)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
 		t.Fatalf("code = %d location = %q", rec.Code, rec.Header().Get("Location"))
 	}
-	if rec.Header().Get("Referrer-Policy") != "no-referrer" {
-		t.Fatalf("referrer policy = %q", rec.Header().Get("Referrer-Policy"))
+	if rec.Header().Get("Referrer-Policy") != "no-referrer" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("the answer must not be cached or leak a referrer: %v", rec.Header())
 	}
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 {
 		t.Fatalf("cookies = %v", cookies)
 	}
 	c := cookies[0]
-	if c.Name != "challenge" || c.Domain != "" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
+	if c.Name != "challenge" || c.Value != raw || c.Domain != "" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
 		t.Fatalf("cookie = %+v", c)
 	}
-	if want := f.now.Add(24 * time.Hour).Unix(); c.Expires.Unix() != want {
-		t.Fatalf("expires %d, want the session end %d", c.Expires.Unix(), want)
+	if want := f.now.Add(time.Hour).Unix(); c.Expires.Unix() != want || c.MaxAge < 3599 || c.MaxAge > 3600 {
+		t.Fatalf("expires %d max-age %d, want the grant end %d and about 3600", c.Expires.Unix(), c.MaxAge, want)
 	}
-	claims, err := validateCookie(requestWithCookie(c.Value), testSecret, "challenge", f.handler.now)
-	if err != nil || claims.GroupID != "g1" || claims.client() != "p-u1" {
-		t.Fatalf("cookie claims = %+v err = %v", claims, err)
-	}
-
-	// The cookie then opens the lab; the handoff token is not what is checked.
-	req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
-	req.Host = labHost
-	req.AddCookie(c)
-	next := httptest.NewRecorder()
-	f.handler.ServeHTTP(next, req)
-	if next.Code != 200 || next.Body.String() != "lab" {
+	// The cookie then opens the lab.
+	if next := f.get(labHost, c, "/"); next.Code != 200 || next.Body.String() != "lab" {
 		t.Fatalf("lab request: %d %q", next.Code, next.Body.String())
 	}
 }
 
 // A saved device link must reach its authored destination after authentication.
-func TestHandoff_NextPreservesDestination(t *testing.T) {
-	f := newHandoffFixture(t)
-	token := f.link(t, nil)
-	baseline := f.open(token)
+func TestAuthPost_NextPreservesDestination(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	baseline := f.open(raw)
 	next := "/panel?x=1#anchor"
-	req := httptest.NewRequest(http.MethodGet, "https://"+labHost+AuthPath+"?"+url.Values{"t": {token}, "next": {next}}.Encode(), nil)
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
+	rec := f.postTo(labHost, raw, next, nil)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != next {
 		t.Fatalf("code = %d location = %q, want 303 %q", rec.Code, rec.Header().Get("Location"), next)
 	}
-	if strings.Contains(rec.Header().Get("Location"), token) || strings.Contains(rec.Body.String(), token) {
-		t.Fatal("handoff token leaked in redirect")
+	if strings.Contains(rec.Header().Get("Location"), raw) || strings.Contains(rec.Body.String(), raw) {
+		t.Fatal("grant leaked in the redirect")
 	}
 	if rec.Header().Get("Set-Cookie") != baseline.Header().Get("Set-Cookie") {
-		t.Fatal("destination changed session cookie policy or lifetime")
-	}
-	if rec.Header().Get("Referrer-Policy") != "no-referrer" || rec.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("handoff response lost token-leak protections")
+		t.Fatal("the destination changed the cookie policy or lifetime")
 	}
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,22 +155,19 @@ func TestHandoff_NextPreservesDestination(t *testing.T) {
 	}))
 	defer backend.Close()
 	f.handler.resolver = func(task, groupID string) (string, error) { return backend.URL, nil }
-	location, err := req.URL.Parse(rec.Header().Get("Location"))
+	location, err := rec.Result().Location()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Browsers retain the fragment locally and omit it from the HTTP request.
 	location.Fragment, location.RawFragment = "", ""
-	follow := httptest.NewRequest(http.MethodGet, location.String(), nil)
-	follow.AddCookie(rec.Result().Cookies()[0])
-	out := httptest.NewRecorder()
-	f.handler.ServeHTTP(out, follow)
+	out := f.get(labHost, rec.Result().Cookies()[0], location.RequestURI())
 	if out.Code != http.StatusOK || out.Body.String() != "/panel?x=1" {
 		t.Fatalf("device received %d %q, want /panel?x=1", out.Code, out.Body.String())
 	}
 }
 
-func TestHandoff_NextStaysOnDeviceOrigin(t *testing.T) {
+func TestAuthPost_NextStaysOnDeviceOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name, next, want string
 	}{
@@ -217,78 +208,82 @@ func TestHandoff_NextStaysOnDeviceOrigin(t *testing.T) {
 		{"encoded dot auth loop", "/panel/%2e%2e/_auth?t=other", "/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newHandoffFixture(t)
-			token := f.link(t, nil)
-			req := httptest.NewRequest(http.MethodGet, "https://"+labHost+AuthPath+"?"+url.Values{"t": {token}, "next": {tc.next}}.Encode(), nil)
-			rec := httptest.NewRecorder()
-			f.handler.ServeHTTP(rec, req)
+			f := newGrantFixture(t)
+			raw := f.grant(t, nil)
+			rec := f.postTo(labHost, raw, tc.next, nil)
 			if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
 				t.Fatalf("code = %d location = %q, want 303 %q", rec.Code, rec.Header().Get("Location"), tc.want)
 			}
-			location, err := req.URL.Parse(rec.Header().Get("Location"))
-			if err != nil || location.Scheme != "https" || location.Host != labHost || location.User != nil {
+			location, err := rec.Result().Location()
+			if err != nil || location.Host != "" || location.User != nil {
 				t.Fatalf("redirect changed device origin: %v (%v)", location, err)
 			}
-			if strings.Contains(location.String(), token) || len(rec.Result().Cookies()) != 1 {
-				t.Fatal("handoff leaked token or failed to issue its session cookie")
+			if strings.Contains(location.String(), raw) || len(rec.Result().Cookies()) != 1 {
+				t.Fatal("the redirect leaked the grant or failed to issue its cookie")
 			}
 		})
 	}
 }
 
-func TestHandoff_NextDoesNotBypassTokenVerification(t *testing.T) {
+func TestAuthPost_NextDoesNotBypassGrantVerification(t *testing.T) {
 	for _, invalid := range []string{"missing", "bad", "expired"} {
 		t.Run(invalid, func(t *testing.T) {
-			f := newHandoffFixture(t)
-			token := ""
+			f := newGrantFixture(t)
+			raw := ""
 			switch invalid {
 			case "bad":
-				token = "bad-token"
+				raw = "bad-grant"
 			case "expired":
-				token = f.link(t, nil)
-				f.now = f.now.Add(2 * time.Minute)
+				raw = f.grant(t, nil)
+				f.now = f.now.Add(2 * time.Hour)
 			}
-			baseline := f.open(token)
-			req := httptest.NewRequest(http.MethodGet, "https://"+labHost+AuthPath+"?"+url.Values{"t": {token}, "next": {"/panel?x=1#anchor"}}.Encode(), nil)
-			req.AddCookie(&http.Cookie{Name: "challenge", Value: "existing-session"})
-			rec := httptest.NewRecorder()
-			f.handler.ServeHTTP(rec, req)
+			baseline := f.open(raw)
+			rec := f.postTo(labHost, raw, "/panel?x=1#anchor", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "challenge", Value: "existing-session"}) })
 			if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
 				t.Fatalf("code = %d location = %q cookies = %v", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
 			}
 			if rec.Body.String() != baseline.Body.String() || rec.Header().Get("Set-Cookie") != baseline.Header().Get("Set-Cookie") {
-				t.Fatal("next changed invalid handoff behavior")
+				t.Fatal("next changed the behavior for an invalid grant")
 			}
 		})
 	}
 }
 
-func TestHandoff_Refusals(t *testing.T) {
+// Every row of the claim table of the spec (2.3.1) is a refusal that sets no cookie and says nothing about the reason.
+func TestAuthPost_Refusals(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(*handoffClaims)
+		mutate func(*grant.Claims)
 	}{
-		{"expired link", func(c *handoffClaims) {
-			c.IssuedAt = jwt.NewNumericDate(time.Now().Add(-10 * time.Minute))
-			c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-8 * time.Minute))
+		{"expired", func(c *grant.Claims) {
+			c.IssuedAt = jwt.NewNumericDate(time.Now().Add(-10 * time.Hour))
+			c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-9 * time.Hour))
 		}},
-		{"another device host", func(c *handoffClaims) { c.Host = "db-abc123" }},
-		{"session already over", func(c *handoffClaims) { c.Session = time.Now().Add(-time.Hour).Unix() }},
-		{"no client", func(c *handoffClaims) { c.Subject = "" }},
-		{"another audience", func(c *handoffClaims) { c.Audience = jwt.ClaimStrings{"somewhere-else"} }},
-		{"no audience", func(c *handoffClaims) { c.Audience = nil }},
-		{"no not-before", func(c *handoffClaims) { c.NotBefore = nil }},
-		{"not valid yet", func(c *handoffClaims) { c.NotBefore = jwt.NewNumericDate(time.Now().Add(10 * time.Minute)) }},
-		{"no issuer", func(c *handoffClaims) { c.Issuer = "" }},
-		{"an unknown tenant", func(c *handoffClaims) { c.Issuer = "mallory" }},
-		{"an issuer that is no name", func(c *handoffClaims) { c.Issuer = "../acme" }},
-		{"a group that does not exist", func(c *handoffClaims) { c.GroupID = "nope" }},
-		{"link over the lifetime cap", func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(6 * time.Minute)) }},
+		{"another device host", func(c *grant.Claims) { c.Host = "db-abc12w.challenges.example.com" }},
+		{"the first label only", func(c *grant.Claims) { c.Host = "web-abc12w" }},
+		{"no host", func(c *grant.Claims) { c.Host = "" }},
+		{"no client", func(c *grant.Claims) { c.Subject = "" }},
+		{"another audience", func(c *grant.Claims) { c.Audience = jwt.ClaimStrings{"somewhere-else"} }},
+		{"no audience", func(c *grant.Claims) { c.Audience = nil }},
+		{"the device access audience only", func(c *grant.Claims) { c.Audience = jwt.ClaimStrings{grant.AudienceDeviceAccess} }},
+		{"no not-before", func(c *grant.Claims) { c.NotBefore = nil }},
+		{"no issued-at", func(c *grant.Claims) { c.IssuedAt = nil }},
+		{"not valid yet", func(c *grant.Claims) { c.NotBefore = jwt.NewNumericDate(time.Now().Add(10 * time.Minute)) }},
+		{"no issuer", func(c *grant.Claims) { c.Issuer = "" }},
+		{"an unknown tenant", func(c *grant.Claims) { c.Issuer = "mallory" }},
+		{"an issuer that is no name", func(c *grant.Claims) { c.Issuer = "../acme" }},
+		{"a group that does not exist", func(c *grant.Claims) { c.Group = "nope" }},
+		{"no group", func(c *grant.Claims) { c.Group = "" }},
+		{"no lab", func(c *grant.Claims) { c.Lab = "" }},
+		{"no device", func(c *grant.Claims) { c.Dev = "" }},
+		{"a console grant on a web host", func(c *grant.Claims) { c.Kind = grant.KindConsole }},
+		{"no kind", func(c *grant.Claims) { c.Kind = "" }},
+		{"a grant over the lifetime cap", func(c *grant.Claims) { c.ExpiresAt = jwt.NewNumericDate(c.IssuedAt.Add(8*time.Hour + time.Second)) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f := newHandoffFixture(t)
-			rec := f.open(f.link(t, c.mutate))
+			f := newGrantFixture(t)
+			rec := f.open(f.grant(t, c.mutate))
 			if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
 				t.Fatalf("code = %d cookies = %v", rec.Code, rec.Result().Cookies())
 			}
@@ -296,53 +291,128 @@ func TestHandoff_Refusals(t *testing.T) {
 	}
 }
 
-func TestHandoff_TamperedSignature(t *testing.T) {
-	f := newHandoffFixture(t)
-	token := f.link(t, nil)
-	parts := strings.Split(token, ".")
+func TestAuthPost_TamperedSignature(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	parts := strings.Split(raw, ".")
 	parts[1] = parts[1][:len(parts[1])-2] + "AA"
 	if rec := f.open(strings.Join(parts, ".")); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("tampered payload: %d", rec.Code)
 	}
-	_, other, _ := ed25519.GenerateKey(rand.Reader)
-	signed := signHandoff(t, other, "k1", baseHandoff(f.now))
-	if rec := f.open(signed); rec.Code != http.StatusUnauthorized {
+	other := granttest.NewKey(t, "acme", "k1")
+	if rec := f.open(other.Sign(t, f.baseGrant())); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("foreign key: %d", rec.Code)
 	}
 }
 
-// The handoff is stateless: the same link opens again until its exp.
-func TestHandoff_IsStatelessAndOpensAgainUntilExp(t *testing.T) {
-	f := newHandoffFixture(t)
-	token := f.link(t, nil)
+// The grant is stateless: the same grant opens again until its exp.
+func TestAuthPost_IsStatelessAndOpensAgainUntilExp(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
 	for i := 0; i < 2; i++ {
-		if rec := f.open(token); rec.Code != http.StatusSeeOther {
+		if rec := f.open(raw); rec.Code != http.StatusSeeOther {
 			t.Fatalf("open %d: %d", i, rec.Code)
 		}
 	}
-	f.now = f.now.Add(2 * time.Minute)
-	if rec := f.open(token); rec.Code != http.StatusUnauthorized {
+	f.now = f.now.Add(2 * time.Hour)
+	if rec := f.open(raw); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("after exp: %d", rec.Code)
 	}
 }
 
-// Only EdDSA counts: a token signed with RSA, HMAC (any secret) or "none" is refused.
-func TestHandoff_RefusesOtherAlgorithms(t *testing.T) {
-	f := newHandoffFixture(t)
-	claims := baseHandoff(f.now)
-	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	rs, _ := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(rsaKey)
-	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(testSecret)
-	none, _ := jwt.NewWithClaims(jwt.SigningMethodNone, claims).SignedString(jwt.UnsafeAllowNoneSignatureType)
-	for name, token := range map[string]string{"RS256": rs, "HS256": hs, "none": none} {
+// Only EdDSA counts: a grant signed with RSA, HMAC (any secret) or "none" is refused.
+func TestAuthPost_RefusesOtherAlgorithms(t *testing.T) {
+	f := newGrantFixture(t)
+	claims := f.baseGrant()
+	rs, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("a shared secret of the proxy, if there were one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	none := f.key.SignWith(t, claims, jwt.SigningMethodNone, "k1", grant.Type)
+	for name, token := range map[string]string{"HS256 signed with the public key's bytes": rs, "none": none} {
 		if rec := f.open(token); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
 			t.Fatalf("%s: %d", name, rec.Code)
 		}
 	}
 }
 
+// The login is a POST of a form from the platform page, and nothing else is accepted on the path.
+func TestAuthPost_OnlyAFormFromAPlatformOrigin(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	refused := func(name string, rec *httptest.ResponseRecorder, code int) {
+		t.Helper()
+		if rec.Code != code || len(rec.Result().Cookies()) != 0 || rec.Header().Get("Location") != "" {
+			t.Errorf("%s: code = %d (want %d) cookies = %v", name, rec.Code, code, rec.Result().Cookies())
+		}
+	}
+	refused("no Origin", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Del("Origin") }), http.StatusUnauthorized)
+	refused("another site's Origin", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") }), http.StatusUnauthorized)
+	refused("the null Origin", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Set("Origin", "null") }), http.StatusUnauthorized)
+	refused("the lab host's own Origin", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Set("Origin", "https://"+labHost) }), http.StatusUnauthorized)
+	refused("an http Origin", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Set("Origin", "http://app.example.com") }), http.StatusUnauthorized)
+	refused("a JSON body", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Set("Content-Type", "application/json") }), http.StatusUnsupportedMediaType)
+	refused("no content type", f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Del("Content-Type") }), http.StatusUnsupportedMediaType)
+	refused("a PUT", f.postTo(labHost, raw, "", func(r *http.Request) { r.Method = http.MethodPut }), http.StatusMethodNotAllowed)
+	refused("a DELETE", f.postTo(labHost, raw, "", func(r *http.Request) { r.Method = http.MethodDelete }), http.StatusMethodNotAllowed)
+	refused("a grant of more than 4096 bytes", f.postTo(labHost, strings.Repeat("a", grant.MaxLen+1), "", nil), http.StatusUnauthorized)
+	refused("a body over 8 KiB", f.postTo(labHost, strings.Repeat("a", 9000), "", nil), http.StatusRequestEntityTooLarge)
+	refused("a next field over 2048 bytes", f.postTo(labHost, raw, "/"+strings.Repeat("a", nextMax), nil), http.StatusUnauthorized)
+	// the grant only in the query string is a link of the old shape
+	refused("the grant in the query", f.postTo(labHost, "", "", func(r *http.Request) { r.URL.RawQuery = "grant=" + url.QueryEscape(raw) }), http.StatusUnauthorized)
+
+	// an empty list of origins refuses every post
+	f.handler.WithPlatformOrigins(nil)
+	refused("no origins configured", f.open(raw), http.StatusUnauthorized)
+	empty, _ := NewEmbedMatcher(nil, nil)
+	f.handler.WithPlatformOrigins(empty)
+	refused("an empty list", f.open(raw), http.StatusUnauthorized)
+}
+
+// A wildcard entry of the list matches one label, as the embedding lists do.
+func TestAuthPost_OriginListUnderstandsWildcards(t *testing.T) {
+	f := newGrantFixture(t)
+	m, err := NewEmbedMatcher([]string{"https://*.example.org", "https://catalog.example.com:8443"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.handler.WithPlatformOrigins(m)
+	raw := f.grant(t, nil)
+	for origin, want := range map[string]int{
+		"https://events.example.org":         http.StatusSeeOther,
+		"https://catalog.example.com:8443":   http.StatusSeeOther,
+		"https://a.b.example.org":            http.StatusUnauthorized,
+		"https://example.org":                http.StatusUnauthorized,
+		"https://catalog.example.com":        http.StatusUnauthorized,
+		"https://app.example.com":            http.StatusUnauthorized,
+		"https://events.example.org.evil.io": http.StatusUnauthorized,
+	} {
+		if rec := f.postTo(labHost, raw, "", func(r *http.Request) { r.Header.Set("Origin", origin) }); rec.Code != want {
+			t.Errorf("Origin %s: %d, want %d", origin, rec.Code, want)
+		}
+	}
+}
+
+// The old link /_auth?t=<token> is a GET: it consumes nothing and fails closed, whatever it carries.
+func TestAuthGet_FailsClosed(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	for _, target := range []string{AuthPath, AuthPath + "?t=" + url.QueryEscape(raw), AuthPath + "?grant=" + url.QueryEscape(raw) + "&next=/x"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			req := httptest.NewRequest(method, "https://"+labHost+target, nil)
+			req.Host = labHost
+			req.Header.Set("Origin", platformOrigin)
+			rec := httptest.NewRecorder()
+			f.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 || rec.Header().Get("Location") != "" {
+				t.Fatalf("%s %s: %d %v", method, target, rec.Code, rec.Result().Cookies())
+			}
+		}
+	}
+}
+
 func TestExpiredCard_NoCookieShowsTheCardWithoutRedirect(t *testing.T) {
-	f := newHandoffFixture(t)
+	f := newGrantFixture(t)
 	for _, tc := range []struct{ lang, first, hint, other string }{
 		{"", "Сесію завершено", "Щоб продовжити, відкрийте лабораторію за посиланням у завданні.", "Session ended"},
 		{"uk-UA,uk;q=0.9", "Сесію завершено", "Щоб продовжити, відкрийте лабораторію за посиланням у завданні.", "Session ended"},
@@ -367,10 +437,9 @@ func TestExpiredCard_NoCookieShowsTheCardWithoutRedirect(t *testing.T) {
 }
 
 func TestExpiredCard_ExpiredCookie(t *testing.T) {
-	f := newHandoffFixture(t)
-	rec := f.open(f.link(t, nil))
-	c := rec.Result().Cookies()[0]
-	f.now = f.now.Add(25 * time.Hour)
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	f.now = f.now.Add(2 * time.Hour)
 	req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
 	req.Host = labHost
 	req.AddCookie(c)
@@ -382,210 +451,143 @@ func TestExpiredCard_ExpiredCookie(t *testing.T) {
 	}
 }
 
-// The keys of the issuing tenant, by key id: a rotation overlaps (both keys work), a removed key stops,
-// an unknown kid is refused.
-func TestHandoff_KeysByTenantAndKeyID(t *testing.T) {
-	f := newHandoffFixture(t)
-	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
-	keys := map[string]ed25519.PublicKey{"acme/k1": f.pub, "acme/k2": pub2}
-	f.handler.keys = func(tenant, kid string) (ed25519.PublicKey, bool) { k, ok := keys[tenant+"/"+kid]; return k, ok }
-	open := func(priv ed25519.PrivateKey, kid string) int {
-		return f.open(signHandoff(t, priv, kid, baseHandoff(f.now))).Code
+// Two cookies of the grant's name mean one was not set by this proxy (a sibling site, a device): the request carries no grant, whichever the
+// browser lists first.
+func TestOneGrantCookieOnly(t *testing.T) {
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	get := func(cookies ...*http.Cookie) int {
+		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
+		req.Host = labHost
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		req.Header.Set("Accept", "text/html")
+		out := httptest.NewRecorder()
+		f.handler.ServeHTTP(out, req)
+		return out.Code
 	}
-	if open(f.priv, "k1") != http.StatusSeeOther || open(priv2, "k2") != http.StatusSeeOther {
+	if code := get(c); code == http.StatusUnauthorized {
+		t.Fatalf("the cookie of the proxy is refused: %d", code)
+	}
+	if code := get(&http.Cookie{Name: c.Name, Value: "forged"}, c); code != http.StatusUnauthorized {
+		t.Fatalf("two cookies of the name: %d", code)
+	}
+	if code := get(c, &http.Cookie{Name: c.Name, Value: "forged"}); code != http.StatusUnauthorized {
+		t.Fatalf("two cookies of the name, ours first: %d", code)
+	}
+}
+
+// The keys of the issuing tenant, by key id: a rotation overlaps (both keys work), a removed key stops, an unknown kid is refused.
+func TestAuthPost_KeysByTenantAndKeyID(t *testing.T) {
+	f := newGrantFixture(t)
+	k2 := granttest.NewKey(t, "acme", "k2")
+	f.handler.keys = lookupOf(map[string]granttest.Key{"acme/k1": f.key, "acme/k2": k2})
+	open := func(k granttest.Key, kid string) int {
+		return f.open(k.SignWith(t, f.baseGrant(), jwt.SigningMethodEdDSA, kid, grant.Type)).Code
+	}
+	if open(f.key, "k1") != http.StatusSeeOther || open(k2, "k2") != http.StatusSeeOther {
 		t.Fatal("during a rotation both keys work")
 	}
-	if open(f.priv, "k2") != http.StatusUnauthorized {
+	if open(f.key, "k2") != http.StatusUnauthorized {
 		t.Fatal("a key under another id's name is refused")
 	}
-	if open(f.priv, "ghost") != http.StatusUnauthorized {
+	if open(f.key, "ghost") != http.StatusUnauthorized {
 		t.Fatal("an unknown kid is refused")
 	}
-	// A token with no kid at all.
-	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, baseHandoff(f.now))
-	noKid, _ := tok.SignedString(f.priv)
-	if rec := f.open(noKid); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no kid: %d", rec.Code)
+	if open(f.key, "") != http.StatusUnauthorized {
+		t.Fatal("a grant with no kid is refused")
 	}
-	delete(keys, "acme/k1") // the old key is removed
-	if open(f.priv, "k1") != http.StatusUnauthorized || open(priv2, "k2") != http.StatusSeeOther {
+	f.handler.keys = lookupOf(map[string]granttest.Key{"acme/k2": k2}) // the old key is removed
+	if open(f.key, "k1") != http.StatusUnauthorized || open(k2, "k2") != http.StatusSeeOther {
 		t.Fatal("after the removal only the new key works")
 	}
 }
 
+func lookupOf(keys map[string]granttest.Key) KeyLookup {
+	return func(tenant, kid string) (ed25519.PublicKey, bool) {
+		k, ok := keys[tenant+"/"+kid]
+		return k.Public, ok
+	}
+}
+
 // CRUCIAL: a tenant cannot open a group of another tenant, with a perfectly valid signature of its own.
-func TestHandoff_RefusesAGroupOfAnotherTenant(t *testing.T) {
-	f := newHandoffFixture(t)
+func TestAuthPost_RefusesAGroupOfAnotherTenant(t *testing.T) {
+	f := newGrantFixture(t)
 	f.groups["theirs"] = "mallory"
-	rec := f.open(f.link(t, func(c *handoffClaims) { c.GroupID = "theirs" }))
+	rec := f.open(f.grant(t, func(c *grant.Claims) { c.Group = "theirs" }))
 	if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("cross-tenant handoff: %d", rec.Code)
+		t.Fatalf("cross-tenant grant: %d", rec.Code)
 	}
 	// The other tenant's own key does not help either: it is not issuer acme's key.
-	pubM, privM, _ := ed25519.GenerateKey(rand.Reader)
-	f.handler.keys = func(tenant, kid string) (ed25519.PublicKey, bool) {
-		switch tenant + "/" + kid {
-		case "acme/k1":
-			return f.pub, true
-		case "mallory/k1":
-			return pubM, true
-		}
-		return nil, false
-	}
-	claims := baseHandoff(f.now)
-	claims.Issuer, claims.GroupID = "mallory", "g1" // g1 is acme's
-	if rec := f.open(signHandoff(t, privM, "k1", claims)); rec.Code != http.StatusUnauthorized {
+	mallory := granttest.NewKey(t, "mallory", "k1")
+	f.handler.keys = lookupOf(map[string]granttest.Key{"acme/k1": f.key, "mallory/k1": mallory})
+	claims := f.baseGrant()
+	claims.Issuer, claims.Group = "mallory", "g1" // g1 is acme's
+	if rec := f.open(mallory.Sign(t, claims)); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("mallory signing for acme's group: %d", rec.Code)
 	}
-	claims.GroupID = "theirs"
-	if rec := f.open(signHandoff(t, privM, "k1", claims)); rec.Code != http.StatusSeeOther {
+	claims.Group = "theirs"
+	if rec := f.open(mallory.Sign(t, claims)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("mallory for its own group: %d", rec.Code)
 	}
 }
 
-// A session cookie dies with the group's ownership: the group now belongs to someone else.
+// A session dies with the group's ownership: the group now belongs to someone else.
 func TestSession_StopsWhenTheGroupChangesOwner(t *testing.T) {
-	f := newHandoffFixture(t)
-	c := f.open(f.link(t, nil)).Result().Cookies()[0]
-	get := func() int {
-		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
-		req.Host = labHost
-		req.AddCookie(c)
-		rec := httptest.NewRecorder()
-		f.handler.ServeHTTP(rec, req)
-		return rec.Code
-	}
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	get := func() int { return f.get(labHost, c, "/").Code }
 	if get() != 200 {
 		t.Fatal("the session opens the lab")
 	}
-	f.groups["g1"] = "mallory"
+	f.groups["g1"] = "mallory" // at once: the cache holds a verified signature, never an ownership
 	if get() != http.StatusNotFound {
 		t.Fatal("a session of a group that changed owner must stop")
 	}
 	delete(f.groups, "g1")
-	if get() != http.StatusNotFound {
-		t.Fatal("and so must a session of a group that is gone")
+	if code := get(); code != http.StatusNotFound {
+		t.Fatalf("and so must a session of a group that is gone: %d", code)
 	}
 }
 
-// The idle lifetime is the cookie's: a link asking for more still gets only idle at first.
-func TestHandoff_CookieLivesTheIdleTTL(t *testing.T) {
-	f := newHandoffFixture(t)
-	f.handler.WithLimits(DefaultHandoffLifetime, 2*time.Hour, 30*time.Minute, 168*time.Hour)
-	cookies := f.open(f.link(t, nil)).Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Expires.Unix() != f.now.Add(2*time.Hour).Unix() {
-		t.Fatalf("cookies = %v", cookies)
-	}
-}
-
-// Never beyond the link's own session end, nor the absolute maximum.
-func TestHandoff_SessionNeverPassesTheLinkOrTheMax(t *testing.T) {
-	f := newHandoffFixture(t)
-	f.handler.WithLimits(DefaultHandoffLifetime, 24*time.Hour, time.Hour, 168*time.Hour)
-	short := f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(3 * time.Hour).Unix() })
-	if c := f.open(short).Result().Cookies(); len(c) != 1 || c[0].Expires.Unix() != f.now.Add(3*time.Hour).Unix() {
-		t.Fatalf("the link ends in 3h: %v", c)
-	}
-	f.handler.WithLimits(DefaultHandoffLifetime, 24*time.Hour, time.Hour, 10*time.Hour)
-	long := f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(1000 * time.Hour).Unix() })
-	c := f.open(long).Result().Cookies()
-	if len(c) != 1 || c[0].Expires.Unix() != f.now.Add(10*time.Hour).Unix() {
-		t.Fatalf("the maximum is 10h: %v", c)
-	}
-}
-
-// Sliding: the cookie is renewed only when less than renewBefore remains, once per window, up to the absolute end.
-func TestSession_SlidesWithActivityAndEndsAtTheMax(t *testing.T) {
-	f := newHandoffFixture(t)
-	f.handler.WithLimits(DefaultHandoffLifetime, 10*time.Hour, 2*time.Hour, 24*time.Hour)
-	c := f.open(f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(1000 * time.Hour).Unix() })).Result().Cookies()[0]
-	get := func(cookie *http.Cookie) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
-		req.Host = labHost
-		req.AddCookie(cookie)
-		rec := httptest.NewRecorder()
-		f.handler.ServeHTTP(rec, req)
-		return rec
-	}
+// The cookie lives until the grant ends and no longer: there is no sliding, no renewal and no idle lifetime.
+func TestSession_EndsAtTheGrantExp(t *testing.T) {
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
 	start := f.now
-	if rec := get(c); rec.Code != 200 || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("9h-plus remain: no renewal, got %d %v", rec.Code, rec.Result().Cookies())
+	f.now = start.Add(59 * time.Minute)
+	if rec := f.get(labHost, c, "/"); rec.Code != 200 || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("just before exp: %d, no renewal expected: %v", rec.Code, rec.Result().Cookies())
 	}
-	if c.Domain != "" {
-		t.Fatalf("the session cookie is host-only: %+v", c)
-	}
-	// 9h later 1h remains (< 2h): renewed to now+10h
-	f.now = start.Add(9 * time.Hour)
-	rec := get(c)
-	renewed := rec.Result().Cookies()
-	if rec.Code != 200 || len(renewed) != 1 || renewed[0].Expires.Unix() != f.now.Add(10*time.Hour).Unix() {
-		t.Fatalf("renewal: %d %v", rec.Code, renewed)
-	}
-	// the renewed cookie is not renewed again at once
-	if rec := get(renewed[0]); len(rec.Result().Cookies()) != 0 {
-		t.Fatal("one renewal per window")
-	}
-	// near the absolute end (24h from the start) the expiry is cut to it, and then nothing later is possible
-	f.now = start.Add(18 * time.Hour)
-	last := get(renewed[0]).Result().Cookies()
-	if len(last) == 1 && last[0].Domain != "" {
-		t.Fatalf("a renewed cookie stays host-only: %+v", last[0])
-	}
-	if len(last) != 1 || last[0].Expires.Unix() != start.Add(24*time.Hour).Unix() {
-		t.Fatalf("cut to the absolute end: %v", last)
-	}
-	f.now = start.Add(23 * time.Hour)
-	if rec := get(last[0]); rec.Code != 200 || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("at the absolute end there is nothing to renew: %d %v", rec.Code, rec.Result().Cookies())
-	}
-	f.now = start.Add(25 * time.Hour)
-	if rec := get(last[0]); rec.Code == 200 {
-		t.Fatal("past the absolute end the session is over")
+	f.now = start.Add(time.Hour + 31*time.Second) // past exp and the clock leeway
+	if rec := f.get(labHost, c, "/"); rec.Code == 200 {
+		t.Fatal("past the end of the grant the session is over")
 	}
 }
 
-// Idle: no request for idle TTL ends it.
-func TestSession_EndsAfterTheIdleTTL(t *testing.T) {
-	f := newHandoffFixture(t)
-	f.handler.WithLimits(DefaultHandoffLifetime, time.Hour, 10*time.Minute, 168*time.Hour)
-	c := f.open(f.link(t, nil)).Result().Cookies()[0]
-	f.now = f.now.Add(2 * time.Hour)
-	req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
-	req.Host = labHost
-	req.AddCookie(c)
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	if rec.Code == 200 {
-		t.Fatal("an idle session must end")
-	}
-}
-
-// The token lifetime limit is the configured one.
-func TestHandoff_TokenLifetimeLimitIsConfigured(t *testing.T) {
-	f := newHandoffFixture(t)
-	long := f.link(t, func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(45 * time.Second)) })
+// The grant lifetime limit is the configured one.
+func TestAuthPost_GrantLifetimeLimitIsConfigured(t *testing.T) {
+	f := newGrantFixture(t)
+	long := f.grant(t, func(c *grant.Claims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(6 * time.Hour)) })
 	if rec := f.open(long); rec.Code != http.StatusSeeOther {
-		t.Fatalf("45s under the default 60s: %d", rec.Code)
+		t.Fatalf("6h under the default 8h: %d", rec.Code)
 	}
-	over := f.link(t, func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(2 * time.Minute)) })
+	over := f.grant(t, func(c *grant.Claims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(9 * time.Hour)) })
 	if rec := f.open(over); rec.Code == http.StatusSeeOther {
-		t.Fatal("2m is over the default 60s limit and must be refused")
+		t.Fatal("9h is over the default 8h limit and must be refused")
 	}
-	f.handler.WithLimits(30*time.Second, DefaultSessionIdleTTL, DefaultSessionRenewBefore, DefaultSessionMaxTTL)
+	f.handler.WithGrantMaxTTL(time.Hour)
 	if rec := f.open(long); rec.Code == http.StatusSeeOther {
-		t.Fatal("45s over a 30s limit must be refused")
+		t.Fatal("6h over a 1h limit must be refused")
 	}
 }
 
-// A device cannot set, replace or clear the proxy's session cookie; its own cookies pass.
-func TestDeviceCannotSetTheSessionCookie(t *testing.T) {
-	f := newHandoffFixture(t)
-	c := f.open(f.link(t, nil)).Result().Cookies()[0]
-	req := httptest.NewRequest("GET", "https://"+labHost+"/cookies", nil)
-	req.Host = labHost
-	req.AddCookie(c)
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
+// A device cannot set, replace or clear the proxy's grant cookie; its own cookies pass.
+func TestDeviceCannotSetTheGrantCookie(t *testing.T) {
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	rec := f.get(labHost, c, "/cookies")
 	if rec.Code != 200 {
 		t.Fatalf("code = %d", rec.Code)
 	}
@@ -594,62 +596,44 @@ func TestDeviceCannotSetTheSessionCookie(t *testing.T) {
 		names = append(names, sc.Name+"="+sc.Value)
 	}
 	if len(names) != 1 || names[0] != "app=1" {
-		t.Fatalf("the response cookies are %v: the session cookie must be stripped, the device's own kept", names)
+		t.Fatalf("the response cookies are %v: the grant cookie must be stripped, the device's own kept", names)
 	}
 }
 
-// A handoff link opens ONE device: its host claim is the whole host name, and the same group's other hosts refuse it.
-func TestHandoff_IsBoundToTheFullHostName(t *testing.T) {
-	f := newHandoffFixture(t)
-	open := func(host, token string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "https://"+host+AuthPath+"?t="+url.QueryEscape(token), nil)
-		req.Host = host
-		rec := httptest.NewRecorder()
-		f.handler.ServeHTTP(rec, req)
-		return rec
-	}
-	link := f.link(t, nil) // host = web-abc12w.challenges.example.com
+// A grant opens ONE device: its host claim is the whole host name, and the same group's other hosts refuse it.
+func TestAuthPost_IsBoundToTheFullHostName(t *testing.T) {
+	f := newGrantFixture(t)
+	link := f.grant(t, nil) // host = web-abc12w.challenges.example.com
 	for _, host := range []string{"web-abc12t.challenges.example.com", "other-xyz12w.challenges.example.com", "web-abc12w.other.example.com"} {
-		if rec := open(host, link); rec.Code == http.StatusSeeOther || len(rec.Result().Cookies()) != 0 {
-			t.Errorf("a link for %s opened on %s: %d %v", labHost, host, rec.Code, rec.Result().Cookies())
+		if rec := f.postTo(host, link, "", nil); rec.Code == http.StatusSeeOther || len(rec.Result().Cookies()) != 0 {
+			t.Errorf("a grant for %s opened on %s: %d %v", labHost, host, rec.Code, rec.Result().Cookies())
 		}
 	}
-	// only the first label is no longer enough
-	if rec := open(labHost, f.link(t, func(c *handoffClaims) { c.Host = "web-abc12w" })); rec.Code != http.StatusUnauthorized {
-		t.Errorf("a link that names the first label only: %d", rec.Code)
-	}
 	// the right host with a port is still the same host
-	if rec := open(labHost+":8443", link); rec.Code != http.StatusSeeOther {
+	if rec := f.postTo(labHost+":8443", link, "", nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("the same host with a port: %d", rec.Code)
 	}
 }
 
 // Sessions of two groups live side by side in one browser, one cookie per device host, and each opens only its own host.
 func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	f := newGrantFixture(t)
 	backends := map[string]*httptest.Server{}
 	for _, g := range []string{"g1", "g2"} {
 		b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("lab-" + g)) }))
 		t.Cleanup(b.Close)
 		backends[g] = b
 	}
-	now := time.Now()
-	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
-		func(task, groupID string) (string, error) { return backends[groupID].URL, nil }).
-		WithGroupTenant(func(string) (string, bool) { return "acme", true })
-	h.now = func() time.Time { return now }
+	f.groups["g2"] = "acme"
+	f.handler.resolver = func(task, groupID string) (string, error) { return backends[groupID].URL, nil }
 
 	hostA, hostB := "web-aaa11w.challenges.example.com", "web-bbb22w.challenges.example.com"
 	jar, _ := cookiejar.New(nil)
 	login := func(host, group string) {
-		claims := baseHandoff(now)
-		claims.Host, claims.GroupID = host, group
-		req := httptest.NewRequest("GET", "https://"+host+AuthPath+"?t="+url.QueryEscape(signHandoff(t, priv, "k1", claims)), nil)
-		req.Host = host
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
+		raw := f.grant(t, func(c *grant.Claims) { c.Host, c.Group = host, group })
+		rec := f.postTo(host, raw, "", nil)
 		if rec.Code != http.StatusSeeOther {
-			t.Fatalf("handoff on %s: %d", host, rec.Code)
+			t.Fatalf("grant on %s: %d", host, rec.Code)
 		}
 		u, _ := url.Parse("https://" + host + "/")
 		jar.SetCookies(u, rec.Result().Cookies())
@@ -665,7 +649,7 @@ func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
 			req.AddCookie(c)
 		}
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
+		f.handler.ServeHTTP(rec, req)
 		if rec.Code != 200 {
 			t.Fatalf("%s: %d", host, rec.Code)
 		}
@@ -685,11 +669,7 @@ func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
 	}
 	// a host the browser never logged in to gets no cookie, and so no session
 	other := "web-ccc33w.challenges.example.com"
-	req := httptest.NewRequest("GET", "https://"+other+"/", nil)
-	req.Host = other
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
+	if rec := f.get(other, nil, "/"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("a host with no cookie: %d", rec.Code)
 	}
 	u, _ := url.Parse("https://" + other + "/")
@@ -698,68 +678,85 @@ func TestSession_CookiesOfTwoGroupsCoexistPerHost(t *testing.T) {
 	}
 }
 
-// The session names the one host it was opened for: what leaks opens at most that device. A cookie of host A sent to host B (the same
-// group, a real session) is refused, and so is one without a host (issued before the binding).
+// The grant names the one host it was issued for: what leaks opens at most that device. A cookie of host A sent to host B (the same group,
+// a real session) is refused, and so is one for a host whose kind is not web.
 func TestSession_IsBoundToItsHost(t *testing.T) {
-	f := newHandoffFixture(t)
-	f.handler.WithLimits(DefaultHandoffLifetime, 10*time.Hour, 2*time.Hour, 24*time.Hour)
-	c := f.open(f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(1000 * time.Hour).Unix() })).Result().Cookies()[0]
-	claims, err := validateCookie(requestWithCookie(c.Value), testSecret, "challenge", f.handler.now)
-	if err != nil || claims.Host != labHost {
-		t.Fatalf("the handoff binds the session to the host: %+v %v", claims, err)
-	}
-	get := func(host string, cookie *http.Cookie) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "https://"+host+"/", nil)
-		req.Host = host
-		req.AddCookie(cookie)
-		rec := httptest.NewRecorder()
-		f.handler.ServeHTTP(rec, req)
-		return rec
-	}
-	if rec := get(labHost+":8443", c); rec.Code != 200 {
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	if rec := f.get(labHost+":8443", c, "/"); rec.Code != 200 {
 		t.Fatalf("its own host (with a port): %d", rec.Code)
 	}
-	for _, other := range []string{"web-abc12t.challenges.example.com", "web-zzz99w.challenges.example.com"} {
-		if rec := get(other, c); rec.Code != http.StatusUnauthorized {
-			t.Errorf("the cookie of %s opened %s: %d", labHost, other, rec.Code)
-		}
+	if rec := f.get("web-zzz99w.challenges.example.com", c, "/"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the cookie of %s opened another host: %d", labHost, rec.Code)
 	}
-	// renewal keeps the host, and a renewed cookie is still refused elsewhere
-	f.now = f.now.Add(9 * time.Hour)
-	rec := get(labHost, c)
-	renewed := rec.Result().Cookies()
-	if rec.Code != 200 || len(renewed) != 1 {
-		t.Fatalf("renewal: %d %v", rec.Code, renewed)
+	// a console host while no console is served is no host at all
+	if rec := f.get("web-abc12t.challenges.example.com", c, "/"); rec.Code != http.StatusNotFound {
+		t.Errorf("a console host without a console: %d", rec.Code)
 	}
-	if cl, err := validateCookie(requestWithCookie(renewed[0].Value), testSecret, "challenge", f.handler.now); err != nil || cl.Host != labHost {
-		t.Fatalf("the renewed session names the same host: %+v %v", cl, err)
-	}
-	if rec := get("web-zzz99w.challenges.example.com", renewed[0]); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("a renewed cookie on another host: %d %v", rec.Code, rec.Result().Cookies())
-	}
-	// a session cookie that names no host (the old kind) is no session
-	old := jwtClaims{GroupID: "g1", Client: "p-u1", Tenant: "acme", Abs: f.now.Add(time.Hour).Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Hour))}}
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, old).SignedString(testSecret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec := get(labHost, &http.Cookie{Name: "challenge", Value: tok}); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("a cookie without a host: %d", rec.Code)
+	// a web grant minted for a console host (no console is served here) opens nothing
+	consoleHost := "web-abc12t.challenges.example.com"
+	raw := f.grant(t, func(c *grant.Claims) { c.Host = consoleHost })
+	cookie := &http.Cookie{Name: "challenge", Value: raw}
+	if rec := f.get(consoleHost, cookie, "/"); rec.Code == 200 {
+		t.Fatalf("a web grant opened a console-letter host: %d", rec.Code)
 	}
 }
 
-func (f *handoffFixture) openFrom(addr, token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("GET", "https://"+labHost+AuthPath+"?t="+url.QueryEscape(token), nil)
-	req.Host, req.RemoteAddr = labHost, addr
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	return rec
+// A verified cookie is remembered for a short time only: a key the tenant removed stops working after that time, and not later.
+func TestSession_RemovedKeyStopsWithinTheCacheTime(t *testing.T) {
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	if f.get(labHost, c, "/").Code != 200 {
+		t.Fatal("the session opens the lab")
+	}
+	f.handler.keys = lookupOf(nil) // RemoveAccessKey
+	f.now = f.now.Add(grantCacheTTL - time.Second)
+	if f.get(labHost, c, "/").Code != 200 {
+		t.Fatal("inside the cache time the verified cookie is still accepted")
+	}
+	f.now = f.now.Add(2 * time.Second)
+	if code := f.get(labHost, c, "/").Code; code != http.StatusUnauthorized {
+		t.Fatalf("a removed key must stop working after the cache time: %d", code)
+	}
 }
 
-// A garbage flood from one address is stopped before any signature is verified, and does not touch another address' valid link.
-func TestHandoff_GarbageFloodIsThrottledBeforeVerification(t *testing.T) {
-	f := newHandoffFixture(t)
+// The cache never keeps a verification past the end of the grant.
+func TestSession_CacheDoesNotOutliveTheGrant(t *testing.T) {
+	f := newGrantFixture(t)
+	short := f.grant(t, func(c *grant.Claims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(10 * time.Second)) })
+	c := f.open(short).Result().Cookies()[0]
+	if f.get(labHost, c, "/").Code != 200 {
+		t.Fatal("the session opens the lab")
+	}
+	f.now = f.now.Add(45 * time.Second) // past exp and the leeway, inside the cache time
+	if code := f.get(labHost, c, "/").Code; code != http.StatusUnauthorized {
+		t.Fatalf("a cached verification must not outlive exp: %d", code)
+	}
+}
+
+// The cache is bounded and does not turn a full table into a refusal.
+func TestGrantCache_IsBounded(t *testing.T) {
+	c := newGrantCache()
+	now := time.Now()
+	g := sessionGrant{}
+	g.ExpiresAt = jwt.NewNumericDate(now.Add(time.Hour))
+	for i := 0; i < grantCacheMax+500; i++ {
+		c.put(grantCacheKey("h", fmt.Sprint(i)), g, now)
+	}
+	if len(c.entries) != grantCacheMax {
+		t.Fatalf("entries = %d, cap %d", len(c.entries), grantCacheMax)
+	}
+	// expired entries are dropped to make room
+	later := now.Add(grantCacheTTL + time.Second)
+	c.put(grantCacheKey("h", "new"), g, later)
+	if _, ok := c.get(grantCacheKey("h", "new"), later); !ok {
+		t.Fatal("a full table of expired entries makes room")
+	}
+}
+
+// A garbage flood from one address is stopped before any signature is verified, and does not touch another address' valid grant.
+func TestAuthPost_GarbageFloodIsThrottledBeforeVerification(t *testing.T) {
+	f := newGrantFixture(t)
 	f.handler.WithAuthRateLimit(1, 3)
 	limited := 0
 	for i := 0; i < 100; i++ {
@@ -770,19 +767,19 @@ func TestHandoff_GarbageFloodIsThrottledBeforeVerification(t *testing.T) {
 	if limited < 100-preAuthBurst-10 {
 		t.Fatalf("only %d of 100 garbage attempts were throttled", limited)
 	}
-	if rec := f.openFrom("203.0.113.9:5000", f.link(t, nil)); rec.Code != http.StatusSeeOther {
-		t.Fatalf("a valid link of another address after the flood: %d", rec.Code)
+	if rec := f.openFrom("203.0.113.9:5000", f.grant(t, nil)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid grant of another address after the flood: %d", rec.Code)
 	}
-	if rec := f.openFrom("198.51.100.7:4000", f.link(t, nil)); rec.Code != http.StatusTooManyRequests {
+	if rec := f.openFrom("198.51.100.7:4000", f.grant(t, nil)); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("the flooding address is still over its bucket: %d", rec.Code)
 	}
 }
 
-// Valid links of one session from one address spend the (lab, address, session) bucket, and only that one.
-func TestHandoff_ValidLinkFloodIsLimitedPerSession(t *testing.T) {
-	f := newHandoffFixture(t)
+// Valid grants of one session from one address spend the (lab, address, session) bucket, and only that one.
+func TestAuthPost_ValidGrantFloodIsLimitedPerSession(t *testing.T) {
+	f := newGrantFixture(t)
 	f.handler.WithAuthRateLimit(0.001, 3)
-	good := f.link(t, nil)
+	good := f.grant(t, nil)
 	limited := false
 	for i := 0; i < 10; i++ {
 		if f.openFrom("198.51.100.7:4000", good).Code == http.StatusTooManyRequests {
@@ -790,7 +787,7 @@ func TestHandoff_ValidLinkFloodIsLimitedPerSession(t *testing.T) {
 		}
 	}
 	if !limited {
-		t.Fatal("a flood of valid links of one session must be limited")
+		t.Fatal("a flood of valid grants of one session must be limited")
 	}
 	if rec := f.openFrom("203.0.113.10:5000", good); rec.Code != http.StatusSeeOther {
 		t.Fatalf("another address: %d", rec.Code)
@@ -798,14 +795,14 @@ func TestHandoff_ValidLinkFloodIsLimitedPerSession(t *testing.T) {
 }
 
 // Whatever cookies an attacker sends, the limiter tables do not grow with them and never pass their cap.
-func TestHandoff_AttackerChosenValuesDoNotGrowTheTables(t *testing.T) {
-	f := newHandoffFixture(t)
+func TestAuthPost_AttackerChosenValuesDoNotGrowTheTables(t *testing.T) {
+	f := newGrantFixture(t)
 	f.handler.WithAuthRateLimit(1, 3)
 	for i := 0; i < 500; i++ {
-		req := httptest.NewRequest("GET", "https://"+labHost+AuthPath+"?t=garbage", nil)
-		req.Host, req.RemoteAddr = labHost, "198.51.100.7:4000"
-		req.AddCookie(&http.Cookie{Name: "challenge", Value: fmt.Sprintf("c%d", i)})
-		f.handler.ServeHTTP(httptest.NewRecorder(), req)
+		f.postTo(labHost, "garbage", "", func(r *http.Request) {
+			r.RemoteAddr = "198.51.100.7:4000"
+			r.AddCookie(&http.Cookie{Name: "challenge", Value: fmt.Sprintf("c%d", i)})
+		})
 	}
 	if n := len(f.handler.preAuthFine.keys); n != 1 {
 		t.Fatalf("pre-verification buckets = %d, one per address", n)
@@ -824,8 +821,8 @@ func TestHandoff_AttackerChosenValuesDoNotGrowTheTables(t *testing.T) {
 }
 
 // Garbage from a thousand addresses is not a lever on everybody: there is no bucket shared by all addresses before verification.
-func TestHandoff_GarbageFromManyAddressesDoesNotBlockAFreshOne(t *testing.T) {
-	f := newHandoffFixture(t)
+func TestAuthPost_GarbageFromManyAddressesDoesNotBlockAFreshOne(t *testing.T) {
+	f := newGrantFixture(t)
 	f.handler.WithAuthRateLimit(1, 3)
 	for i := 0; i < 1000; i++ {
 		for j := 0; j < 25; j++ { // each address spends its own whole budget
@@ -835,14 +832,14 @@ func TestHandoff_GarbageFromManyAddressesDoesNotBlockAFreshOne(t *testing.T) {
 		}
 		f.openFrom(fmt.Sprintf("10.9.%d.%d:1", i/250, i%250), "garbage")
 	}
-	if rec := f.openFrom("203.0.113.77:5000", f.link(t, nil)); rec.Code != http.StatusSeeOther {
-		t.Fatalf("a valid link from a fresh address after the flood: %d", rec.Code)
+	if rec := f.openFrom("203.0.113.77:5000", f.grant(t, nil)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid grant from a fresh address after the flood: %d", rec.Code)
 	}
 }
 
 // One IPv6 network (a /64) is one client: rotating the host part does not give a fresh bucket; another /64 has its own.
-func TestHandoff_IPv6ClientsAreKeyedByTheirSlash64(t *testing.T) {
-	f := newHandoffFixture(t)
+func TestAuthPost_IPv6ClientsAreKeyedByTheirSlash64(t *testing.T) {
+	f := newGrantFixture(t)
 	f.handler.WithAuthRateLimit(1, 3)
 	limited := false
 	for i := 0; i < 60; i++ {
@@ -856,7 +853,7 @@ func TestHandoff_IPv6ClientsAreKeyedByTheirSlash64(t *testing.T) {
 	if f.openFrom("[2001:db8:1:2:ffff::9]:1", "garbage").Code != http.StatusTooManyRequests {
 		t.Fatal("any address of the same /64 is over the same bucket")
 	}
-	if rec := f.openFrom("[2001:db8:1:3::1]:1", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+	if rec := f.openFrom("[2001:db8:1:3::1]:1", f.grant(t, nil)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("another /64: %d", rec.Code)
 	}
 	if got := preAuthKeyOf("203.0.113.5:80"); got != "203.0.113.5/32" {
@@ -868,4 +865,139 @@ func preAuthKeyOf(addr string) string {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = addr
 	return preAuthClientIP(r)
+}
+
+// A request in flight ends when the grant that authorised it ends: the live check cuts it at exp.
+func TestSession_InFlightRequestEndsAtTheGrantExp(t *testing.T) {
+	f := newGrantFixture(t)
+	started := make(chan struct{})
+	hold := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("x"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done() // held until the proxy cuts the request
+	}))
+	defer hold.Close()
+	f.handler.resolver = func(task, groupID string) (string, error) { return hold.URL, nil }
+	raw := f.grant(t, nil)
+	c := f.open(raw).Result().Cookies()[0]
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { f.handler.ServeHTTP(w, r) }))
+	defer srv.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+		req.Host = labHost
+		req.AddCookie(c)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request did not reach the device")
+	}
+	if n := f.handler.CheckLive(); n != 0 {
+		t.Fatalf("closed %d while the grant is valid", n)
+	}
+	f.now = f.now.Add(time.Hour + time.Second) // the grant has ended
+	if n := f.handler.CheckLive(); n != 1 {
+		t.Fatalf("closed %d at the end of the grant, want 1", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request outlived its grant")
+	}
+}
+
+// The grant never reaches the device: the upstream is a participant's server, and HttpOnly does not hide a cookie from the server it is sent to.
+// Only the device's own cookies pass; nothing in a forwarded header, query or Referer carries the grant; the post to /_auth is never proxied.
+func TestGrantNeverReachesTheDevice(t *testing.T) {
+	f := newGrantFixture(t)
+	raw := f.grant(t, nil)
+	var mu sync.Mutex
+	var seen []http.Header
+	var paths []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen, paths = append(seen, r.Header.Clone()), append(paths, r.URL.RequestURI())
+		mu.Unlock()
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"))
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte("lab"))
+	}))
+	defer backend.Close()
+	f.handler.resolver = func(task, groupID string) (string, error) { return backend.URL, nil }
+	c := f.open(raw).Result().Cookies()[0]
+	srv := httptest.NewServer(f.handler)
+	defer srv.Close()
+
+	// a plain request: the grant cookie among the device's own, two Cookie headers (a second cookie of the grant's name is refused: TestOneGrantCookieOnly), a Referer from the platform
+	req, _ := http.NewRequest("GET", srv.URL+"/page?x=1", nil)
+	req.Host = labHost
+	req.Header.Add("Cookie", "app=1; "+c.Name+"="+c.Value)
+	req.Header.Add("Cookie", "other=2")
+	req.Header.Set("Referer", "https://app.example.com/tasks/1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("%v %v", resp, err)
+	}
+	_ = resp.Body.Close()
+
+	// a WebSocket upgrade
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: app=1; %s=%s\r\n\r\n", labHost, c.Name, c.Value)
+	buf := make([]byte, 512)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _ := conn.Read(buf)
+	_ = conn.Close()
+	if !strings.Contains(string(buf[:n]), "101") {
+		t.Fatalf("the upgrade did not reach the device: %q", buf[:n])
+	}
+
+	// the post that delivers a grant is answered by the proxy, never forwarded
+	post := f.postTo(labHost, raw, "/after", nil)
+	if post.Code != http.StatusSeeOther {
+		t.Fatalf("post: %d", post.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("the device saw %d requests (paths %v), want the page and the upgrade only", len(seen), paths)
+	}
+	for i, h := range seen {
+		for k, vs := range h {
+			for _, v := range vs {
+				if strings.Contains(v, raw) || (k == "Cookie" && strings.Contains(v, c.Name+"=")) {
+					t.Errorf("request %d: header %s carries the grant: %q", i, k, v)
+				}
+			}
+		}
+		if !strings.Contains(h.Get("Cookie"), "app=1") {
+			t.Errorf("request %d: the device's own cookie was lost: %q", i, h.Get("Cookie"))
+		}
+	}
+	for _, p := range paths {
+		if strings.Contains(p, raw) || strings.Contains(p, AuthPath) {
+			t.Errorf("a forwarded path names the grant or the auth path: %q", p)
+		}
+	}
+	if !strings.Contains(seen[0].Get("Cookie"), "other=2") {
+		t.Errorf("the second Cookie header's own cookie was lost: %q", seen[0].Get("Cookie"))
+	}
 }

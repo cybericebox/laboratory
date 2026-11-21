@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/errdefs"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -20,7 +20,7 @@ import (
 // those manifest-listed bytes from the original repository by immutable digest.
 // No tag lookup, platform reselection or content-store mutation is performed.
 func loadRegistryBackedImage(ctx context.Context, cs content.Provider, manifest v1.Hash, original string, keychain authn.Keychain) (v1.Image, error) {
-	src := &registryLayerSource{local: contentSource{cs}, keychain: keychain}
+	src := &registryLayerSource{local: contentSource{cs}, keychain: keychain, manifest: manifest}
 	img, err := snapshot.LoadImage(ctx, src, manifest)
 	if err != nil {
 		return nil, err
@@ -52,6 +52,7 @@ type registryLayerSource struct {
 	repo     name.Repository
 	keychain authn.Keychain
 	layers   map[v1.Hash]int64
+	manifest v1.Hash // the image manifest: a request for it makes the gate's grant for its blobs
 }
 
 func (s *registryLayerSource) ReadBlob(ctx context.Context, h v1.Hash) (io.ReadCloser, int64, error) {
@@ -66,17 +67,9 @@ func (s *registryLayerSource) ReadBlob(ctx context.Context, h v1.Hash) (io.ReadC
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
 	}
-	keychain := s.keychain
-	if keychain == nil {
-		keychain = authn.DefaultKeychain
-	}
-	layer, err := remote.Layer(s.repo.Digest(h.String()), remote.WithContext(ctx), remote.WithAuthFromKeychain(keychain))
+	rc, err = readPackedLayer(ctx, s.repo, s.manifest, s.keychain, http.DefaultTransport, h)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read original packed layer %s: %w", h, err)
-	}
-	rc, err = layer.Compressed() // remote verifies the requested digest at EOF
-	if err != nil {
-		return nil, 0, fmt.Errorf("read original packed layer %s: %w", h, err)
+		return nil, 0, err
 	}
 	return &packedSizeReader{ReadCloser: rc, expected: expected}, expected, nil
 }

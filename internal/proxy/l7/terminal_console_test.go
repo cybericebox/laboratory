@@ -15,6 +15,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/go-logr/logr"
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/grant"
+	"github.com/cybericebox/laboratory/internal/grant/granttest"
 )
 
 // memSink collects every log line, key-value pairs included.
@@ -65,9 +69,9 @@ func (f *termFixture) dialWith(host, origin string, protocols ...string) (*webso
 	return websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.srv.URL, "http")+"/ws", &websocket.DialOptions{Host: host, HTTPHeader: hdr, Subprotocols: protocols})
 }
 
-// The console of a page framed by another site (another registrable domain), with no cookie jar anywhere: the handoff link is answered with
-// the page and a token, the page opens the socket with the token as a subprotocol, only the first subprotocol comes back, no Set-Cookie ever
-// goes out, no log line holds the token or the link, and the CSP has no 'unsafe-inline' for scripts.
+// The console of a page framed by another site (another registrable domain), with no cookie jar anywhere: the grant posted by the platform
+// page is answered with the console page holding it, the page opens the socket with the grant as a subprotocol, only the first subprotocol
+// comes back, no Set-Cookie ever goes out, no log line holds the grant, and the CSP has no 'unsafe-inline' for scripts.
 func TestConsoleWorksCookielessInACrossSiteFrame(t *testing.T) {
 	sink := &memSink{}
 	f := newTermFixture(t, func(c *TerminalConfig) {
@@ -75,9 +79,11 @@ func TestConsoleWorksCookielessInACrossSiteFrame(t *testing.T) {
 		c.Log = logr.New(sink)
 	})
 	f.h.WithAccessLog(logr.New(sink), 0)
-	link := f.link(termHost)
-	req, _ := http.NewRequest("GET", f.srv.URL+AuthPath+"?t="+url.QueryEscape(link), nil)
+	raw := rehost(t, f.cookie, termHost)
+	req, _ := http.NewRequest("POST", f.srv.URL+AuthPath, strings.NewReader(url.Values{"grant": {raw}}.Encode()))
 	req.Host = termHost
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", platformOrigin)                         // the platform page that submits the form
 	req.Header.Set("Referer", "https://catalog.example.org/tasks/1") // what the browser sends for the frame
 	resp, err := http.DefaultClient.Do(req)                          // a client with no cookie jar
 	if err != nil {
@@ -115,8 +121,8 @@ func TestConsoleWorksCookielessInACrossSiteFrame(t *testing.T) {
 		t.Errorf("an inline script or handler in the page")
 	}
 	token := consoleToken(t, body.String())
-	if strings.Contains(body.String(), link) {
-		t.Error("the handoff link is echoed in the page")
+	if token != raw {
+		t.Error("the page holds the grant that was posted, unchanged")
 	}
 
 	// the socket: from the framing site's origin, token as the second subprotocol
@@ -149,17 +155,16 @@ func TestConsoleWorksCookielessInACrossSiteFrame(t *testing.T) {
 		}
 	}
 	time.Sleep(100 * time.Millisecond)
-	if logs := sink.all(); strings.Contains(logs, token) || strings.Contains(logs, link) || strings.Contains(logs, "t="+url.QueryEscape(link)) {
-		t.Errorf("a log line holds the token or the link:\n%s", logs)
+	if logs := sink.all(); strings.Contains(logs, token) {
+		t.Errorf("a log line holds the grant:\n%s", logs)
 	}
 }
 
-// What the token is worth: one host, one signature, one use, a limited time, and the exact subprotocols.
-func TestConsoleTokenIsCheckedOnTheSocket(t *testing.T) {
+// What the grant is worth on the socket: one host, one signature, one kind, a limited time, and the exact subprotocols.
+func TestConsoleGrantIsCheckedOnTheSocket(t *testing.T) {
 	f := newTermFixture(t, nil)
 	rec := f.get("/", nil)
 	token := consoleToken(t, rec.Body.String())
-	own := "http://" + termHost
 	dial := func(host string, protocols ...string) error {
 		c, _, err := f.dialWith(host, "http://"+host, protocols...)
 		if err == nil {
@@ -168,49 +173,55 @@ func TestConsoleTokenIsCheckedOnTheSocket(t *testing.T) {
 		return err
 	}
 	if err := dial(termHost, ConsoleSubprotocol, token); err != nil {
-		t.Fatalf("the token of this host: %v", err)
+		t.Fatalf("the grant of this host: %v", err)
 	}
-	_ = own
-	// a token for host A on host B (both consoles of the same group)
+	// a grant for host A on host B (both consoles of the same group)
 	if err := dial(termHostFor("lab1", "plain"), ConsoleSubprotocol, token); err == nil {
-		t.Error("a token of one console host opened another")
+		t.Error("a grant of one console host opened another")
 	}
+	sc := sessionOf(t, f.cookie)
+	sc.Host, sc.Kind = termHost, grant.KindConsole
+	sc.Lab, sc.Dev = termLabDevice(termHost)
+	sc.Audience = []string{grant.AudienceProxy, grant.AudienceDeviceAccess}
 	// expired
-	var claims jwtClaims
-	_, _ = jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return testSecret, nil })
-	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
-	if err := dial(termHost, ConsoleSubprotocol, signCookie(t, claims)); err == nil {
-		t.Error("an expired token opened the console")
+	expired := sc
+	expired.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
+	if err := dial(termHost, ConsoleSubprotocol, signCookie(t, expired)); err == nil {
+		t.Error("an expired grant opened the console")
 	}
-	// the cookie of a web session (use empty) is no console token, and a console token is no web cookie
-	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Hour))
-	claims.Use = ""
-	if err := dial(termHost, ConsoleSubprotocol, signCookie(t, claims)); err == nil {
-		t.Error("a web session token opened the console")
+	// the grant of a web session (kind web) is no console grant
+	web := sc
+	web.Kind = grant.KindWeb
+	if err := dial(termHost, ConsoleSubprotocol, signCookie(t, web)); err == nil {
+		t.Error("a web grant opened the console")
 	}
-	req, _ := http.NewRequest("GET", f.srv.URL+"/", nil)
-	req.Host = termHostFor("lab1", "kali")
-	web := "web-k10w." + termBaseDom
+	// a grant that is not for the proxy
+	deviceOnly := sc
+	deviceOnly.Audience = []string{grant.AudienceDeviceAccess}
+	if err := dial(termHost, ConsoleSubprotocol, signCookie(t, deviceOnly)); err == nil {
+		t.Error("a grant without the proxy audience opened the console")
+	}
+	// and a console grant is no web cookie
+	web2 := "web-k10w." + termBaseDom
 	req2, _ := http.NewRequest("GET", f.srv.URL+"/", nil)
-	req2.Host = web
+	req2.Host = web2
 	req2.AddCookie(&http.Cookie{Name: "challenge", Value: token})
 	if resp, err := http.DefaultClient.Do(req2); err == nil {
 		_ = resp.Body.Close()
 		if resp.StatusCode == 200 {
-			t.Error("a console token opened a web host as a cookie")
+			t.Error("a console grant opened a web host as a cookie")
 		}
 	}
-	// a token signed with another secret
-	bad, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("another-secret-another-secret-123456"))
-	claims.Use = "console"
-	if err := dial(termHost, ConsoleSubprotocol, bad); err == nil {
-		t.Error("a token signed with another key opened the console")
+	// a grant signed with another key
+	other := granttest.NewKey(t, "acme", "k1")
+	if err := dial(termHost, ConsoleSubprotocol, other.Sign(t, claimsOf(sc, time.Now()))); err == nil {
+		t.Error("a grant signed with another key opened the console")
 	}
-	// the subprotocols: wrong name, missing token, token first, extra entries, none
+	// the subprotocols: wrong name, missing grant, grant first, extra entries, none
 	for name, protos := range map[string][]string{
 		"wrong name":     {"cib.console.v2", token},
-		"no token":       {ConsoleSubprotocol},
-		"token first":    {token, ConsoleSubprotocol},
+		"no grant":       {ConsoleSubprotocol},
+		"grant first":    {token, ConsoleSubprotocol},
 		"an extra entry": {ConsoleSubprotocol, token, "x"},
 		"none":           nil,
 	} {
@@ -234,7 +245,7 @@ func TestConsoleTokenIsCheckedOnTheSocket(t *testing.T) {
 	}
 }
 
-// A reload of the console page (no ?t=) is "session over".
+// A reload of the console page (a GET holds no grant) is "session over".
 func TestConsolePageWithoutLinkIsSessionOver(t *testing.T) {
 	f := newTermFixture(t, nil)
 	f.cookie = "" // nothing makes a link
@@ -244,7 +255,7 @@ func TestConsolePageWithoutLinkIsSessionOver(t *testing.T) {
 	}
 }
 
-// The page script removes ?t= from the address and offers the token as the second subprotocol.
+// The page script leaves the posted path for the root (a reload is a GET, not a second post) and offers the grant as the second subprotocol.
 func TestConsoleScriptDropsTheLinkAndUsesSubprotocols(t *testing.T) {
 	js, err := terminalFS.ReadFile("terminalassets/terminal.js")
 	if err != nil {
@@ -266,10 +277,61 @@ func TestConsoleScriptDropsTheLinkAndUsesSubprotocols(t *testing.T) {
 
 func rehostWeb(t *testing.T, token, host string) string {
 	t.Helper()
-	var claims jwtClaims
-	if _, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return testSecret, nil }); err != nil {
+	sc := sessionOf(t, token)
+	sc.Host = host
+	return signCookie(t, sc)
+}
+
+// A console ends when the grant it was opened with ends: the live check closes it at exp, whatever the lifetime limit says, and a grant that
+// has ended opens nothing.
+func TestConsoleEndsAtTheGrantExp(t *testing.T) {
+	f := newTermFixture(t, nil)
+	sc := sessionOf(t, f.cookie)
+	sc.Host, sc.Kind = termHost, grant.KindConsole
+	sc.Lab, sc.Dev = termLabDevice(termHost)
+	sc.Audience = []string{grant.AudienceProxy, grant.AudienceDeviceAccess}
+	sc.ExpiresAt = jwt.NewNumericDate(time.Now().Add(1500 * time.Millisecond))
+	c, _, err := f.dialWith(termHost, "http://"+termHost, ConsoleSubprotocol, signCookie(t, sc))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+	c.SetReadLimit(1 << 16)
+	if err := c.Write(context.Background(), websocket.MessageText, []byte(`{"cols":100,"rows":30}`)); err != nil {
 		t.Fatal(err)
 	}
-	claims.Host, claims.Use = host, ""
-	return signCookie(t, claims)
+	if m := readText(t, c); m.Type != "ready" {
+		t.Fatalf("not ready: %+v", m)
+	}
+	if n := f.h.CheckLive(); n != 0 {
+		t.Fatalf("closed %d before the grant ended", n)
+	}
+	time.Sleep(1700 * time.Millisecond)
+	if n := f.h.CheckLive(); n != 1 {
+		t.Fatalf("closed %d at the end of the grant, want 1", n)
+	}
+	rctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	reason := ""
+	for {
+		typ, msg, err := c.Read(rctx)
+		if err != nil {
+			break
+		}
+		if typ == websocket.MessageBinary {
+			if ft, p, _ := wire.Parse(msg); ft == wire.TypeClose {
+				reason = string(p)
+			}
+		}
+	}
+	// the close frame may be lost with the connection that the cancelled context closes; when it arrives it says why
+	if reason != "" && reason != wire.ReasonLifetime {
+		t.Fatalf("closed with %q, want %q", reason, wire.ReasonLifetime)
+	}
+	// and now that grant opens nothing (past exp and the clock leeway)
+	sc.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute))
+	if c2, _, err := f.dialWith(termHost, "http://"+termHost, ConsoleSubprotocol, signCookie(t, sc)); err == nil {
+		_ = c2.CloseNow()
+		t.Fatal("an ended grant opened a console")
+	}
 }

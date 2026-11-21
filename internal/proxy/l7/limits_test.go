@@ -57,7 +57,7 @@ func TestBucketSetOverflowIsSharedAndModest(t *testing.T) {
 
 // The address (fine) and the network (coarse) tiers: many addresses of one /24 (or /48) spend the network's budget; another network is free.
 func TestHandoff_CoarseTiersLimitANetwork(t *testing.T) {
-	f := newHandoffFixture(t)
+	f := newGrantFixture(t)
 	f.handler.WithAuthRateLimit(1, 3)
 	v4 := func(i int) string { return fmt.Sprintf("198.51.100.%d:1", i) }
 	limited := false
@@ -72,7 +72,7 @@ func TestHandoff_CoarseTiersLimitANetwork(t *testing.T) {
 	if f.openFrom("198.51.100.254:1", "garbage").Code != http.StatusTooManyRequests {
 		t.Fatal("a fresh address of the limited /24 shares its bucket")
 	}
-	if rec := f.openFrom("198.51.101.1:1", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+	if rec := f.openFrom("198.51.101.1:1", f.grant(t, nil)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("another /24: %d", rec.Code)
 	}
 
@@ -85,7 +85,7 @@ func TestHandoff_CoarseTiersLimitANetwork(t *testing.T) {
 	if !limited {
 		t.Fatal("250 /64 networks of one /48 must pass the /48 bucket")
 	}
-	if rec := f.openFrom("[2001:db8:6::1]:1", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+	if rec := f.openFrom("[2001:db8:6::1]:1", f.grant(t, nil)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("another /48: %d", rec.Code)
 	}
 }
@@ -93,11 +93,11 @@ func TestHandoff_CoarseTiersLimitANetwork(t *testing.T) {
 // The work garbage can cause is bounded by the cap on verifications in flight: with it full the answer is 503 at once, without verifying, and a
 // valid link goes through when there is room again. Nothing is remembered that could refuse anybody afterwards.
 func TestHandoff_VerificationCapAnswers503(t *testing.T) {
-	f := newHandoffFixture(t)
+	f := newGrantFixture(t)
 	f.handler.verifySem = make(chan struct{}, 2)
 	f.handler.verifySem <- struct{}{}
 	f.handler.verifySem <- struct{}{}
-	good := f.link(t, nil)
+	good := f.grant(t, nil)
 	rec := f.openFrom("203.0.113.1:1", good)
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("full cap: %d retry-after=%q", rec.Code, rec.Header().Get("Retry-After"))
@@ -113,7 +113,7 @@ func TestHandoff_VerificationCapAnswers503(t *testing.T) {
 
 // Under a concurrent flood the answers are only "refused" (401 garbage, 503 no slot) and the slots all come back.
 func TestHandoff_VerificationCapUnderConcurrentFlood(t *testing.T) {
-	f := newHandoffFixture(t)
+	f := newGrantFixture(t)
 	f.handler.verifySem = make(chan struct{}, 2)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -137,7 +137,7 @@ func TestHandoff_VerificationCapUnderConcurrentFlood(t *testing.T) {
 	if len(f.handler.verifySem) != 0 {
 		t.Fatalf("slots leaked: %d", len(f.handler.verifySem))
 	}
-	if rec := f.openFrom("203.0.113.9:1", f.link(t, nil)); rec.Code != http.StatusSeeOther {
+	if rec := f.openFrom("203.0.113.9:1", f.grant(t, nil)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("a valid link after the flood: %d", rec.Code)
 	}
 }

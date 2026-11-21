@@ -4,18 +4,20 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -25,26 +27,27 @@ const exportChunkSize = 1 << 20
 
 const exportFormat = "tar+gzip; OCI layer: whiteouts as .wh.<name>, opaque directories as .wh..wh..opq"
 
-// SetRegistryAddr tells the agent where the platform registry (zot) is, as it reaches it
-// (host:port). Snapshot export reads the snapshots from there.
+// SetRegistryAddr tells the agent where the registry gate is, as it reaches it (host:port). Snapshot export reads the snapshots from there.
 func (h *Handler) SetRegistryAddr(addr string) { h.registryAddr = addr }
 
-// SetRegistryAuth gives the agent the reader account of the registry (empty user: anonymous).
-func (h *Handler) SetRegistryAuth(user, password string) {
-	if user == "" {
-		h.registryAuth = nil
-		return
-	}
-	h.registryAuth = &authn.Basic{Username: user, Password: password}
+// SetRegistryTransport makes the agent speak TLS to the registry gate, trusting only what tlsConf holds (nil: plain http, a development
+// setup and the tests), and present its own projected ServiceAccount token on every request (nil: none). The agent has no registry
+// account: the gate knows it by the token and lets it read the snapshots.
+func (h *Handler) SetRegistryTransport(tlsConf *tls.Config, token *imagecache.TokenFile) {
+	h.registryTLS, h.registryToken = tlsConf, token
 }
 
-// registryOptions are the options of a registry read: the context and, when configured, the reader account.
+// registryOptions are the options of a registry read: the context and the transport (TLS and the agent's token).
 func (h *Handler) registryOptions(ctx context.Context) []remote.Option {
-	opts := []remote.Option{remote.WithContext(ctx)}
-	if h.registryAuth != nil {
-		opts = append(opts, remote.WithAuth(h.registryAuth))
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if h.registryTLS != nil {
+		tr.TLSClientConfig = h.registryTLS
 	}
-	return opts
+	var rt http.RoundTripper = tr
+	if h.registryToken != nil {
+		rt = h.registryToken.RoundTripper(tr)
+	}
+	return []remote.Option{remote.WithContext(ctx), remote.WithTransport(rt)}
 }
 
 // ExportDeviceSnapshot streams the latest state of a snapshot-backed device as one
@@ -80,7 +83,11 @@ func (h *Handler) ExportDeviceSnapshot(in *protobuf.DeviceSnapshotRequest, strea
 	if err != nil {
 		return status.Errorf(codes.Internal, "snapshot reference %q: %v", st.Image, err)
 	}
-	imgRef, err := name.NewDigest(fmt.Sprintf("%s/%s@%s", h.registryAddr, repo, digest), name.Insecure)
+	var nameOpts []name.Option
+	if h.registryTLS == nil {
+		nameOpts = append(nameOpts, name.Insecure)
+	}
+	imgRef, err := name.NewDigest(fmt.Sprintf("%s/%s@%s", h.registryAddr, repo, digest), nameOpts...)
 	if err != nil {
 		return status.Errorf(codes.Internal, "snapshot reference: %v", err)
 	}

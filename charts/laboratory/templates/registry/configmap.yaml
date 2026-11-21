@@ -1,30 +1,18 @@
 {{- if include "laboratory.registryEnabled" . }}
 {{- $r := .Values.registry }}
 {{- $cache := $r.cache }}
-{{- $all := list "read" "create" "update" "delete" }}
 {{- $storage := dict "rootDirectory" "/var/lib/registry" "dedupe" true "gc" true "gcDelay" $r.gc.delay "gcInterval" $r.gc.interval }}
 {{- /*
-Access control. The snapshots of the labs (lab/**) and the shared base repository are NOT anonymous: the reader account may read
-them, the writer reads and writes them. The image cache (c/**) belongs to the registry gate: its account `gate` reads and writes it, and
-nobody else has any right there (clients reach the cache only through the gate, which proves each pull with the pull's own credentials
-before it serves a stored copy). The patterns are disjoint, there is no "**" catch-all and no admin policy: a repository that matches
-none is denied to everyone.
+Access control. zot listens on the loopback of the pod and has ONE account, `gate`: the gate container is the only caller, and it reads and
+writes everything: the image cache (c/**), the snapshots of the labs (lab/**) and the shared base repository. No node, no operator, no agent and
+no platform component has an account in zot: they ask the gate, which decides each request from the caller's token and the cluster's objects.
+The patterns are disjoint, there is no "**" catch-all and no admin policy: a repository that matches none is denied to everyone.
 */}}
-{{- $private := dict "policies" (list (dict "users" (list "reader") "actions" (list "read")) (dict "users" (list "writer") "actions" $all)) }}
-{{- $repos := dict "lab/**" $private "base" $private "base/**" $private }}
-{{- if $r.platform.enabled }}
-{{- /*
-platform/** holds the images a lab runs (registry.platform): private like the snapshots, the reader reads it, and an account of its own,
-platform-writer, reads, writes and deletes it. The snapshot writer is not listed, so it has no right here, and platform-writer is listed
-nowhere else, so it has none in lab/**, base or the cache. The cache retention below names only the cache glob, never this one.
-*/}}
-{{- $_ := set $repos "platform/**" (dict "policies" (list (dict "users" (list "reader") "actions" (list "read")) (dict "users" (list "platform-writer") "actions" $all))) }}
-{{- end }}
-{{- if $cache.enabled }}
-{{- $_ := set $repos "c/**" (dict "policies" (list (dict "users" (list "gate") "actions" $all))) }}
-{{- end }}
+{{- $all := list "read" "create" "update" "delete" }}
+{{- $gate := dict "policies" (list (dict "users" (list "gate") "actions" $all)) }}
+{{- $repos := dict "lab/**" $gate "base" $gate "base/**" $gate "c/**" $gate }}
 {{- $access := dict "repositories" $repos }}
-{{- /* zot listens on the loopback of the pod only: the gate container (port 5000) is the one way in, structurally. */}}
+{{- /* zot listens on the loopback of the pod only: the gate container (TLS, port 5443) is the one way in, structurally. */}}
 {{- $http := dict "address" "127.0.0.1" "compat" (list "docker2s2") "port" "5001" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
 {{- $cfg := dict "distSpecVersion" "1.1.0" "storage" $storage "http" $http "log" (dict "level" "info") }}
 {{- if $cache.enabled }}

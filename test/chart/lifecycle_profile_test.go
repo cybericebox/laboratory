@@ -14,13 +14,18 @@ func TestLifecycleProfileFullSwitchesOnWhatTheLifecycleNeeds(t *testing.T) {
 		}
 	}
 	on := operatorConfig(t, "--set", "lifecycle.profile=full")
+	onAgent := agentConfig(t, "--set", "lifecycle.profile=full")
 	for k, want := range map[string]string{
 		"LIFECYCLE_PER_LAB_STOP_AVAILABLE": "true", "LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE": "true", "LIFECYCLE_RETAINED_RESTART_AVAILABLE": "true",
 		"LIFECYCLE_FULL_GROUP_STOP_AVAILABLE": "true", "RUNTIME_OBSERVATION_ENABLED": "true", "STATE_PERSISTENCE_ENABLED": "true",
 		"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE": "true", "REQUIRED_SNAPSHOT_AVAILABLE": "true",
 	} {
-		if on[k] != want {
-			t.Errorf("profile full: %s = %q, want %q", k, on[k], want)
+		got := on[k]
+		if strings.HasPrefix(k, "LIFECYCLE_") {
+			got = onAgent[k] // only the management agent reads the capabilities
+		}
+		if got != want {
+			t.Errorf("profile full: %s = %q, want %q", k, got, want)
 		}
 	}
 }

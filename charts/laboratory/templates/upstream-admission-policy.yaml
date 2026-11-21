@@ -1,0 +1,48 @@
+{{- if .Values.operator.admissionPolicy.enabled }}
+{{- /*
+Who may write which Secret of the upstream credentials namespace. RBAC cannot say it: a Role names Secrets by name only when the names are
+known, and the lab Secrets (lab-<hash>) are made at run time. Only the registry gate reads there; two accounts write:
+  - the management agent (reachable from outside the cluster and driven by tenants) creates and deletes the Secrets of labs, lab-*, and nothing else, so it cannot
+    overwrite the credentials of a tenant (tenant-*) or the platform's own (platform);
+  - the operator writes tenant-<name> and platform, and deletes those and the lab-* of a lab that is gone.
+Everyone else is as RBAC leaves them (nobody has a right here).
+*/ -}}
+{{- $agent := printf "system:serviceaccount:%s:laboratory-agent" .Values.agent.namespace }}
+{{- $operator := printf "system:serviceaccount:%s:laboratory-controller-manager" .Release.Namespace }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-upstream-writers
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ include "laboratory.upstreamNamespace" . }}
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [secrets]
+  validations:
+    - expression: >-
+        request.userInfo.username != {{ $agent | quote }} || (request.operation in ['CREATE', 'DELETE'] && request.name.startsWith('lab-'))
+      message: "the management agent may create and delete only the Secrets lab-* of the upstream credentials namespace"
+      reason: Forbidden
+    - expression: >-
+        request.userInfo.username != {{ $operator | quote }} || (request.operation == 'DELETE' ? (request.name.startsWith('lab-') || request.name.startsWith('tenant-') || request.name == 'platform') : (request.name.startsWith('tenant-') || request.name == 'platform'))
+      message: "the operator may write only tenant-* and platform in the upstream credentials namespace, and delete those and lab-*"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-upstream-writers
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-upstream-writers
+  validationActions: [Deny]
+{{- end }}

@@ -95,9 +95,12 @@ func Run() {
 	h.SetRenewMinInterval(cfg.Server.RenewMinInterval)
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
-	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
+	exportTLS, err := gateTLS(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetRegistryTransport(exportTLS, gateToken(cfg))
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
-	h.SetPlatformImages(cfg.Cache.NodePrefix, cfg.ImagePlatformOnly)
 	allowedRegistries := cfg.AllowedRegistries
 	if cfg.Cache.Enabled {
 		// The image cache is on: an image goes through it or is refused, so only the registries it serves may be named. An empty
@@ -201,7 +204,7 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		NodeTimeoutSeconds: int32(cfg.Scheduler.NodeTimeout / time.Second),
 		LabsDomain:         cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
-		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionIdleTTL: cfg.ProxySessionIdleTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
+		ProxyGrantMaxTTL: cfg.ProxyGrantMaxTTL, TerminalGrantMaxTTL: cfg.TerminalGrantMaxTTL,
 	}
 	if f.DeviceProfiles, err = profiles.Enabled(cfg.DeviceProfiles); err != nil {
 		return f, fmt.Errorf("AGENT_DEVICE_PROFILES: %w", err)

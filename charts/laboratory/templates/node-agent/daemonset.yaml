@@ -34,13 +34,11 @@ spec:
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
-      # The node-agent follows the configured lab placement selector and tolerations (labWorkloads). A control-plane node gets
-      # one only when labs tolerate its taint. Cilium startup and automatic DaemonSet availability tolerations keep the observer
-      # running through temporary readiness/pressure changes; these do not widen lab workload scheduling.
-      {{- with .Values.labWorkloads.nodeSelector }}
+      # The node-agent runs on the lab pool (the constant selector, the pool's tolerations). Cilium startup and automatic DaemonSet
+      # availability tolerations keep the observer running through temporary readiness/pressure changes; these do not widen lab workload
+      # scheduling. No image pull secret: a lab pod holds no registry credential.
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        node-restriction.kubernetes.io/cib-pool: lab
       tolerations:
         - key: node.cilium.io/agent-not-ready
           operator: Exists
@@ -50,13 +48,9 @@ spec:
         - key: cybericebox.com/node-starting
           operator: Exists
           effect: NoSchedule
-        {{- with .Values.labWorkloads.tolerations }}
+        {{- with .Values.pools.lab.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       initContainers:
         # Host prep: kernel modules and sysctls. Nothing is installed on the node.
         - name: host-prep
@@ -222,41 +216,28 @@ spec:
             - name: TUN_SLOTS
               value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
           {{- if include "laboratory.registryEnabled" . }}
-            # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
-            # containerd reads it as a plain-HTTP localhost registry.
-            {{- if .Values.registry.cache.enabled }}
-            # With the image cache the relay dials the gate's TLS port and trusts only the registry's own authority: the credentials of a
-            # pull cross the cluster network in that hop.
+            # The lab registry (the image cache, the snapshots): the relay serves 127.0.0.1:5035 (a constant of the image), where containerd reads it
+            # as a plain-HTTP localhost registry, and dials the gate's TLS port at registry.gate.address, the internal load balancer: a node has no
+            # cluster DNS. It trusts only the registry's own authority and shows the gate the node's projected ServiceAccount token (audience
+            # laboratory-registry-gate), the only identity of the node. There is no registry password on the node.
             - name: STATE_REGISTRY_ADDR
-              value: {{ include "laboratory.registryTLSAddr" . | quote }}
+              value: {{ .Values.registry.gate.address | quote }}
             - name: STATE_REGISTRY_CA_FILE
               value: /etc/registry-ca/ca.crt
-            {{- else }}
-            - name: STATE_REGISTRY_ADDR
-              value: {{ include "laboratory.registryAddr" . | quote }}
-            {{- end }}
+            - name: REGISTRY_TOKEN_FILE
+              value: /var/run/secrets/registry-gate/token
+            # The unix socket of the push listener, in a directory of its own (mode 0700) shared with node-state only (the snapshot engine):
+            # the directory is a subdirectory of the host directory the node-agent already mounts, and nothing else lives in it.
+            - name: STATE_PUSH_SOCKET
+              value: /run/cybericebox/registry-push/push.sock
           {{- else }}
-            # No platform registry in this release (no cache, no state persistence, no platform images): no relay on the node.
+            # No lab registry in this release (no cache, no state persistence): no relay on the node.
             - name: REGISTRY_ENABLED
               value: "false"
           {{- end }}
           {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
-          {{- if include "laboratory.registryEnabled" . }}
-            # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image. The snapshot engine and
-            # its writer account are node-state's (templates/node-state), not the node-agent's.
-            - name: STATE_REGISTRY_READER_USER
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: readerUsername
-            - name: STATE_REGISTRY_READER_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: laboratory-registry
-                  key: readerPassword
-          {{- end }}
           {{- end }}
           securityContext:
             {{- /* No AppArmor Unconfined and no DAC_READ_SEARCH: those are node-state's (the snapshot engine). */}}
@@ -294,10 +275,13 @@ spec:
               mountPath: /etc/bandwidth
               readOnly: true
             {{- end }}
-            {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
-            # The authority of the registry gate's TLS port: only its certificate (ca.crt), not the key of the server.
+            {{- if include "laboratory.registryEnabled" . }}
+            # The authority of the registry gate's TLS port (public data) and the node's own projected token for the gate.
             - name: registry-ca
               mountPath: /etc/registry-ca
+              readOnly: true
+            - name: registry-gate-token
+              mountPath: /var/run/secrets/registry-gate
               readOnly: true
             {{- end }}
             - name: ovs-run
@@ -327,13 +311,18 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
-        {{- if and (include "laboratory.registryEnabled" .) .Values.registry.cache.enabled }}
+        {{- if include "laboratory.registryEnabled" . }}
+        # A ConfigMap, never the Secret that holds the server key: a node reads every Secret a pod bound to it mounts.
         - name: registry-ca
-          secret:
-            secretName: laboratory-registry-tls
-            items:
-              - key: ca.crt
-                path: ca.crt
+          configMap:
+            name: laboratory-registry-ca
+        - name: registry-gate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ include "laboratory.registryGateAudience" . }}
+                  expirationSeconds: 3600
+                  path: token
         {{- end }}
         {{- if .Values.bandwidth.enabled }}
         # The limits of every node, written by the operator; the node-agent reads the key of its own node. Optional: the pod starts before

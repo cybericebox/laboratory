@@ -22,7 +22,7 @@ func renderControllerDeployments(t *testing.T, extra ...string) map[string]appsv
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"template", "controller-contract", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test"}
+	args := []string{"template", "controller-contract", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test", "--set", "registry.gate.address=registry.lab.internal:5443"}
 	args = append(args, extra...)
 	data, err := exec.Command(helm, args...).CombinedOutput()
 	if err != nil {
@@ -96,7 +96,7 @@ func renderChart(t *testing.T, extra ...string) (string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"template", "workers", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test"}
+	args := []string{"template", "workers", chart, "--namespace", "laboratory-system", "--kube-version", "1.37.0", "--set", "operator.publicVPNEndpoint=vpn.example.test", "--set", "operator.baseDomain=labs.example.test", "--set", "operator.supportEmail=help@example.test", "--set", "registry.gate.address=registry.lab.internal:5443"}
 	data, err := exec.Command(helm, append(args, extra...)...).CombinedOutput()
 	return string(data), err
 }

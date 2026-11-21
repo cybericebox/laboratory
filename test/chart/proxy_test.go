@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 )
@@ -48,14 +49,14 @@ func TestProxyBudgetNeedsMoreThanOneReplica(t *testing.T) {
 	}
 }
 
-// daemonset mode: one pod per node (narrowed by nodeSelector), same pod as the Deployment's, no replicas, no budget.
+// daemonset mode: one pod on every node of the lab pool, same pod as the Deployment's, no replicas, no budget.
 func TestProxyDaemonSetMode(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "--set-string", "proxy.nodeSelector.lab=true", "--set", "proxy.tolerations[0].operator=Exists",
+	out, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "--set", "pools.lab.tolerations[0].operator=Exists",
 		"-s", "templates/proxy/daemonset.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "tolerations:", "operator: Exists", "lab: \"true\"", "name: l7"} {
+	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "tolerations:", "operator: Exists", "node-restriction.kubernetes.io/cib-pool: lab", "name: l7"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
@@ -86,17 +87,20 @@ func TestProxyModeIsValidated(t *testing.T) {
 	}
 }
 
-// The proxy's sliding session comes from the chart.
-func TestProxySessionValuesReachTheProxy(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "proxy.l7.sessionIdleTTL=12h", "--set", "proxy.l7.sessionRenewBefore=30m", "--set", "proxy.l7.sessionMaxTTL=48h",
+// A device web host is opened with a grant: the proxy gets its lifetime limit and the origins that may post one, and no secret of its own.
+func TestProxyGrantValuesReachTheProxy(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "proxy.l7.grantMaxTTL=2h", "--set", "proxy.l7.platformOrigins={https://app.example.com,https://*.example.org}",
 		"-s", "templates/proxy/deployment.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for name, val := range map[string]string{"SESSION_IDLE_TTL": "12h", "SESSION_RENEW_BEFORE": "30m", "SESSION_MAX_TTL": "48h"} {
-		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + val + `"`).MatchString(out) {
+	for name, val := range map[string]string{"GRANT_MAX_TTL": "2h", "PLATFORM_ORIGINS": "https://app.example.com,https://*.example.org"} {
+		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + regexp.QuoteMeta(val) + `"`).MatchString(out) {
 			t.Errorf("%s = %s missing:\n%s", name, val, out)
 		}
+	}
+	if strings.Contains(out, "secretKeyRef") {
+		t.Errorf("the proxy holds no secret:\n%s", out)
 	}
 }
 
@@ -119,7 +123,7 @@ func TestProxyServerLimitsAreValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for name, val := range map[string]string{"READ_HEADER_TIMEOUT": "10s", "READ_TIMEOUT": "5m", "IDLE_TIMEOUT": "2m", "MAX_HEADER_BYTES": "65536", "ACCESS_TOKEN_MAX_TTL": "60s"} {
+	for name, val := range map[string]string{"READ_HEADER_TIMEOUT": "10s", "READ_TIMEOUT": "5m", "IDLE_TIMEOUT": "2m", "MAX_HEADER_BYTES": "65536", "GRANT_MAX_TTL": "8h"} {
 		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + val + `"`).MatchString(out) {
 			t.Errorf("%s = %s missing", name, val)
 		}
@@ -179,25 +183,44 @@ func TestL7MaxConnectionsFitTheMemoryLimit(t *testing.T) {
 	}
 }
 
-// LB-IPAM shares the edge address across namespaces only when both sides name each other: proxy.sharedNamespaces adds the namespaces of
-// further Services (the platform's HTTP/3 one) to the WireGuard Service and to the Gateway's Service; the default changes nothing.
-func TestEdgeServicesNameTheSharedNamespaces(t *testing.T) {
-	const key = "lbipam.cilium.io/sharing-cross-namespace: "
+// The entries are NodePort Services that keep the client's address: the L7 proxy, the VPN (in every demux mode) and the agent. A fixed node port
+// and annotations are values; nothing names a shared address any more.
+func TestEntryServicesAreNodePortsWithLocalTraffic(t *testing.T) {
 	for _, c := range []struct {
-		args   []string
-		wg, gw string
+		tpl, name, ns string
+		set           []string
+		portKey       string
 	}{
-		{nil, `laboratory-system`, `"laboratory-wg"`},
-		{[]string{"--set", "proxy.sharedNamespaces={platform,other}"}, `laboratory-system,platform,other`, `"laboratory-wg,platform,other"`},
+		{"templates/proxy/service.yaml", "laboratory-proxy-l7", "laboratory-proxy", []string{"--set", "proxy.l7.service.nodePort=30443", "--set", "proxy.l7.service.annotations.lb\\.example\\.com/pool=edge"}, "proxy.l7"},
+		{"templates/wg/service.yaml", "laboratory-proxy-wg", "laboratory-wg", []string{"--set", "proxy.wg.nodePort=30820", "--set", "proxy.wg.service.annotations.lb\\.example\\.com/pool=edge"}, "proxy.wg"},
+		{"templates/agent/service.yaml", "laboratory-agent", "laboratory-agent", []string{"--set", "agent.enabled=true", "--set", "agent.service.nodePort=30454", "--set", "agent.service.annotations.lb\\.example\\.com/pool=edge"}, "agent"},
 	} {
-		out, err := helmTemplate(t, append(c.args, "-s", "templates/wg/service.yaml", "-s", "templates/gateway/gateway.yaml")...)
-		if err != nil {
-			t.Fatalf("%v\n%s", err, out)
-		}
-		for _, want := range []string{key + c.wg + "\n", key + c.gw + "\n"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("%v: missing %q\n%s", c.args, want, out)
+		for _, mode := range []string{"userspace", "tc", "xdp"} {
+			var svc corev1.Service
+			render(t, c.tpl, &svc, append(append([]string{}, c.set...), "--set", "proxy.wg.mode="+mode)...)
+			if svc.Name != c.name || svc.Namespace != c.ns {
+				t.Errorf("%s: %s/%s", c.tpl, svc.Namespace, svc.Name)
+			}
+			if svc.Spec.Type != corev1.ServiceTypeNodePort || svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
+				t.Errorf("%s (%s): type %s, externalTrafficPolicy %s: want NodePort and Local", c.tpl, mode, svc.Spec.Type, svc.Spec.ExternalTrafficPolicy)
+			}
+			if svc.Annotations["lb.example.com/pool"] != "edge" {
+				t.Errorf("%s: annotations %v", c.tpl, svc.Annotations)
+			}
+			if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].NodePort == 0 {
+				t.Errorf("%s: ports %+v: want one port with the fixed node port", c.tpl, svc.Spec.Ports)
+			}
+			for k := range svc.Annotations {
+				if strings.HasPrefix(k, "lbipam.cilium.io/") {
+					t.Errorf("%s: %s: there is no shared address any more", c.tpl, k)
+				}
 			}
 		}
+	}
+	// without a fixed node port Kubernetes picks one
+	var svc corev1.Service
+	render(t, "templates/proxy/service.yaml", &svc)
+	if svc.Spec.Ports[0].NodePort != 0 || svc.Spec.Ports[0].Port != 443 {
+		t.Errorf("default port %+v", svc.Spec.Ports[0])
 	}
 }

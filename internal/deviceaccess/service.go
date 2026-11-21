@@ -3,10 +3,13 @@
 //
 // Path of a console: participant, L7 proxy (authorization), this service on the node of the device, a shell in the device.
 //
-// The service trusts the proxy and nothing else; the Cilium policy lets only the proxy pods reach it. It does not trust the proxy
-// with the container: a request names a lab device (namespace, lab, device) and the service finds the container itself from what the
-// runtime shows (see Resolve), copies the process spec from that container (see ProcessFor) and refuses everything that is not a
-// lab device with a console. It has no Kubernetes API rights.
+// The Cilium policy lets only the proxy pods reach the service, and a request is authenticated by what it carries, not by where it comes
+// from: the console grant the tenant's platform signed (see Auth and internal/grant), verified with the tenant's access public key. The service
+// holds no key of its own; the keys are public data mirrored into a ConfigMap it mounts. A request must agree with its grant (client, group,
+// lab, device), the pod must carry the name of the grant's group, and the stream ends at the grant's exp. The proxy is not trusted with the
+// container: a request names a lab device (namespace, lab, device) and the service finds the container itself from what the runtime shows (see
+// Resolve), copies the process spec from that container (see ProcessFor) and refuses everything that is not a lab device with a console. It has
+// no Kubernetes API rights.
 package deviceaccess
 
 import (
@@ -20,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // Conn is one stream with the proxy: whole messages, no ordering between the two directions. The WebSocket adapter is in
@@ -42,6 +46,9 @@ type Limits struct {
 	WriteTimeout time.Duration
 	// Cleanup bounds the time the clean-up of an exec may take.
 	Cleanup time.Duration
+	// KeyRecheck is how often an open console asks again whether the key its grant was verified with still exists; a console ends (access-lost)
+	// when it is gone at two checks in a row. Zero means DefaultLimits().KeyRecheck.
+	KeyRecheck time.Duration
 }
 
 // DefaultLimits are the values of the chart defaults.
@@ -49,7 +56,7 @@ func DefaultLimits() Limits {
 	return Limits{
 		PerClient: 3, PerLab: 10, PerNode: 200,
 		Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
-		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second,
+		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second, KeyRecheck: 15 * time.Second,
 	}
 }
 
@@ -60,6 +67,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.Cleanup <= 0 {
 		l.Cleanup = d.Cleanup
+	}
+	if l.KeyRecheck <= 0 {
+		l.KeyRecheck = d.KeyRecheck
 	}
 	return l
 }
@@ -122,7 +132,8 @@ func (s *Service) Serve(ctx context.Context, conn Conn) {
 	}
 	// The open request is authenticated before anything else is done with it. Nothing else of it is logged on a failure, and the answer does
 	// not say which check failed.
-	if err := s.auth.Check(req); err != nil {
+	claims, err := s.auth.Check(req)
+	if err != nil {
 		s.refuse(ctx, conn, wire.OpenRequest{}, wire.CodeUnauthorized, err)
 		return
 	}
@@ -132,7 +143,7 @@ func (s *Service) Serve(ctx context.Context, conn Conn) {
 	}
 	switch req.Kind {
 	case wire.KindConsole:
-		s.serveConsole(ctx, conn, req)
+		s.serveConsole(ctx, conn, req, claims)
 	default:
 		s.refuse(ctx, conn, req, wire.CodeBadRequest, fmt.Errorf("unknown kind %q", req.Kind))
 	}
@@ -195,8 +206,15 @@ func (s *Service) refuse(ctx context.Context, conn Conn, req wire.OpenRequest, c
 }
 
 // resolve finds the device container of a request and maps the refusals of Resolve to the codes a caller sees.
-func (s *Service) resolve(ctx context.Context, req wire.OpenRequest) (Device, string, error) {
-	dev, err := Resolve(ctx, s.rt, Target{Namespace: req.Namespace, Lab: req.Lab, Device: req.Device})
+//
+// The pod must carry the name of the group the grant is for (names.LabelGroupName, stamped by the operator): a lab and a device name
+// repeat across groups, and the namespace of the request is the proxy's word, so the grant's group is what binds the console to the
+// right namespace.
+//
+// It must also carry the tenant that signed the grant (names.LabelTenant, stamped by the operator from the LabGroup): the service verifies a
+// grant with the keys of every tenant, so this is what stops a tenant that holds a valid key from opening another tenant's device.
+func (s *Service) resolve(ctx context.Context, req wire.OpenRequest, group, tenant string) (Device, string, error) {
+	dev, err := Resolve(ctx, s.rt, Target{Namespace: req.Namespace, Lab: req.Lab, Device: req.Device, GroupName: names.EncodeName(group), Tenant: tenant})
 	switch {
 	case err == nil:
 		return dev, "", nil

@@ -36,6 +36,47 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 
+{{- /* Values of the earlier layouts (removed in the pools release): a values file that still sets one fails loudly, naming the replacement.
+       Each entry is the path of the removed value as its parts, and what replaces it. */ -}}
+{{- $removed := list
+  (list (list "gateway") "the Gateway objects are gone: the L7 proxy, the agent and the VPN are NodePort Services (externalTrafficPolicy Local) behind a load balancer of infrastructure; see proxy.l7.service, agent.service and proxy.wg.service")
+  (list (list "proxy" "sharingKey") "there is no shared load balancer address any more")
+  (list (list "proxy" "sharedNamespaces") "there is no shared load balancer address any more")
+  (list (list "proxy" "service") "use proxy.wg.service.annotations for the VPN and proxy.l7.service.annotations for the L7 proxy")
+  (list (list "proxy" "l7" "accessTokenMaxTTL") "use proxy.l7.grantMaxTTL")
+  (list (list "proxy" "l7" "sessionIdleTTL") "a session lasts as long as its grant (proxy.l7.grantMaxTTL)")
+  (list (list "proxy" "l7" "sessionRenewBefore") "a session lasts as long as its grant (proxy.l7.grantMaxTTL)")
+  (list (list "proxy" "l7" "sessionMaxTTL") "use proxy.l7.grantMaxTTL")
+  (list (list "proxy" "wg" "externalTrafficPolicy") "the VPN Service is always Local")
+  (list (list "registry" "cache" "credentialsSecret") "the gate proves every pull with the upstream credentials it reads in the namespace laboratory-upstream")
+}}
+{{- range $entry := $removed }}
+{{- $path := index $entry 0 }}
+{{- $node := $.Values }}
+{{- $found := true }}
+{{- range $key := $path }}
+{{- if and $found (kindIs "map" $node) (hasKey $node $key) }}{{- $node = index $node $key }}{{- else }}{{- $found = false }}{{- end }}
+{{- end }}
+{{- if $found }}
+{{- fail (printf "%s was removed: %s." (join "." $path) (index $entry 1)) }}
+{{- end }}
+{{- end }}
+
+{{- /* The pools: the selector of a pool is a constant of the chart (see "laboratory.pool"); a values file cannot point a component at another pool. */ -}}
+{{- range $path := list "operator" "agent" "registry" "labScheduler" "proxy" "proxy.wg" "nodeAgent" "nodeState" "terminal" "checks" "pools.lab" "pools.labControl" }}
+{{- $node := $.Values }}
+{{- $found := true }}
+{{- range $key := splitList "." $path }}
+{{- if and $found (kindIs "map" $node) (hasKey $node $key) }}{{- $node = index $node $key }}{{- else }}{{- $found = false }}{{- end }}
+{{- end }}
+{{- if and $found (kindIs "map" $node) (hasKey $node "nodeSelector") }}
+{{- fail (printf "%s.nodeSelector is not a value: the selector of a pool (node-restriction.kubernetes.io/cib-pool=lab or lab-control) is a constant of the chart. Only pools.lab.tolerations and pools.labControl.tolerations can be set." $path) }}
+{{- end }}
+{{- if and $found (kindIs "map" $node) (hasKey $node "tolerations") (ne (printf "%s" $path) "pools.lab") (ne (printf "%s" $path) "pools.labControl") }}
+{{- fail (printf "%s.tolerations is not a value: the taints belong to the pool, set pools.lab.tolerations or pools.labControl.tolerations." $path) }}
+{{- end }}
+{{- end }}
+
 {{- /* A device must stay below a group's pods, and those below the platform's. */ -}}
 {{- with .Values.priorityClasses }}
 {{- if not (and (lt (int64 .device.value) (int64 .group.value)) (lt (int64 .group.value) (int64 .platform.value))) }}
@@ -121,9 +162,9 @@ at install time instead of shipping a broken deployment.
 {{- if or (eq .Values.terminal.namespace .Release.Namespace) (eq .Values.terminal.namespace .Values.proxy.namespace) }}
 {{- fail "terminal.namespace must be a namespace of its own, not the release namespace or the proxy's: the privileged level and the proxy's Role over its EndpointSlices must cover nothing else" }}
 {{- end }}
-{{- range $v := list .Values.terminal.sharedSecret.value .Values.terminal.sharedSecret.accept }}
-{{- if and $v (lt (len $v) 32) }}
-{{- fail "terminal.sharedSecret.value and .accept must be at least 32 characters (or empty: the value is then made by the chart and kept in the cluster)" }}
+{{- range $k := list "grantMaxTTL" "keyReload" }}
+{{- if not (regexMatch "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$" (toString (index $.Values.terminal $k))) }}
+{{- fail (printf "terminal.%s must be a Go duration such as 8h or 15s (got %q)" $k (toString (index $.Values.terminal $k))) }}
 {{- end }}
 {{- end }}
 {{- range $list := list "allow" "deny" }}
@@ -168,9 +209,6 @@ at install time instead of shipping a broken deployment.
 {{- if not (has .Values.proxy.wg.mode (list "userspace" "tc" "xdp")) }}
 {{- fail (printf "proxy.wg.mode must be userspace, tc or xdp (got %q)" .Values.proxy.wg.mode) }}
 {{- end }}
-{{- if not (has (.Values.proxy.wg.externalTrafficPolicy | default "") (list "" "Local" "Cluster")) }}
-{{- fail (printf "proxy.wg.externalTrafficPolicy must be empty (follows proxy.wg.mode), Local or Cluster (got %q)" (toString .Values.proxy.wg.externalTrafficPolicy)) }}
-{{- end }}
 {{- if not (has .Values.proxy.mode (list "replicas" "daemonset")) }}
 {{- fail "proxy.mode must be replicas or daemonset" }}
 {{- end }}
@@ -208,12 +246,23 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.restartThreshold) 1 }}
 {{- fail "scheduler.restartThreshold must be at least 1" }}
 {{- end }}
-{{- if dig "cache" "credentialsSecret" "" .Values.registry }}
-{{- fail "registry.cache.credentialsSecret was removed: the gate proves every pull with the credentials of the pull itself (the lab's pull secret). For rate-limit relief on public images set registry.cache.anonymousFill (a dockerconfigjson Secret). See DEPLOY.md, \"The registry gate\"." }}
+{{- /* A lab node pulls only through the gate (nothing else could carry a credential to it), so with lab nodes the cache is not optional. */}}
+{{- if and .Values.nodeAgent.enabled (not .Values.registry.cache.enabled) }}
+{{- fail "nodeAgent.enabled needs registry.cache.enabled: a lab node has no registry credential, so every image of a lab is pulled through the registry gate (the cache) and nowhere else" }}
 {{- end }}
 {{- if include "laboratory.registryEnabled" . }}
 {{- if not .Values.nodeAgent.enabled }}
-{{- fail "the platform registry (installed because the image cache, state persistence or platform images is on) needs nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}
+{{- fail "the lab registry (installed because the image cache or state persistence is on) needs nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}
+{{- end }}
+{{- /* The nodes have no cluster DNS: they reach the gate through the internal load balancer, and its certificate is made for that host. */}}
+{{- if not .Values.registry.gate.address }}
+{{- fail "registry.gate.address is required: host:port of the internal load balancer the lab nodes dial to reach the registry gate (for example registry.lab.internal:5443). It is the address of the Service laboratory-registry (NodePort, TLS port 5443) as infrastructure binds it" }}
+{{- end }}
+{{- if not (regexMatch "^(\\[[0-9a-fA-F:.]+\\]|[A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?):[0-9]{1,5}$" (toString .Values.registry.gate.address)) }}
+{{- fail (printf "registry.gate.address %q is not host:port" (toString .Values.registry.gate.address)) }}
+{{- end }}
+{{- if not (has (toString .Values.registry.cache.requireDigest) (list "true" "false")) }}
+{{- fail "registry.cache.requireDigest must be true or false" }}
 {{- end }}
 {{- if and .Values.registry.retainClass.create (not .Values.registry.retainClass.provisioner) }}
 {{- fail "registry.retainClass.provisioner is required when registry.retainClass.create is true (rancher.io/local-path, ebs.csi.aws.com, ...)" }}
@@ -221,7 +270,7 @@ at install time instead of shipping a broken deployment.
 {{- if not .Values.registry.size }}
 {{- fail "registry.size is required (volume size of the platform registry)" }}
 {{- end }}
-{{- /* A cache upstream is a repository namespace of its own; these belong to snapshots, the base image and the platform images. */}}
+{{- /* A cache upstream is a repository namespace of its own; these belong to snapshots, the base image and the platform's own components. */}}
 {{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}
 {{- if has .name (list "lab" "base" "platform") }}
 {{- fail (printf "registry.cache: an upstream registry cannot be named %q (the repository namespaces lab, base and platform belong to the registry itself)" .name) }}
@@ -241,17 +290,12 @@ list plus the registries of the platform's own images) must be one the cache ser
 {{- end }}
 {{- end }}
 {{- end }}
-{{- range .Values.registry.platform.writerNamespaces }}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString .)) }}
-{{- fail (printf "registry.platform.writerNamespaces: %q is not a namespace name" (toString .)) }}
-{{- end }}
-{{- end }}
 {{- end }}
 {{- if and (include "laboratory.nodeState.enabled" .) (eq (int .Values.nodeState.healthPort) (int .Values.nodeAgent.healthPort)) }}
 {{- fail "nodeState.healthPort must differ from nodeAgent.healthPort: both are on the host network" }}
 {{- end }}
 {{- if and .Values.devices.statePersistence.enabled (not (include "laboratory.registryEnabled" .)) }}
-{{- fail "devices.statePersistence.enabled needs the platform registry: node-state pushes the snapshots through the node-agent's relay to it" }}
+{{- fail "devices.statePersistence.enabled needs the lab registry: node-state pushes the snapshots through the node-agent's relay to the registry gate" }}
 {{- end }}
 {{- if and .Values.devices.statePersistence.enabled (not .Values.nodeAgent.enabled) }}
 {{- fail "devices.statePersistence.enabled needs nodeAgent.enabled: node-state reaches the registry through the node-agent's relay" }}

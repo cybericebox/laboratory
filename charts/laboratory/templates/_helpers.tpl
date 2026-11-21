@@ -49,8 +49,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Comma-separated names of .Values.imagePullSecrets (a list of `- name: x`): what the
-operator copies into every lab group namespace and sets on lab pods.
+Comma-separated names of .Values.imagePullSecrets (a list of `- name: x`): the credentials of the platform's own images. The operator
+copies them into the Secret `platform` of the namespace laboratory-upstream, where only the registry gate reads them; no pod of a lab gets them.
 */}}
 {{- define "laboratory.pullSecretNames" -}}
 {{- $n := list -}}
@@ -59,13 +59,6 @@ operator copies into every lab group namespace and sets on lab pods.
 {{- end -}}
 {{- join "," $n -}}
 {{- end -}}
-
-{{/*
-host:port of the platform registry Service inside the cluster (the release namespace).
-*/}}
-{{- define "laboratory.registryAddr" -}}
-{{- printf "laboratory-registry.%s.svc:5000" .Release.Namespace -}}
-{{- end }}
 
 {{/*
 The release tag of an image: the image's own tag when set, else the global image.tag, else the chart appVersion. One release tag
@@ -113,12 +106,6 @@ names no port.
 
 {{- /* The demux modes that run on the host network with BPF capabilities. */}}
 {{- define "laboratory.wgHostNetwork" -}}{{- if has .Values.proxy.wg.mode (list "tc" "xdp") -}}true{{- end -}}{{- end }}
-{{- define "laboratory.wgExternalTrafficPolicy" -}}
-{{- if .Values.proxy.wg.externalTrafficPolicy -}}{{ .Values.proxy.wg.externalTrafficPolicy }}
-{{- else if include "laboratory.wgHostNetwork" . -}}Local
-{{- else -}}Cluster
-{{- end -}}
-{{- end }}
 {{/*
 node-state (the snapshot engine and the CPU throttle monitor, apart from the node-agent) is rendered when one of the two features that
 need the container runtime's files and the host cgroups is on: devices.statePersistence.enabled or lifecycle.runtimeObservation.enabled
@@ -178,13 +165,27 @@ prometheus.io/path: /metrics
 {{- end }}
 {{- end }}
 
+{{/* The namespace of the upstream registry credentials (the Secrets tenant-<name>, lab-<hash>, platform): only the registry gate reads it. */}}
+{{- define "laboratory.upstreamNamespace" -}}laboratory-upstream{{- end }}
+
+{{/* The audience of the ServiceAccount tokens the registry gate accepts (the relay of a node, the operator and the agent present one). */}}
+{{- define "laboratory.registryGateAudience" -}}laboratory-registry-gate{{- end }}
+{{- /* The host:port the nodes pull cache images from: the node-agent's relay, a constant of the images (names.RegistryNodePrefix). */ -}}
+{{- define "laboratory.registryNodePrefix" -}}localhost:5035{{- end }}
+{{- /* A Kubernetes quantity of bytes ("2Gi", "500M", "1048576") as a plain number of bytes, for a binary that reads an integer. */ -}}
+{{- define "laboratory.bytes" -}}
+{{- $s := toString . -}}
+{{- $bin := dict "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+{{- $dec := dict "K" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 -}}
+{{- if regexMatch "^[0-9]+$" $s -}}{{ $s }}
+{{- else if regexMatch "^[0-9]+(Ki|Mi|Gi|Ti)$" $s -}}{{ mul (int64 (regexFind "^[0-9]+" $s)) (index $bin (regexFind "[A-Za-z]+$" $s)) }}
+{{- else if regexMatch "^[0-9]+(K|M|G|T)$" $s -}}{{ mul (int64 (regexFind "^[0-9]+" $s)) (index $dec (regexFind "[A-Za-z]+$" $s)) }}
+{{- else -}}{{ fail (printf "%q is not a quantity of bytes (a number, or a number with Ki, Mi, Gi, Ti, K, M, G or T)" $s) }}
+{{- end -}}
+{{- end }}
+
 {{- define "laboratory.sharedEnv" -}}
 {{- include "laboratory.lifecycleProfile" . -}}
-LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
-LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
-LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}
-LIFECYCLE_RETAINED_RESTART_AVAILABLE: {{ .Values.lifecycle.capabilities.retainedRestart | quote }}
-LIFECYCLE_FULL_GROUP_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.fullGroupStop | quote }}
 RUNTIME_OBSERVATION_ENABLED: {{ .Values.lifecycle.runtimeObservation.enabled | quote }}
 REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.requiredSnapshotAvailable | quote }}
 {{- /* The ending notice of reservations: the operator gives it, the agent reports it and computes the end of the groups. */}}
@@ -192,10 +193,8 @@ RESERVATION_ENDING_NOTICE_SECONDS: {{ .Values.reservations.endingNoticeSeconds |
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
 {{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}
-WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (ne (include "laboratory.wgEnabled" .) "") | quote }}
-IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
-LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
+LAB_TOLERATIONS: {{ .Values.pools.lab.tolerations | toJson | quote }}
 VPN_CPU: {{ .Values.vpn.resources.cpu | quote }}
 VPN_MEMORY: {{ .Values.vpn.resources.memory | quote }}
 GATEWAY_CPU: {{ .Values.inetGateway.resources.cpu | quote }}
@@ -225,7 +224,6 @@ DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
 DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
-DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
 PROFILE_LABELS_ENABLED: {{ .Values.profileLabels.enabled | quote }}
 MICROVM_ENABLED: {{ .Values.microvm.enabled | quote }}
 MICROVM_RUNTIME_CLASS: {{ .Values.microvm.runtimeClassName | quote }}
@@ -239,13 +237,39 @@ GROUP_DEFAULT_USERS: {{ .Values.groupLimits.defaultUsers | quote }}
 GROUP_DEFAULT_LABS: {{ .Values.groupLimits.defaultLabs | quote }}
 GROUP_VPN_GATEWAYS_PER_LAB: {{ .Values.groupLimits.vpnGatewaysPerLab | quote }}
 GROUP_INTERNET_GATEWAYS_PER_LAB: {{ .Values.groupLimits.internetGatewaysPerLab | quote }}
+VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
+MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
+{{- /* The feature switches of the laboratory: what the operator and the agent refuse when it is off (see "Feature switches" in DEPLOY.md). */}}
+VPN_ENABLED: {{ .Values.vpn.enabled | quote }}
+INTERNET_ENABLED: {{ .Values.inetGateway.enabled | quote }}
+PROXY_L7_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled | quote }}
+PROXY_RDP_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.rdp.enabled | quote }}
+PROXY_VNC_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.vnc.enabled | quote }}
+CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
+ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
+TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
+STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
+STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
+STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
+STATE_WRITE_QUOTA: {{ .Values.devices.statePersistence.writeQuota | quote }}
+STATE_MAX_FILE_SIZE: {{ .Values.devices.statePersistence.maxFileSize | quote }}
+STATE_MAX_ENTRIES: {{ .Values.devices.statePersistence.maxEntries | quote }}
+STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
+IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
+IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
+IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
+ALLOWED_REGISTRIES: {{ include "laboratory.allowedRegistries" . | quote }}
+{{- end }}
+
+{{- /* What only the operator reads of the settings above (the agent's settings and the operator's are one map except for these). */}}
+{{- define "laboratory.operatorOnlyEnv" -}}
+WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (ne (include "laboratory.wgEnabled" .) "") | quote }}
+DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
 GATEWAY_MAX_CONNECTIONS_PER_LAB: {{ .Values.inetGateway.limits.maxConnectionsPerLab | quote }}
 GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB: {{ .Values.inetGateway.limits.newConnectionsPerSecondPerLab | quote }}
-VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
 VNI_QUARANTINE: {{ .Values.vni.quarantine | quote }}
 VNI_SWEEP_INTERVAL: {{ .Values.vni.sweepInterval | quote }}
 EGRESS_MONITOR_ENABLED: {{ .Values.internetEgress.monitor.enabled | quote }}
-EGRESS_STATS_PORT: {{ .Values.internetEgress.statsPort | quote }}
 EGRESS_LOG_DIR: {{ include "laboratory.egressLogDir" . | quote }}
 EGRESS_LOG_RETENTION: {{ printf "%dh" (mul (int .Values.internetEgress.log.retentionDays) 24) | quote }}
 EGRESS_SIGNAL_HOST_LABS: {{ .Values.internetEgress.monitor.hostLabs | quote }}
@@ -263,32 +287,22 @@ DEVICE_RECONCILE_WORKERS: {{ .Values.operator.workers.device | quote }}
 CONNECTION_RECONCILE_WORKERS: {{ .Values.operator.workers.connection | quote }}
 API_QPS: {{ .Values.operator.api.qps | quote }}
 API_BURST: {{ .Values.operator.api.burst | quote }}
-MAX_LAB_GATEWAYS: {{ .Values.operator.maxLabGateways | quote }}
-{{- /* The feature switches of the laboratory: what the operator and the agent refuse when it is off (see "Feature switches" in DEPLOY.md). */}}
-VPN_ENABLED: {{ .Values.vpn.enabled | quote }}
-INTERNET_ENABLED: {{ .Values.inetGateway.enabled | quote }}
-PROXY_L7_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled | quote }}
-PROXY_RDP_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.rdp.enabled | quote }}
-PROXY_VNC_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.vnc.enabled | quote }}
-CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
-ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
+IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
+IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
+IMAGE_CACHE_REQUIRE_DIGEST: {{ .Values.registry.cache.requireDigest | quote }}
+{{- end }}
+
+{{- /* What only the management agent reads. */}}
+{{- define "laboratory.agentOnlyEnv" -}}
+LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
+LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
+LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}
+LIFECYCLE_RETAINED_RESTART_AVAILABLE: {{ .Values.lifecycle.capabilities.retainedRestart | quote }}
+LIFECYCLE_FULL_GROUP_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.fullGroupStop | quote }}
 TERMINAL_MAX_LIFETIME: {{ .Values.terminal.limits.maxLifetime | quote }}
-TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
 TERMINAL_SERVED: {{ .Values.terminal.enabled | quote }}
 CHECKS_MAX_TIME_LIMIT_SECONDS: {{ .Values.checks.maxTimeLimitSeconds | quote }}
 CHECKS_MANUAL_COOLDOWN: {{ .Values.checks.manualCooldown | quote }}
-STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
-STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
-STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
-STATE_WRITE_QUOTA: {{ .Values.devices.statePersistence.writeQuota | quote }}
-STATE_MAX_FILE_SIZE: {{ .Values.devices.statePersistence.maxFileSize | quote }}
-STATE_MAX_ENTRIES: {{ .Values.devices.statePersistence.maxEntries | quote }}
-STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
-IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
-IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
-IMAGE_CACHE_PIN_CONCURRENCY: {{ .Values.registry.cache.pinConcurrency | quote }}
-IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
-ALLOWED_REGISTRIES: {{ include "laboratory.allowedRegistries" . | quote }}
 {{- end }}
 
 {{/*
@@ -365,19 +379,17 @@ Comma-separated names of the registries the image cache serves.
 {{- end }}
 
 {{/*
-Non-empty when the platform registry (zot) is deployed: at least one of registry.cache.enabled,
-devices.statePersistence.enabled and registry.platform.enabled is on. Everything that depends on it
-(the node relay, the node-agent, operator and agent settings, the Secrets, the network policies) is
-rendered only then. When all three are off there is no registry: no Deployment, Service, Secret or
-policy, and no relay on the nodes. The volume (registry.size) keeps its claim across an upgrade
+Non-empty when the lab registry (zot and its gate) is deployed: registry.cache.enabled or devices.statePersistence.enabled is on.
+Everything that depends on it (the node relay, the node-agent, operator and agent settings, the Secrets, the network policies) is
+rendered only then. When both are off there is no registry: no Deployment, Service, Secret or policy, and no relay on the nodes. The volume (registry.size) keeps its claim across an upgrade
 (helm.sh/resource-policy: keep), so switching a feature off and on again finds its data.
 */}}
 {{- define "laboratory.registryEnabled" -}}
-{{- if or .Values.registry.cache.enabled .Values.devices.statePersistence.enabled .Values.registry.platform.enabled -}}true{{- end -}}
+{{- if or .Values.registry.cache.enabled .Values.devices.statePersistence.enabled -}}true{{- end -}}
 {{- end }}
 
 {{/*
-Upstream registries of the image cache as a JSON list of {name, url}: the built-in
+Upstream registries of the image cache as a JSON list of {name, url, authHosts}: the built-in
 ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 */}}
 {{- define "laboratory.cacheUpstreams" -}}
@@ -386,26 +398,36 @@ ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 {{- range .Values.registry.cache.registries -}}
 {{- $url := index $known . -}}
 {{- if not $url -}}{{- fail (printf "registry.cache.registries: %q is not built in; add it to registry.cache.extraRegistries with its url" .) -}}{{- end -}}
-{{- $out = append $out (dict "name" . "url" $url) -}}
+{{- /* The hosts whose token endpoint the registry's challenge may name besides its own (the gate follows no other realm): Docker Hub's token service. */ -}}
+{{- $auth := dict "docker.io" (list "auth.docker.io") "ghcr.io" (list "ghcr.io") "quay.io" (list "quay.io") -}}
+{{- $out = append $out (dict "name" . "url" $url "authHosts" (default (list) (index $auth .))) -}}
 {{- end -}}
 {{- range .Values.registry.cache.extraRegistries -}}
-{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url)) -}}
+{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url) "authHosts" (default (list) .authHosts)) -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
 
 {{/*
-host:port of the TLS port of the registry gate (the release namespace): the relay of a node dials it for the image cache, because the
-pull's credentials travel there.
+host:port of the gate's TLS port as the operator and the agent dial it: the Service in the release namespace.
 */}}
-{{- define "laboratory.registryTLSAddr" -}}
+{{- define "laboratory.registryServiceAddr" -}}
 {{- printf "laboratory-registry.%s.svc:5443" .Release.Namespace -}}
 {{- end }}
 
 {{/*
+host of registry.gate.address (the internal load balancer the lab nodes dial), without the port.
+*/}}
+{{- define "laboratory.registryGateHost" -}}
+{{- $a := .Values.registry.gate.address | toString -}}
+{{- if hasPrefix "[" $a -}}{{ regexFind "^\\[[^\\]]+\\]" $a | trimPrefix "[" | trimSuffix "]" }}{{- else -}}{{ regexReplaceAll ":[0-9]+$" $a "" }}{{- end -}}
+{{- end }}
+
+{{/*
 The certificate of the registry gate's TLS port, made once per render and cached in .Values._registryTLS: a certificate authority of its own
-(kept across upgrades, read back with lookup) and a server certificate for the Service names, signed by it. The node-agent trusts only the
-authority (its Secret key ca.crt), so no other certificate of the cluster is accepted for this hop. The server certificate is made again
+(kept across upgrades, read back with lookup) and a server certificate for the Service names and for the host of registry.gate.address
+(an IP SAN when it is an address), signed by it. The nodes, the operator and the agent trust only the authority, which they read from the
+ConfigMap laboratory-registry-ca (public data); the Secret holding the key is read by the registry pod only. The server certificate is made again
 at every upgrade only when the Secret is missing; to rotate, delete the Secret laboratory-registry-tls and upgrade.
 */}}
 {{- define "laboratory.registryTLS" -}}
@@ -416,60 +438,34 @@ at every upgrade only when the Secret is missing; to rotate, delete the Secret l
 {{- else -}}
 {{- $ns := .Release.Namespace -}}
 {{- $ca := genCA "laboratory-registry-ca" 3650 -}}
-{{- $alt := list "laboratory-registry" (printf "laboratory-registry.%s" $ns) (printf "laboratory-registry.%s.svc" $ns) (printf "laboratory-registry.%s.svc.cluster.local" $ns) -}}
-{{- $cert := genSignedCert (printf "laboratory-registry.%s.svc" $ns) nil $alt 3650 $ca -}}
+{{- $alt := list "laboratory-registry" (printf "laboratory-registry.%s" $ns) (printf "laboratory-registry.%s.svc" $ns) -}}
+{{- $ips := list -}}
+{{- $host := include "laboratory.registryGateHost" . -}}
+{{- if $host -}}
+{{- if regexMatch "^[0-9.]+$|:" $host -}}{{- $ips = append $ips $host -}}{{- else -}}{{- $alt = append $alt $host -}}{{- end -}}
+{{- end -}}
+{{- $cert := genSignedCert (printf "laboratory-registry.%s.svc" $ns) $ips $alt 3650 $ca -}}
 {{- $_ := set .Values "_registryTLS" (dict "ca" $ca.Cert "crt" $cert.Cert "key" $cert.Key) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-The credentials of the platform registry (zot), made once per render and cached in .Values._registryCreds so that the
-registry Secret and the copy for the agent (another namespace) agree. Generated once and kept across upgrades (read back with
-lookup). Accounts: writer (the operator and the node-agents write snapshots), reader (it may read the snapshots of the labs, the
-base repository and platform/**), gate (the registry gate: read and write on the cache tree c/** and nothing else; its key for the
-credential hash is kept with it) and, when
-registry.platform.enabled, platform-writer (it reads, writes and deletes platform/** only; its password is kept once made, also when the
-feature is switched off, so that switching it on again changes nothing). A registry made by an earlier version has no reader or
-platform-writer yet: it is added, the existing accounts stay.
+The credentials inside the registry pod, made once per render and cached in .Values._registryCreds so that the Secret does not change on
+every render: the only zot account, gate (the gate container reaches zot on the loopback with it), and the key of the gate's credential hash.
+Generated once and kept across upgrades (read back with lookup). There is no reader, writer or platform account: nothing outside the pod
+holds a registry password. A registry Secret made by an earlier version is read for gatePassword and gateKey and rewritten without the rest.
 */}}
 {{- define "laboratory.registryCreds" -}}
 {{- if not (hasKey .Values "_registryCreds") -}}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace "laboratory-registry" -}}
-{{- $writer := randAlphaNum 40 -}}
-{{- $reader := randAlphaNum 40 -}}
 {{- $gate := randAlphaNum 40 -}}
 {{- $gateKey := randAlphaNum 48 -}}
-{{- $platform := "" -}}
-{{- $htpasswd := "" -}}
-{{- if and $existing $existing.data -}}
-{{- $writer = index $existing.data "password" | b64dec -}}
-{{- if hasKey $existing.data "readerPassword" -}}
-{{- $reader = index $existing.data "readerPassword" | b64dec -}}
-{{- $htpasswd = index $existing.data "htpasswd" | b64dec -}}
-{{- else -}}
-{{- $htpasswd = printf "%s\n%s" (index $existing.data "htpasswd" | b64dec | trim) (htpasswd "reader" $reader) -}}
-{{- end -}}
-{{- if hasKey $existing.data "gatePassword" -}}
+{{- if and $existing $existing.data (hasKey $existing.data "gatePassword") (hasKey $existing.data "gateKey") -}}
 {{- $gate = index $existing.data "gatePassword" | b64dec -}}
 {{- $gateKey = index $existing.data "gateKey" | b64dec -}}
-{{- else -}}
-{{- $htpasswd = printf "%s\n%s" ($htpasswd | trim) (htpasswd "gate" $gate) -}}
 {{- end -}}
-{{- if hasKey $existing.data "platformPassword" -}}
-{{- $platform = index $existing.data "platformPassword" | b64dec -}}
-{{- else if .Values.registry.platform.enabled -}}
-{{- $platform = randAlphaNum 40 -}}
-{{- $htpasswd = printf "%s\n%s" ($htpasswd | trim) (htpasswd "platform-writer" $platform) -}}
-{{- end -}}
-{{- else -}}
-{{- $htpasswd = printf "%s\n%s\n%s" (htpasswd "writer" $writer) (htpasswd "reader" $reader) (htpasswd "gate" $gate) -}}
-{{- if .Values.registry.platform.enabled -}}
-{{- $platform = randAlphaNum 40 -}}
-{{- $htpasswd = printf "%s\n%s" $htpasswd (htpasswd "platform-writer" $platform) -}}
-{{- end -}}
-{{- end -}}
-{{- $_ := set .Values "_registryCreds" (dict "writer" $writer "reader" $reader "gate" $gate "gateKey" $gateKey "platform" $platform "htpasswd" $htpasswd) -}}
+{{- $_ := set .Values "_registryCreds" (dict "gate" $gate "gateKey" $gateKey "htpasswd" (htpasswd "gate" $gate)) -}}
 {{- end -}}
 {{- end -}}
 
@@ -482,11 +478,11 @@ additions of the device profiles, and what the VPN and gateway pods need. A Go t
 {{- end -}}
 
 {{/*
-The node selector of every lab pod (VPN, gateway, device): labWorkloads.nodeSelector plus the node-agent-ready label that the
+The node selector of every lab pod (VPN, gateway, device) as JSON: the lab pool (a constant) plus the node-agent-ready label that the
 node-agent sets on its node. Lab pods run only where a ready node-agent serves them (see DEPLOY.md, "Which nodes run labs").
 */}}
 {{- define "laboratory.labNodeSelector" -}}
-{{- merge (dict "laboratory.cybericebox.com/node-agent-ready" "true") (deepCopy .Values.labWorkloads.nodeSelector) | toJson -}}
+{{- dict "node-restriction.kubernetes.io/cib-pool" "lab" "laboratory.cybericebox.com/node-agent-ready" "true" | toJson -}}
 {{- end }}
 
 {{/*
@@ -511,19 +507,17 @@ the nodes and there are more of them than replicas (the pod anti-affinity is req
 {{- end }}
 
 {{/*
-The nodeSelector and tolerations of a component: its own values when set, else the lab-node placement (labWorkloads).
-Renders nothing when both are empty. Call: include "laboratory.placement" (dict "own" .Values.x "root" $), own = a map with
-optional nodeSelector / tolerations keys. Each of the two falls back on its own. A DaemonSet passes daemon=true: its pods also
-tolerate the startup taint of a new lab worker (cybericebox.com/node-starting, see DEPLOY.md), because they have to be there for
-the node to become usable, which is what removes that taint.
+Where a component runs: the constant selector of its pool and the tolerations of the pool (pools.<pool>.tolerations). There is no per-component
+override and no fallback: the selector cannot be set by a values file (validate.yaml refuses an attempt). Call:
+include "laboratory.pool" (dict "pool" "lab" "root" $) with pool = "lab" or "labControl". A DaemonSet of the lab pool passes daemon=true: its pods
+also tolerate the startup taint of a new lab worker (cybericebox.com/node-starting, see DEPLOY.md), because they have to be there for the node to
+become usable, which is what removes that taint.
 */}}
-{{- define "laboratory.placement" -}}
-{{- $sel := .own.nodeSelector | default .root.Values.labWorkloads.nodeSelector -}}
-{{- $tol := .own.tolerations | default .root.Values.labWorkloads.tolerations -}}
-{{- if $sel }}
+{{- define "laboratory.pool" -}}
+{{- $name := ternary "lab" "lab-control" (eq .pool "lab") -}}
+{{- $tol := (index .root.Values.pools .pool).tolerations -}}
 nodeSelector:
-{{- toYaml $sel | nindent 2 }}
-{{- end }}
+  node-restriction.kubernetes.io/cib-pool: {{ $name }}
 {{- if or $tol .daemon }}
 tolerations:
 {{- if $tol }}

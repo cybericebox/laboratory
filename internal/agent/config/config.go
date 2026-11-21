@@ -155,11 +155,12 @@ type Config struct {
 	State StateConfig
 	// Scheduler and Endpoints are reported by GetFeatures (the same chart values as the operator's).
 	Scheduler SchedulerConfig
-	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures. They are
-	// read under the proxy's own names (the same variables of the same chart values), not as a second copy.
-	ProxyAccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
-	ProxySessionIdleTTL    time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
-	ProxySessionMaxTTL     time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
+	// ProxyGrantMaxTTL and TerminalGrantMaxTTL are the longest exp - iat of an access grant that the L7 proxy
+	// (chart proxy.l7.grantMaxTTL) and device-access (chart terminal.grantMaxTTL) accept. GetFeatures reports the
+	// smaller one, so a grant the backend signs is accepted by both. They are read under the same names as the
+	// services' own variables (the same chart values), not as a second copy.
+	ProxyGrantMaxTTL    time.Duration `env:"GRANT_MAX_TTL" envDefault:"8h"`
+	TerminalGrantMaxTTL time.Duration `env:"TERMINAL_GRANT_MAX_TTL" envDefault:"8h"`
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`
@@ -171,15 +172,18 @@ type Config struct {
 	// operator's values (operator.baseDomain, operator.publicVPNEndpoint): the chart passes one value to both.
 	BaseDomain        string `env:"BASE_DOMAIN"`
 	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT"`
-	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it: snapshot export reads the device snapshots from
-	// it, and PrewarmImages makes the cache fetch through it. Empty = names.RegistryServiceAddr (the chart always installs it there).
+	// RegistryAddr is host:port of the registry gate's TLS port as the agent reaches it: snapshot export reads the device snapshots from
+	// it (the same gate that PrewarmImages warms the cache through, Cache.GateAddr). Empty = names.RegistryGateAddr.
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
 	// RegistryEnabled is false when the chart installs no platform registry (no image cache, no state persistence, no platform images):
 	// the agent has no registry address, a snapshot export is refused and PrewarmImages is off. Default true.
 	RegistryEnabled bool `env:"AGENT_REGISTRY_ENABLED" envDefault:"true"`
-	// RegistryUser and RegistryPassword are the reader account of the registry: the snapshots are not anonymous.
-	RegistryUser     string `env:"AGENT_REGISTRY_USER"`
-	RegistryPassword string `env:"AGENT_REGISTRY_PASSWORD"`
+	// RegistryTokenFile is the projected ServiceAccount token (audience laboratory-registry-gate) the agent presents to the registry gate,
+	// for the snapshot export and the prewarm. The agent has no registry account.
+	RegistryTokenFile string `env:"AGENT_REGISTRY_TOKEN_FILE" envDefault:"/var/run/secrets/registry-gate/token"`
+	// RegistryInsecureDev (AGENT_REGISTRY_INSECURE_DEV): plain http and no token, for development. Without a CA file
+	// (AGENT_PREWARM_GATE_CA_FILE) and without it the agent refuses to talk to the gate: its token never travels in the clear.
+	RegistryInsecureDev bool `env:"AGENT_REGISTRY_INSECURE_DEV" envDefault:"false"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's
@@ -188,11 +192,6 @@ type Config struct {
 	// AllowedRegistries are the registries lab images may come from (the chart's registry.allowedRegistries, with the registries of
 	// the platform's own images added); an image from another registry is refused with REGISTRY_NOT_ALLOWED. "*" allows every registry.
 	AllowedRegistries []string `env:"ALLOWED_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
-	// ImagePlatformOnly makes every tenant run only the images of the platform registry, pinned by digest
-	// (platform:<name>@sha256:<hex>); any other reference is refused with the reason IMAGE_NOT_PLATFORM. A tenant can also be
-	// platform-only on its own (Tenant.spec.images.platformOnly). The registry address the nodes pull from is the constant
-	// names.RegistryNodePrefix (Cache.NodePrefix).
-	ImagePlatformOnly bool `env:"AGENT_IMAGE_PLATFORM_ONLY" envDefault:"false"`
 }
 
 // StateConfig is the state persistence values of the operator, under the operator's names (STATE_*): one chart value, one name.
@@ -216,7 +215,7 @@ type SchedulerConfig struct {
 }
 
 // CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition. The names are the operator's
-// (IMAGE_CACHE_*, IMAGE_PULL_SECRETS): one chart value, one name.
+// (IMAGE_CACHE_*): one chart value, one name.
 type CacheConfig struct {
 	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
 	// NodePrefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); a tenant image that names it
@@ -224,10 +223,6 @@ type CacheConfig struct {
 	NodePrefix string `env:"IMAGE_CACHE_PREFIX"`
 	// Registries are the upstream registries the cache serves.
 	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
-	// PullSecrets are dockerconfigjson Secrets of the release namespace used to ask the upstream registries for digests.
-	PullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
-	// PullSecretNamespace is the namespace of those Secrets; empty = names.SystemNamespace.
-	PullSecretNamespace string `env:"AGENT_PULL_SECRET_NAMESPACE"`
 	// GateAddr is host:port of the registry gate's TLS port, where the cache path is served: PrewarmImages warms images through it, with the
 	// credentials of the call. Empty = names.RegistryGateAddr. GateCAFile is the authority the agent trusts there (the chart gives it the CA
 	// of the gate's certificate only); without it the agent speaks plain http, which only a development setup does.
@@ -267,7 +262,7 @@ func Load() (*Config, error) {
 		}
 		c.RegistryAddr = ""
 	} else if c.RegistryAddr == "" {
-		c.RegistryAddr = names.RegistryServiceAddr
+		c.RegistryAddr = names.RegistryGateAddr
 	}
 	c.PublicVPNEndpoint = names.WithPublicVPNPort(c.PublicVPNEndpoint)
 	if c.ReleaseNamespace == "" {
@@ -275,9 +270,6 @@ func Load() (*Config, error) {
 	}
 	if c.Cache.GateAddr == "" {
 		c.Cache.GateAddr = names.RegistryGateAddr
-	}
-	if c.Cache.PullSecretNamespace == "" {
-		c.Cache.PullSecretNamespace = names.SystemNamespace
 	}
 	if c.Cache.NodePrefix == "" {
 		c.Cache.NodePrefix = names.RegistryNodePrefix

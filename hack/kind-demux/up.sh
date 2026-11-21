@@ -4,7 +4,7 @@
 # laboratory CRDs. Idempotent: an existing cluster is reused.
 #
 #   make kind-demux-up              # or hack/kind-demux/up.sh
-#   make kind-demux-e2e KIND_DEMUX_MODE=userspace   # or kind-demux-e2e-all: upgrade, userspace, tc, xdp, lbipam, detach
+#   make kind-demux-e2e KIND_DEMUX_MODE=userspace   # or kind-demux-e2e-all: upgrade, userspace, tc, xdp, detach
 #   make kind-demux-down
 #
 # Needs docker, kind, kubectl and helm. The kubectl context is kind-icebox-demux; other kind clusters are not touched.
@@ -26,6 +26,9 @@ helm upgrade --install cilium cilium --repo https://helm.cilium.io --version "$C
 
 "${KUBECTL[@]}" -n kube-system rollout status ds/cilium --timeout=5m
 "${KUBECTL[@]}" wait --for=condition=Ready nodes --all --timeout=5m
+# The workers are the lab pool: the demux (a DaemonSet of the chart) runs where the label node-restriction.kubernetes.io/cib-pool is lab. The label is
+# an administrator's (a kubelet cannot put it on its own node), so it is set here and not in kind.yaml.
+"${KUBECTL[@]}" label node "$CLUSTER-worker" "$CLUSTER-worker2" node-restriction.kubernetes.io/cib-pool=lab --overwrite
 
 "${KUBECTL[@]}" apply --server-side -f "$ROOT/config/crd/bases"
 "${KUBECTL[@]}" wait --for=condition=Established crd --all --timeout=2m

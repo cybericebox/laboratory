@@ -7,8 +7,15 @@ metadata:
   labels:
     app: laboratory-agent
     {{- include "laboratory.labels" . | nindent 4 }}
+  {{- with .Values.agent.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  # The entry of the platform's backend: the load balancer outside the cluster (infrastructure) sends the agent port to the node port of the
+  # nodes that run the agent. mTLS stays (certificate-server.yaml). Local keeps the caller's address.
+  type: NodePort
+  externalTrafficPolicy: Local
   selector:
     app: laboratory-agent
   ports:
@@ -16,4 +23,7 @@ spec:
       port: {{ .Values.agent.grpcPort }}
       targetPort: {{ .Values.agent.grpcPort }}
       protocol: TCP
+      {{- with .Values.agent.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
 {{- end }}

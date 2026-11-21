@@ -16,10 +16,9 @@ type Config struct {
 
 	// The egress of the labs (docs/specs/lab-internet-egress.md): a lab's TCP 80 and 443 end in the web proxy of the gateway, its port 53 in the
 	// DNS answerer, and ICMP echo is the only thing forwarded.
-	EgressHTTPPort  int `env:"EGRESS_HTTP_PORT" envDefault:"3180"`
-	EgressTLSPort   int `env:"EGRESS_TLS_PORT" envDefault:"3443"`
-	EgressDNSPort   int `env:"EGRESS_DNS_PORT" envDefault:"5353"`
-	EgressStatsPort int `env:"EGRESS_STATS_PORT" envDefault:"9188"`
+	EgressHTTPPort int `env:"EGRESS_HTTP_PORT" envDefault:"3180"`
+	EgressTLSPort  int `env:"EGRESS_TLS_PORT" envDefault:"3443"`
+	EgressDNSPort  int `env:"EGRESS_DNS_PORT" envDefault:"5353"`
 	// EgressDNSUpstreams are the resolvers the gateway asks (comma separated): public ones, since the gateway's own policy reaches the
 	// public internet only and the lab must never learn names of the cluster.
 	EgressDNSUpstreams string `env:"EGRESS_DNS_UPSTREAMS" envDefault:"1.1.1.1,9.9.9.9"`

@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -185,6 +186,11 @@ func Run() {
 		// watch on every Secret of the cluster, and the operator has no such permission (only in its own namespaces).
 		// The same for Roles (the lab checker's Role per lab): the operator holds them in the group namespaces only.
 		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &rbacv1.Role{}}}},
+		// The one Secret informer the operator has (the access key mirror) is limited to the access keys namespace: the operator may list
+		// and watch Secrets there and nowhere else.
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}},
+		}},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -326,6 +332,14 @@ func Run() {
 			os.Exit(1)
 		}
 	}
+	if cfg.DeviceAccessNamespace != "" {
+		// The device access service verifies console grants with the tenants' access keys; it holds no API token, so the operator mirrors
+		// the (public) keys into a ConfigMap it mounts.
+		if err = (&laboratorycontroller.AccessKeysMirror{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Namespace: cfg.DeviceAccessNamespace}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AccessKeysMirror")
+			os.Exit(1)
+		}
+	}
 	vniRetirer := &laboratorycontroller.VNIRetirer{Client: mgr.GetClient(), Interval: cfg.VNIRetireFlush}
 	if err = mgr.Add(vniRetirer); err != nil {
 		setupLog.Error(err, "unable to add the VNI retirer")
@@ -354,6 +368,7 @@ func Run() {
 		State:                     statePolicy,
 		Mirror:                    mirror,
 		Pinner:                    pinner,
+		RequireDigest:             cfg.Cache.RequireDigest,
 		CredentialResolver: func(kc authn.Keychain) imagecache.Resolver {
 			// the lab's own credentials only: the digest of a private image, asked of its registry directly
 			return &imagecache.RegistryResolver{Keychain: kc, TTL: cfg.Cache.PinTTL, Platforms: platforms}
@@ -506,6 +521,12 @@ func Run() {
 			os.Exit(1)
 		}
 	}
+	if cfg.Cache.Enabled {
+		if err = mgr.Add(&laboratorycontroller.UpstreamSweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}); err != nil {
+			setupLog.Error(err, "unable to add the upstream credentials sweep")
+			os.Exit(1)
+		}
+	}
 	if cfg.RuntimeObservation {
 		if err = mgr.Add(&laboratorycontroller.RetentionSweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Registry: stateRegistry, RetirementsOnly: true, Interval: 5 * time.Second}); err != nil {
 			setupLog.Error(err, "unable to add lifecycle retirement sweep")
@@ -519,7 +540,7 @@ func Run() {
 	if cfg.EgressMonitorEnabled {
 		monitor := &laboratorycontroller.EgressMonitor{
 			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorderFor("egress"), Log: ctrl.Log.WithName("egress-monitor"),
-			Port: cfg.EgressStatsPort, LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
+			LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
 			HostLabsThreshold: cfg.EgressSignalHostLabs, CapMinutes: cfg.EgressSignalCapMinutes,
 		}
 		if activity.Enabled() {
@@ -570,7 +591,6 @@ func gatewayEgressEnv(cfg *operator.Config) []corev1.EnvVar {
 		{"EGRESS_DNS_UPSTREAMS", cfg.EgressDNSUpstreams}, {"EGRESS_DNS_QUERIES_PER_SECOND", cfg.EgressDNSQueriesPerSecond},
 		{"EGRESS_HOST_NEW_PER_SECOND", cfg.EgressHostNewPerSecond}, {"EGRESS_HOST_GATEWAY_NEW_PER_SECOND", cfg.EgressHostGatewayNewPerSecond}, {"EGRESS_MAX_CONN_SECONDS", cfg.EgressMaxConnSeconds},
 		{"EGRESS_TUNNEL_SUFFIXES", cfg.EgressTunnelSuffixes}, {"EGRESS_ICMP_PER_SECOND", cfg.EgressICMPPerSecond},
-		{"EGRESS_STATS_PORT", fmt.Sprint(cfg.EgressStatsPort)},
 	} {
 		if e.value != "" {
 			env = append(env, corev1.EnvVar{Name: e.name, Value: e.value})

@@ -47,7 +47,7 @@ spec:
               images:
                 description: |-
                   Images are the references to pull, as the nodes pull them (through the image cache
-                  when the lab uses it).
+                  when the lab uses it, with the tenant segment: <prefix>/c/<tenant>/<registry>/<repo>).
                 items:
                   maxLength: 512
                   type: string
@@ -60,14 +60,10 @@ spec:
                   type: string
                 maxItems: 1000
                 type: array
-              pullSecret:
-                description: |-
-                  PullSecret names a kubernetes.io/dockerconfigjson Secret in the images namespace
-                  (laboratory-images) with the tenant's registry credentials, created by the operator
-                  for this ImagePull and owned by it. Absent: anonymous pulls.
-                type: string
               tenant:
-                description: Tenant is the tenant the images belong to (informational).
+                description: |-
+                  Tenant is the tenant the images belong to. The registry gate reads the tenant's credentials for the pull from it
+                  (Tenant.spec.images.pullSecret, kept only at the gate), and allows the pull when it lists the node and the exact references.
                 type: string
             required:
             - images

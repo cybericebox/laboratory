@@ -252,8 +252,7 @@ func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
 	set := []string{"--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
 		"--set", "scheduler.platformReservePercent=12", "--set", "scheduler.platformReserveCpu=150m", "--set", "scheduler.platformReserveMemory=384Mi",
 		"--set", "scheduler.packingReservePercent=20", "--set", "scheduler.packingReserveCpu=300m", "--set", "scheduler.packingReserveMemory=1Gi",
-		"--set", "labWorkloads.nodeSelector.lab-node=true",
-		"--set", "labWorkloads.tolerations[0].key=labs", "--set", "labWorkloads.tolerations[0].operator=Exists"}
+		"--set", "pools.lab.tolerations[0].key=labs", "--set", "pools.lab.tolerations[0].operator=Exists"}
 	op := operatorConfig(t, set...)
 	out, err := helmTemplate(t, append(append([]string{}, set...), "-s", "templates/agent/deployment.yaml")...)
 	if err != nil {
@@ -280,7 +279,7 @@ func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
 			t.Errorf("%s: operator %q, agent %q (set %v)", name, op[name], v, ok)
 		}
 	}
-	if op["SCHEDULER_PLATFORM_RESERVE_CPU"] != "150m" || op["SCHEDULER_PACKING_RESERVE_MEMORY"] != "1Gi" || !strings.Contains(op["LAB_NODE_SELECTOR"], "lab-node") {
+	if op["SCHEDULER_PLATFORM_RESERVE_CPU"] != "150m" || op["SCHEDULER_PACKING_RESERVE_MEMORY"] != "1Gi" || !strings.Contains(op["LAB_NODE_SELECTOR"], "cib-pool") || !strings.Contains(op["LAB_TOLERATIONS"], "labs") {
 		t.Errorf("the chart values do not reach the operator: %v", op)
 	}
 }
@@ -349,4 +348,22 @@ func TestOperatorMayEndReservations(t *testing.T) {
 			t.Errorf("operator may %s reservations", verb)
 		}
 	}
+}
+
+// agentConfig is the settings of the management agent as its Deployment renders them: what it reads of the shared map.
+func agentConfig(t *testing.T, extra ...string) map[string]string {
+	t.Helper()
+	out, err := helmTemplate(t, append(append([]string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}, extra...), "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var dep appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(out), &dep); err != nil {
+		t.Fatalf("decode Deployment: %v\n%s", err, out)
+	}
+	res := map[string]string{}
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		res[e.Name] = e.Value
+	}
+	return res
 }

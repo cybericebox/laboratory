@@ -309,7 +309,7 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		if refused, serr := r.refusedForGood(ctx, device, err); refused {
 			return ctrl.Result{}, serr // refused with an event: nothing to retry
 		}
-		return r.pullSecretWait(ctx, device, err)
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
@@ -531,12 +531,6 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	if err := r.refuseUncached(device); err != nil {
 		return err
 	}
-	// Before the incarnation moves: a device that waits for its lab's pull Secret starts
-	// the same incarnation once it is there.
-	pullSecrets, err := r.devicePullSecrets(ctx, device)
-	if err != nil {
-		return err
-	}
 	st := device.Status.State
 	spec := device.Spec.State
 	next := st.Incarnation + 1
@@ -573,7 +567,9 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	device.Status.State.StoppedAt = nil
 
 	labels, _, annotations, podSpec := r.workloadTemplateFor(device, true, plan)
-	setPullSecrets(&podSpec, pullSecrets)
+	if err := r.stampGroupName(ctx, device, labels); err != nil {
+		return err
+	}
 	annotations[names.AnnotationStateEpoch] = fmt.Sprint(st.Epoch)
 	annotations[names.AnnotationStateDevice] = device.Name
 	annotations[names.AnnotationStateIncarnation] = fmt.Sprint(next)

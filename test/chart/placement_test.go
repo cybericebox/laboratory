@@ -57,109 +57,110 @@ func hasToleration(spec corev1.PodSpec, key string) bool {
 	return false
 }
 
-var labPlacement = []string{
-	"--set-string", "labWorkloads.nodeSelector.cybericebox\\.com/lab=true",
-	"--set", "labWorkloads.tolerations[0].key=cybericebox.com/lab",
-	"--set", "labWorkloads.tolerations[0].operator=Equal",
-	"--set-string", "labWorkloads.tolerations[0].value=true",
-	"--set", "labWorkloads.tolerations[0].effect=NoSchedule",
+const poolKey = "node-restriction.kubernetes.io/cib-pool"
+
+// The pool of every pod of the chart (section 2.1 of the pools release): the lab pool holds what serves the labs, the lab-control pool the control.
+var podPools = map[string]string{
+	"Deployment/laboratory-controller-manager": "lab-control",
+	"Deployment/laboratory-agent":              "lab-control",
+	"Deployment/laboratory-registry":           "lab-control",
+	"Deployment/laboratory-scheduler":          "lab-control",
+	"Deployment/laboratory-proxy":              "lab",
+	"DaemonSet/laboratory-proxy-wg":            "lab",
+	"DaemonSet/laboratory-node-agent":          "lab",
+	"DaemonSet/laboratory-node-state":          "lab",
+	"DaemonSet/laboratory-device-access":       "lab",
+	"DaemonSet/laboratory-checker":             "lab",
 }
 
-// Every component of the chart follows the lab-node placement unless it has its own values; with nothing set nothing renders.
-func TestAllComponentsFollowLabNodes(t *testing.T) {
-	t.Run("labWorkloads reaches every pod", func(t *testing.T) {
-		specs := placementSpecs(t, append([]string{"--set", "proxy.mode=replicas"}, labPlacement...)...)
-		for _, want := range []string{"Deployment/laboratory-controller-manager", "Deployment/laboratory-proxy", "DaemonSet/laboratory-node-agent"} {
-			if _, ok := specs[want]; !ok {
-				t.Fatalf("%s not rendered, got %v", want, keys(specs))
+var everyPod = []string{"--set", "terminal.enabled=true", "--set", "checks.enabled=true", "--set", "devices.statePersistence.enabled=true"}
+
+// The selector of a pool is a constant of the chart and only its tolerations are values: every pod is on its pool, whatever else is set.
+func TestPodsRunOnTheirPools(t *testing.T) {
+	poolTols := []string{
+		"--set", "pools.lab.tolerations[0].key=cybericebox.com/lab", "--set", "pools.lab.tolerations[0].operator=Exists",
+		"--set", "pools.labControl.tolerations[0].key=cybericebox.com/lab-control", "--set", "pools.labControl.tolerations[0].operator=Exists",
+	}
+	for _, mode := range []string{"replicas", "daemonset"} {
+		specs := placementSpecs(t, append(append([]string{"--set", "proxy.mode=" + mode}, everyPod...), poolTols...)...)
+		for name, pool := range podPools {
+			if mode == "daemonset" && name == "Deployment/laboratory-proxy" {
+				name = "DaemonSet/laboratory-proxy"
 			}
-		}
-		if len(specs) < 6 {
-			t.Fatalf("expected the operator, agent, registry, lab-scheduler, proxy and node-agent, got %v", keys(specs))
-		}
-		for name, spec := range specs {
-			if spec.NodeSelector["cybericebox.com/lab"] != "true" {
-				t.Errorf("%s: nodeSelector %v", name, spec.NodeSelector)
-			}
-			if !hasToleration(spec, "cybericebox.com/lab") {
-				t.Errorf("%s: tolerations %v", name, spec.Tolerations)
-			}
-			if _, bad := spec.NodeSelector["laboratory.cybericebox.com/node-agent-ready"]; bad {
-				t.Errorf("%s must not select node-agent-ready", name)
-			}
-		}
-	})
-	t.Run("proxy daemonset follows too", func(t *testing.T) {
-		specs := placementSpecs(t, append([]string{"--set", "proxy.mode=daemonset"}, labPlacement...)...)
-		spec, ok := specs["DaemonSet/laboratory-proxy"]
-		if !ok || spec.NodeSelector["cybericebox.com/lab"] != "true" || !hasToleration(spec, "cybericebox.com/lab") {
-			t.Fatalf("proxy daemonset: %v %+v", ok, spec.NodeSelector)
-		}
-	})
-	t.Run("own values win", func(t *testing.T) {
-		own := []string{}
-		for _, c := range []string{"operator", "agent", "registry", "labScheduler", "proxy", "proxy.wg"} {
-			own = append(own,
-				"--set-string", c+".nodeSelector.own="+c,
-				"--set", c+".tolerations[0].key=own-"+c,
-				"--set", c+".tolerations[0].operator=Exists")
-		}
-		specs := placementSpecs(t, append(own, labPlacement...)...)
-		want := map[string]string{
-			"Deployment/laboratory-controller-manager": "operator",
-			"Deployment/laboratory-proxy":              "proxy",
-			"DaemonSet/laboratory-proxy-wg":            "proxy.wg",
-		}
-		checked := 0
-		for name, spec := range specs {
-			if strings.HasPrefix(name, "DaemonSet/laboratory-node-agent") {
-				if spec.NodeSelector["cybericebox.com/lab"] != "true" {
-					t.Errorf("%s keeps the lab placement: %v", name, spec.NodeSelector)
-				}
+			spec, ok := specs[name]
+			if !ok {
+				t.Errorf("%s (proxy %s) is not rendered, got %v", name, mode, keys(specs))
 				continue
 			}
-			comp := ""
-			for k, v := range spec.NodeSelector {
-				if k == "own" {
-					comp = v
-				}
+			if len(spec.NodeSelector) != 1 || spec.NodeSelector[poolKey] != pool {
+				t.Errorf("%s: nodeSelector %v, want the pool %s only", name, spec.NodeSelector, pool)
 			}
-			if comp == "" {
-				t.Errorf("%s: own selector missing: %v", name, spec.NodeSelector)
-				continue
+			wantTol := "cybericebox.com/lab"
+			if pool == "lab-control" {
+				wantTol = "cybericebox.com/lab-control"
 			}
-			if _, mixed := spec.NodeSelector["cybericebox.com/lab"]; mixed {
-				t.Errorf("%s: own selector must replace the lab one: %v", name, spec.NodeSelector)
+			if !hasToleration(spec, wantTol) {
+				t.Errorf("%s: tolerations %v lack the taint of the pool", name, spec.Tolerations)
 			}
-			if !hasToleration(spec, "own-"+comp) || hasToleration(spec, "cybericebox.com/lab") {
-				t.Errorf("%s: tolerations %v", name, spec.Tolerations)
+			other := "cybericebox.com/lab-control"
+			if pool == "lab-control" {
+				other = "cybericebox.com/lab"
 			}
-			if w, ok := want[name]; ok && w != comp {
-				t.Errorf("%s: %s", name, comp)
-			}
-			checked++
-		}
-		if checked < 5 {
-			t.Errorf("checked only %d pods of %v", checked, keys(specs))
-		}
-	})
-	t.Run("nothing set renders nothing", func(t *testing.T) {
-		for name, spec := range placementSpecs(t) {
-			if strings.HasPrefix(name, "DaemonSet/laboratory-node-agent") {
-				if len(spec.NodeSelector) != 0 {
-					t.Errorf("%s: %v", name, spec.NodeSelector)
-				}
-				continue
-			}
-			tolerations := spec.Tolerations
-			if strings.HasPrefix(name, "DaemonSet/") && len(tolerations) == 1 && tolerations[0].Key == "cybericebox.com/node-starting" {
-				tolerations = nil // a DaemonSet always tolerates the startup taint of a new lab worker
-			}
-			if len(spec.NodeSelector) != 0 || len(tolerations) != 0 {
-				t.Errorf("%s: %v %v", name, spec.NodeSelector, spec.Tolerations)
+			if hasToleration(spec, other) {
+				t.Errorf("%s: tolerates the taint of the other pool: %v", name, spec.Tolerations)
 			}
 		}
-	})
+		for name := range specs {
+			if _, ok := podPools[name]; !ok && (mode != "daemonset" || name != "DaemonSet/laboratory-proxy") {
+				t.Errorf("%s is a pod of the chart with no pool listed in this test", name)
+			}
+		}
+	}
+}
+
+// With nothing set no pod tolerates anything but what its kind needs: the startup taint of a new lab worker for a DaemonSet of the lab pool, and the
+// taints Cilium and the kubelet put on a node that is not ready for the pods that must be there to make it ready.
+func TestNothingSetRendersNoTolerationsOfAPool(t *testing.T) {
+	for name, spec := range placementSpecs(t, everyPod...) {
+		for _, tol := range spec.Tolerations {
+			switch tol.Key {
+			case "cybericebox.com/node-starting", "node.cilium.io/agent-not-ready":
+			default:
+				t.Errorf("%s tolerates %v with no pool toleration set", name, tol)
+			}
+		}
+		if strings.HasPrefix(name, "Deployment/") && len(spec.Tolerations) != 0 {
+			t.Errorf("%s: %v", name, spec.Tolerations)
+		}
+	}
+}
+
+// The selector cannot be set by a values file, wherever it was a value before, and the tolerations belong to the pool.
+func TestThePoolSelectorIsNotAValue(t *testing.T) {
+	for _, c := range []string{"operator", "agent", "registry", "labScheduler", "proxy", "proxy.wg", "nodeAgent", "nodeState", "terminal", "checks", "pools.lab", "pools.labControl"} {
+		if out, err := helmTemplate(t, "--set-string", c+".nodeSelector.own=x"); err == nil {
+			t.Errorf("%s.nodeSelector was accepted:\n%s", c, out)
+		} else if !strings.Contains(out, c+".nodeSelector is not a value") {
+			t.Errorf("%s.nodeSelector: unclear refusal:\n%s", c, out)
+		}
+	}
+	for _, c := range []string{"operator", "agent", "registry", "labScheduler", "proxy", "proxy.wg"} {
+		if out, err := helmTemplate(t, "--set", c+".tolerations[0].key=x", "--set", c+".tolerations[0].operator=Exists"); err == nil {
+			t.Errorf("%s.tolerations was accepted:\n%s", c, out)
+		}
+	}
+}
+
+// The helper is one: the earlier fallback to a placement of all lab pods is gone.
+func TestNoPlacementFallbackIsLeft(t *testing.T) {
+	for _, dir := range []string{"../../charts/laboratory/templates", "../../charts/laboratory/values.yaml"} {
+		if out := grepTree(t, dir, "laboratory\\.placement|"+"lab"+"Workloads"); out != "" {
+			t.Errorf("a placement fallback is left:\n%s", out)
+		}
+	}
+	if !strings.Contains(readChart(t, "templates/_helpers.tpl"), `define "laboratory.pool"`) {
+		t.Error("the helper laboratory.pool is missing")
+	}
 }
 
 func keys(m placedSpecs) []string {

@@ -86,11 +86,14 @@ KIND_CONFIG    ?= hack/kind/kind-config.yaml
 .PHONY: cluster-up
 cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 lab workers); for test-e2e name it kind: make cluster-up KIND_CLUSTER_NAME=kind
 	$(KIND) create cluster --config $(KIND_CONFIG) --name $(KIND_CLUSTER_NAME)
+	$(KUBECTL) label node $(KIND_CLUSTER_NAME)-control-plane node-restriction.kubernetes.io/cib-pool=lab-control --overwrite
+	$(KUBECTL) label node $(KIND_CLUSTER_NAME)-worker $(KIND_CLUSTER_NAME)-worker2 node-restriction.kubernetes.io/cib-pool=lab --overwrite
 	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
 
 .PHONY: cluster-down
 cluster-down: ## Delete Kind cluster
 	$(KIND) delete cluster --name $(KIND_CLUSTER_NAME)
+	-$(CONTAINER_TOOL) rm -f registry.e2e.test
 
 .PHONY: docker-build-controller docker-build-agent docker-build-proxy docker-build-node docker-build-lab
 docker-build-controller: ## Build the controller (operator) image
@@ -132,11 +135,10 @@ kind-demux-up: ## Create the demux kind cluster (icebox-demux, Cilium 1.20.2, no
 kind-demux-e2e: ## Build the proxy image and run the demux e2e on icebox-demux (KIND_DEMUX_MODE=upgrade|userspace|tc|xdp|detach)
 	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
 	KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) hack/kind-demux/e2e.sh $(KIND_DEMUX_MODE)
-kind-demux-e2e-all: ## Build the proxy image once and run the demux e2e: upgrade from develop, userspace, tc, xdp, LB-IPAM, detach back to userspace
+kind-demux-e2e-all: ## Build the proxy image once and run the demux e2e: upgrade from develop, userspace, tc, xdp, detach back to userspace
 	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
-	@summary="$$(mktemp)"; for m in upgrade userspace tc xdp lbipam detach; do \
-		if [ $$m = lbipam ]; then run="hack/kind-demux/lbipam.sh"; else run="hack/kind-demux/e2e.sh $$m"; fi; \
-		KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) KIND_DEMUX_SUMMARY="$$summary" $$run || { cat "$$summary"; rm -f "$$summary"; exit 1; }; \
+	@summary="$$(mktemp)"; for m in upgrade userspace tc xdp detach; do \
+		KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) KIND_DEMUX_SUMMARY="$$summary" hack/kind-demux/e2e.sh $$m || { cat "$$summary"; rm -f "$$summary"; exit 1; }; \
 	done; printf '\n== summary\n'; cat "$$summary"; rm -f "$$summary"
 kind-demux-down: ## Delete the demux kind cluster and its client containers
 	hack/kind-demux/down.sh
@@ -398,32 +400,25 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KIND ?= kind
-KUSTOMIZE ?= $(LOCALBIN)/kustomize
-CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+# kustomize, controller-gen and golangci-lint come from mise (mise.toml pins them): run the targets through `mise run ...`.
+KUSTOMIZE ?= kustomize
+CONTROLLER_GEN ?= controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
-GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GOLANGCI_LINT ?= golangci-lint
 
 ## Tool Versions
 # Tools are built with the toolchain of go.mod, not whatever go is installed: a tool
 # built by an older Go cannot parse the newer standard library (generic methods).
 GO_TOOLCHAIN ?= $(shell go env GOVERSION)
-KUSTOMIZE_VERSION ?= v5.8.2
-CONTROLLER_TOOLS_VERSION ?= v0.22.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
-GOLANGCI_LINT_VERSION ?= v2.14.0
 
-.PHONY: kustomize
-kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
-$(KUSTOMIZE): $(LOCALBIN)
-	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
-
-.PHONY: controller-gen
-controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
-$(CONTROLLER_GEN): $(LOCALBIN)
-	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
+# The tools mise installs: these targets only check that they are on PATH.
+.PHONY: kustomize controller-gen golangci-lint
+kustomize controller-gen golangci-lint:
+	@command -v $@ >/dev/null 2>&1 || { echo "$@ is not on PATH: run this target through mise (mise install; mise run make <target>)" >&2; exit 1; }
 
 .PHONY: setup-envtest
 setup-envtest: envtest ## Download the binaries required for ENVTEST in the local bin directory.
@@ -437,11 +432,6 @@ setup-envtest: envtest ## Download the binaries required for ENVTEST in the loca
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
-
-.PHONY: golangci-lint
-golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
-$(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
@@ -458,17 +448,3 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
-
-# Branch cycle (scripts/dev.sh, the same in every repository), see CONTRIBUTING.md:
-#   make dev-start NAME=<x>      feature/<x> from the fresh develop
-#   make dev-push [MINOR=1]      push, open or update the PR into develop, auto-merge when green (MINOR=1 labels it "minor")
-#   make dev-done                back to develop, pull, delete the merged local branch
-.PHONY: dev-start dev-push dev-done
-dev-start:
-	@NAME='$(NAME)' scripts/dev.sh start
-
-dev-push:
-	@MINOR='$(MINOR)' scripts/dev.sh push
-
-dev-done:
-	@scripts/dev.sh done

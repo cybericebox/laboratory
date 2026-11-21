@@ -32,9 +32,7 @@ type LabGroupVPNSpecApplyConfiguration struct {
 	// The agent writes it explicitly (and keeps Disabled equal to its opposite), off unless the caller asks for it.
 	Enabled *bool `json:"enabled,omitempty"`
 	// Disabled is the old switch, kept so a group made before Enabled means the same: true stops the VPN server (no pod). Enabled wins
-	// when it is set.
-	//
-	// Deprecated: use Enabled.
+	// when it is set. New code reads VPNEnabled(), not this field.
 	Disabled *bool `json:"disabled,omitempty"`
 	// Deprecated: suspension now always keeps WireGuard and the internet
 	// gateway running while stopping only task devices.

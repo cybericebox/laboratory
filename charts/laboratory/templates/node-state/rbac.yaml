@@ -37,12 +37,6 @@ rules:
     resources: [ pods ]
     verbs: [ patch ]
   {{- end }}
-  {{- if .Values.devices.statePersistence.enabled }}
-  # The source reader requests only pull Secrets referenced by a freshly UID/node/container-bound Pod. No Secret list/watch/write is granted.
-  - apiGroups: [ "" ]
-    resources: [ secrets ]
-    verbs: [ get ]
-  {{- end }}
   # The annotation of its own node (cybericebox.com/state-persistence); the admission policy laboratory-node-state-annotation limits the
   # patch to that one annotation of its own node. No node patch privilege exists without it.
   {{- if .Values.operator.admissionPolicy.enabled }}

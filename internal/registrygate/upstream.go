@@ -18,6 +18,34 @@ import (
 type Registry struct {
 	Name string
 	URL  *url.URL
+	// AuthHosts are the hosts besides the registry's own whose token endpoint this registry's challenge may name (Docker Hub:
+	// auth.docker.io). A realm anywhere else is refused: the credentials of a pull are never sent to a host the entry does not name.
+	AuthHosts []string
+}
+
+// realmAllowed says whether a token realm may receive the pull's credentials: https, on the registry's own host or one of its AuthHosts;
+// plain http only for a registry that is itself plain http (inside the cluster, the tests), on its own host.
+func (r Registry) realmAllowed(ru *url.URL) bool {
+	host := ru.Hostname()
+	if host == "" {
+		return false
+	}
+	switch ru.Scheme {
+	case "https":
+	case schemeHTTP:
+		return r.URL.Scheme == schemeHTTP && ru.Host == r.URL.Host
+	default:
+		return false
+	}
+	if host == r.URL.Hostname() {
+		return true
+	}
+	for _, h := range r.AuthHosts {
+		if strings.EqualFold(h, host) {
+			return true
+		}
+	}
+	return false
 }
 
 // Creds are the credentials of a pull. Empty is anonymous.
@@ -86,6 +114,9 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 	if errors.Is(err, errTokenRefused) {
 		return Denied, nil, nil
 	}
+	if errors.Is(err, errBadRealm) {
+		return BadRealm, nil, err
+	}
 	if err != nil {
 		return Unreachable, nil, err
 	}
@@ -107,6 +138,9 @@ func (u *Upstream) Head(ctx context.Context, reg Registry, o Object, c Creds, cr
 	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
 		return Denied, nil, nil
+	}
+	if errors.Is(err, errBadRealm) {
+		return BadRealm, nil, err
 	}
 	if err != nil {
 		return Unreachable, nil, err
@@ -168,6 +202,9 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 	if errors.Is(err, errTokenRefused) {
 		return nil, Denied, nil
 	}
+	if errors.Is(err, errBadRealm) {
+		return nil, BadRealm, err
+	}
 	if err != nil {
 		return nil, Unreachable, err
 	}
@@ -222,7 +259,7 @@ func (u *Upstream) do(ctx context.Context, method string, reg Registry, o Object
 			return resp, nil // a plain 401: a refusal, with nothing to answer
 		}
 		drain(resp)
-		if auth, err = u.answer(ctx, challenge, o.Repo, c, tokenKey); err != nil {
+		if auth, err = u.answer(ctx, reg, challenge, o.Repo, c, tokenKey); err != nil {
 			return nil, err
 		}
 		if auth == "" { // nothing to answer with: the registry's 401 stands
@@ -247,7 +284,7 @@ func (u *Upstream) cachedAuth(key string) string {
 
 // answer turns a WWW-Authenticate challenge into an Authorization value: a Bearer token fetched with the credentials (or none), or
 // Basic with the credentials. An empty answer means there is nothing to send (anonymous, and the registry wants Basic).
-func (u *Upstream) answer(ctx context.Context, challenge, repo string, c Creds, tokenKey string) (string, error) {
+func (u *Upstream) answer(ctx context.Context, reg Registry, challenge, repo string, c Creds, tokenKey string) (string, error) {
 	scheme, params := parseChallenge(challenge)
 	switch scheme {
 	case "basic":
@@ -258,8 +295,8 @@ func (u *Upstream) answer(ctx context.Context, challenge, repo string, c Creds, 
 	case "bearer":
 		realm := params["realm"]
 		ru, err := url.Parse(realm)
-		if err != nil || realm == "" || ru.Scheme != "https" && ru.Scheme != schemeHTTP {
-			return "", fmt.Errorf("bad token realm %q", realm)
+		if err != nil || realm == "" || !reg.realmAllowed(ru) {
+			return "", errBadRealm // the realm is not echoed: it is the upstream's word
 		}
 		q := ru.Query()
 		if s := params["service"]; s != "" {
@@ -314,6 +351,9 @@ func (u *Upstream) answer(ctx context.Context, challenge, repo string, c Creds, 
 
 // errTokenRefused: the token endpoint refused the credentials, which is a denial of the pull, not an outage.
 var errTokenRefused = errors.New("the token endpoint refused the credentials")
+
+// errBadRealm: the challenge names a token endpoint this registry may not use; no credential was sent to it.
+var errBadRealm = errors.New("the token realm of the challenge is not one this registry may use")
 
 func basic(c Creds) string {
 	r := &http.Request{Header: http.Header{}}

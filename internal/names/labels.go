@@ -1,6 +1,9 @@
 package names
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 
 	pubnames "github.com/cybericebox/laboratory/pkg/names"
@@ -26,10 +29,18 @@ const (
 	// sees the environment, never the labels).
 	LabelLabUID    = LabelPrefix + "lab-uid"
 	LabelDeviceUID = LabelPrefix + "device-uid"
+	// LabelGroupName is the name of the LabGroup (the CR name, names.EncodeName of the platform's group id) on the pod of a device. The
+	// device access service requires it to equal the group of a console grant: lab and device names repeat across groups, so this binds a
+	// grant to the namespace it is for. It is operator-internal (LabelPrefix): a participant cannot set it on a pod.
+	LabelGroupName = LabelPrefix + "group-name"
 	// LabelTerminal is "true" on the pod of a device whose lab asks for a console. The device access service reads it from the sandbox
 	// of the pod in the container runtime and refuses every device without it, so the proxy is not the only place that knows which
 	// devices have a console.
 	LabelTerminal = LabelPrefix + "terminal"
+	// LabelTerminalSpec is the digest (TerminalSpecHash) of the terminal command and user the lab author set, stamped by the operator next to
+	// LabelTerminal. The device access service runs only the command and user whose digest equals it, so a compromised proxy that holds a
+	// valid grant cannot choose a program or a user: it can only repeat what the Device says. Pod labels cannot carry a list, hence a digest.
+	LabelTerminalSpec = LabelPrefix + "terminal-spec"
 	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
@@ -280,3 +291,17 @@ func CheckerLabRoleName(lab string) string { return "checker-checks-" + lab }
 // IsEDAIface is true for the interface name of the EDA channel in a pod: EDAIface, and for pods created before the rename
 // LegacyAccessPortIface.
 func IsEDAIface(name string) bool { return name == EDAIface || name == LegacyAccessPortIface }
+
+// TerminalSpecHash is the label value (LabelTerminalSpec) of a terminal command and user: the first 32 hex characters of the SHA-256 of
+// their JSON, an absent command being the empty list.
+func TerminalSpecHash(command []string, user string) string {
+	if command == nil {
+		command = []string{}
+	}
+	raw, _ := json.Marshal(struct {
+		C []string `json:"c"`
+		U string   `json:"u"`
+	}{command, user})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:16])
+}

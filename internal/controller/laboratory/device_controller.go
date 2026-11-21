@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net"
 	"regexp"
-	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -68,8 +67,6 @@ type DeviceReconciler struct {
 	Registry SnapshotRegistry
 	// Recorder records the events of a Device (a lab pull Secret that is missing); nil records none.
 	Recorder record.EventRecorder
-	// pullWaiting holds the devices whose wait for the lab's pull Secret was already told.
-	pullWaiting sync.Map
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would start a device twice.
 	Reader client.Reader
@@ -103,14 +100,10 @@ type DeviceReconciler struct {
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var device laboratoryv1alpha1.Device
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
-		if errors.IsNotFound(err) {
-			r.pullWaiting.Delete(req.NamespacedName)
-		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
-		r.pullWaiting.Delete(req.NamespacedName)
 		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -256,7 +249,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 			if stderrors.Is(err, errProfileUnsupported) {
 				return ctrl.Result{}, nil // refused for good, with an event: nothing to retry
 			}
-			return r.pullSecretWait(ctx, device, err)
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
@@ -290,11 +283,8 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err := r.deleteLegacyPodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
 	}
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
-		dep.Spec.Replicas = ptrInt32(replicas)
-		if err := r.Update(ctx, &dep); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.syncWorkload(ctx, device, &dep, replicas); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
@@ -310,6 +300,54 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// syncWorkload writes the replicas and, for a device on the cache, the images of the Deployment, in one update when either differs.
+func (r *DeviceReconciler) syncWorkload(ctx context.Context, device *laboratoryv1alpha1.Device, dep *appsv1.Deployment, replicas int32) error {
+	changed := r.convergeDeviceImages(device, dep)
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
+		dep.Spec.Replicas = ptrInt32(replicas)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return r.Update(ctx, dep)
+}
+
+// convergeDeviceImages brings the Deployment of a device made by an earlier version to what a new one is made with: the cache references with
+// the tenant segment, the pull policy Always, and no image pull secret. A reference without the segment is refused by the registry gate,
+// so such a Deployment would fail at its next pull. The pod template changes, and the Recreate rollout restarts the device: the upgrade is
+// made between events (the release notes say so). It touches nothing else and does nothing for a device that is not on the cache or whose
+// Deployment already matches; the pods of a state device are made new for every incarnation and need no convergence.
+// It reports whether it changed the Deployment.
+func (r *DeviceReconciler) convergeDeviceImages(device *laboratoryv1alpha1.Device, dep *appsv1.Deployment) bool {
+	if device.Spec.ImageMirror == "" {
+		return false
+	}
+	_, _, _, want := r.workloadTemplate(device)
+	have := &dep.Spec.Template.Spec
+	changed := false
+	sync := func(cur, wanted []corev1.Container) {
+		for i := range cur {
+			for j := range wanted {
+				if cur[i].Name != wanted[j].Name {
+					continue
+				}
+				if cur[i].Image != wanted[j].Image || cur[i].ImagePullPolicy != wanted[j].ImagePullPolicy {
+					cur[i].Image, cur[i].ImagePullPolicy = wanted[j].Image, wanted[j].ImagePullPolicy
+					changed = true
+				}
+			}
+		}
+	}
+	sync(have.InitContainers, want.InitContainers)
+	sync(have.Containers, want.Containers)
+	if len(have.ImagePullSecrets) > 0 {
+		have.ImagePullSecrets = nil
+		changed = true
+	}
+	return changed
 }
 
 // deleteWithdrawnWorkload deletes the Deployment of a device the scheduler withdrew (its group did not get every pod a node
@@ -505,8 +543,9 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 	labels[names.LabelLabUID] = parentUID
 	labels[names.LabelDeviceUID] = string(device.UID)
 	// The device access service reads this label from the runtime and refuses a console to a device without it.
-	if enabled, _, _ := device.TerminalSettings(); enabled {
+	if enabled, command, user := device.TerminalSettings(); enabled {
 		labels[names.LabelTerminal] = valueTrue
+		labels[names.LabelTerminalSpec] = names.TerminalSpecHash(command, user)
 	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
@@ -528,6 +567,8 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 		hostUsers := false
 		podSpec.HostUsers = &hostUsers
 	}
+	// Every container and init container with a cache reference pulls with Always; the pod has no image pull secret.
+	setPullPolicies(&podSpec, device.Spec.ImageMirror)
 	return labels, selectorLabels, annotations, podSpec
 }
 
@@ -537,7 +578,7 @@ func (r *DeviceReconciler) refuseUncached(device *laboratoryv1alpha1.Device) err
 	if device.Spec.ImageMirror == "" {
 		return nil
 	}
-	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.For(names.TenantOf(device.Labels))
 	for _, img := range []string{device.Spec.Image, r.NetConfigImage} {
 		if _, err := rw.RewriteRequired(img); err != nil {
 			return err
@@ -552,7 +593,7 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 	if device.Spec.ImageMirror == "" {
 		return image
 	}
-	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.For(names.TenantOf(device.Labels))
 	return rw.RewritePinned(image, device.Spec.ImageDigests[image])
 }
 
@@ -567,7 +608,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 		return err
 	}
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device)
-	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
+	if err := r.stampGroupName(ctx, device, labels); err != nil {
 		return err
 	}
 
@@ -787,6 +828,24 @@ func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace stri
 		return false, err
 	}
 	return group.Spec.Suspended, nil
+}
+
+// stampGroupName puts the name of the device's LabGroup on the labels of its pod (names.LabelGroupName). The device access service requires
+// it to equal the group of a console grant: lab and device names repeat across groups, so it is what binds a grant to the namespace it is for.
+// The tenant of the group goes with it (names.LabelTenant, names.TenantOf of the LabGroup): the service requires it to equal the issuer of the
+// grant, so a tenant that holds a valid key cannot open the device of another tenant's group. Both labels are operator-made
+// (names.LabelPrefix labels are never copied from a user), so a participant cannot set them. A namespace with no LabGroup gets neither, and
+// then no console opens in it.
+func (r *DeviceReconciler) stampGroupName(ctx context.Context, device *laboratoryv1alpha1.Device, labels map[string]string) error {
+	group, err := r.labGroupOfNamespace(ctx, device.Namespace)
+	if err != nil {
+		return err
+	}
+	if group != nil {
+		labels[names.LabelGroupName] = group.Name
+		labels[names.LabelTenant] = names.TenantOf(group.Labels)
+	}
+	return nil
 }
 
 // labGroupOfNamespace returns the LabGroup named by the namespace label, or the

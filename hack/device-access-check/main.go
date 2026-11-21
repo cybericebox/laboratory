@@ -3,8 +3,9 @@
 // device-access-check drives a running device access service against one real lab device and reports what it saw. It is run by
 // hack/device-access-check.sh INSIDE the service pod on the node of the device (the listener is bound to the pod IP and the network policy
 // admits only the L7 proxy, so a port-forward would not reach it), once for a device on a runc node and once for a device on a Kata node.
-// It signs its open requests with the secret the pod has mounted, so it exercises the authentication too. It was written on a machine without a Linux node and has NOT been run: treat the first run as part of the
-// verification, not as a formality.
+// Its open requests carry a console grant (a JWS signed by the tenant's key, aud laboratory-device-access, kind "console", for this group, lab
+// and device), so it exercises the authentication too; the grant is read from a file and never printed. It was written on a machine without a
+// Linux node and has NOT been run: treat the first run as part of the verification, not as a formality.
 //
 //	device-access-check -namespace <ns> -lab <lab> -device <device> [-user <name>] [-command /bin/sh]
 package main
@@ -12,8 +13,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -34,7 +33,9 @@ import (
 
 var (
 	addr    = flag.String("addr", os.Getenv("LISTEN"), "address of the service (the LISTEN of the pod: <pod ip>:<port>)")
-	secret  = flag.String("secret-file", "/etc/device-access/auth/current", "the secret shared with the proxy")
+	grantF  = flag.String("grant-file", "", "the file of the console grant for this group, lab and device (the platform signs it; the request must agree with it)")
+	client  = flag.String("client", "check", "the client (sub) of the grant")
+	group   = flag.String("group", "check", "the group (group_id) of the grant")
 	ns      = flag.String("namespace", "", "namespace of the lab group")
 	labName = flag.String("lab", "", "lab name")
 	device  = flag.String("device", "", "device name (its lab must ask for a terminal)")
@@ -67,15 +68,13 @@ func open(ctx context.Context, req wire.OpenRequest) (*session, wire.OpenReply, 
 		return nil, wire.OpenReply{}, err
 	}
 	c.SetReadLimit(wire.MaxFrame)
-	key, err := os.ReadFile(*secret)
+	raw, err := os.ReadFile(*grantF)
 	if err != nil {
 		return nil, wire.OpenReply{}, err
 	}
-	if err := wire.Sign([]byte(strings.TrimRight(string(key), "\r\n")), &req, time.Now()); err != nil {
-		return nil, wire.OpenReply{}, err
-	}
-	raw, _ := json.Marshal(req)
-	if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
+	req.Grant = strings.TrimSpace(string(raw))
+	body, _ := json.Marshal(req)
+	if err := c.Write(ctx, websocket.MessageText, body); err != nil {
 		return nil, wire.OpenReply{}, err
 	}
 	typ, msg, err := c.Read(ctx)
@@ -88,7 +87,7 @@ func open(ctx context.Context, req wire.OpenRequest) (*session, wire.OpenReply, 
 }
 
 func consoleReq() wire.OpenRequest {
-	r := wire.OpenRequest{Kind: wire.KindConsole, Namespace: *ns, Lab: *labName, Device: *device, User: *user, Cols: 100, Rows: 30, Client: "check", Group: "check"}
+	r := wire.OpenRequest{Kind: wire.KindConsole, Namespace: *ns, Lab: *labName, Device: *device, User: *user, Cols: 100, Rows: 30, Client: *client, Group: *group}
 	if *command != "" {
 		r.Command = strings.Fields(*command)
 	}
@@ -232,7 +231,7 @@ func main() {
 		if len(parts) != 3 {
 			continue
 		}
-		x, rr, err := open(ctx, wire.OpenRequest{Kind: wire.KindConsole, Namespace: parts[0], Lab: parts[1], Device: parts[2], Client: "check", Group: "check"})
+		x, rr, err := open(ctx, wire.OpenRequest{Kind: wire.KindConsole, Namespace: parts[0], Lab: parts[1], Device: parts[2], Client: *client, Group: *group})
 		check("refused: "+c, err == nil && !rr.OK, fmt.Sprint(err, rr.Error))
 		if x != nil {
 			x.c.CloseNow()

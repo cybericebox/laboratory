@@ -24,7 +24,7 @@ type Resolver interface {
 // RewritePinned is Rewrite for a reference pinned to digest: the tag is
 // replaced by the digest, so every pod of a lab pulls the very same image.
 // A reference the cache does not serve is returned unchanged.
-func (r Rewriter) RewritePinned(ref, digest string) string {
+func (r Scoped) RewritePinned(ref, digest string) string {
 	if digest == "" {
 		return r.Rewrite(ref)
 	}

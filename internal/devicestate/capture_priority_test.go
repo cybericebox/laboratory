@@ -2,11 +2,14 @@ package devicestate
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
 // Inspect is before CaptureRequired's shared tracked mutex. Holding it here
@@ -39,7 +42,6 @@ func requiredCapturePriority(t *testing.T, dispatch string) {
 	r.e.Poll = 5 * time.Millisecond
 	clock := &testClock{t: time.Date(2026, 10, 9, 4, 8, 22, 987654321, time.UTC)}
 	r.e.Now = clock.now
-	r.e.MinPushInterval = time.Minute
 	req := captureRequest(r)
 	r.cl.mu.Lock()
 	r.cl.pods = []PodInfo{r.pod}
@@ -63,12 +65,6 @@ func requiredCapturePriority(t *testing.T, dispatch string) {
 	r.e.mu.Lock()
 	tr := r.e.tracked[r.pod.ContainerID]
 	r.e.mu.Unlock()
-	tr.mu.Lock() // The prior push record is complete before moving exact time.
-	priorPushes := len(tr.pushes)
-	tr.mu.Unlock()
-	if priorPushes != 1 {
-		t.Fatalf("initial snapshot push record is incomplete: %d", priorPushes)
-	}
 	// This is exact native push eligibility, including its fractional timestamp.
 	clock.advance(time.Minute)
 	gate := &priorityInspectRuntime{fakeRuntime: r.rt, entered: make(chan struct{}), release: make(chan struct{})}
@@ -238,20 +234,19 @@ func TestRequiredCapturePendingClearStaleCancelAndExitResumeExistingWatcher(t *t
 func TestRequiredCapturePendingPriorityPreservesBudgetFailure(t *testing.T) {
 	for _, limit := range []string{"interval", "budget"} {
 		t.Run(limit, func(t *testing.T) {
-			r, clock := rigWithClock(t)
+			r, _ := rigWithClock(t)
 			req := captureRequest(r)
 			tr := r.track(t)
 			defer r.e.stopAll()
 			if err := push(t, r, tr, "work", "prior good"); err != nil {
 				t.Fatal(err)
 			}
-			if limit == "interval" {
-				r.e.MinPushInterval = time.Minute
-				clock.advance(29 * time.Second) // Residual cannot fit the 30s capture deadline.
-			} else {
-				r.e.PushBudget = 1
-				r.e.PushBudgetWindow = time.Hour
+			// The gate says how long the device has to wait; the required capture does not push past it.
+			code := snapshot.CodePushInterval
+			if limit == "budget" {
+				code = snapshot.CodePushBudget
 			}
+			r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: code, retry: 3600, msg: limit})
 			r.rt.setDiff(tarOf(map[string]string{"work": "required changed"}))
 			result, err := r.e.CaptureRequired(context.Background(), r.pod, req)
 			if err == nil || result.Result != "Failed" || result.Image != "" {
@@ -283,11 +278,10 @@ func TestRequiredCapturePendingFailedCurrentRequestKeepsPriorityUntilFreshClear(
 			if err := push(t, r, tr, "work", "prior good"); err != nil {
 				t.Fatal(err)
 			}
-			r.e.MinPushInterval = time.Minute
 			if failure == "quota" {
 				r.pod.Policy.WriteQuota = 1
 			} else {
-				clock.advance(29 * time.Second) // Residual cannot fit the 30s capture deadline.
+				r.gate.refuse(&gateAnswer{status: http.StatusTooManyRequests, code: snapshot.CodePushInterval, retry: 3600, msg: failure})
 			}
 			r.rt.setDiff(tarOf(map[string]string{"work": "required changed"}))
 			p := r.pod
@@ -306,6 +300,7 @@ func TestRequiredCapturePendingFailedCurrentRequestKeepsPriorityUntilFreshClear(
 			// Make rate and quota eligible again without clearing the actual API
 			// request. A completed failed worker must not reopen ordinary pushing.
 			clock.advance(10 * time.Minute)
+			r.gate.refuse(nil) // the gate lets the device push again
 			tr.mu.Lock()
 			tr.pod.Policy = normalPolicy
 			tr.mu.Unlock()
