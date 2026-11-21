@@ -169,18 +169,14 @@ jobs:
         run: |
           printf '%s' "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
           .github/scripts/ci.sh chart src/charts/laboratory "${VERSION#v}" "$VERSION" "$RUNNER_TEMP/dist"
-      - name: Create the git tag and the GitHub release
+      # A draft that gets its asset and is published last (the repository's releases are immutable: a published one takes no asset). The
+      # tag is created at the publication, at SHA. A re-run continues in whatever state the release is (.github/scripts/release.sh).
+      - name: Create the release as a draft, add the chart, publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            at=$(git rev-parse "refs/tags/$VERSION^{commit}")
-            [[ "$at" == "$SHA" ]] || { echo "::error::$VERSION exists at ${at:0:7}, not at ${SHA:0:7}"; exit 1; }
-            echo "release $VERSION exists"
-          else
-            gh release create "$VERSION" --target "$SHA" --title "$VERSION" --generate-notes --latest="$LATEST"
-          fi
-          gh release upload "$VERSION" "$RUNNER_TEMP"/dist/laboratory-*.tgz --clobber
+          git fetch --tags --force --quiet
+          .github/scripts/release.sh "$VERSION" "$SHA" "$LATEST" "$RUNNER_TEMP/dist/laboratory-${VERSION#v}.tgz"
 
   main:
     name: Merge the line into main

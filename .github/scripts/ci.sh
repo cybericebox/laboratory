@@ -8,7 +8,7 @@
 #   ci.sh retag IMAGE SRC DST                  DST becomes another name of SRC (no rebuild). A version tag is immutable: when it exists
 #                                              it must be the same digest (nothing happens), otherwise exit 1. Any other tag (latest) moves.
 #   ci.sh chart CHART_DIR VERSION APP_VERSION OUT   package the Helm chart and push it to oci://registry-1.docker.io/cybericebox (the tgz goes
-#                                              to OUT). A version that exists must hold the same chart (nothing happens), otherwise exit 1.
+#                                              to OUT, as pulled back from the registry). A version that exists must hold the same chart (nothing happens), otherwise exit 1.
 #   ci.sh hub-tags IMAGE                       every tag of a Docker Hub repository, one per line
 #   ci.sh hub-delete IMAGE TAG                 delete one tag
 #   ci.sh delete-matching DRY_RUN REGEX IMAGE...  delete the tags that match the whole REGEX (ERE) in every repository
@@ -148,6 +148,10 @@ chart() {
   else
     retry helm push "$out/laboratory-$version.tgz" "$oci"
   fi
+  # The file of OUT is the registry's own copy, byte for byte: packaging twice does not give the same bytes, and the release asset must
+  # be the very chart that the registry holds (publish_release compares them by digest on a re-run).
+  retry helm pull "$oci/laboratory" --version "$version" --destination "$tmp/pulled" >/dev/null
+  cp "$tmp/pulled/laboratory-$version.tgz" "$out/laboratory-$version.tgz"
   rm -rf "$tmp"
 }
 
