@@ -1,6 +1,7 @@
 package grant_test
 
 import (
+	"crypto/ed25519"
 	"strings"
 	"testing"
 	"time"
@@ -80,8 +81,8 @@ func TestVerifyToleratesTheClockOnlyByTheLeeway(t *testing.T) {
 	if _, err := grant.Verify(k.Sign(t, k.Claims(t0.Add(time.Minute), time.Hour, host)), opts(k)); err == nil {
 		t.Fatal("a grant issued a minute ahead is refused")
 	}
-	if _, err := grant.Verify(k.Sign(t, k.Claims(t0.Add(-time.Hour-20*time.Second), time.Hour, host)), opts(k)); err != nil {
-		t.Fatalf("a grant that ended 20s ago is within the leeway: %v", err)
+	if _, err := grant.Verify(k.Sign(t, k.Claims(t0.Add(-time.Hour-20*time.Second), time.Hour, host)), opts(k)); err == nil {
+		t.Fatal("a grant that ended 20s ago is refused: the leeway does not extend exp")
 	}
 }
 
@@ -101,3 +102,43 @@ func TestVerifyConsoleNeedsBothAudiencesToServeBothVerifiers(t *testing.T) {
 }
 
 func with(c grant.Claims, f func(*grant.Claims)) grant.Claims { f(&c); return c }
+
+// The key is looked up by the issuer the grant names: the key id of tenant B does not verify a grant whose iss says tenant A, even when
+// both tenants use the same key id.
+func TestAKeyOfAnotherTenantDoesNotVerifyAGrantOfThisOne(t *testing.T) {
+	acme, beta := granttest.NewKey(t, "acme", "k1"), granttest.NewKey(t, "beta", "k1")
+	lookup := func(tenant, id string) (ed25519.PublicKey, bool) {
+		for _, k := range []granttest.Key{acme, beta} {
+			if k.Tenant == tenant && k.ID == id {
+				return k.Public, true
+			}
+		}
+		return nil, false
+	}
+	o := opts(acme)
+	o.Keys = lookup
+	// signed by beta, claiming to be acme (iss acme, kid k1): the key looked up is acme's
+	c := beta.Claims(t0, time.Hour, host)
+	c.Issuer = "acme"
+	if _, err := grant.Verify(beta.Sign(t, c), o); err == nil {
+		t.Fatal("beta's signature verified as acme's grant")
+	}
+	// signed by beta as beta: valid, and the claims say beta (the caller binds that to the tenant of the object)
+	got, err := grant.Verify(beta.Sign(t, beta.Claims(t0, time.Hour, host)), o)
+	if err != nil || got.Tenant() != "beta" {
+		t.Fatalf("beta's own grant: %v %+v", err, got)
+	}
+}
+
+// A grant is valid until its exp exactly: the leeway is for the clock of the issuer ahead (nbf, iat), never for a grant that has ended.
+func TestVerifyRefusesAGrantAtItsExp(t *testing.T) {
+	k := granttest.NewKey(t, "acme", "k1")
+	raw := k.Sign(t, k.Claims(t0.Add(-time.Hour), time.Hour, host)) // exp == t0
+	if _, err := grant.Verify(raw, opts(k)); err == nil {
+		t.Fatal("a grant verified at its exp")
+	}
+	raw = k.Sign(t, k.Claims(t0.Add(-time.Hour+time.Second), time.Hour, host)) // exp == t0 + 1s
+	if _, err := grant.Verify(raw, opts(k)); err != nil {
+		t.Fatalf("a grant one second before its exp: %v", err)
+	}
+}

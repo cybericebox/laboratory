@@ -219,13 +219,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Strip challenge cookie before forwarding.
 	r = r.Clone(r.Context())
-	var kept []string
-	for _, c := range r.Cookies() {
-		if c.Name != h.cookieName {
-			kept = append(kept, c.Name+"="+c.Value)
-		}
-	}
-	r.Header.Set("Cookie", strings.Join(kept, "; "))
+	stripCookie(r, h.cookieName)
 	stripClientAddress(r.Header)
 	r.Header.Set("X-Forwarded-Proto", schemeHTTPS)
 
@@ -365,7 +359,8 @@ func filterSetCookies(hdr http.Header, keep func(name, domain string) bool) {
 		for _, attr := range parts[1:] {
 			k, val, _ := strings.Cut(strings.TrimSpace(attr), "=")
 			if strings.EqualFold(k, "domain") {
-				domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), "."))
+				// a trailing dot names the same host (Domain=example.test. is Domain=example.test): compare without it
+				domain = strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), ".")), ".")
 			}
 		}
 		if keep(strings.TrimSpace(cookieName), domain) {
@@ -532,4 +527,15 @@ func (h *Handler) legacyRoute(task, groupID, client string) (backendURL, lab str
 		return "", "", false
 	}
 	return backendURL, lab, true
+}
+
+// stripCookie removes the cookies of one name from the request, whatever number of Cookie headers carried them.
+func stripCookie(r *http.Request, name string) {
+	var kept []string
+	for _, c := range r.Cookies() {
+		if c.Name != name {
+			kept = append(kept, c.Name+"="+c.Value)
+		}
+	}
+	r.Header.Set("Cookie", strings.Join(kept, "; "))
 }

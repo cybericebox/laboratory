@@ -231,6 +231,8 @@ func TestDeviceResponseFilter(t *testing.T) {
 		"challenge=x",                                  // our session cookie, host-only: removed
 		"challenge=x; Domain=web-abc.labs.example.com", // and with its own domain: removed
 		"challengex=1",                                 // only the exact name
+		"h=1; Domain=labs.example.com.",                // a trailing dot names the same host: removed
+		"i=1; Domain=web-abc.labs.example.com.",        // and for its own host: stays
 	} {
 		h.Add("Set-Cookie", c)
 	}
@@ -240,7 +242,7 @@ func TestDeviceResponseFilter(t *testing.T) {
 	h.Set("Content-Type", "text/html")
 	deviceResponseFilter(h, "challenge", host+":443", base)
 	got := strings.Join(h.Values("Set-Cookie"), "|")
-	want := "a=1|b=1; Path=/; Domain=web-abc.labs.example.com|c=1; Domain=.web-abc.labs.example.com|challengex=1"
+	want := "a=1|b=1; Path=/; Domain=web-abc.labs.example.com|c=1; Domain=.web-abc.labs.example.com|challengex=1|i=1; Domain=web-abc.labs.example.com."
 	if got != want {
 		t.Fatalf("cookies:\n got %q\nwant %q", got, want)
 	}

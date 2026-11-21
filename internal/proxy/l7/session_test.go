@@ -451,6 +451,33 @@ func TestExpiredCard_ExpiredCookie(t *testing.T) {
 	}
 }
 
+// Two cookies of the grant's name mean one was not set by this proxy (a sibling site, a device): the request carries no grant, whichever the
+// browser lists first.
+func TestOneGrantCookieOnly(t *testing.T) {
+	f := newGrantFixture(t)
+	c := f.open(f.grant(t, nil)).Result().Cookies()[0]
+	get := func(cookies ...*http.Cookie) int {
+		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
+		req.Host = labHost
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		req.Header.Set("Accept", "text/html")
+		out := httptest.NewRecorder()
+		f.handler.ServeHTTP(out, req)
+		return out.Code
+	}
+	if code := get(c); code == http.StatusUnauthorized {
+		t.Fatalf("the cookie of the proxy is refused: %d", code)
+	}
+	if code := get(&http.Cookie{Name: c.Name, Value: "forged"}, c); code != http.StatusUnauthorized {
+		t.Fatalf("two cookies of the name: %d", code)
+	}
+	if code := get(c, &http.Cookie{Name: c.Name, Value: "forged"}); code != http.StatusUnauthorized {
+		t.Fatalf("two cookies of the name, ours first: %d", code)
+	}
+}
+
 // The keys of the issuing tenant, by key id: a rotation overlaps (both keys work), a removed key stops, an unknown kid is refused.
 func TestAuthPost_KeysByTenantAndKeyID(t *testing.T) {
 	f := newGrantFixture(t)
@@ -917,11 +944,11 @@ func TestGrantNeverReachesTheDevice(t *testing.T) {
 	srv := httptest.NewServer(f.handler)
 	defer srv.Close()
 
-	// a plain request: the grant cookie among the device's own, two Cookie headers, a Referer from the platform
+	// a plain request: the grant cookie among the device's own, two Cookie headers (a second cookie of the grant's name is refused: TestOneGrantCookieOnly), a Referer from the platform
 	req, _ := http.NewRequest("GET", srv.URL+"/page?x=1", nil)
 	req.Host = labHost
 	req.Header.Add("Cookie", "app=1; "+c.Name+"="+c.Value)
-	req.Header.Add("Cookie", "other=2; "+c.Name+"="+c.Value)
+	req.Header.Add("Cookie", "other=2")
 	req.Header.Set("Referer", "https://app.example.com/tasks/1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != 200 {

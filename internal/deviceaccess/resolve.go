@@ -24,6 +24,9 @@ type Target struct {
 	// GroupName, when not empty, is the name of the LabGroup (names.EncodeName of the platform's group id) the pod must be stamped with
 	// (names.LabelGroupName). The console always sets it; the checker socket, which has no group, does not.
 	GroupName string
+	// Tenant, when not empty, is the tenant (the issuer of the grant) the pod must be stamped with (names.LabelTenant, taken from the LabGroup
+	// by the operator). A pod without the label never matches.
+	Tenant string
 }
 
 // Refusals of Resolve. The service tells a caller only the short code, not which one of the checks failed in detail.
@@ -40,6 +43,8 @@ var (
 type Device struct {
 	ContainerID string
 	PodUID      string
+	// TerminalSpec is the digest of the terminal command and user the operator stamped (names.LabelTerminalSpec); empty when there is none.
+	TerminalSpec string
 }
 
 // Resolve finds the container of a lab device, and only that.
@@ -94,6 +99,9 @@ func resolve(ctx context.Context, rt Runtime, t Target, needConsole bool) (Devic
 		if t.GroupName != "" && l[names.LabelGroupName] != t.GroupName {
 			continue
 		}
+		if t.Tenant != "" && l[names.LabelTenant] != t.Tenant {
+			continue
+		}
 		if needConsole && l[names.LabelTerminal] != "true" {
 			disabled = true
 			continue
@@ -116,7 +124,7 @@ func resolve(ctx context.Context, rt Runtime, t Target, needConsole bool) (Devic
 				return Device{}, err
 			}
 			if up {
-				found = append(found, Device{ContainerID: c.ID, PodUID: uid})
+				found = append(found, Device{ContainerID: c.ID, PodUID: uid, TerminalSpec: l[names.LabelTerminalSpec]})
 			}
 		}
 	}

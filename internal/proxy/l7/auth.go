@@ -146,8 +146,19 @@ func (c *grantCache) put(key [sha256.Size]byte, g sessionGrant, now time.Time) {
 // cookieGrant reads the grant cookie of a request on a web host and verifies it for that host, through the cache. The group and policy
 // checks of the request still run after it.
 func (h *Handler) cookieGrant(r *http.Request, task string) (sessionGrant, error) {
-	cookie, err := r.Cookie(h.cookieName)
-	if err != nil || cookie.Value == "" {
+	var cookie *http.Cookie
+	for _, c := range r.Cookies() {
+		if c.Name != h.cookieName {
+			continue
+		}
+		// two cookies of the name: one of them was not set by this proxy (a sibling site, a device); which one a browser lists first is no
+		// guide, so the request carries no grant
+		if cookie != nil {
+			return sessionGrant{}, fmt.Errorf("more than one %s cookie", h.cookieName)
+		}
+		cookie = c
+	}
+	if cookie == nil || cookie.Value == "" {
 		return sessionGrant{}, fmt.Errorf("no %s cookie", h.cookieName)
 	}
 	host := requestHost(r)

@@ -46,6 +46,9 @@ type Limits struct {
 	WriteTimeout time.Duration
 	// Cleanup bounds the time the clean-up of an exec may take.
 	Cleanup time.Duration
+	// KeyRecheck is how often an open console asks again whether the key its grant was verified with still exists; a console ends (access-lost)
+	// when it is gone at two checks in a row. Zero means DefaultLimits().KeyRecheck.
+	KeyRecheck time.Duration
 }
 
 // DefaultLimits are the values of the chart defaults.
@@ -53,7 +56,7 @@ func DefaultLimits() Limits {
 	return Limits{
 		PerClient: 3, PerLab: 10, PerNode: 200,
 		Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
-		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second,
+		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second, KeyRecheck: 15 * time.Second,
 	}
 }
 
@@ -64,6 +67,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.Cleanup <= 0 {
 		l.Cleanup = d.Cleanup
+	}
+	if l.KeyRecheck <= 0 {
+		l.KeyRecheck = d.KeyRecheck
 	}
 	return l
 }
@@ -204,8 +210,11 @@ func (s *Service) refuse(ctx context.Context, conn Conn, req wire.OpenRequest, c
 // The pod must carry the name of the group the grant is for (names.LabelGroupName, stamped by the operator): a lab and a device name
 // repeat across groups, and the namespace of the request is the proxy's word, so the grant's group is what binds the console to the
 // right namespace.
-func (s *Service) resolve(ctx context.Context, req wire.OpenRequest, group string) (Device, string, error) {
-	dev, err := Resolve(ctx, s.rt, Target{Namespace: req.Namespace, Lab: req.Lab, Device: req.Device, GroupName: names.EncodeName(group)})
+//
+// It must also carry the tenant that signed the grant (names.LabelTenant, stamped by the operator from the LabGroup): the service verifies a
+// grant with the keys of every tenant, so this is what stops a tenant that holds a valid key from opening another tenant's device.
+func (s *Service) resolve(ctx context.Context, req wire.OpenRequest, group, tenant string) (Device, string, error) {
+	dev, err := Resolve(ctx, s.rt, Target{Namespace: req.Namespace, Lab: req.Lab, Device: req.Device, GroupName: names.EncodeName(group), Tenant: tenant})
 	switch {
 	case err == nil:
 		return dev, "", nil

@@ -54,6 +54,8 @@ type stream struct {
 
 	// until is the exp of the grant the stream was opened with: the stream ends then (access-lost), whatever the lifetime limit says.
 	until time.Time
+	// tenant and keyID name the key the grant was verified with: the stream asks again whether it still exists (see runConsole).
+	tenant, keyID string
 
 	// idle is reset by every byte that crosses the stream (see pass).
 	idleMu  sync.Mutex
@@ -208,9 +210,16 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 	}
 	defer s.counter.releaseConsole(clientKey(req), labKey(req))
 
-	dev, code, err := s.resolve(ctx, req, claims.Group)
+	dev, code, err := s.resolve(ctx, req, claims.Group, claims.Issuer)
 	if err != nil {
 		s.refuse(ctx, conn, req, code, err)
+		return
+	}
+	// The command and the user are the lab author's, as the operator stamped them on the pod (a digest: labels cannot carry a list): the
+	// proxy names them in the request, and a request that differs from the stamp is refused, so a compromised proxy cannot choose a program
+	// or a user.
+	if dev.TerminalSpec == "" || dev.TerminalSpec != names.TerminalSpecHash(req.Command, req.User) {
+		s.refuse(ctx, conn, req, wire.CodeUnauthorized, errors.New("the command or the user is not the device's"))
 		return
 	}
 	spec, err := s.rt.Spec(ctx, dev.ContainerID)
@@ -231,6 +240,7 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 
 	st := s.newStream(req, s.lim.Idle)
 	st.until = claims.End()
+	st.tenant, st.keyID = claims.Issuer, claims.KeyID
 	st.cmdHash = CommandHash(command)
 	if !s.track(st) {
 		s.refuse(ctx, conn, req, wire.CodeUnavailable, errors.New("shutting down"))
@@ -288,19 +298,40 @@ func (st *stream) runConsole(ctx context.Context, conn Conn, ex Exec, stdin *pip
 		defer timer.Stop()
 		expiry = timer.C
 	}
-	select {
-	case reason = <-st.stopped:
-	case <-expiry:
-		reason = wire.ReasonAccess
-	case reason = <-readerDone:
-	case <-ex.Wait():
-		reason = wire.ReasonExit
-	case <-st.idleC():
-		reason = wire.ReasonIdle
-	case <-life:
-		reason = wire.ReasonLifetime
-	case <-ctx.Done():
-		reason = wire.ReasonShutdown
+	// A key the platform removed (RemoveAccessKey) must end the consoles it opened, not only stop new ones: ask again at the reload interval,
+	// and end when it is gone twice in a row (one empty read of a volume being swapped does not cut a console).
+	var recheck <-chan time.Time
+	if st.keyID != "" && st.svc.auth != nil && st.svc.auth.Keys != nil {
+		tk := time.NewTicker(st.svc.lim.KeyRecheck)
+		defer tk.Stop()
+		recheck = tk.C
+	}
+	missing := 0
+	for {
+		select {
+		case <-recheck:
+			if _, ok := st.svc.auth.Keys(st.tenant, st.keyID); ok {
+				missing = 0
+				continue
+			}
+			if missing++; missing < 2 {
+				continue
+			}
+			reason = wire.ReasonAccess
+		case reason = <-st.stopped:
+		case <-expiry:
+			reason = wire.ReasonAccess
+		case reason = <-readerDone:
+		case <-ex.Wait():
+			reason = wire.ReasonExit
+		case <-st.idleC():
+			reason = wire.ReasonIdle
+		case <-life:
+			reason = wire.ReasonLifetime
+		case <-ctx.Done():
+			reason = wire.ReasonShutdown
+		}
+		break
 	}
 	// The close frame goes out before the reader is stopped: cancelling the context of a WebSocket read closes the connection.
 	st.closeFrame(conn, reason)

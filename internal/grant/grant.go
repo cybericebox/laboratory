@@ -50,6 +50,9 @@ type Claims struct {
 	Host string `json:"host"`
 	// Kind is KindWeb or KindConsole and agrees with the kind letter of Host.
 	Kind string `json:"kind"`
+	// KeyID is the kid of the key the grant was verified with (set by Verify, never read from the payload): a long-lived stream asks the
+	// key lookup again for (iss, KeyID) to learn that the key was removed.
+	KeyID string `json:"-"`
 	jwt.RegisteredClaims
 }
 
@@ -114,6 +117,12 @@ func Verify(raw string, o Options) (Claims, error) {
 	if err != nil || !token.Valid {
 		return Claims{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	// The leeway of the parser also covers exp; a grant ends at its exp exactly (the cookie's Max-Age and the live check use it), so the
+	// leeway is kept for nbf and iat, the issuer's clock being ahead.
+	if claims.ExpiresAt == nil || !now().Before(claims.ExpiresAt.Time) {
+		return Claims{}, fmt.Errorf("%w: expired", ErrInvalid)
+	}
+	claims.KeyID, _ = token.Header["kid"].(string)
 	if typ, _ := token.Header["typ"].(string); typ != Type {
 		return Claims{}, fmt.Errorf("%w: typ", ErrInvalid)
 	}

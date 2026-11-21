@@ -266,6 +266,9 @@ func sandboxLabels(uid string) map[string]string {
 		names.LabelLabUID: "lab-uid", names.LabelDeviceUID: "dev-uid",
 		names.LabelGroupName: names.EncodeName("g-1"),
 		names.LabelTerminal:  "true",
+		names.LabelTenant:    "acme",
+		// the operator stamps the digest of the command and user of the device; this one has neither
+		names.LabelTerminalSpec: names.TerminalSpecHash(nil, ""),
 	}
 }
 
