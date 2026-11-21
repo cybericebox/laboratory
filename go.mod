@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
-	github.com/bits-and-blooms/bitset v1.25.0
+	github.com/bits-and-blooms/bitset v1.29.0
 	github.com/caarlos0/env/v11 v11.4.2
 	github.com/cilium/ebpf v0.22.0
 	github.com/coder/websocket v1.8.15
@@ -23,13 +23,13 @@ require (
 	github.com/google/go-containerregistry v0.22.1
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae
-	github.com/onsi/ginkgo/v2 v2.33.0
+	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/ovn-org/libovsdb v0.7.0
-	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/ti-mo/conntrack v0.6.0
 	github.com/vishvananda/netlink v1.3.1
@@ -41,7 +41,7 @@ require (
 	golang.org/x/time v0.16.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
