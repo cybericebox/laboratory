@@ -116,6 +116,20 @@ The same rule applies to GitHub release pages, published images and chart versio
 
 ### Settings in GitHub that the workflows rely on
 
+### Where each workflow definition comes from
+
+The default branch is `develop`; `main` only receives promoted lines. `pull_request_target` takes the workflow and the checkout from the default branch (GitHub changed this on 2025-12-08), not from the base branch of the pull request.
+
+| Workflow | Event | Definition comes from | Secrets | Can write access to `develop` alone change a release? |
+|---|---|---|---|---|
+| `line-gate.yml` | `pull_request_target` into `release/*` | `develop` | none | It changes the gate for every line, but only through a reviewed pull request into `develop`; Promote runs the gate again from its own checkout of `main`, so a weakened copy on `develop` cannot get a release past Promote |
+| `check.yml`, `test.yml` | `pull_request` | the merge commit of the pull request | pull-only Docker Hub account | No secret that can write; the gate keeps `.github/**` out of a line |
+| `candidate.yml`, `backport.yml` | push to `release/X.Y` | the line | environment `candidate` (`release/*` only) | No: a branch is needed whose name matches `release/*`, and only the owner may create one |
+| `candidate.yml` | manual | the chosen ref | environment `candidate` | No: the environment refuses any ref that is not `release/*` |
+| `promote.yml`, `cleanup.yml` | manual | the chosen ref, `main` required (a first step stops any other ref) | environment `release` (`main` only) | No: a copy on `develop` gets no secret; its scripts and gate are the ones of `main` |
+| `build.yml` | manual | the chosen ref (`develop` by default) | repository secrets today | Yes, until its secret moves to an environment: it is not part of the release path but can publish `sha-*` |
+| scheduled workflows | none exist | | | |
+
 - Default branch: `develop`. `pull_request_target` (`line-gate.yml`) and the Run workflow button read their workflow from it, so `line-gate.yml`, `candidate.yml`, `backport.yml`, `check.yml`, `promote.yml` and `cleanup.yml` must be on `develop` (and on `main` for Promote and Retention).
 - Rulesets (not classic branch protection, so admins are bound too). `develop`: pull request required, required check `Check passed`. `release/*`: creation, update and deletion only through the owner (nobody else may create a branch of that name: the environment below trusts the name), pull request required, no direct push, no force push, required checks `Check passed` and `Line gate` (the job names, they are stable), no required approvals (the owner works alone), merges by hand, no merge queue (the workflows do not run for `merge_group`). `main`: no pull request and no direct push except for the bypass actor of the Promote merge (the owner and the app or token behind `RELEASE_TOKEN`). Tags `v*`: block updates and deletion of final tags (`refs/tags/v*` without `v*-rc.*`); candidate tags are created and deleted by the workflows with the job token, so they stay out of a restrictive tag ruleset.
 - Environments. `candidate`: deployment branches `release/*` only; secrets `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (push; Delete is not needed here) and `BACKPORT_TOKEN` (fine-grained token or app token: contents, pull requests and issues write; it must not be able to write `main`). `release`: deployment branch `main` only; secrets `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (Read/Write/Delete) and `RELEASE_TOKEN` (contents write, a bypass actor of the `main` ruleset). No repository-level secret holds a Docker Hub write credential or a token for `main`. For `pull_request_target` the environment rules are evaluated against the default branch, and for `pull_request` against `refs/pull/N/merge`: no job of those events uses an environment.
