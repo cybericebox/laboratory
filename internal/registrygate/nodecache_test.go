@@ -625,3 +625,32 @@ func TestTheCacheNeedsItsImageHost(t *testing.T) {
 		}
 	}
 }
+
+// containerd resolves a tag with a HEAD, then fetches the index by its digest, then the manifest of its platform by its digest, then the
+// blobs. The grant the HEAD makes holds only the root (a HEAD has no body); what the index lists joins it when the index is served.
+func TestAnIndexPulledAfterTheHEADOfItsTagGrantsItsChildren(t *testing.T) {
+	n := newNodeRig(t)
+	n.cache.Creds.(*SecretView).Set(names.UpstreamPlatformSecret, dockerConfig("up", "alice", "pw"))
+	n.sch.SetPod(PodInfo{Namespace: "lg-acme", Name: "vpn", UID: "u-vpn", Node: "node-a", Phase: "Running", Images: []string{pfx + "platform/up/org/private:v1"},
+		Labels: map[string]string{names.LabelComponent: names.ComponentVPN}})
+	attest := "sha256:" + strings.Repeat("e", 64) // another manifest of the index, never pulled
+	idx := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[`+
+		`{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":%q,"size":1},`+
+		`{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":%q,"size":1}]}`, n.md, attest))
+	id := n.putTag("org/private", "v1", idx)
+	accept := map[string]string{"Accept": "application/vnd.oci.image.index.v1+json"}
+	for _, s := range []struct{ what, method, path string }{
+		{"the HEAD of the tag", "HEAD", n.mp("platform", "org/private", "v1")},
+		{"the index by its digest", "GET", n.mp("platform", "org/private", id)},
+		{"the manifest of the platform by its digest", "GET", n.mp("platform", "org/private", n.md)},
+		{"its config", "GET", n.bp("platform", "org/private", n.cfg)},
+		{"its layer", "GET", n.bp("platform", "org/private", n.ld)},
+	} {
+		if code, _, _ := n.get(tokA, s.method, s.path, accept); code != 200 {
+			t.Fatalf("%s: %d", s.what, code)
+		}
+	}
+	if code, _, _ := n.get(tokA, "GET", n.mp("platform", "org/private", attest), accept); code == 200 {
+		t.Fatal("a manifest the index lists but the node never asked for is not served from an upstream that does not have it")
+	}
+}

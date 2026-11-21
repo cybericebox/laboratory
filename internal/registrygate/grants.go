@@ -137,8 +137,9 @@ func (g *Grants) Add(node, seg, repo string, creds Creds, tag, root string, chil
 	return nil
 }
 
-// Expand adds what a manifest lists to a root that a live grant already holds (a child manifest served under that grant, whose layers are
-// then reachable). It creates nothing, changes no credentials and adds no root, and reports whether it did anything.
+// Expand adds what a manifest lists to a manifest that a live grant already holds (a child manifest served under that grant, whose layers are
+// then reachable; or a root that a HEAD of its tag made, which has no body, when the body is served by its digest, as containerd does).
+// It creates nothing, changes no credentials and adds no root, and reports whether it did anything.
 func (g *Grants) Expand(node, seg, repo, root string, children []string) bool {
 	if g.check(root, children) != nil {
 		return false
@@ -150,7 +151,9 @@ func (g *Grants) Expand(node, seg, repo, root string, children []string) bool {
 	if gr == nil || !now.Before(gr.expires) {
 		return false
 	}
-	if _, ok := gr.subs[root]; !ok { // only a manifest that an index of the grant listed
+	_, isSub := gr.subs[root]
+	_, isRoot := gr.roots[root]
+	if !isSub && !isRoot { // only a manifest that an index of the grant listed, or one the grant was made for
 		return false
 	}
 	g.putRootLocked(gr, "", root, children)

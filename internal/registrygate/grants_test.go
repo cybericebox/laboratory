@@ -198,3 +198,28 @@ func TestAManifestTooBigIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A root made by a HEAD (no body, so no children) takes what it lists when its body is served by its digest.
+func TestExpandTakesTheChildrenOfARootMadeByAHEAD(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	g := &Grants{Now: func() time.Time { return now }}
+	root, child, layer := hexd(1), hexd(2), hexd(3)
+	if err := g.Add("n1", "platform", "docker.io/x/y", Creds{}, "e2e", root, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.Has("n1", "platform", "docker.io/x/y", child, true); ok {
+		t.Fatal("a HEAD lists nothing")
+	}
+	if !g.Expand("n1", "platform", "docker.io/x/y", root, []string{child}) {
+		t.Fatal("the body of the root joins the grant")
+	}
+	if _, ok := g.Has("n1", "platform", "docker.io/x/y", child, true); !ok {
+		t.Fatal("the manifest the root lists is granted")
+	}
+	if g.Expand("n1", "platform", "docker.io/x/y", hexd(9), []string{layer}) {
+		t.Fatal("a manifest the grant knows nothing of adds nothing")
+	}
+	if _, ok := g.Has("n1", "platform", "docker.io/x/y", layer, true); ok {
+		t.Fatal("nothing outside the grant is granted")
+	}
+}
