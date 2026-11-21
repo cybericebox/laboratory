@@ -8,9 +8,8 @@
 #   - the branch exists: this push was brought back before (a re-run does not open it twice);
 #   - a pick does not apply cleanly: no branch is pushed; an issue is opened that says so and how to do it by hand
 #     (a branch with no commits cannot be a pull request, so the issue stands where the draft pull request would be).
-# A pull request made with the default GITHUB_TOKEN does not start the checks. Set the secret BACKPORT_TOKEN (a fine-grained token or an
-# app token with contents, pull requests and issues write) and they start; the repository setting "Allow GitHub Actions to create and
-# approve pull requests" is needed either way.
+# The token is the job's GITHUB_TOKEN (contents, pull requests, issues write); the checks of the pull request wait for the owner's approval
+# ("Approve workflows to run"), see CONTRIBUTING.md. The repository setting "Allow GitHub Actions to create and approve pull requests" is needed.
 # Environment: GH_TOKEN (gh), REMOTE (default origin), BASE (default develop).
 set -euo pipefail
 
