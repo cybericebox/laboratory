@@ -63,7 +63,7 @@ func ParseRegistries(data []byte) ([]Registry, error) {
 	out := make([]Registry, 0, len(raw))
 	for _, e := range raw {
 		u, err := url.Parse(e.URL)
-		if err != nil || e.Name == "" || u.Host == "" || u.Scheme != "https" && u.Scheme != schemeHTTP {
+		if err != nil || e.Name == "" || u.Host == "" || u.Scheme != schemeHTTPS && u.Scheme != schemeHTTP {
 			return nil, fmt.Errorf("registries: bad entry %q %q", e.Name, e.URL)
 		}
 		hosts := e.AuthHosts

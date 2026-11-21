@@ -258,6 +258,7 @@ STATE_TENANT_QUOTA: {{ .Values.devices.statePersistence.tenantQuota | quote }}
 IMAGE_CACHE_ENABLED: {{ .Values.registry.cache.enabled | quote }}
 IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
 IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
+IMAGE_CACHE_PLAIN_HTTP_REGISTRIES: {{ include "laboratory.cachePlainHTTPNames" . | quote }}
 ALLOWED_REGISTRIES: {{ include "laboratory.allowedRegistries" . | quote }}
 {{- end }}
 
@@ -375,6 +376,16 @@ Comma-separated names of the registries the image cache serves.
 {{- define "laboratory.cacheRegistryNames" -}}
 {{- $names := list -}}
 {{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}{{ $names = append $names .name }}{{ end -}}
+{{- join "," $names -}}
+{{- end }}
+
+{{/*
+Comma-separated names of the cache's registries whose url is plain http (a registry inside the cluster): the operator's and the agent's tag
+resolver ask them over plain http, as the gate does. A name is the host (and port) of the image reference, so "reg.example.com:5000".
+*/}}
+{{- define "laboratory.cachePlainHTTPNames" -}}
+{{- $names := list -}}
+{{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}{{ if hasPrefix "http://" .url }}{{ $names = append $names .name }}{{ end }}{{ end -}}
 {{- join "," $names -}}
 {{- end }}
 

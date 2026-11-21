@@ -1,0 +1,7 @@
+# gitleaks: the secret scan of `mise run lint:leaks` over the whole history. The default rules, minus what is not a secret here.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures and the vendored xterm.js"
+paths = ['''_test\.go$''', '''^test/''', '''^internal/proxy/l7/terminalassets/''']

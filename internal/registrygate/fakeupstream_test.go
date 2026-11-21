@@ -1,10 +1,12 @@
 package registrygate
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,10 +39,11 @@ type fakeUpstream struct {
 	redirectManifests bool
 	// redirectHost, when set, is the host name of the https Location of a manifest redirect instead of the CDN's address (the test dials it).
 	redirectHost   string
-	noDigestHeader bool // manifests are answered without Docker-Content-Digest
-	headStatus     int  // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
-	redirectHeads  bool // blob HEADs redirect too (not only the GET)
-	cdnStatus      int  // when set, the CDN answers this instead of the object
+	noDigestHeader bool   // manifests are answered without Docker-Content-Digest
+	headStatus     int    // when set, HEADs answer this (a registry that hides a repository from a caller who lost access)
+	redirectHeads  bool   // blob HEADs redirect too (not only the GET)
+	cdnStatus      int    // when set, the CDN answers this instead of the object
+	failBody       string // the body of an error answer (fail, cdnStatus): text of the upstream that must never reach a client
 	calls          map[string]*atomic.Int64
 	authSeen       []string // Authorization header of every request to the CDN
 }
@@ -56,8 +59,10 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		status := f.cdnStatus
 		f.mu.Unlock()
 		f.count("cdn")
+		failBody := f.failBody
 		if status != 0 {
 			w.WriteHeader(status)
+			_, _ = w.Write([]byte(failBody))
 			return
 		}
 		_, _ = w.Write(body)
@@ -67,6 +72,25 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 	t.Cleanup(f.cdn.Close)
 	t.Cleanup(f.cdnPlain.Close)
 	return f
+}
+
+// redirectBase is where a redirect points: a host NAME on the default https port (the gate refuses an IP address or a port), which
+// cdnTransport dials to the test CDN. The test CDN's certificate names example.com.
+func (f *fakeUpstream) redirectBase() string { return "https://example.com" }
+
+// cdnTransport trusts the test CDN's certificate and dials every port 443 to the test CDN, so a redirect to https://example.com/... lands
+// on it and no name leaves the loopback. It replaces the transport of an Upstream in the tests, and with it the dial-time refusal of
+// internal addresses (the CDN listens on the loopback); production code has no way to do that.
+func (f *fakeUpstream) cdnTransport() *http.Transport {
+	tr := f.cdn.Client().Transport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		if _, port, _ := net.SplitHostPort(addr); port == "443" {
+			addr = f.cdn.Listener.Addr().String()
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+	return tr
 }
 
 func (f *fakeUpstream) registry(name string) Registry {
@@ -130,7 +154,7 @@ func (f *fakeUpstream) mayRead(repo, user, pass string) bool {
 
 func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	fail := f.fail
+	fail, failBody := f.fail, f.failBody
 	f.mu.Unlock()
 	if r.URL.Path == "/token" {
 		f.count("token")
@@ -159,13 +183,14 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	f.count(r.Method + " " + repo)
 	if fail != 0 {
 		w.WriteHeader(fail)
+		_, _ = w.Write([]byte(failBody))
 		return
 	}
 	f.mu.Lock()
 	redirectManifest := f.redirectManifests
 	f.mu.Unlock()
 	if redirectManifest && strings.Contains(r.URL.Path, "/manifests/") {
-		target := f.cdn.URL
+		target := f.redirectBase()
 		if f.plainCDN {
 			target = f.cdnPlain.URL
 		}
@@ -208,13 +233,23 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect && strings.Contains(r.URL.Path, "/blobs/") && (r.Method == http.MethodGet || redirectHeads) {
-		target := f.cdn.URL
+		target := f.redirectBase()
 		if f.plainCDN {
 			target = f.cdnPlain.URL
 		}
 		w.Header().Set("Location", target+"/cdn"+r.URL.Path)
 		w.WriteHeader(http.StatusTemporaryRedirect)
 		return
+	}
+	if from, ok := strings.CutSuffix(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-"); ok && r.Method == http.MethodGet && r.Header.Get("Range") != "" {
+		var n int
+		if _, err := fmt.Sscan(from, &n); err == nil && n >= 0 && n < len(body) {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", n, len(body)-1, len(body)))
+			w.Header().Set("Content-Length", fmt.Sprint(len(body)-n))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body[n:])
+			return
+		}
 	}
 	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
 	w.Header().Set("Content-Type", "application/octet-stream")

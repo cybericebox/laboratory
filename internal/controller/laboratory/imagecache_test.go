@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -175,6 +178,7 @@ var _ = Describe("Image cache: device image rewrite", func() {
 type fakeResolver struct {
 	digests map[string]string
 	fail    map[string]bool
+	failErr error // the error of a failed resolution (default: "upstream unreachable")
 	calls   []string
 	mu      sync.Mutex
 }
@@ -184,6 +188,9 @@ func (f *fakeResolver) Resolve(_ context.Context, ref string) (string, error) {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, ref)
 	if f.fail[ref] {
+		if f.failErr != nil {
+			return "", f.failErr
+		}
 		return "", fmt.Errorf("upstream unreachable")
 	}
 	return f.digests[ref], nil
@@ -314,6 +321,44 @@ func TestClassImagesUsePinnedDigests(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
+}
+
+// What a registry answers never reaches a Lab's status, an event or the error of a refused lab, nor the group's warning: a resolver that
+// fails with the body of the answer in its error (as go-containerregistry's does) is shown with the image name and our words only.
+func TestPinFailureShowsNoTextOfTheRegistry(t *testing.T) {
+	const secret = "INTERNAL-SECRET token=abc123\nsecond line"
+	leaky := &transport.Error{StatusCode: 404, Request: &http.Request{URL: &url.URL{Host: "reg.example.com"}}, Errors: []transport.Diagnostic{{Message: secret}}}
+	check := func(what, text string) {
+		t.Helper()
+		if strings.Contains(text, "SECRET") || strings.Contains(text, "abc123") || strings.ContainsAny(text, "\n\r") || !strings.Contains(text, "404") {
+			t.Errorf("%s: %q", what, text)
+		}
+	}
+	lab := pinLab()
+	res := &fakeResolver{digests: map[string]string{"ghcr.io/cybericebox/laboratory-node:v1": digN}, fail: map[string]bool{"nginx:1.25": true}, failErr: leaky}
+	r := cachedLabReconciler(t, true, lab)
+	r.Pinner, r.NetConfigImage = pinnerOf(res), "ghcr.io/cybericebox/laboratory-node:v1"
+	if _, err := settleModes(context.Background(), r, lab); err != nil {
+		t.Fatal(err)
+	}
+	check("lab warning", lab.Status.ImageWarning)
+
+	lab2 := pinLab()
+	r2 := cachedLabReconciler(t, true, lab2)
+	r2.Pinner, r2.NetConfigImage, r2.RequireDigest = pinnerOf(res), "ghcr.io/cybericebox/laboratory-node:v1", true
+	_, err := settleModes(context.Background(), r2, lab2)
+	var required *digestRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("%v", err)
+	}
+	check("the refused lab (condition and event)", err.Error())
+
+	g := &LabGroupReconciler{Mirror: imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries},
+		Resolver: &fakeResolver{fail: map[string]bool{"ghcr.io/cybericebox/laboratory-lab:v1": true}, failErr: leaky}}
+	if _, err := g.cachedImage(context.Background(), "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); err != nil {
+		t.Fatal(err)
+	}
+	check("group warning", g.takePinWarning("ns"))
 }
 
 func TestGroupImagePinning(t *testing.T) {
@@ -463,5 +508,20 @@ func TestLabsSharingAnImageResolveItOnce(t *testing.T) {
 		if l.Status.ImageDigests["nginx:1.25"] != digA {
 			t.Fatalf("%s: %v", l.Name, l.Status.ImageDigests)
 		}
+	}
+}
+
+// The gate refuses a manifest by tag by default, so a VPN or gateway image that cannot be pinned must not be handed to a pod as a tag:
+// it would sit in ImagePullBackOff under a status that says "pulled by tag".
+func TestGroupImageUnpinnableIsRefusedWhenDigestsAreRequired(t *testing.T) {
+	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
+	img := "ghcr.io/cybericebox/laboratory-lab:v1"
+	g := &LabGroupReconciler{Mirror: rw, RequireDigest: true, Resolver: &fakeResolver{fail: map[string]bool{img: true}}}
+	got, err := g.cachedImage(context.Background(), "ns", img)
+	if err == nil || got != "" || !strings.Contains(err.Error(), img) {
+		t.Fatalf("an unpinnable image with digests required: %q %v", got, err)
+	}
+	if w := g.takePinWarning("ns"); w != "" {
+		t.Fatalf("no \"pulled by tag\" warning for an image that is not pulled: %q", w)
 	}
 }
