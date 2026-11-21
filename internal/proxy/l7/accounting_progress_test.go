@@ -111,8 +111,16 @@ func TestWebSocketCountsPayloadBothDirectionsAndBufferedInput(t *testing.T) {
 	if got := <-received; got != string(frame) {
 		t.Fatal("buffered input changed", got)
 	}
+	// The proxy counts a frame after it has written it, so the client may read the answer a moment before the meter holds it.
+	want := func(rows []Touch, partial bool) bool {
+		return len(rows) == 1 && rows[0].BytesIn == 5 && rows[0].BytesOut == 3 && rows[0].RespondedMs != 0 && !partial
+	}
 	rows, _, partial := meter.Snapshot(GroupNamespace("g1"))
-	if len(rows) != 1 || rows[0].BytesIn != 5 || rows[0].BytesOut != 3 || rows[0].RespondedMs == 0 || partial {
+	for deadline := time.Now().Add(3 * time.Second); !want(rows, partial) && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+		rows, _, partial = meter.Snapshot(GroupNamespace("g1"))
+	}
+	if !want(rows, partial) {
 		t.Fatal(rows, partial)
 	}
 }
