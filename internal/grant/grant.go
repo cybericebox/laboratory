@@ -114,6 +114,11 @@ func Verify(raw string, o Options) (Claims, error) {
 	if err != nil || !token.Valid {
 		return Claims{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	// The leeway of the parser also covers exp; a grant ends at its exp exactly (the cookie's Max-Age and the live check use it), so the
+	// leeway is kept for nbf and iat, the issuer's clock being ahead.
+	if claims.ExpiresAt == nil || !now().Before(claims.ExpiresAt.Time) {
+		return Claims{}, fmt.Errorf("%w: expired", ErrInvalid)
+	}
 	if typ, _ := token.Header["typ"].(string); typ != Type {
 		return Claims{}, fmt.Errorf("%w: typ", ErrInvalid)
 	}
