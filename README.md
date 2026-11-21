@@ -479,19 +479,21 @@ The chart uses the image tag of its own version. It refuses the tag `latest`. Th
 
 ## Development
 
-To build from source you need the Go version named in `go.mod`, Docker and `make`.
+To build from source you need [mise](https://mise.jdx.dev), Docker and `make`. `mise install` puts the pinned tools in place (Go, kind,
+kubectl, helm, kustomize, controller-gen, golangci-lint, protoc); `mise tasks` lists the commands. The Makefile holds the targets; run
+them through mise so that they see those tools.
 
 ```bash
-make help            # list all targets
-make manifests       # regenerate resource definitions and access rules
-make generate        # regenerate generated code
-make fmt vet         # format and vet
-make lint            # run the linter
-make build           # build the operator binary into ./bin/manager
-make test            # unit tests and tests against a real API server
-make test-e2e        # end-to-end tests on a kind cluster
-make docker-build    # build all images
-make kind-deploy     # build, load into a kind cluster and install
+mise run generate    # regenerate resource definitions, access rules, generated code and API clients
+mise run proto       # regenerate the Go code of the gRPC contracts
+mise run lint        # run the linter (for Linux, as CI does)
+mise run build       # build the operator binary into ./bin/manager
+mise run test        # unit tests and tests against a real API server
+mise run cluster-up  # the kind cluster of the end-to-end tests
+mise run e2e         # end-to-end tests on that cluster
+mise run make help   # every other Makefile target: mise run make <target>
+mise run make docker-build    # build all images
+mise run make kind-deploy     # build, load into a kind cluster and install
 ```
 
 | Path | Contents |
