@@ -10,7 +10,7 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/containerd/api v1.12.0
-	github.com/containerd/containerd/v2 v2.4.1
+	github.com/containerd/containerd/v2 v2.4.2
 	github.com/containerd/continuity v0.5.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/platforms v1.0.0-rc.5
