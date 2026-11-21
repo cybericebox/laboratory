@@ -67,7 +67,7 @@ jobs:
         run: |
           [[ "$REF" == refs/heads/main ]] || { echo "::error::Promote runs from main (got $REF): its scripts are the trusted ones"; exit 1; }
       - name: Check repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: The candidate may be promoted
@@ -126,11 +126,11 @@ jobs:
       LATEST: ${{ needs.verify.outputs.latest }}
     steps:
       - name: Check repository (the trusted scripts)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Check the released commit (the chart)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify.outputs.sha }}
           path: src
@@ -189,7 +189,7 @@ jobs:
       # cannot merge; the release itself stays published and Promote can be run again. No bypass actor and no extra token: the branch
       # promote/vX.Y.Z and the pull request are made with GITHUB_TOKEN, and the owner approves the check runs of the pull request.
       - name: Check repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Open the pull request into main

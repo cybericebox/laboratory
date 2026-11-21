@@ -46,11 +46,11 @@ jobs:
       # The scripts that run with the Docker Hub credentials are the ones of the branch the workflow runs on (develop or release/*, the
       # branches the environment allows), never the ones of the commit that is built: that commit is data for the build.
       - name: Check repository (the trusted scripts)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check the commit to build
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || 'develop' }}
           path: src
