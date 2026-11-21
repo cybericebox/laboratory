@@ -3,6 +3,7 @@ package deviceaccess
 import (
 	"context"
 	"crypto/ed25519"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,5 +203,32 @@ func TestConsoleRunsOnlyWhatTheOperatorStamped(t *testing.T) {
 	}
 	cn.send(wire.Close(wire.ReasonClient))
 	expectClose(t, cn, wire.ReasonClient)
+	waitDone(t, done)
+}
+
+// A key the platform removes ends the consoles it opened, not only the new ones.
+func TestConsoleEndsWhenItsKeyIsRemoved(t *testing.T) {
+	var mu sync.Mutex
+	present := true
+	lookup := func(tenant, id string) (ed25519.PublicKey, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !present {
+			return nil, false
+		}
+		return testGrantKey.Lookup()(tenant, id)
+	}
+	svc := testService(labRuntime())
+	svc.auth = NewAuth(lookup, 8*time.Hour)
+	svc.lim.KeyRecheck = 50 * time.Millisecond
+	c, done := run(svc, context.Background())
+	c.sendOpen(t, openReq())
+	if reply := c.reply(t); !reply.OK {
+		t.Fatalf("refused: %+v", reply)
+	}
+	mu.Lock()
+	present = false
+	mu.Unlock()
+	expectClose(t, c, wire.ReasonAccess)
 	waitDone(t, done)
 }

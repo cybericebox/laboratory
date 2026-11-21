@@ -46,6 +46,9 @@ type Limits struct {
 	WriteTimeout time.Duration
 	// Cleanup bounds the time the clean-up of an exec may take.
 	Cleanup time.Duration
+	// KeyRecheck is how often an open console asks again whether the key its grant was verified with still exists; a console ends (access-lost)
+	// when it is gone at two checks in a row. Zero means DefaultLimits().KeyRecheck.
+	KeyRecheck time.Duration
 }
 
 // DefaultLimits are the values of the chart defaults.
@@ -53,7 +56,7 @@ func DefaultLimits() Limits {
 	return Limits{
 		PerClient: 3, PerLab: 10, PerNode: 200,
 		Idle: 30 * time.Minute, Lifetime: 8 * time.Hour,
-		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second,
+		WriteTimeout: 30 * time.Second, Cleanup: 10 * time.Second, KeyRecheck: 15 * time.Second,
 	}
 }
 
@@ -64,6 +67,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.Cleanup <= 0 {
 		l.Cleanup = d.Cleanup
+	}
+	if l.KeyRecheck <= 0 {
+		l.KeyRecheck = d.KeyRecheck
 	}
 	return l
 }

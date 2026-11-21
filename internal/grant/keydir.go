@@ -13,7 +13,8 @@ import (
 // DirKeys is a KeyLookup over a directory of PEM public keys, one file per key named <tenant>.<kid>: the ConfigMap the operator mirrors
 // from the access key Secrets, mounted as files (pools-release.md, 2.3.4). The directory is read again at most every `every`: the kubelet
 // updates a ConfigMap volume in place, so a key the platform removed stops working after the kubelet's delay plus at most that interval.
-// A bad or half-written directory keeps the keys already held.
+// A file that cannot be read is skipped (the others still count); a directory that cannot be read keeps the keys already held for at most
+// staleAfter and then holds none, so a removed key cannot stay valid behind a broken volume.
 type DirKeys struct {
 	dir   string
 	every time.Duration
@@ -23,6 +24,9 @@ type DirKeys struct {
 	keys    map[string]ed25519.PublicKey
 	checked time.Time
 	loaded  bool
+	// failingSince is when the directory read first failed in the run of failures that is going on; zero when the last read worked.
+	failingSince time.Time
+	staleAfter   time.Duration
 }
 
 // keyIDRE is what a key id may be inside a file name (the agent's accessKeyIDRE): no path separator. The name always starts with the
@@ -34,7 +38,11 @@ func ValidKeyID(s string) bool { return keyIDRE.MatchString(s) && s != "." && s 
 
 // NewDirKeys returns a lookup over dir. The directory is read at the first lookup.
 func NewDirKeys(dir string, every time.Duration) *DirKeys {
-	return &DirKeys{dir: dir, every: every, now: time.Now}
+	stale := 4 * every
+	if stale < time.Minute {
+		stale = time.Minute
+	}
+	return &DirKeys{dir: dir, every: every, now: time.Now, staleAfter: stale}
 }
 
 // Lookup is the KeyLookup of the directory.
@@ -47,7 +55,14 @@ func (d *DirKeys) Lookup(tenant, keyID string) (ed25519.PublicKey, bool) {
 	if !d.loaded || d.now().Sub(d.checked) >= d.every {
 		d.checked = d.now()
 		if keys, err := readKeyDir(d.dir); err == nil {
-			d.keys, d.loaded = keys, true
+			d.keys, d.loaded, d.failingSince = keys, true, time.Time{}
+		} else {
+			if d.failingSince.IsZero() {
+				d.failingSince = d.now()
+			}
+			if d.now().Sub(d.failingSince) >= d.staleAfter {
+				d.keys, d.loaded = nil, true // fail closed
+			}
 		}
 	}
 	k, ok := d.keys[tenant+"."+keyID]
@@ -68,7 +83,7 @@ func readKeyDir(dir string) (map[string]ed25519.PublicKey, error) {
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			return nil, err
+			continue // one unreadable entry (a volume being swapped) does not keep the other keys from counting
 		}
 		if k, ok := ParseAccessKey(raw); ok {
 			keys[name] = k

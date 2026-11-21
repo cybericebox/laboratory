@@ -94,3 +94,68 @@ func TestDirKeysKeepsTheKeysWhenTheDirectoryCannotBeRead(t *testing.T) {
 		t.Fatal("an unreadable directory keeps the keys already held")
 	}
 }
+
+// One entry that cannot be read does not keep a removed key valid: the others are read and the removed one is gone.
+func TestDirKeysSkipsAnUnreadableEntry(t *testing.T) {
+	dir := t.TempDir()
+	_, a := pemOf(t)
+	pubB, b := pemOf(t)
+	for name, data := range map[string][]byte{"acme.k1": a, "acme.k2": b} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	d := NewDirKeys(dir, 30*time.Second)
+	d.now = func() time.Time { return now }
+	if _, ok := d.Lookup("acme", "k1"); !ok {
+		t.Fatal("k1")
+	}
+	// k1 is removed and k2 cannot be read at the next reload
+	if err := os.Remove(filepath.Join(dir, "acme.k1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "acme.k2"), 0); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(31 * time.Second)
+	if _, ok := d.Lookup("acme", "k1"); ok {
+		t.Fatal("a removed key stayed valid behind an unreadable entry")
+	}
+	if err := os.Chmod(filepath.Join(dir, "acme.k2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(31 * time.Second)
+	if k, ok := d.Lookup("acme", "k2"); !ok || !k.Equal(pubB) {
+		t.Fatal("k2 is back when it can be read")
+	}
+}
+
+// A directory that cannot be read keeps the keys for a bounded time and then holds none.
+func TestDirKeysFailClosedAfterAContinuousFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "keys")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, data := pemOf(t)
+	if err := os.WriteFile(filepath.Join(dir, "acme.k1"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	d := NewDirKeys(dir, 15*time.Second)
+	d.now = func() time.Time { return now }
+	if _, ok := d.Lookup("acme", "k1"); !ok {
+		t.Fatal("k1")
+	}
+	if err := os.Rename(dir, dir+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(20 * time.Second)
+	if _, ok := d.Lookup("acme", "k1"); !ok {
+		t.Fatal("a short failure keeps the keys held")
+	}
+	now = now.Add(2 * time.Minute)
+	if _, ok := d.Lookup("acme", "k1"); ok {
+		t.Fatal("the keys stayed valid after a continuous failure")
+	}
+}

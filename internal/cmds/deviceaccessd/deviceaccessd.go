@@ -118,6 +118,7 @@ func run(cfg Config) error {
 	lim := deviceaccess.DefaultLimits()
 	lim.PerClient, lim.PerLab, lim.PerNode = cfg.PerClient, cfg.PerLab, cfg.PerNode
 	lim.Idle, lim.Lifetime = cfg.Idle, cfg.Lifetime
+	lim.KeyRecheck = cfg.KeyReload
 	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL)})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
