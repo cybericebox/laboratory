@@ -18,8 +18,6 @@ protoc = "35.0"
 protoc-gen-go = "1.36.12"
 protoc-gen-go-grpc = "1.6.2"
 gh = "2.104.0"           # dev-push
-actionlint = "1.7.12"    # lint: the workflows (it runs shellcheck on their run: scripts)
-shellcheck = "0.11.0"    # lint: every shell script
 python = "3.14.10"       # the release helpers of .github/scripts (standard library only)
 "github:mokevnin/heavy" = "0.1.2"  # a machine-wide semaphore: heavy commands of every checkout and agent take turns (heavy --status)
 # Built with the pinned Go, not downloaded: a tool built by an older Go cannot parse the newer standard library.
@@ -122,9 +120,8 @@ env = { GOOS = "linux" }
 run = "heavy -- golangci-lint run"
 
 [tasks.lint-ci]
-description = "actionlint (workflows); shellcheck: the release helpers and dev.sh with every finding, the other scripts and tasks from warnings up"
+description = "shellcheck: the release helpers and dev.sh with every finding, the other scripts and tasks from warnings up (actionlint runs in lint:leaks)"
 run = [
-  "actionlint",
   "shellcheck -x -P SCRIPTDIR .github/scripts/*.sh scripts/dev.sh scripts/dev.test.sh mise-tasks/test-scripts",
   "git ls-files -z '*.sh' 'mise-tasks/*' | xargs -0 shellcheck -x -P SCRIPTDIR -S warning",
 ]
