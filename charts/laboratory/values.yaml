@@ -968,7 +968,7 @@ registry:
     # Registry host, so it cannot be used without this. The gate follows a redirect (at most 3, each one checked again) only over https, on the
     # default port, with no userinfo, to a listed host, and never sends the pull's credentials to it; the final answer is judged as a direct one.
     # Any other redirect stays inconclusive (the pull fails with IMAGE_REGISTRY_UNAVAILABLE), as does every redirect of a registry not listed
-    # here. A registry's list set here replaces its default; set a registry to [] (or null) to follow none.
+    # here. A registry's list set here replaces its default; set a registry to [] (or null) to follow none. A registry the cache does not serve is ignored if built in, an error otherwise.
     redirects:
       registry.k8s.io:
         - "*.pkg.dev"

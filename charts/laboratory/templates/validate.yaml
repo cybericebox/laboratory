@@ -280,7 +280,8 @@ at install time instead of shipping a broken deployment.
 (no public suffix alone, no IP address) and refuses to load a list it cannot enforce. */}}
 {{- $served := include "laboratory.cacheRegistryNames" . | splitList "," }}
 {{- range $name, $patterns := (default (dict) .Values.registry.cache.redirects) }}
-{{- if not (has $name $served) }}
+{{- /* A built-in registry the cache does not serve (registry.k8s.io is in the default map) is simply unused; any other name is a typo. */}}
+{{- if not (or (has $name $served) (has $name (list "docker.io" "ghcr.io" "quay.io" "registry.k8s.io"))) }}
 {{- fail (printf "registry.cache.redirects: %q is not a registry the cache serves (served: %s)" $name (join ", " $served)) }}
 {{- end }}
 {{- if not (kindIs "slice" $patterns) }}
