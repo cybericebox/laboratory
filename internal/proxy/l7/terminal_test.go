@@ -832,9 +832,9 @@ func TestEndpointDirectory(t *testing.T) {
 	}
 }
 
-// The console socket carries a proxy-signed token and is not charged to the pre-verification bucket: a garbage flood from the same address
-// does not close it.
-func TestConsoleSocketIsNotAffectedByAPreAuthFlood(t *testing.T) {
+// The console socket carries a grant that costs a signature verification: it is charged to the pre-verification bucket like /_auth, so a garbage
+// flood from one address is answered 429 before any grant is verified, and the verification slots are always released.
+func TestConsoleSocketIsThrottledLikeAuth(t *testing.T) {
 	f := newTermFixture(t, nil)
 	f.h.WithAuthRateLimit(1, 3)
 	for i := 0; i < 100; i++ {
@@ -849,7 +849,21 @@ func TestConsoleSocketIsNotAffectedByAPreAuthFlood(t *testing.T) {
 			t.Fatalf("the flood must be throttled, got %d", resp.StatusCode)
 		}
 	}
-	f.openConsole("kali")
+	// the same budget covers the socket: garbage offered as a subprotocol is answered 429 once the address is over
+	req, _ := http.NewRequest("GET", f.srv.URL+"/ws", nil)
+	req.Host = termHostFor("lab1", "kali")
+	req.Header.Set("Sec-WebSocket-Protocol", ConsoleSubprotocol+", garbage")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the socket of a throttled address got %d", resp.StatusCode)
+	}
+	if n := len(f.h.verifySem); n != 0 {
+		t.Fatalf("%d verification slots are held", n)
+	}
 }
 
 // A console session is handed to the activity ring of its group namespace twice: when it opens and when it ends, with one session id.

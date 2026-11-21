@@ -90,7 +90,16 @@ func (h *Handler) consoleSocket(w http.ResponseWriter, r *http.Request, task str
 		h.expired(w, r)
 		return
 	}
+	// The grant on the socket is verified like the one on /_auth: an Ed25519 verification costs CPU, so a garbage flood is throttled per address
+	// before the grant is looked at and the verifications run in a bounded number of slots.
+	if !h.throttlePreAuth(w, r) {
+		return
+	}
+	if !h.acquireVerify(w, r) {
+		return
+	}
 	claims, err := h.verifyGrant(raw, task, requestHost(r))
+	h.releaseVerify()
 	if err != nil {
 		h.expired(w, r)
 		return
