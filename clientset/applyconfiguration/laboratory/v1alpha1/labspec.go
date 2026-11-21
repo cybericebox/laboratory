@@ -32,9 +32,10 @@ type LabSpecApplyConfiguration struct {
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
-	// ImagePullSecret names a kubernetes.io/dockerconfigjson Secret in the lab's namespace with
-	// the pull credentials of this lab's private images. Only the management agent sets it,
-	// from the credentials the platform sends with the deploy; a value in a client's spec is
+	// ImagePullSecret says that this lab brought pull credentials for its private images. The Secret
+	// (kubernetes.io/dockerconfigjson) is in the namespace laboratory-upstream, where only the registry gate reads it, and
+	// its name is computed from the namespace and the name of the lab; no pod references it. Only the management
+	// agent sets the field, from the credentials the platform sends with the deploy; a value in a client's spec is
 	// ignored.
 	ImagePullSecret *string `json:"imagePullSecret,omitempty"`
 	// Checks lists the checks of the lab without their definitions (those are in the Secret <lab>-checks). Only the
