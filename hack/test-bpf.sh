@@ -7,7 +7,7 @@
 set -euo pipefail
 
 if [[ "${1:-}" != "inside" ]]; then
-  image=${BPF_TEST_IMAGE:-docker.io/golang:1.27.1}
+  image=${BPF_TEST_IMAGE:-docker.io/golang:1.27.4}
   snapshot=$(mktemp -d)
   container="cice-bpf-tests-$$-${RANDOM}"
   cleanup() {

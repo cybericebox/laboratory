@@ -16,7 +16,7 @@ ARG DISTROLESS=gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c5
 
 # The Go stage always runs on the build host and cross-compiles, so multi-arch builds
 # do not go through QEMU.
-FROM --platform=$BUILDPLATFORM mirror.gcr.io/library/golang:1.27.1@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS builder
+FROM --platform=$BUILDPLATFORM mirror.gcr.io/library/golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /workspace
