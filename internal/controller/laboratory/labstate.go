@@ -289,7 +289,7 @@ func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.L
 	var failed []string
 	for i, ref := range refs {
 		if answers[i].Err != nil {
-			failed = append(failed, fmt.Sprintf("%s (%v)", ref, answers[i].Err))
+			failed = append(failed, fmt.Sprintf("%s (%s)", ref, imagecache.SafeError(answers[i].Err))) // never the registry's own words: this reaches the status and an event
 			continue
 		}
 		digests[ref] = answers[i].Digest

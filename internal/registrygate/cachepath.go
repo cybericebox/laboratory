@@ -17,6 +17,7 @@ const (
 	kindUploads   = "uploads"
 	tagLatest     = "latest"
 	schemeHTTP    = "http"
+	schemeHTTPS   = "https"
 )
 
 var (

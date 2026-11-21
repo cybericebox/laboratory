@@ -94,8 +94,8 @@ type LabReconciler struct {
 	// Pinner resolves image tags to digests, in the background, for a lab created with the image cache on; nil pins nothing. A lab
 	// whose digests are not all there yet waits (it is woken through PinEvents).
 	Pinner *imagecache.AsyncResolver
-	// RequireDigest refuses a lab whose image tags cannot be pinned to a digest (the registry gate runs with GATE_REQUIRE_DIGEST and would
-	// refuse the pull by tag anyway); off, such a lab pulls by tag and says so in Status.ImageWarning.
+	// RequireDigest refuses a lab whose image tags cannot be pinned to a digest (the registry gate runs with GATE_REQUIRE_DIGEST, on by
+	// default, and would refuse the pull by tag anyway); off, such a lab pulls by tag and says so in Status.ImageWarning.
 	RequireDigest bool
 	// CredentialResolver builds the resolver of a lab's own credentials (a keychain made of the lab's and its tenant's pull documents
 	// only): the Pinner keeps one per credential fingerprint. Nil: a lab with credentials is not pinned (its tags stay tags).

@@ -287,10 +287,13 @@ type CacheConfig struct {
 	PinTTL time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	// PinConcurrency is how many image tags are resolved at once, in the background, for new labs (IMAGE_CACHE_PIN_CONCURRENCY).
 	PinConcurrency int `env:"IMAGE_CACHE_PIN_CONCURRENCY" envDefault:"8"`
-	// RequireDigest (IMAGE_CACHE_REQUIRE_DIGEST, the chart's registry.cache.requireDigest, like GATE_REQUIRE_DIGEST of the gate): a tag
-	// that cannot be resolved to a digest fails the creation of the lab.
-	RequireDigest bool     `env:"IMAGE_CACHE_REQUIRE_DIGEST" envDefault:"false"`
+	// RequireDigest (IMAGE_CACHE_REQUIRE_DIGEST, the chart's registry.cache.requireDigest, like GATE_REQUIRE_DIGEST of the gate; on by
+	// default): a tag that cannot be resolved to a digest fails the creation of the lab. Off, it is pulled by its tag.
+	RequireDigest bool     `env:"IMAGE_CACHE_REQUIRE_DIGEST" envDefault:"true"`
 	Registries    []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	// PlainHTTPRegistries are the served registries the chart lists with an http:// url (IMAGE_CACHE_PLAIN_HTTP_REGISTRIES): the tag resolver
+	// asks them over plain http, as the registry gate does.
+	PlainHTTPRegistries []string `env:"IMAGE_CACHE_PLAIN_HTTP_REGISTRIES" envSeparator:","`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)

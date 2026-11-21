@@ -1,6 +1,8 @@
 package registrygate
 
 import (
+	"github.com/cybericebox/laboratory/internal/netguard"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,7 +36,7 @@ func (r Registry) realmAllowed(ru *url.URL) bool {
 		return false
 	}
 	switch ru.Scheme {
-	case "https":
+	case schemeHTTPS:
 	case schemeHTTP:
 		return r.URL.Scheme == schemeHTTP && ru.Host == r.URL.Host
 	default:
@@ -77,8 +79,7 @@ type token struct {
 // NewUpstream is an upstream client that never follows a redirect by itself: the gate decides what a redirect may carry. headerTimeout
 // bounds the wait for the answer of a request; the body of a blob has no deadline of its own (it is as long as the layer is).
 func NewUpstream(headerTimeout time.Duration) *Upstream {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = headerTimeout
+	tr := netguard.NewTransport(headerTimeout, nil) // refuses internal addresses for redirect hops; the tests replace the transport, production code never does
 	return &Upstream{
 		Timeout: headerTimeout,
 		HTTP: &http.Client{
@@ -198,8 +199,11 @@ func classify(code int, redirected bool) Outcome {
 	return Unreachable
 }
 
-// follow follows the redirects of a response (at most five) over https and WITHOUT the Authorization header; on plain http only
-// inside the upstream's own host. It returns the last response and whether a redirect was followed.
+// follow follows the redirects of a response (at most five) WITHOUT the Authorization header. A redirect to the registry's own origin is
+// followed as it is; any other only when netguard.CheckRedirect accepts the target (https, default port, no userinfo, a DNS name that is not an
+// IP address in any form), and then the connection is made by a dialer that refuses loopback, private, link-local, CGNAT and the other
+// internal addresses at the moment it connects (so a name that is changed to one cannot pass). It returns the last response and whether a
+// redirect was followed.
 func (u *Upstream) follow(ctx context.Context, reg Registry, resp *http.Response, method string) (*http.Response, bool, error) {
 	redirected := false
 	for hops := 0; resp.StatusCode >= 300 && resp.StatusCode < 400; hops++ {
@@ -208,10 +212,16 @@ func (u *Upstream) follow(ctx context.Context, reg Registry, resp *http.Response
 		if hops >= 5 {
 			return nil, true, errors.New("too many upstream redirects")
 		}
-		if lerr != nil || loc.Scheme != "https" && !u.allowInsecure(reg, loc) {
-			return nil, true, fmt.Errorf("upstream redirect refused: %v", lerr)
+		if lerr != nil {
+			return nil, true, fmt.Errorf("upstream redirect refused: %w", lerr)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, loc.String(), nil) // no Authorization
+		hopCtx := netguard.HopContext(ctx)
+		if sameOrigin(reg, loc) {
+			hopCtx = ctx // the registry's own origin (it may be a cluster address or plain http): as trusted as the request that got here
+		} else if err := netguard.CheckRedirect(loc); err != nil {
+			return nil, true, fmt.Errorf("upstream redirect refused: %w", err)
+		}
+		req, err := http.NewRequestWithContext(hopCtx, method, loc.String(), nil) // no Authorization
 		if err != nil {
 			return nil, true, err
 		}
@@ -251,10 +261,21 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 	return resp, Allowed, nil
 }
 
-// allowInsecure lets a redirect stay on plain http only inside the upstream's own host when that upstream is itself plain http (a
-// registry of the same cluster, and the tests); a redirect to another host over http is refused.
-func (u *Upstream) allowInsecure(reg Registry, loc *url.URL) bool {
-	return reg.URL.Scheme == schemeHTTP && loc.Scheme == schemeHTTP && loc.Host == reg.URL.Host
+// sameOrigin says that a redirect stays on the registry's own scheme, host and port (a registry of the same cluster over plain http, and
+// the tests, redirect to themselves). Any other host over plain http is refused by netguard.CheckRedirect.
+func sameOrigin(reg Registry, loc *url.URL) bool {
+	return loc.Scheme == reg.URL.Scheme && strings.EqualFold(loc.Hostname(), reg.URL.Hostname()) && effectivePort(loc) == effectivePort(reg.URL)
+}
+
+// effectivePort is the port of a URL, the default one of its scheme when it has none ("https://h" and "https://h:443" are one origin).
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == schemeHTTPS {
+		return "443"
+	}
+	return "80"
 }
 
 // do sends the request, answers a challenge, and returns the response that is not a challenge.

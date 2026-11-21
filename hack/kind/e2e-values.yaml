@@ -26,6 +26,9 @@ registry:
       nodePort: 30543
 nodeAgent:
   image:
+    # also the netconfig image of the labs: named by the stand's registry, where the tests publish it, so the operator pins it to a digest
+    # as it pins the images of a deployment (registry.cache.requireDigest stays on); the node-agent pod uses the copy loaded onto the nodes
+    repository: registry.e2e.test/cybericebox/laboratory-node
     tag: e2e
   # the containerd of a Kind node
   criSocket: /run/containerd/containerd.sock

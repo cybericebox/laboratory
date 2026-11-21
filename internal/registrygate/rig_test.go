@@ -102,7 +102,7 @@ func newRig(t *testing.T) *rig {
 	regs := &RegistrySet{}
 	regs.Set([]Registry{f.registry("up")})
 	up := NewUpstream(5 * time.Second)
-	up.HTTP.Transport = f.cdn.Client().Transport // trusts the test CDN
+	up.HTTP.Transport = f.cdnTransport() // trusts the test CDN
 	z := NewZot(addr, "gate", "gatepw")
 	store := NewStore(DefaultTiming)
 	clk := &clock{t: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)}
