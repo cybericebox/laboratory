@@ -6,6 +6,8 @@ A release line is the branch release/X.Y. Everything is computed from the branch
 
   release_version.py line-of BRANCH       X.Y of release/X.Y (exit 1 for any other branch)
   release_version.py next-rc LINE         stdin: the tags. Prints  version=vX.Y.Z  tag=vX.Y.Z-rc.N
+  release_version.py existing-rc LINE [TAG...]
+                                          stdin: all tags; TAG...: the tags on the commit. Prints version= and tag= of the candidate the commit has
   release_version.py is-latest VERSION    stdin: the tags. Exit 0 when VERSION is the highest final release
   release_version.py stale-rc             stdin: the tags. Prints the candidates whose version has a final release (to be deleted)
   release_version.py prune [--from X.Y] [--keep N]
@@ -19,17 +21,18 @@ does not matter: only the maximum counts).
 import re
 import sys
 
-FINAL = re.compile(r"^v(\d+)\.(\d+)(?:\.(\d+))?$")
-RC = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$")
-BRANCH = re.compile(r"^release/(\d+)\.(\d+)$")
-LINE = re.compile(r"^(\d+)\.(\d+)$")
+# ASCII digits only and the whole string (fullmatch): a Unicode digit or a trailing newline must never read as a version.
+FINAL = re.compile(r"v(\d+)\.(\d+)(?:\.(\d+))?", re.ASCII)
+RC = re.compile(r"v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)", re.ASCII)
+BRANCH = re.compile(r"release/(\d+)\.(\d+)", re.ASCII)
+LINE = re.compile(r"(\d+)\.(\d+)", re.ASCII)
 
 
 def finals(tags):
     """{(x, y, z): tag} of the final releases."""
     out = {}
     for t in tags:
-        m = FINAL.match(t.strip())
+        m = FINAL.fullmatch(t.strip())
         if m:
             out[(int(m[1]), int(m[2]), int(m[3] or 0))] = t.strip()
     return out
@@ -39,21 +42,21 @@ def candidates(tags):
     """[(x, y, z, n)] of the release candidates."""
     out = []
     for t in tags:
-        m = RC.match(t.strip())
+        m = RC.fullmatch(t.strip())
         if m:
             out.append(tuple(int(g) for g in m.groups()))
     return out
 
 
 def line_of(branch):
-    m = BRANCH.match(branch)
+    m = BRANCH.fullmatch(branch)
     if not m:
         raise ValueError(f"{branch!r} is not a release line (release/X.Y)")
     return f"{int(m[1])}.{int(m[2])}"
 
 
 def parse_line(line):
-    m = LINE.match(line)
+    m = LINE.fullmatch(line)
     if not m:
         raise ValueError(f"{line!r} is not a line (X.Y)")
     return int(m[1]), int(m[2])
@@ -69,8 +72,21 @@ def next_rc(line, tags):
     return version, f"{version}-rc.{n}"
 
 
+def existing_rc(line, at_commit, tags):
+    """(version, tag) of the candidate a commit already carries, or None. Only a tag that the arithmetic itself would have given counts
+    (X.Y of the line, Z = the next patch): a hand-made tag such as v1.2.9-rc.1 on the commit is ignored, never adopted."""
+    x, y = parse_line(line)
+    z_final = [k[2] for k in finals(tags) if k[:2] == (x, y)]
+    z = max(z_final) + 1 if z_final else 0
+    mine = [c for c in candidates(at_commit) if c[:3] == (x, y, z)]
+    if not mine:
+        return None
+    n = max(c[3] for c in mine)
+    return f"v{x}.{y}.{z}", f"v{x}.{y}.{z}-rc.{n}"
+
+
 def is_latest(version, tags):
-    m = FINAL.match(version)
+    m = FINAL.fullmatch(version)
     if not m:
         raise ValueError(f"{version!r} is not a final version")
     mine = (int(m[1]), int(m[2]), int(m[3] or 0))
@@ -112,6 +128,11 @@ def main(argv):
             version, tag = next_rc(args[0], sys.stdin.read().split())
             print(f"version={version}")
             print(f"tag={tag}")
+        elif cmd == "existing-rc":
+            found = existing_rc(args[0], args[1:], sys.stdin.read().split())
+            if found:
+                print(f"version={found[0]}")
+                print(f"tag={found[1]}")
         elif cmd == "is-latest":
             return 0 if is_latest(args[0], sys.stdin.read().split()) else 1
         elif cmd == "stale-rc":

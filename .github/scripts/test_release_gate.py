@@ -32,8 +32,15 @@ def api_of(w):
             return w["pulls"]
         if "/check-runs" in path:
             return w["checks"]
-        if path.startswith(f"repos/{REPO}/commits/"):
-            return {"sha": w["commit"][path.rsplit("/", 1)[1]]}
+        if path.startswith(f"repos/{REPO}/git/ref/tags/"):
+            name = path.rsplit("/", 1)[1]
+            if name in w.get("annotated", {}):
+                return {"object": {"type": "tag", "sha": "t" * 40}}
+            return {"object": {"type": "commit", "sha": w["commit"][name]}}
+        if path == f"repos/{REPO}/git/tags/{'t' * 40}":
+            return {"object": {"type": "commit", "sha": w["annotated"]["v1.10.0-rc.2"]}}
+        if path.startswith(f"repos/{REPO}/commits/") and "/" not in path[len(f"repos/{REPO}/commits/"):]:
+            raise AssertionError("a tag must not be resolved through commits/NAME (a branch of that name would win): " + path)
         if path.startswith(f"repos/{REPO}/compare/"):
             return w["compare"]
         if path.endswith("/files?per_page=100"):
@@ -158,6 +165,37 @@ class VerifyTests(unittest.TestCase):
         w = world(tags=["v1.10.0-rc.1"], commit={"v1.10.0-rc.1": SHA}, files=[{"filename": ".github/x", "additions": 9999, "deletions": 0}])
         w["pulls"][0]["base"]["ref"] = "develop"
         self.assertEqual(verify(w, "v1.10.0-rc.1")["kind"], "cut")
+
+
+class HardeningTests(unittest.TestCase):
+    def refused(self, w, text, rc="v1.10.0-rc.2"):
+        with self.assertRaises(rg.GateError) as cm:
+            verify(w, rc)
+        self.assertIn(text, str(cm.exception))
+
+    def test_unicode_digits_and_a_trailing_newline_are_not_a_candidate(self):
+        for rc in ["v1.10.0-rc.\u0662", "v\u0661.10.0-rc.2", "v1.10.0-rc.2\n"]:
+            self.refused(world(), "not a candidate tag", rc)
+
+    def test_a_patch_is_not_skipped(self):
+        w = world(tags=["v1.10.0", "v1.10.9-rc.1"], commit={"v1.10.9-rc.1": SHA, "v1.10.0": "c" * 40})
+        self.refused(w, "next release of line 1.10 is v1.10.1", "v1.10.9-rc.1")
+
+    def test_a_candidate_of_an_older_patch_is_refused(self):
+        w = world(tags=["v1.10.0", "v1.10.1", "v1.10.1-rc.1", "v1.10.0-rc.5"], commit={"v1.10.0-rc.5": SHA, "v1.10.0": "c" * 40})
+        # v1.10.0 is final already, at another commit
+        self.refused(w, "already exists", "v1.10.0-rc.5")
+
+    def test_the_first_candidate_of_a_line_must_be_patch_zero(self):
+        self.refused(world(tags=["v1.10.1-rc.1"], commit={"v1.10.1-rc.1": SHA}), "next release of line 1.10 is v1.10.0", "v1.10.1-rc.1")
+
+    def test_an_annotated_tag_is_peeled_to_its_commit(self):
+        w = world(annotated={"v1.10.0-rc.2": SHA})
+        self.assertEqual(verify(w)["sha"], SHA)
+
+    def test_the_tag_is_read_from_the_tag_ref_not_from_commits(self):
+        # api_of raises when commits/NAME is asked (a branch of the same name would answer instead of the tag)
+        self.assertEqual(verify(world())["sha"], SHA)
 
 
 if __name__ == "__main__":

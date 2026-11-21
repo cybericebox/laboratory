@@ -12,6 +12,19 @@ set +e
 
 check "sha-tag" sha-abcdef0 "$("$here/ci.sh" sha-tag abcdef0123456789)"
 
+# image_exists tells "the registry says no" from "could not ask" (the real function, with a faked retry)
+# shellcheck disable=SC2329
+retry() { printf '%s\n' "$FAKE_OUT"; return "${FAKE_RC:-0}"; }
+FAKE_RC=0 FAKE_OUT=ok image_exists img v1; check "exists: found" 0 "$?"
+FAKE_RC=1 FAKE_OUT='ERROR: docker.io/img:v1: not found' image_exists img v1; check "exists: not found is a no" 1 "$?"
+FAKE_RC=1 FAKE_OUT='manifest unknown' image_exists img v1; check "exists: manifest unknown is a no" 1 "$?"
+(FAKE_RC=1 FAKE_OUT='dial tcp: i/o timeout' image_exists img v1) >/dev/null 2>&1; check "exists: a network error is not a no (stops)" 1 "$?"
+out=$( (FAKE_RC=1 FAKE_OUT='unauthorized: incorrect username or password' image_state img v1 sha1) 2>&1 ); check "state: an auth error is not 'missing'" 0 "$(grep -c '^missing' <<<"$out")"
+unset -f retry
+# shellcheck disable=SC1090
+source "$here/ci.sh"
+set +e
+
 # --- the registry is a fake: a file per tag holding "digest revision"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -64,6 +77,23 @@ got=$(delete_matching false 'v1\.2\.3-rc\.[0-9]+' img | tr '\n' ' ' | sed 's/ $/
 check "delete-matching: only whole matches" "del img v1.2.3-rc.1 del img v1.2.3-rc.2" "$got"
 check "delete-matching: dry run deletes nothing" "0" "$(delete_matching true 'v1\.2\.3-rc\.[0-9]+' img | grep -c '^del')"
 check "delete-matching: status with a non-matching last tag" 0 "$(delete_matching false 'nomatch' img >/dev/null; echo $?)"
+
+# a refused deletion does not stop the others, is reported, and makes the exit status 1
+# shellcheck disable=SC2329
+hub_delete() { if [[ "$2" == v1.2.3-rc.1 ]]; then hub_failed+=("$1:$2 (HTTP 403)"); return 1; fi; echo "del $1 $2"; }
+hub_failed=()
+got=$(delete_matching false 'v1\.2\.3-rc\.[0-9]+' img | tr '\n' ' ')
+delete_matching false 'v1\.2\.3-rc\.[0-9]+' img >/dev/null; st=$?
+check "delete-matching: a refusal does not stop the next deletion" "del img v1.2.3-rc.2 " "$got"
+check "delete-matching: a refusal is the exit status" 1 "$st"
+# a failed listing is not an empty repository
+# shellcheck disable=SC2329
+hub_tags() { return 1; }
+delete_matching false 'x' img >/dev/null 2>&1; check "delete-matching: a failed listing fails" 1 "$?"
+# shellcheck disable=SC2329
+hub_tags() { printf '%s\n' v1.2.3-rc.1 v1.2.3-rc.2 v1.2.30-rc.1 v1.2.3 sha-abcdef0 latest; }
+# shellcheck disable=SC2329
+hub_delete() { echo "del $1 $2"; }
 
 mkdir "$tmp/r2" && cd "$tmp/r2" || exit 1
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t

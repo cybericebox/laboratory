@@ -22,11 +22,12 @@ import sys
 MAX_CHANGED_LINES = 400
 OVERRIDE_LABEL = "large-fix"
 
-# Not counted: files a tool writes (go.sum, lock files, the generated Go, CRDs, RBAC and chart CRD copies, the eBPF objects).
+# Not counted: files a tool writes. Each pattern is anchored to the place where the tool writes (a file anywhere else, named like a
+# generated one, is counted: the name is the attacker's to choose, so a name alone never lowers the count).
 UNCOUNTED = re.compile(
-    r"(^|/)(go\.sum|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|uv\.lock|mise\.lock)$"
-    r"|(^|/)zz_generated\.[^/]*$"
-    r"|\.pb\.go$"
+    r"^(go\.sum|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|uv\.lock|mise\.lock)$"
+    r"|^api/[^/]+/[^/]+/zz_generated\.deepcopy\.go$"
+    r"|^pkg/(agent/protobuf|rpc/[^/]+/[^/]+)/[^/]*\.pb\.go$"
     r"|^clientset/"
     r"|^config/crd/bases/"
     r"|^config/rbac/role\.yaml$"
@@ -35,14 +36,23 @@ UNCOUNTED = re.compile(
     r"|^internal/proxy/demux/fastpath/[^/]*_bpfe[lb]\.go$"
 )
 
-# What each CI job runs. A line takes no change here (develop takes it):
+# What each CI job runs. A line takes no change here (develop takes it). Case-insensitive on purpose.
 #   .github/**                 the workflows and every script they run, CODEOWNERS
-#   mise.toml, mise.lock       tool versions and the tasks every job runs
-#   mise-tasks/**, hack/**     the scripts the tasks run
-#   scripts/**                 dev.sh and its test
-#   .golangci.yml              the lint configuration
+#   mise config                mise.toml, .mise.toml, mise.<env>.toml, mise.lock, .tool-versions, and the directories mise reads at any depth
+#                              (mise/, .mise/, .config/mise/, mise-tasks/, .mise-tasks/): a second config file overrides tools and tasks
+#   hack/**, scripts/**        the scripts the tasks run, dev.sh and its test
+#   golangci-lint config       .golangci.{yml,yaml,toml,json}
 # Not protected: the Go sources and their tests, the Dockerfile and the chart: they are the product the checks judge.
-PROTECTED = re.compile(r"^(\.github/|\.?mise(\.[a-z]+)?\.(toml|lock)$|mise-tasks/|hack/|scripts/|\.golangci\.ya?ml$)")
+# (This is a guard against accidents and weakening of the checks, not a sandbox: a pull request into a line still runs its own Go tests.)
+PROTECTED = re.compile(
+    r"^\.github/"
+    r"|^(hack|scripts)/"
+    r"|(^|/)\.?mise(-tasks)?/"
+    r"|(^|/)\.?mise(\.[a-z0-9_-]+)?\.(toml|lock)$"
+    r"|(^|/)\.tool-versions$"
+    r"|(^|/)\.golangci\.(ya?ml|toml|json)$",
+    re.IGNORECASE,
+)
 
 FILES_CAP = 3000
 
@@ -76,8 +86,8 @@ def problems(files, changed_files, labels=(), max_lines=MAX_CHANGED_LINES):
     prot = protected_files(files)
     if prot:
         out.append(
-            "A release line does not take changes to CI or the build tooling (.github, mise.toml, mise-tasks, hack, scripts, .golangci.yml): "
-            f"{', '.join(prot[:5])}. Make the change in develop; if the line's own CI is broken, the owner merges it with the ruleset bypass."
+            "A release line does not take changes to CI or the build tooling (.github, mise config, hack, scripts, golangci-lint config): "
+            f"{', '.join(json.dumps(p) for p in prot[:5])}. Make the change in develop; if the line's own CI is broken, the owner merges it with the ruleset bypass."
         )
     n = changed_lines(files)
     if n > max_lines and OVERRIDE_LABEL not in labels:

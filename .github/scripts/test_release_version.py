@@ -130,5 +130,42 @@ class CliTests(unittest.TestCase):
         self.assertEqual((rc, out), (0, "v1.10.0\n"))
 
 
+class StrictnessTests(unittest.TestCase):
+    def test_unicode_digits_are_not_versions(self):
+        for tag in ["v\u0661.\u0662.\u0663", "v1.2.3-rc.\u0665", "v\uff11.2.3"]:
+            self.assertEqual(rv.finals([tag]), {}, tag)
+            self.assertEqual(rv.candidates([tag]), [], tag)
+
+    def test_unicode_digits_are_not_a_line(self):
+        for b in ["release/\u0661.\u0662", "release/1.2\n"]:
+            with self.assertRaises(ValueError, msg=repr(b)):
+                rv.line_of(b)
+        with self.assertRaises(ValueError):
+            rv.parse_line("1.2\n")
+
+
+class ExistingRcTests(unittest.TestCase):
+    def test_the_candidate_of_the_commit_is_kept(self):
+        self.assertEqual(rv.existing_rc("1.10", ["v1.10.0-rc.1", "v1.10.0-rc.2"], ["v1.10.0-rc.1", "v1.10.0-rc.2"]), ("v1.10.0", "v1.10.0-rc.2"))
+
+    def test_a_hand_made_tag_of_another_patch_is_ignored(self):
+        self.assertIsNone(rv.existing_rc("1.10", ["v1.10.9-rc.1"], ["v1.10.9-rc.1"]))
+        self.assertIsNone(rv.existing_rc("1.10", ["v1.10.1-rc.1"], []))  # no final yet: the next patch is 0
+
+    def test_a_tag_of_another_line_or_a_free_form_tag_is_ignored(self):
+        self.assertIsNone(rv.existing_rc("1.10", ["v1.11.0-rc.1", "v1.10.x-rc.1", "v1.10.0-rc.1-evil"], []))
+
+    def test_after_a_release_the_next_patch_counts(self):
+        self.assertEqual(rv.existing_rc("1.10", ["v1.10.1-rc.1"], ["v1.10.0"]), ("v1.10.1", "v1.10.1-rc.1"))
+
+    def test_nothing_on_the_commit(self):
+        self.assertIsNone(rv.existing_rc("1.10", [], ["v1.10.0-rc.1"]))
+
+    def test_cli(self):
+        with mock.patch("sys.stdin", io.StringIO("v1.10.0-rc.1 v1.10.0-rc.2")), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(rv.main(["existing-rc", "1.10", "v1.10.0-rc.1"]), 0)
+        self.assertEqual(out.getvalue(), "version=v1.10.0\ntag=v1.10.0-rc.1\n")
+
+
 if __name__ == "__main__":
     unittest.main()

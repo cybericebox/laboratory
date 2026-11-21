@@ -54,4 +54,32 @@ DRY_RUN=true
 out=$(retention 2>&1)
 check "dry run deletes nothing" 0 "$(grep -cE '^(del |gh )' <<<"$out")"
 check "dry run lists" 1 "$(grep -c 'would delete img1:v1.10.0-rc.1' <<<"$out")"
+
+# --- a final tag that is not on main (made by hand) changes nothing
+command git checkout -q --detach HEAD
+command git commit -q --allow-empty -m side
+command git tag v1.99.0
+command git checkout -q main
+DRY_RUN=false
+out=$(retention 2>&1)
+check "a final tag outside main is ignored (v1.11.0 is not pruned)" 0 "$(grep -c '^del img1 v1.11.0$' <<<"$out")"
+check "the ignored tag is said" 1 "$(grep -c 'ignored: v1.99.0' <<<"$out")"
+command git tag -d v1.99.0 >/dev/null
+
+# --- a refused deletion: the rest goes on, the tag of that candidate stays, it is reported, the exit status follows STRICT
+# shellcheck disable=SC2329
+hub_delete() { if [[ "$1 $2" == "img1 v1.10.0-rc.1" ]]; then hub_failed+=("img1:v1.10.0-rc.1 (HTTP 403)"); return 1; fi; echo "del $1 $2"; }
+# shellcheck disable=SC2034 # read by retention()
+DRY_RUN=false STRICT=false
+out=$(retention 2>&1); rc=$?
+check "refused: the other images are still deleted" 1 "$(grep -c '^del img2 v1.10.0-rc.1$' <<<"$out")"
+check "refused: later candidates are still handled" 1 "$(grep -c '^del img1 v1.10.0-rc.2$' <<<"$out")"
+check "refused: the git tag and page of that candidate stay" 0 "$(grep -c 'gh release delete v1.10.0-rc.1 ' <<<"$out")"
+check "refused: it is reported" 1 "$(grep -c '::warning::retention could not delete img1:v1.10.0-rc.1 (HTTP 403)' <<<"$out")"
+check "refused: not strict, the exit status is 0 (the release is already public)" 0 "$rc"
+STRICT=true retention >/dev/null 2>&1; check "refused: strict, the exit status is 1" 1 "$?"
+summary=$tmp/summary
+GITHUB_STEP_SUMMARY=$summary STRICT=false retention >/dev/null 2>&1
+check "refused: the step summary lists it" 1 "$(grep -c 'img1:v1.10.0-rc.1' "$summary")"
+
 exit $fail

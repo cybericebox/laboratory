@@ -98,5 +98,27 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.run_cli([f("a.go", 500)], 1, "bug,large-fix"), 0)
 
 
+class BypassTests(unittest.TestCase):
+    def test_other_mise_and_tool_config_is_protected(self):
+        for name in [".mise/config.toml", "mise/config.toml", ".config/mise.toml", ".config/mise/config.toml", ".config/mise/conf.d/a.toml",
+                     "mise.local.toml", ".mise.toml", "mise.ci.toml", ".mise-tasks/lint", "mise/tasks/lint", ".tool-versions", "sub/mise.toml",
+                     ".golangci.toml", ".golangci.json", ".GitHub/x".replace("GitHub", "github"), "Scripts/dev.sh", "MISE.TOML", "HACK/x.sh"]:
+            self.assertEqual(len(lg.problems([f(name)], 1)), 1, name)
+
+    def test_a_name_alone_does_not_lower_the_count(self):
+        for name in ["internal/go.sum", "x/zz_generated.evil.go", "internal/evil.pb.go", "api/zz_generated.deepcopy.go", "api/a/v1/zz_generated.evil.go",
+                     "docs/package-lock.json", "x/clientset/a.go", "internal/proxy/demux/fastpath/evil.o.go"]:
+            self.assertEqual(lg.changed_lines([f(name, 500)]), 500, name)
+
+    def test_the_real_generated_paths_are_still_not_counted(self):
+        for name in ["go.sum", "api/laboratory/v1alpha1/zz_generated.deepcopy.go", "pkg/agent/protobuf/agent_grpc.pb.go",
+                     "pkg/rpc/node/v1/node_agent.pb.go", "config/rbac/role.yaml"]:
+            self.assertEqual(lg.changed_lines([f(name, 500)]), 0, name)
+
+    def test_file_names_in_the_message_cannot_forge_workflow_commands(self):
+        msg = " ".join(lg.problems([f(".github/x\n::error::forged")], 1))
+        self.assertNotIn("\n", msg)
+
+
 if __name__ == "__main__":
     unittest.main()

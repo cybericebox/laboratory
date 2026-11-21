@@ -13,6 +13,7 @@
 #   ci.sh hub-delete IMAGE TAG                 delete one tag
 #   ci.sh delete-matching DRY_RUN REGEX IMAGE...  delete the tags that match the whole REGEX (ERE) in every repository
 #   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> tags whose commit is an ancestor of RELEASE_SHA, and the buildcache tags
+#   hub-delete, delete-matching and cleanup go on after a refused deletion (an immutable tag may be refused), list the refusals in hub_failed and exit 1 at the end
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -25,7 +26,7 @@ hub_login() {
   [[ -n "$hub_jwt" ]] && return 0
   [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]] || die "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are required"
   hub_jwt=$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' |
-    curl -fsS -X POST -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -r .token)
+    curl -fsS -X POST -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -r .token) || die "Docker Hub login failed"
   [[ -n "$hub_jwt" && "$hub_jwt" != null ]] || die "Docker Hub login failed"
 }
 
@@ -34,16 +35,28 @@ hub_tags() {
   local url="https://hub.docker.com/v2/repositories/$1/tags?page_size=100"
   while [[ -n "$url" && "$url" != null ]]; do
     local page
-    page=$(curl -fsS -H "Authorization: JWT $hub_jwt" "$url")
-    jq -r '.results[].name' <<<"$page"
-    url=$(jq -r '.next // empty' <<<"$page")
+    # Explicit checks: this runs inside $(...) and < <(...), where set -e does not apply, so a failed page would be read as "no more tags".
+    page=$(curl -fsS -H "Authorization: JWT $hub_jwt" "$url") || die "Docker Hub: the list of tags of $1 failed ($url)"
+    jq -r '.results[].name' <<<"$page" || die "Docker Hub: the list of tags of $1 is not JSON"
+    url=$(jq -r '.next // empty' <<<"$page") || die "Docker Hub: no next page in the list of tags of $1"
   done
 }
 
+# Deletions that the registry refused or that failed: "IMAGE:TAG (HTTP code)", for the caller to report. An immutable tag may be refused.
+hub_failed=()
 hub_delete() {
+  local code
   hub_login
-  curl -fsS -o /dev/null -X DELETE -H "Authorization: JWT $hub_jwt" "https://hub.docker.com/v2/repositories/$1/tags/$2/"
-  echo "deleted $1:$2"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: JWT $hub_jwt" "https://hub.docker.com/v2/repositories/$1/tags/$2/") || code=000
+  case "$code" in
+    2??) echo "deleted $1:$2" ;;
+    404) echo "$1:$2 is already gone" ;;
+    *)
+      hub_failed+=("$1:$2 (HTTP $code)")
+      echo "::warning::could not delete $1:$2 (HTTP $code)" >&2
+      return 1
+      ;;
+  esac
 }
 
 # retry CMD...: runs the command; when it fails with a Docker Hub rate limit (429 Too Many Requests) it is run again after
@@ -62,8 +75,14 @@ retry() {
   done
 }
 
-# true when the image $1:$2 exists on Docker Hub (a rate limit is retried, so it is not read as "missing")
-image_exists() { retry docker buildx imagetools inspect "$1:$2" >/dev/null 2>&1; }
+# true when the image $1:$2 exists on Docker Hub, false when the registry says it does not (a rate limit is retried). Any other failure
+# (network, authentication, 5xx) stops the script: it is never read as "missing", which would let a push or a retag go on blindly.
+image_exists() {
+  local out
+  if out=$(retry docker buildx imagetools inspect "$1:$2" 2>&1); then return 0; fi
+  if grep -qiE 'not found|manifest unknown|name unknown|\b404\b' <<<"$out"; then return 1; fi
+  die "cannot tell whether $1:$2 exists: $(head -c 300 <<<"$out")"
+}
 
 # the digest of the manifest (list) behind $1:$2
 image_digest() { retry docker buildx imagetools inspect "$1:$2" --format '{{json .Manifest}}' | jq -r .digest; }
@@ -134,28 +153,31 @@ chart() {
 
 # delete_matching DRY_RUN REGEX IMAGE...
 delete_matching() {
-  local dry=$1 re=$2 image tag
+  local dry=$1 re=$2 image tag tags failed=0
   shift 2
   for image in "$@"; do
+    tags=$(hub_tags "$image") || return 1 # not inside < <(...): a failed listing must stop, not look like an empty repository
     while read -r tag; do
       [[ -n "$tag" ]] || continue
       if [[ "$tag" =~ ^($re)$ ]]; then
-        if [[ "$dry" == true ]]; then echo "would delete $image:$tag"; else hub_delete "$image" "$tag"; fi
+        if [[ "$dry" == true ]]; then echo "would delete $image:$tag"; else hub_delete "$image" "$tag" || failed=1; fi
       fi
-    done < <(hub_tags "$image")
+    done <<<"$tags"
   done
+  return "$failed"
 }
 
 # cleanup RELEASE_SHA DRY_RUN IMAGE...: the dev images of builds that are part of a release, and the registry layer caches
 cleanup() {
   local release_sha=$1 dry=$2
   shift 2
-  local image tag full
+  local image tag full tags failed=0
   for image in "$@"; do
     echo "== $image"
     local doomed=()
+    tags=$(hub_tags "$image") || return 1
     while read -r tag; do
-      if [[ "$tag" == buildcache-develop || "$tag" == buildcache ]]; then
+      if [[ "$tag" == buildcache-develop || "$tag" == buildcache-release || "$tag" == buildcache ]]; then
         doomed+=("$tag")
         continue
       fi
@@ -170,16 +192,16 @@ cleanup() {
       else
         echo "keep $tag (not an ancestor of the release commit)"
       fi
-    done < <(hub_tags "$image")
+    done <<<"$tags"
     echo "to delete from $image: ${#doomed[@]}"
     printf '  %s\n' "${doomed[@]}"
     [[ "$dry" == true ]] && continue
     for tag in "${doomed[@]}"; do
-      hub_delete "$image" "$tag"
+      hub_delete "$image" "$tag" || failed=1
     done
   done
   [[ "$dry" == true ]] && echo "dry run: nothing deleted"
-  return 0
+  return "$failed"
 }
 
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0 2>/dev/null

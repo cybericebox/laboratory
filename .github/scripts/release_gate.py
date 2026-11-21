@@ -25,7 +25,7 @@ import line_gate
 import release_version
 
 REQUIRED_CHECKS = ("Check passed",)
-RC = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$")
+RC = re.compile(r"v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)", re.ASCII)
 
 
 class GateError(Exception):
@@ -52,9 +52,22 @@ def gh_api(path, paginate=False):
     return data
 
 
+def tag_commit(api, repo, name):
+    """The commit a tag points at, read from the tag ref itself (git/ref/tags/NAME, annotated tags peeled). Not repos/.../commits/NAME: a
+    branch with the same name as the tag would win there, and anybody who can push a branch could then name the commit."""
+    obj = api(f"repos/{repo}/git/ref/tags/{name}")["object"]
+    for _ in range(5):
+        if obj["type"] == "commit":
+            return obj["sha"]
+        if obj["type"] != "tag":
+            break
+        obj = api(f"repos/{repo}/git/tags/{obj['sha']}")["object"]
+    raise GateError(f"tag {name} does not point at a commit")
+
+
 def verify_candidate(rc, repo, api=gh_api, required=REQUIRED_CHECKS, max_lines=line_gate.MAX_CHANGED_LINES):
     """Returns {"sha", "kind" ("line" or "cut"), "pr"}; raises GateError with the reason otherwise. `api(path, paginate=False)` is injected."""
-    m = RC.match(rc or "")
+    m = RC.fullmatch(rc or "")
     if not m:
         raise GateError(f"{rc!r} is not a candidate tag (vX.Y.Z-rc.N)")
     x, y, z, n = (int(g) for g in m.groups())
@@ -66,9 +79,12 @@ def verify_candidate(rc, repo, api=gh_api, required=REQUIRED_CHECKS, max_lines=l
     newer = [c for c in release_version.candidates(tags) if c[:3] == (x, y, z) and c[3] > n]
     if newer:
         raise GateError(f"{rc} is not the newest candidate of {version}: v{x}.{y}.{z}-rc.{max(c[3] for c in newer)} exists")
-    sha = api(f"repos/{repo}/commits/{rc}")["sha"]
+    expected = release_version.next_rc(line, [t for t in tags if t != rc])[0]
+    if version != expected and version not in tags:
+        raise GateError(f"{rc}: the next release of line {line} is {expected}, not {version} (a patch is never skipped or taken out of order)")
+    sha = tag_commit(api, repo, rc)
     if version in tags:
-        final = api(f"repos/{repo}/commits/{version}")["sha"]
+        final = tag_commit(api, repo, version)
         if final != sha:
             raise GateError(f"{version} already exists at {final[:7]}, not at the commit of {rc} ({sha[:7]})")
 
