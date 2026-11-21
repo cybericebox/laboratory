@@ -178,21 +178,6 @@ func TestHopDialRefusesWhatANameResolvesTo(t *testing.T) {
 	_ = c.Close()
 }
 
-func itoa(n int) string {
-	return strings.TrimSpace(strings.Join(strings.Fields(strings.Repeat("x ", 0)), "") + func() string { return fmtInt(n) }())
-}
-
-func fmtInt(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for ; n > 0; n /= 10 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-	}
-	return string(b)
-}
-
 // redirector is a registry (plain http, on the loopback) that answers every request with a 307 to loc, and a target that counts its hits.
 func redirector(t *testing.T, loc func(target *httptest.Server) string) (reg Registry, target *httptest.Server, hits *atomic.Int64) {
 	t.Helper()

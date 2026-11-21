@@ -89,7 +89,7 @@ func refuseInternalAddress(_, address string, _ syscall.RawConn) error {
 }
 
 var internalPrefixes = func() []netip.Prefix {
-	var out []netip.Prefix
+	out := make([]netip.Prefix, 0, 8)
 	for _, s := range []string{
 		"0.0.0.0/8",     // "this network"
 		"100.64.0.0/10", // CGNAT
