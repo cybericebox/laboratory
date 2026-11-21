@@ -90,3 +90,24 @@ func TestStreamThroughRefusesABlobThatDoesNotMatchItsDigest(t *testing.T) {
 		t.Fatalf("a right blob streams through: %d", code)
 	}
 }
+
+// A resumed download is how a client gets round a cut: the first transfer stops one byte short, the next asks for the rest. A range is not
+// stored and cannot be hashed, so a range of a blob that was refused must not be passed on from the upstream at all.
+func TestRangeOfAnUnverifiedBlobIsNotPassedOn(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		r := newRig(t)
+		r.cache.DiskFull = func() bool { return full }
+		good := bytes.Repeat([]byte("G"), 4096)
+		d := r.up.put("org/private", "blobs", good)
+		bad := bytes.Repeat([]byte("B"), len(good))
+		r.corrupt("org/private", d, bad)
+
+		code, body, _ := r.pull("GET", bpath("org/private", d), alice, "pw", map[string]string{"Range": "bytes=4095-"})
+		if code == http.StatusPartialContent || bytes.Equal(body, bad[4095:]) {
+			t.Fatalf("diskFull=%v: the last byte of a blob that does not match its digest was served (%d, %d bytes)", full, code, len(body))
+		}
+		if r.inZot("c/up/org/private", "blobs", d) {
+			t.Fatalf("diskFull=%v: a blob that does not match its digest was stored", full)
+		}
+	}
+}

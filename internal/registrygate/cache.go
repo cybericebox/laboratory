@@ -949,7 +949,9 @@ func (l *lenient) Write(p []byte) (int, error) {
 
 // streamThrough serves the blob from upstream with the pull's credentials and keeps nothing (the disk is full, or the store failed).
 func (c *Cache) streamThrough(w http.ResponseWriter, r *http.Request, reg Registry, up Object, digest string, who caller) {
-	up.Range = r.Header.Get("Range")
+	// a Range is not passed on: a part of a blob cannot be hashed, so a range from upstream would deliver (in two resumed pieces) the
+	// bytes that the held-back last byte keeps from a whole transfer. The client gets the whole blob, verified, as HTTP allows.
+	up.Range = ""
 	fc, fk := c.fillCreds(who, reg.Name)
 	resp, out, _ := c.Up.Fetch(r.Context(), reg, up, fc, fk)
 	if resp == nil {

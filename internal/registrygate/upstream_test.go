@@ -189,3 +189,26 @@ func TestAFetchFollowsARedirectWithoutAuthorization(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 }
+
+// A registry written with its default port and a redirect without it (or the reverse) are the same origin: a registry on a private
+// address must keep redirecting to itself.
+func TestSameOriginComparesTheEffectivePort(t *testing.T) {
+	for _, c := range []struct {
+		reg, loc string
+		same     bool
+	}{
+		{"https://reg.corp:443", "https://reg.corp/v2/x", true},
+		{"https://reg.corp", "https://REG.corp:443/v2/x", true},
+		{"http://reg.corp:80", "http://reg.corp/v2/x", true},
+		{"http://reg.corp:5000", "http://reg.corp:5000/v2/x", true},
+		{"http://reg.corp:5000", "http://reg.corp/v2/x", false},
+		{"https://reg.corp", "https://reg.corp:8443/v2/x", false},
+		{"https://reg.corp", "http://reg.corp:443/v2/x", false},
+		{"https://reg.corp", "https://other.corp/v2/x", false},
+	} {
+		reg := Registry{URL: mustURL(t, c.reg)}
+		if got := sameOrigin(reg, mustURL(t, c.loc)); got != c.same {
+			t.Errorf("%s -> %s: %v, want %v", c.reg, c.loc, got, c.same)
+		}
+	}
+}

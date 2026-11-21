@@ -26,7 +26,7 @@ func isHop(ctx context.Context) bool { return ctx.Value(hopKey{}) != nil }
 // decimal, hex, octal or short numbers, IPv6, with a zone), has no dot ("localhost", "metadata"), ends in a dot, or has an empty or
 // unusual label. There is no list of allowed hosts: blob CDNs vary. What the name resolves to is judged at dial time (refuseInternalAddress).
 func checkFillRedirect(loc *url.URL) error {
-	if loc.Scheme != "https" {
+	if loc.Scheme != schemeHTTPS {
 		return errors.New("not https")
 	}
 	if loc.User != nil {

@@ -237,6 +237,16 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTemporaryRedirect)
 		return
 	}
+	if from, ok := strings.CutSuffix(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-"); ok && r.Method == http.MethodGet && r.Header.Get("Range") != "" {
+		var n int
+		if _, err := fmt.Sscan(from, &n); err == nil && n >= 0 && n < len(body) {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", n, len(body)-1, len(body)))
+			w.Header().Set("Content-Length", fmt.Sprint(len(body)-n))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body[n:])
+			return
+		}
+	}
 	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if strings.Contains(r.URL.Path, "/manifests/") && !noDigest {

@@ -35,7 +35,7 @@ func (r Registry) realmAllowed(ru *url.URL) bool {
 		return false
 	}
 	switch ru.Scheme {
-	case "https":
+	case schemeHTTPS:
 	case schemeHTTP:
 		return r.URL.Scheme == schemeHTTP && ru.Host == r.URL.Host
 	default:
@@ -281,7 +281,18 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 // sameOrigin says that a redirect stays on the registry's own scheme, host and port (a registry of the same cluster over plain http, and
 // the tests, redirect to themselves). Any other host over plain http is refused by checkFillRedirect.
 func sameOrigin(reg Registry, loc *url.URL) bool {
-	return loc.Scheme == reg.URL.Scheme && strings.EqualFold(loc.Host, reg.URL.Host)
+	return loc.Scheme == reg.URL.Scheme && strings.EqualFold(loc.Hostname(), reg.URL.Hostname()) && effectivePort(loc) == effectivePort(reg.URL)
+}
+
+// effectivePort is the port of a URL, the default one of its scheme when it has none ("https://h" and "https://h:443" are one origin).
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == schemeHTTPS {
+		return "443"
+	}
+	return "80"
 }
 
 // do sends the request, answers a challenge, and returns the response that is not a challenge.

@@ -111,7 +111,7 @@ func redirectTarget(reg Registry, resp *http.Response) (*url.URL, bool) {
 	}
 	t := resp.Request.URL.ResolveReference(ref)
 	host := t.Hostname()
-	if t.Scheme != "https" || t.User != nil || t.Port() != "" || t.Host != host || host == "" || strings.HasSuffix(host, ".") ||
+	if t.Scheme != schemeHTTPS || t.User != nil || t.Port() != "" || t.Host != host || host == "" || strings.HasSuffix(host, ".") ||
 		net.ParseIP(host) != nil || !plainHostName(strings.ToLower(host)) || !redirectHostMatches(reg.Redirects, host) {
 		return nil, false
 	}
