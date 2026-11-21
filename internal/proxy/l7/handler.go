@@ -243,13 +243,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Strip challenge cookie before forwarding.
 	r = r.Clone(r.Context())
-	var kept []string
-	for _, c := range r.Cookies() {
-		if c.Name != h.cookieName {
-			kept = append(kept, c.Name+"="+c.Value)
-		}
-	}
-	r.Header.Set("Cookie", strings.Join(kept, "; "))
+	stripCookie(r, h.cookieName)
 	stripClientAddress(r.Header)
 	r.Header.Set("X-Forwarded-Proto", schemeHTTPS)
 
@@ -546,4 +540,15 @@ func (h *Handler) legacyRoute(task, groupID, client string) (backendURL, lab str
 		return "", "", false
 	}
 	return backendURL, lab, true
+}
+
+// stripCookie removes the cookies of one name from the request, whatever number of Cookie headers carried them.
+func stripCookie(r *http.Request, name string) {
+	var kept []string
+	for _, c := range r.Cookies() {
+		if c.Name != name {
+			kept = append(kept, c.Name+"="+c.Value)
+		}
+	}
+	r.Header.Set("Cookie", strings.Join(kept, "; "))
 }
