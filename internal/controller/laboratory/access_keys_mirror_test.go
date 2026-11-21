@@ -150,11 +150,12 @@ func TestAccessKeysSecretTenantIsTheInverseOfTheName(t *testing.T) {
 func TestDevicePodCarriesTheGroupName(t *testing.T) {
 	scheme := bwScheme()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lg-ns", Labels: map[string]string{names.LabelGroup: "grp-1"}}}
-	group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "grp-1"}}
+	group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "grp-1", Labels: map[string]string{names.LabelTenant: "acme"}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, group).Build()
 	r := &DeviceReconciler{Client: c, Reader: c}
-	device := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Namespace: "lg-ns", UID: "device-uid", Labels: map[string]string{names.LabelGroupName: "forged"}}}
+	device := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Namespace: "lg-ns", UID: "device-uid", Labels: map[string]string{names.LabelGroupName: "forged", names.LabelTenant: "evil"}}}
 	device.Spec.Name, device.Spec.LabRef = "web", "lab"
+	device.Spec.Access = []laboratoryv1alpha1.DeviceAccess{{Kind: laboratoryv1alpha1.AccessTerminal, Command: []string{"/bin/bash"}, User: "kali"}}
 	labels, selector, _, _ := r.workloadTemplate(device)
 	if _, ok := labels[names.LabelGroupName]; ok {
 		t.Fatalf("a user label set the group name: %v", labels)
@@ -164,6 +165,14 @@ func TestDevicePodCarriesTheGroupName(t *testing.T) {
 	}
 	if labels[names.LabelGroupName] != "grp-1" {
 		t.Fatalf("labels = %v", labels)
+	}
+	// the tenant is the LabGroup's, whatever the device's own labels say (the device access service binds the issuer of a grant to it)
+	if labels[names.LabelTenant] != "acme" {
+		t.Fatalf("tenant label = %q: %v", labels[names.LabelTenant], labels)
+	}
+	// the terminal command and user are stamped as a digest the service compares
+	if labels[names.LabelTerminal] != "true" || labels[names.LabelTerminalSpec] != names.TerminalSpecHash([]string{"/bin/bash"}, "kali") {
+		t.Fatalf("terminal labels: %v", labels)
 	}
 	if _, ok := selector[names.LabelGroupName]; ok {
 		t.Fatalf("the group name leaked into the selector: %v", selector)

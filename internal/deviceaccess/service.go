@@ -204,8 +204,11 @@ func (s *Service) refuse(ctx context.Context, conn Conn, req wire.OpenRequest, c
 // The pod must carry the name of the group the grant is for (names.LabelGroupName, stamped by the operator): a lab and a device name
 // repeat across groups, and the namespace of the request is the proxy's word, so the grant's group is what binds the console to the
 // right namespace.
-func (s *Service) resolve(ctx context.Context, req wire.OpenRequest, group string) (Device, string, error) {
-	dev, err := Resolve(ctx, s.rt, Target{Namespace: req.Namespace, Lab: req.Lab, Device: req.Device, GroupName: names.EncodeName(group)})
+//
+// It must also carry the tenant that signed the grant (names.LabelTenant, stamped by the operator from the LabGroup): the service verifies a
+// grant with the keys of every tenant, so this is what stops a tenant that holds a valid key from opening another tenant's device.
+func (s *Service) resolve(ctx context.Context, req wire.OpenRequest, group, tenant string) (Device, string, error) {
+	dev, err := Resolve(ctx, s.rt, Target{Namespace: req.Namespace, Lab: req.Lab, Device: req.Device, GroupName: names.EncodeName(group), Tenant: tenant})
 	switch {
 	case err == nil:
 		return dev, "", nil

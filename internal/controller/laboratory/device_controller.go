@@ -505,8 +505,9 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 	labels[names.LabelLabUID] = parentUID
 	labels[names.LabelDeviceUID] = string(device.UID)
 	// The device access service reads this label from the runtime and refuses a console to a device without it.
-	if enabled, _, _ := device.TerminalSettings(); enabled {
+	if enabled, command, user := device.TerminalSettings(); enabled {
 		labels[names.LabelTerminal] = valueTrue
+		labels[names.LabelTerminalSpec] = names.TerminalSpecHash(command, user)
 	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
@@ -794,8 +795,10 @@ func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace stri
 
 // stampGroupName puts the name of the device's LabGroup on the labels of its pod (names.LabelGroupName). The device access service requires
 // it to equal the group of a console grant: lab and device names repeat across groups, so it is what binds a grant to the namespace it is for.
-// The label is operator-made (names.LabelPrefix labels are never copied from a user), so a participant cannot set it. A namespace with no
-// LabGroup gets no label, and then no console opens in it.
+// The tenant of the group goes with it (names.LabelTenant, names.TenantOf of the LabGroup): the service requires it to equal the issuer of the
+// grant, so a tenant that holds a valid key cannot open the device of another tenant's group. Both labels are operator-made
+// (names.LabelPrefix labels are never copied from a user), so a participant cannot set them. A namespace with no LabGroup gets neither, and
+// then no console opens in it.
 func (r *DeviceReconciler) stampGroupName(ctx context.Context, device *laboratoryv1alpha1.Device, labels map[string]string) error {
 	group, err := r.labGroupOfNamespace(ctx, device.Namespace)
 	if err != nil {
@@ -803,6 +806,7 @@ func (r *DeviceReconciler) stampGroupName(ctx context.Context, device *laborator
 	}
 	if group != nil {
 		labels[names.LabelGroupName] = group.Name
+		labels[names.LabelTenant] = names.TenantOf(group.Labels)
 	}
 	return nil
 }

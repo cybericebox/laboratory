@@ -208,9 +208,16 @@ func (s *Service) serveConsole(ctx context.Context, conn Conn, req wire.OpenRequ
 	}
 	defer s.counter.releaseConsole(clientKey(req), labKey(req))
 
-	dev, code, err := s.resolve(ctx, req, claims.Group)
+	dev, code, err := s.resolve(ctx, req, claims.Group, claims.Issuer)
 	if err != nil {
 		s.refuse(ctx, conn, req, code, err)
+		return
+	}
+	// The command and the user are the lab author's, as the operator stamped them on the pod (a digest: labels cannot carry a list): the
+	// proxy names them in the request, and a request that differs from the stamp is refused, so a compromised proxy cannot choose a program
+	// or a user.
+	if dev.TerminalSpec == "" || dev.TerminalSpec != names.TerminalSpecHash(req.Command, req.User) {
+		s.refuse(ctx, conn, req, wire.CodeUnauthorized, errors.New("the command or the user is not the device's"))
 		return
 	}
 	spec, err := s.rt.Spec(ctx, dev.ContainerID)

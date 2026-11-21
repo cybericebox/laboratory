@@ -2,6 +2,7 @@ package deviceaccess
 
 import (
 	"context"
+	"crypto/ed25519"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 	"github.com/cybericebox/laboratory/internal/grant"
+	"github.com/cybericebox/laboratory/internal/grant/granttest"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -117,4 +119,88 @@ func TestResolveGroupNameIsOptionalForTheCheckerAndRequiredWhenGiven(t *testing.
 	if _, err := Resolve(context.Background(), rt, target); err == nil {
 		t.Fatal("another group resolved")
 	}
+}
+
+// The service verifies a grant with the keys of every tenant, so the tenant that signed it must be the tenant of the pod: a second tenant
+// that holds a valid key cannot open the device of another tenant's group.
+func TestConsoleIsBoundToTheTenantOfTheGrant(t *testing.T) {
+	beta := granttest.MustKey("beta", "k1")
+	both := func(tenant, id string) (ed25519.PublicKey, bool) {
+		if k, ok := testGrantKey.Lookup()(tenant, id); ok {
+			return k, ok
+		}
+		return beta.Lookup()(tenant, id)
+	}
+	service := func(rt Runtime) *Service {
+		svc := testService(rt)
+		svc.auth = NewAuth(both, 8*time.Hour)
+		return svc
+	}
+	// beta signs a perfect grant for the group, lab and device of a pod of acme
+	r := openReq()
+	c := beta.Claims(time.Now(), time.Hour, "dev-abc12t.labs.example.test")
+	c.Group, c.Lab, c.Dev, c.Kind, c.Subject = r.Group, r.Lab, r.Device, grant.KindConsole, r.Client
+	c.Audience = jwt.ClaimStrings{grant.AudienceProxy, grant.AudienceDeviceAccess}
+	r.Grant = beta.Sign(t, c)
+	if code := refusedWith(t, service(labRuntime()), r); code != wire.CodeNotFound {
+		t.Errorf("a grant of another tenant: %q", code)
+	}
+	// a pod without the tenant label never matches
+	rt := labRuntime()
+	for _, c := range rt.containers {
+		if c.Labels[labelKind] == kindSandbox {
+			delete(c.Labels, names.LabelTenant)
+		}
+	}
+	if code := refusedWith(t, service(rt), openReq()); code != wire.CodeNotFound {
+		t.Errorf("a pod without the tenant label: %q", code)
+	}
+	// the owner opens it
+	svc := service(labRuntime())
+	cn, done := run(svc, context.Background())
+	cn.sendOpen(t, openReq())
+	if reply := cn.reply(t); !reply.OK {
+		t.Fatalf("the tenant of the pod is refused: %+v", reply)
+	}
+	cn.send(wire.Close(wire.ReasonClient))
+	expectClose(t, cn, wire.ReasonClient)
+	waitDone(t, done)
+}
+
+// The command and the user are the lab author's as the operator stamped them: a request that names others, or a pod without the stamp, is refused.
+func TestConsoleRunsOnlyWhatTheOperatorStamped(t *testing.T) {
+	r := openReq()
+	r.Command, r.User = []string{"/bin/bash"}, "root"
+	r.Grant = testGrantFor(t, r, time.Now())
+	if code := refusedWith(t, testService(labRuntime()), r); code != wire.CodeUnauthorized {
+		t.Errorf("a command the device does not name: %q", code)
+	}
+	rt := labRuntime()
+	for _, c := range rt.containers {
+		if c.Labels[labelKind] == kindSandbox {
+			delete(c.Labels, names.LabelTerminalSpec)
+		}
+	}
+	if code := refusedWith(t, testService(rt), openReq()); code != wire.CodeUnauthorized {
+		t.Errorf("a pod without the stamp: %q", code)
+	}
+	// the stamped command and user pass
+	rt = labRuntime()
+	for _, c := range rt.containers {
+		if c.Labels[labelKind] == kindSandbox {
+			c.Labels[names.LabelTerminalSpec] = names.TerminalSpecHash([]string{"/bin/bash"}, "")
+		}
+	}
+	ok := openReq()
+	ok.Command = []string{"/bin/bash"}
+	ok.Grant = testGrantFor(t, ok, time.Now())
+	svc := testService(rt)
+	cn, done := run(svc, context.Background())
+	cn.sendOpen(t, ok)
+	if reply := cn.reply(t); !reply.OK {
+		t.Fatalf("the stamped command was refused: %+v", reply)
+	}
+	cn.send(wire.Close(wire.ReasonClient))
+	expectClose(t, cn, wire.ReasonClient)
+	waitDone(t, done)
 }
