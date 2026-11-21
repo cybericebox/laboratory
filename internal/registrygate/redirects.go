@@ -137,7 +137,7 @@ func (u *Upstream) followProof(ctx context.Context, reg Registry, resp *http.Res
 		if hops >= maxProofRedirects {
 			return nil, false, nil
 		}
-		req, err := http.NewRequestWithContext(ctx, method, t.String(), nil)
+		req, err := http.NewRequestWithContext(hopContext(ctx), method, t.String(), nil) // dialed with the internal addresses refused
 		if err != nil {
 			return nil, false, err
 		}

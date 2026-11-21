@@ -2701,6 +2701,18 @@ compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.ad
   in `registries.json` of the ConfigMap `laboratory-registry-gate`. Only the gate calls upstream registries (zot has no sync of its own), and the registry
   pod's egress is open, so the redirect targets need no network rule here; a cluster that restricts egress by hosts must allow the targets
   (`*.pkg.dev` for `registry.k8s.io`).
+- **Redirects while filling, and what a fill checks.** A blob or a manifest is fetched after the decision is made, and a registry may redirect that fetch
+  (a blob to a CDN). No host list applies there (CDNs vary), so the gate follows a redirect (at most 5, never with the pull's credentials) only to the
+  registry's own origin or to a target that is `https`, has no userinfo, uses the default port (none or 443) and names a DNS name: an IP address in any form
+  (dotted, decimal, hex, octal, short, IPv6, with a zone), a name without a dot and a trailing dot are refused. Whatever the name resolves to is judged when the
+  connection is made, for these redirect hops and for the redirect hops of a manifest proof alike: loopback, private (RFC 1918, `fc00::/7`), link-local
+  (`169.254.0.0/16` with the metadata address, `fe80::/10`), CGNAT (`100.64.0.0/10`), unspecified, multicast and reserved addresses, and an IPv4-mapped,
+  NAT64, 6to4 or IPv4-compatible form of those, are refused, so a name that is changed to an internal address after the check cannot pass. A refused hop
+  makes the answer inconclusive (`503`). A cluster that sends the gate's traffic through an HTTP proxy (`HTTPS_PROXY`) is judged at the proxy's address,
+  not the target's. The gate also checks the bytes: a manifest fetched by digest and a blob must hash (sha256) to the digest asked for. A blob is hashed while
+  it streams and its last byte is held back until the hash matches, so on a mismatch zot never receives a complete body (nothing is stored, whatever zot
+  checks itself) and the client's download stays short; a miss streamed through on a full volume is checked the same way. A byte range is not checked (the
+  kubelet checks the digest of what it pulls).
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.

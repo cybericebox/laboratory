@@ -1,10 +1,12 @@
 package registrygate
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -67,6 +69,25 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 	t.Cleanup(f.cdn.Close)
 	t.Cleanup(f.cdnPlain.Close)
 	return f
+}
+
+// redirectBase is where a redirect points: a host NAME on the default https port (the gate refuses an IP address or a port), which
+// cdnTransport dials to the test CDN. The test CDN's certificate names example.com.
+func (f *fakeUpstream) redirectBase() string { return "https://example.com" }
+
+// cdnTransport trusts the test CDN's certificate and dials every port 443 to the test CDN, so a redirect to https://example.com/... lands
+// on it and no name leaves the loopback. It replaces the transport of an Upstream in the tests, and with it the dial-time refusal of
+// internal addresses (the CDN listens on the loopback); production code has no way to do that.
+func (f *fakeUpstream) cdnTransport() *http.Transport {
+	tr := f.cdn.Client().Transport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		if _, port, _ := net.SplitHostPort(addr); port == "443" {
+			addr = f.cdn.Listener.Addr().String()
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+	return tr
 }
 
 func (f *fakeUpstream) registry(name string) Registry {
@@ -165,7 +186,7 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	redirectManifest := f.redirectManifests
 	f.mu.Unlock()
 	if redirectManifest && strings.Contains(r.URL.Path, "/manifests/") {
-		target := f.cdn.URL
+		target := f.redirectBase()
 		if f.plainCDN {
 			target = f.cdnPlain.URL
 		}
@@ -208,7 +229,7 @@ func (f *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redirect && strings.Contains(r.URL.Path, "/blobs/") && (r.Method == http.MethodGet || redirectHeads) {
-		target := f.cdn.URL
+		target := f.redirectBase()
 		if f.plainCDN {
 			target = f.cdnPlain.URL
 		}

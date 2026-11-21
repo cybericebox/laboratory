@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,8 +78,7 @@ type token struct {
 // NewUpstream is an upstream client that never follows a redirect by itself: the gate decides what a redirect may carry. headerTimeout
 // bounds the wait for the answer of a request; the body of a blob has no deadline of its own (it is as long as the layer is).
 func NewUpstream(headerTimeout time.Duration) *Upstream {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = headerTimeout
+	tr := newUpstreamTransport(headerTimeout, nil)
 	return &Upstream{
 		Timeout: headerTimeout,
 		HTTP: &http.Client{
@@ -88,6 +88,24 @@ func NewUpstream(headerTimeout time.Duration) *Upstream {
 		Now:    time.Now,
 		tokens: map[string]token{},
 	}
+}
+
+// newUpstreamTransport is the transport of an Upstream: the default one, whose dialer refuses internal addresses for the requests that
+// are redirect hops (see hopContext). resolver is nil in production (the system resolver); a test passes its own to name an address.
+// There is deliberately no way to switch the check off from here: the tests replace Upstream.HTTP.Transport by one of their own, which
+// production code never does (NewUpstream takes no option, and the only caller outside the tests is registrygated).
+func newUpstreamTransport(headerTimeout time.Duration, resolver *net.Resolver) *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = headerTimeout
+	plain := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Resolver: resolver}
+	guarded := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Resolver: resolver, Control: refuseInternalAddress}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if isHop(ctx) {
+			return guarded.DialContext(ctx, network, addr)
+		}
+		return plain.DialContext(ctx, network, addr)
+	}
+	return tr
 }
 
 // Object is one thing to fetch: the path under /v2 of the upstream, "<repo>/manifests/<ref>" or "<repo>/blobs/<digest>".
@@ -198,8 +216,11 @@ func classify(code int, redirected bool) Outcome {
 	return Unreachable
 }
 
-// follow follows the redirects of a response (at most five) over https and WITHOUT the Authorization header; on plain http only
-// inside the upstream's own host. It returns the last response and whether a redirect was followed.
+// follow follows the redirects of a response (at most five) WITHOUT the Authorization header. A redirect to the registry's own origin is
+// followed as it is; any other only when checkFillRedirect accepts the target (https, default port, no userinfo, a DNS name that is not an
+// IP address in any form), and then the connection is made by a dialer that refuses loopback, private, link-local, CGNAT and the other
+// internal addresses at the moment it connects (so a name that is changed to one cannot pass). It returns the last response and whether a
+// redirect was followed.
 func (u *Upstream) follow(ctx context.Context, reg Registry, resp *http.Response, method string) (*http.Response, bool, error) {
 	redirected := false
 	for hops := 0; resp.StatusCode >= 300 && resp.StatusCode < 400; hops++ {
@@ -208,10 +229,16 @@ func (u *Upstream) follow(ctx context.Context, reg Registry, resp *http.Response
 		if hops >= 5 {
 			return nil, true, errors.New("too many upstream redirects")
 		}
-		if lerr != nil || loc.Scheme != "https" && !u.allowInsecure(reg, loc) {
-			return nil, true, fmt.Errorf("upstream redirect refused: %v", lerr)
+		if lerr != nil {
+			return nil, true, fmt.Errorf("upstream redirect refused: %w", lerr)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, loc.String(), nil) // no Authorization
+		hopCtx := hopContext(ctx)
+		if sameOrigin(reg, loc) {
+			hopCtx = ctx // the registry's own origin (it may be a cluster address or plain http): as trusted as the request that got here
+		} else if err := checkFillRedirect(loc); err != nil {
+			return nil, true, fmt.Errorf("upstream redirect refused: %w", err)
+		}
+		req, err := http.NewRequestWithContext(hopCtx, method, loc.String(), nil) // no Authorization
 		if err != nil {
 			return nil, true, err
 		}
@@ -251,10 +278,10 @@ func (u *Upstream) Fetch(ctx context.Context, reg Registry, o Object, c Creds, c
 	return resp, Allowed, nil
 }
 
-// allowInsecure lets a redirect stay on plain http only inside the upstream's own host when that upstream is itself plain http (a
-// registry of the same cluster, and the tests); a redirect to another host over http is refused.
-func (u *Upstream) allowInsecure(reg Registry, loc *url.URL) bool {
-	return reg.URL.Scheme == schemeHTTP && loc.Scheme == schemeHTTP && loc.Host == reg.URL.Host
+// sameOrigin says that a redirect stays on the registry's own scheme, host and port (a registry of the same cluster over plain http, and
+// the tests, redirect to themselves). Any other host over plain http is refused by checkFillRedirect.
+func sameOrigin(reg Registry, loc *url.URL) bool {
+	return loc.Scheme == reg.URL.Scheme && strings.EqualFold(loc.Host, reg.URL.Host)
 }
 
 // do sends the request, answers a challenge, and returns the response that is not a challenge.

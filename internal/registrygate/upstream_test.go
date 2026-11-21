@@ -116,7 +116,7 @@ func TestFetchFollowsACDNRedirectWithoutAuthorization(t *testing.T) {
 	f.redirect = true
 	d := f.put("org/private", "blobs", []byte("layer bytes"))
 	u := NewUpstream(5 * time.Second)
-	u.HTTP.Transport = f.cdn.Client().Transport // trusts the test CDN's certificate
+	u.HTTP.Transport = f.cdnTransport() // trusts the test CDN's certificate
 	resp, o, err := u.Fetch(context.Background(), f.registry("up"), Object{Repo: "org/private", Kind: "blobs", Ref: d}, Creds{"alice", "pw"}, "h")
 	if o != Allowed || err != nil || resp == nil {
 		t.Fatalf("%v %v", o, err)
@@ -152,7 +152,7 @@ func TestARedirectIsNoProof(t *testing.T) {
 	d := f.put("org/private", "manifests", []byte("m"))
 	f.redirectManifests = true
 	u := NewUpstream(5 * time.Second)
-	u.HTTP.Transport = f.cdn.Client().Transport
+	u.HTTP.Transport = f.cdnTransport()
 	reg := f.registry("up")
 	ctx := context.Background()
 
@@ -182,7 +182,7 @@ func TestAFetchFollowsARedirectWithoutAuthorization(t *testing.T) {
 	d := f.put("org/private", "blobs", []byte("layer"))
 	f.redirect = true
 	u := NewUpstream(5 * time.Second)
-	u.HTTP.Transport = f.cdn.Client().Transport
+	u.HTTP.Transport = f.cdnTransport()
 	resp, o, _ := u.Fetch(context.Background(), f.registry("up"), Object{Repo: "org/private", Kind: "blobs", Ref: d}, Creds{"alice", "pw"}, "h")
 	if o != Allowed || resp == nil || len(f.authSeen) != 1 || f.authSeen[0] != "" {
 		t.Fatalf("%v %q", o, f.authSeen)
