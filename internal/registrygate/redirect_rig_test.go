@@ -50,7 +50,7 @@ func TestRedirectedManifestOfAListedRegistryIsProvedAndServed(t *testing.T) {
 	ld := r.up.put("library/nginx", "blobs", layer)
 	cfg := r.up.put("library/nginx", "blobs", []byte("{}"))
 	md := r.up.put("library/nginx", "manifests", manifestBody(cfg, ld))
-	r.redirectRegistry("eu.pkg.test", []string{"*.pkg.test"})
+	r.redirectRegistry("example.com", []string{"example.com"}) // the test CDN's certificate names example.com
 
 	code, body, hdr := r.pull("GET", mpath("library/nginx", md), "", "", nil)
 	if code != 200 || hdr.Get("Docker-Content-Digest") != md || !bytes.Contains(body, []byte(ld)) {
@@ -79,7 +79,7 @@ func TestRedirectOutsideTheListIsStillUnavailable(t *testing.T) {
 		patterns []string
 	}{
 		"target outside the patterns": {"eu.other.test", []string{"*.pkg.test"}},
-		"registry without a list":     {"eu.pkg.test", nil},
+		"registry without a list":     {"example.com", nil},
 	} {
 		r := newRig(t)
 		md := r.up.put("library/nginx", "manifests", manifestBody(r.up.put("library/nginx", "blobs", []byte("{}"))))
