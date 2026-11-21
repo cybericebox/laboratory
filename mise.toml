@@ -18,6 +18,7 @@ protoc = "35.0"
 protoc-gen-go = "1.36.12"
 protoc-gen-go-grpc = "1.6.2"
 gh = "2.104.0"           # dev-push
+python = "3.14.10"       # the release helpers of .github/scripts (standard library only)
 "github:mokevnin/heavy" = "0.1.2"  # a machine-wide semaphore: heavy commands of every checkout and agent take turns (heavy --status)
 # Built with the pinned Go, not downloaded: a tool built by an older Go cannot parse the newer standard library.
 # golangci-lint stays here and is not a go.mod tool: its authors advise against making it a module dependency (it would pull its
@@ -109,10 +110,21 @@ description = "gitleaks over the whole history (.gitleaks.toml) and actionlint o
 run = ["gitleaks git --redact --no-banner --log-level warn", "actionlint"]
 
 [tasks.lint]
+description = "Everything lint: lint-go and lint-ci"
+run = [{ task = "lint-go" }, { task = "lint-ci" }]
+
+[tasks.lint-go]
 description = "golangci-lint, for Linux as in CI (on macOS the Linux-only files would be left out and their helpers reported unused)"
 depends = ["lint:leaks", "cache-guard"]
 env = { GOOS = "linux" }
 run = "heavy -- golangci-lint run"
+
+[tasks.lint-ci]
+description = "shellcheck: the release helpers and dev.sh with every finding, the other scripts and tasks from warnings up (actionlint runs in lint:leaks)"
+run = [
+  "shellcheck -x -P SCRIPTDIR .github/scripts/*.sh scripts/dev.sh scripts/dev.test.sh mise-tasks/test-scripts",
+  "git ls-files -z '*.sh' 'mise-tasks/*' | xargs -0 shellcheck -x -P SCRIPTDIR -S warning",
+]
 
 [tasks.test-netns]
 description = "The real-iptables tests in network namespaces (Docker, privileged)"
@@ -123,16 +135,16 @@ description = "The eBPF tests of the WireGuard demux fast path (Docker, privileg
 run = "heavy -- hack/test-bpf.sh"
 
 [tasks.check]
-description = "What the CI check runs without Docker: generate-check, lint and test"
-run = [{ task = "generate-check" }, { task = "lint" }, { task = "test" }]
+description = "What the CI check runs without Docker: generate-check, lint, test and test-scripts"
+run = [{ task = "generate-check" }, { task = "lint" }, { task = "test" }, { task = "test-scripts" }]
 
 # Branch cycle (scripts/dev.sh, the same in every repository), see CONTRIBUTING.md.
 [tasks.dev-start]
-description = "feature/<name> from the fresh develop. Usage: mise run dev-start <name>"
+description = "feature/<name> from the fresh develop; with --line X.Y, fix/X.Y/<name> from release/X.Y. Usage: mise run dev-start <name> [--line X.Y]"
 run = "scripts/dev.sh start"
 
 [tasks.dev-push]
-description = "Push, open or update the PR into develop, auto-merge when green (MINOR=1 labels it minor)"
+description = "Push, open or update the PR into its base: develop (auto-merge when green) or release/X.Y for a fix branch (merged by hand, no auto-merge)"
 run = "scripts/dev.sh push"
 
 [tasks.dev-done]

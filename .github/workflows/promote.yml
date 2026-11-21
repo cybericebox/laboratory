@@ -1,14 +1,31 @@
 name: Promote
 
-# Turns a pre-release (vX.Y.Z-rc.N) into the release vX.Y.Z: the same image gets the tags vX.Y.Z and latest (no rebuild),
-# the rc tags and pre-releases of that version go away, the GitHub release is created,
-# and the dev images (sha-<7>) of commits that are ancestors of the release commit are deleted, together with the registry cache tags.
-# dry_run changes nothing: it verifies the rc and prints what would happen, with the list of dev tags.
+# Turns a candidate (vX.Y.Z-rc.N) of a release line into the release vX.Y.Z. Started by `mise run release promote` in infrastructure
+# (gh workflow run promote.yml -f rc=...) or by hand. Steps, each one safe to run again after a failure:
+#   verify   the candidate is the newest of its version, its commit is the result of a merged pull request into release/X.Y whose head had
+#            every required check green (the first candidate of a line: a merged pull request into develop), and the line gate still passes
+#            (.github/scripts/release_gate.py; any failed lookup refuses). There is no review requirement.
+#   release  the SAME images get the tag vX.Y.Z (no rebuild; latest moves when this is the newest release), the chart is published with
+#            the final version, the git tag and the GitHub release page are created at the commit of the candidate
+#   main     LAST, once everything is published: the branch promote/vX.Y.Z is pushed at the commit and a pull request into main is opened
+#            with the job's own token and set to auto-merge (merge commit); main_gate.py is its check (.github/scripts/main_pr.sh)
+#   cleanup  retention (cleanup.yml), in parallel with main: it does not wait for the merge (candidates and old releases do not depend on
+#            main); only its last step, the dev images of commits that main has, lags until a later run
+# dry_run verifies and prints the plan and changes nothing (it only reads: the retention list is made with the Docker Hub credentials).
+#
+# It runs only from main: the scripts that decide are the ones on main, never the ones of the line or of a pull request. The default
+# branch of this repository is develop, so it must be started with `gh workflow run promote.yml --ref main` (a run on any other ref stops
+# at the first step). The workflow file has to exist on the default branch too (GitHub lists a dispatchable workflow from there) and on
+# main: the first promote of a repository needs these workflows on both already.
+# The Docker Hub credentials are secrets of the environment "release" (deployment branch: main only), so a run from any other ref, with
+# any edited copy of this file, cannot read them. There is no other credential: the pull request into main is made with GITHUB_TOKEN.
+# Bootstrap: the workflow has to exist on main before the first promote, so the first change that brings promote.yml, cleanup.yml and
+# .github/scripts to main is an ordinary pull request develop -> main (full check, merged by the owner).
 on:
   workflow_dispatch:
     inputs:
       rc:
-        description: Pre-release tag to promote (vX.Y.Z-rc.N)
+        description: Candidate to promote (vX.Y.Z-rc.N)
         required: true
       dry_run:
         description: Verify and print only, change nothing
@@ -19,68 +36,105 @@ concurrency:
   group: promote
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
 
 env:
   IMAGES: cybericebox/laboratory-controller cybericebox/laboratory-agent cybericebox/laboratory-proxy cybericebox/laboratory-node cybericebox/laboratory-lab
+  CHART_REPO: cybericebox/laboratory
   RC: ${{ inputs.rc }}
 
 jobs:
   verify:
-    name: Verify the pre-release
+    name: Verify the candidate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
     outputs:
       sha: ${{ steps.rc.outputs.sha }}
       version: ${{ steps.rc.outputs.version }}
+      latest: ${{ steps.rc.outputs.latest }}
     steps:
+      - name: Promote runs from main only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [[ "$REF" == refs/heads/main ]] || { echo "::error::Promote runs from main (got $REF): its scripts are the trusted ones"; exit 1; }
       - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Login to docker registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: The pre-release is on main and its checks passed
+      - name: The candidate may be promoted
         id: rc
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          [[ "$RC" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo "::error::$RC is not a pre-release tag (vX.Y.Z-rc.N)"; exit 1; }
-          sha=$(git rev-parse --verify "refs/tags/$RC^{commit}") || { echo "::error::tag $RC does not exist"; exit 1; }
-          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$RC is not on main"; exit 1; }
-          ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/prerelease.yml/runs?head_sha=$sha&status=success" --jq .total_count)
-          [[ "$ok" -gt 0 ]] || { echo "::error::the Pre-release workflow did not pass for $sha"; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "version=${RC%-rc.*}" >> "$GITHUB_OUTPUT"
-      - name: The rc image exists
+          git fetch --tags --force --quiet
+          sha=$(python3 .github/scripts/release_gate.py verify-candidate --repo "$GITHUB_REPOSITORY" --rc "$RC")
+          version=${RC%-rc.*}
+          latest=false
+          if git tag --list | python3 .github/scripts/release_version.py is-latest "$version"; then latest=true; fi
+          {
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
+      # Before anything is published: a merge into main that cannot happen would leave a public release behind a red run.
+      - name: main can take the commit
+        env:
+          SHA: ${{ steps.rc.outputs.sha }}
         run: |
-          for image in $IMAGES; do
-            .github/scripts/ci.sh exists "$image" "$RC" || { echo "::error::$image:$RC does not exist"; exit 1; }
-          done
+          if git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "main already has ${SHA:0:7}"
+          elif git merge-tree --write-tree --quiet origin/main "$SHA" >/dev/null; then
+            echo "main takes ${SHA:0:7} with a merge commit, without a conflict"
+          else
+            echo "::error::merging ${SHA:0:7} into main conflicts. Nothing is published yet. Merge main into the line by a pull request first (or merge by hand), then promote"
+            exit 1
+          fi
+      - name: The plan
+        env:
+          VERSION: ${{ steps.rc.outputs.version }}
+          SHA: ${{ steps.rc.outputs.sha }}
+          LATEST: ${{ steps.rc.outputs.latest }}
+        run: |
+          echo "promote $RC (${SHA:0:7}) to $VERSION"
+          echo "images that get the tag $VERSION (no rebuild; latest moves: $LATEST):"
+          for image in $IMAGES; do echo "  $image"; done
+          echo "chart $CHART_REPO:${VERSION#v}"
+          if git merge-base --is-ancestor "$SHA" origin/main; then echo "main already has the commit"; else echo "main gets the commit with a merge commit"; fi
+          echo "candidates of $VERSION that retention deletes afterwards:"
+          git tag --list "$VERSION-rc.*" | sed 's/^/  /'
 
   release:
     name: Release
-    needs: [verify]
+    needs: verify
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       SHA: ${{ needs.verify.outputs.sha }}
-      DRY_RUN: ${{ inputs.dry_run }}
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      GH_TOKEN: ${{ github.token }}
+      LATEST: ${{ needs.verify.outputs.latest }}
     steps:
-      - name: Check repository
+      - name: Check repository (the trusted scripts)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Check the released commit (the chart)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          path: src
+          persist-credentials: false
       - name: Login to docker registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -88,53 +142,70 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Add vX.Y.Z and latest to the rc image (no rebuild)
+      - name: The candidate images exist and were built from the commit
         run: |
           for image in $IMAGES; do
-            if [[ "$DRY_RUN" == true ]]; then
-              echo "dry run: $image:$RC would get $VERSION and latest"
-            else
-              .github/scripts/ci.sh retry docker buildx imagetools create -t "$image:$VERSION" -t "$image:latest" "$image:$RC"
-            fi
+            state=$(.github/scripts/ci.sh image-state "$image" "$RC" "$SHA")
+            [[ "$state" == same ]] || { echo "::error::$image:$RC is $state"; exit 1; }
           done
-      - name: Create the GitHub release
+      - name: Add the version tag to the candidate image (no rebuild)
         run: |
-          if [[ "$DRY_RUN" == true ]]; then echo "dry run: release $VERSION would be created at $SHA"; exit 0; fi
-          if gh release view "$VERSION" >/dev/null 2>&1; then echo "release $VERSION exists"; else
-            gh release create "$VERSION" --target "$SHA" --title "$VERSION" --generate-notes --latest
-          fi
-      - name: Set up Helm
-        if: ${{ !inputs.dry_run }}
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+          for image in $IMAGES; do
+            .github/scripts/ci.sh retag "$image" "$RC" "$VERSION"
+            if [[ "$LATEST" == true ]]; then .github/scripts/ci.sh retag "$image" "$RC" latest; fi
+          done
+      - name: Install helm (the pinned tools of the released commit)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+        with:
+          working_directory: src
       - name: Package and push the chart
-        if: ${{ !inputs.dry_run }}
         env:
-          VERSION_TAG: ${{ needs.verify.outputs.version }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ needs.verify.outputs.sha }}
         run: |
-          git checkout --detach "$SHA"
-          VERSION="${VERSION_TAG#v}"
-          helm package charts/laboratory --version "$VERSION" --app-version "$VERSION_TAG" --destination dist
           printf '%s' "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
-          helm push dist/laboratory-*.tgz oci://registry-1.docker.io/cybericebox
-          gh release upload "$VERSION_TAG" dist/laboratory-*.tgz --clobber
+          .github/scripts/ci.sh chart src/charts/laboratory "${VERSION#v}" "$VERSION" "$RUNNER_TEMP/dist"
+      # A draft that gets its asset and is published last (the repository's releases are immutable: a published one takes no asset). The
+      # tag is created at the publication, at SHA. A re-run continues in whatever state the release is (.github/scripts/release.sh).
+      - name: Create the release as a draft, add the chart, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --tags --force --quiet
+          .github/scripts/release.sh "$VERSION" "$SHA" "$LATEST" "$RUNNER_TEMP/dist/laboratory-${VERSION#v}.tgz"
 
-      - name: Delete the rc tags and pre-releases of this version
-        run: |
-          if [[ "$DRY_RUN" == true ]]; then
-            echo "dry run: would delete the Docker Hub tags $VERSION-rc.* and these pre-releases:"
-            git tag --list "$VERSION-rc.*"
-            exit 0
-          fi
-          # shellcheck disable=SC2086
-          .github/scripts/ci.sh delete-rc "$VERSION" $IMAGES
-          for tag in $(git tag --list "$VERSION-rc.*"); do
-            gh release delete "$tag" --cleanup-tag --yes || git push origin --delete "$tag" || true
-          done
-      - name: Clean up the dev images (sha-<7> of ancestors of the release commit) and the registry cache
-        run: |
-          # shellcheck disable=SC2086
-          .github/scripts/ci.sh cleanup "$SHA" "$DRY_RUN" $IMAGES
+  main:
+    name: Pull request into main
+    needs: [verify, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      SHA: ${{ needs.verify.outputs.sha }}
+    steps:
+      # Last on purpose: the images, the chart, the tag and the release page are public by now. This job fails (red) when the pull request
+      # cannot merge; the release itself stays published and Promote can be run again. No bypass actor and no extra token: the branch
+      # promote/vX.Y.Z and the pull request are made with GITHUB_TOKEN, and the owner approves the check runs of the pull request.
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Open the pull request into main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/main_pr.sh
+
+  cleanup:
+    name: Retention
+    # Not after main: the release is public, and retention does not need the merge (see the header).
+    needs: [verify, release]
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (inputs.dry_run || needs.release.result == 'success') }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cleanup.yml
+    with:
+      dry_run: ${{ inputs.dry_run }}
+      strict: false # the release is public by now; a refused deletion is reported and does not turn this run red
+    secrets: inherit

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Tests of the release helpers (.github/scripts: version arithmetic, line gate, promote gate, backport, retention, registry helpers) and of scripts/dev.sh; no Docker, no network"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:?run through mise}"
+export PYTHONDONTWRITEBYTECODE=1
+python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+for t in .github/scripts/*.test.sh scripts/dev.test.sh; do
+  echo "== $t"
+  bash "$t"
+done

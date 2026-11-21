@@ -1,13 +1,28 @@
 name: Test
 
-# The tests of the repository: the PR check and the pre-release run them (workflow_call).
+# The tests of the repository: the PR check runs them (workflow_call).
 on:
   workflow_call:
 
 permissions:
   contents: read
 
+# These tests run the code of a pull request, so they hold no secret at all and pull public images anonymously.
+# If the Docker Hub pull rate limit ever bites, add a docker/login-action step with a read-only account (an environment-less secret that
+# cannot push) before the container tests of the jobs below; nothing else is needed.
+
 jobs:
+  scripts:
+    name: Release helpers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install the pinned tools (mise.toml)
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+      - name: Tests of .github/scripts and scripts/dev.sh (mise run test-scripts)
+        run: mise run test-scripts
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -27,12 +42,6 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Login to Docker Hub for container tests
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Install the pinned tools (mise.toml)
         uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: VPN and gateway pod firewalls in network namespaces (privileged docker, mise run test-netns)
@@ -44,12 +53,6 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Login to Docker Hub for container tests
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Install the pinned tools (mise.toml)
         uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: The committed objects match wg_fastpath.bpf.c (mise run generate-bpf is reproducible)
@@ -89,12 +92,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install the pinned tools (mise.toml)
         uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
-      - name: Login to Docker Hub for container tests
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Allow user namespaces (device pods run with hostUsers false; Ubuntu's AppArmor restricts them)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Create kind cluster (1 control plane + 2 lab workers, one tainted)

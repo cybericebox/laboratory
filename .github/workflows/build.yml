@@ -20,6 +20,9 @@ jobs:
   image:
     name: Image ${{ matrix.name }}
     runs-on: ubuntu-latest
+    # The Docker Hub credentials are secrets of the environment "build" (deployment branches: develop and release/*), so no workflow
+    # holds a registry write credential outside an environment. A manual run on any other branch cannot read them.
+    environment: build
     strategy:
       fail-fast: false
       matrix:
@@ -40,10 +43,18 @@ jobs:
             image: cybericebox/laboratory-lab
             target: lab
     steps:
-      - name: Check repository
+      # The scripts that run with the Docker Hub credentials are the ones of the branch the workflow runs on (develop or release/*, the
+      # branches the environment allows), never the ones of the commit that is built: that commit is data for the build.
+      - name: Check repository (the trusted scripts)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check the commit to build
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref || 'develop' }}
+          path: src
+          persist-credentials: false
       - name: Login to docker registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -54,7 +65,7 @@ jobs:
       - name: Image tag
         id: meta
         run: |
-          echo "sha=$(.github/scripts/ci.sh sha-tag "$(git rev-parse HEAD)")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(.github/scripts/ci.sh sha-tag "$(git -C src rev-parse HEAD)")" >> "$GITHUB_OUTPUT"
       - name: Is the image already there
         id: exists
         env:
@@ -72,8 +83,8 @@ jobs:
         if: steps.exists.outputs.found != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          context: .
-          file: Dockerfile
+          context: src
+          file: src/Dockerfile
           target: ${{ matrix.target }}
           push: true
           platforms: linux/amd64,linux/arm64

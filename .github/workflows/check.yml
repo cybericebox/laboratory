@@ -1,10 +1,15 @@
 name: Check
 
-# A PR into develop or main: tests plus the image build. The layers go to the registry cache
-# (<image>:buildcache-develop); nothing is published. A PR from a fork gets no secrets, so it builds without the cache.
+# A PR into develop or into a release line (release/X.Y): tests plus the image build. Nothing is published and nothing is written to a
+# registry: a check runs the code of the pull request, so it holds no Docker Hub credential that could write (those are secrets of the
+# environments "candidate", "release" and "build"). It reads the layer cache that the candidate builds write (buildcache-release, public).
+# main takes only the pull requests of Promote, which have their own gate (main-gate.yml, "Main gate"). The required check here is "Check passed".
+# It must come from a pull_request run: a check of a workflow_dispatch run is not evaluated for a pull request, so there is no dispatch trigger.
 on:
   pull_request:
-    branches: [ develop, main ]
+    # edited: a pull request that is moved from develop to a line (a new base) has to be checked again against the line
+    types: [ opened, synchronize, reopened, edited ]
+    branches: [ develop, 'release/*' ]
 
 concurrency:
   group: check-${{ github.event.pull_request.number }}
@@ -24,17 +29,16 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      # A PR with only docs (*.md, docs/**, .gitignore, LICENSE) builds nothing. A release PR into main always runs everything.
+      # A PR with only docs (*.md, docs/**, .gitignore, LICENSE) builds nothing.
       # This is a job, not a paths-ignore on the workflow: the required check "Check passed" must always report.
       - name: Is there more than docs
         id: c
         env:
-          BASE_REF: ${{ github.base_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           code=false
-          if [[ "$BASE_REF" == main ]] || ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
+          if ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
             code=true
           else
             while IFS= read -r f; do
@@ -80,12 +84,6 @@ jobs:
     steps:
       - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Login to docker registry
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
@@ -98,8 +96,7 @@ jobs:
           target: ${{ matrix.target }}
           push: false
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-develop
-          cache-to: ${{ github.event.pull_request.head.repo.full_name == github.repository && format('type=registry,ref={0}:buildcache-develop,mode=max', matrix.image) || '' }}
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-release
 
   passed:
     name: Check passed

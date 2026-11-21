@@ -1,0 +1,53 @@
+name: Main gate
+
+# The gate of a pull request into main. main only receives promoted lines: the pull request that Promote opens (head promote/vX.Y.Z, made
+# with the job token) must carry exactly the tagged release commit, or a clean merge of main into it (.github/scripts/main_gate.py has the
+# exact rule). Every other pull request into main fails this check: the one-time bootstrap develop -> main and a hand-resolved conflict
+# are merged by the owner after switching the required check off in the ruleset for that one merge (CONTRIBUTING.md, "Bootstrap").
+#
+# pull_request_target on purpose: the workflow and the script come from the default branch (develop), so the pull request cannot change
+# the gate (a pull_request workflow is the one of the pull request itself, and a pull request could make its own check pass). Nothing of
+# the pull request is checked out or run: its head is fetched as git objects and read as data. A pull request from a fork fails at once.
+# It uses no secret. The required check is "Main gate" (this job name).
+on:
+  pull_request_target:
+    branches: [ main ]
+    types: [ opened, edited, synchronize, reopened ]
+
+concurrency:
+  group: main-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+jobs:
+  gate:
+    name: Main gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check the default branch (the rule and its script)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the head of the pull request as data
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          [[ "$HEAD_REPO" == "$GITHUB_REPOSITORY" ]] || { echo "::error::main takes no pull request from a fork ($HEAD_REPO)"; exit 1; }
+          git fetch --tags --force --quiet
+          git fetch --quiet origin "refs/pull/$PR/head"
+          [[ "$(git rev-parse FETCH_HEAD)" == "$HEAD_SHA" ]] || { echo "::error::the pull request moved on from ${HEAD_SHA:0:7}: the run of its new head decides"; exit 1; }
+      - name: The release exists and the head is exactly it
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/main_gate.py check "$HEAD_REF" "$HEAD_SHA"
