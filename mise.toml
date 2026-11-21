@@ -6,6 +6,9 @@
 # Settings that were make variables are environment variables with defaults, described in the description of the task that reads them.
 
 [tools]
+gitleaks = "8.30.1"   # lint:leaks: the secret scan of the whole history (.gitleaks.toml)
+actionlint = "1.7.12"   # lint:leaks: the GitHub workflows
+shellcheck = "0.11.0"   # actionlint checks the run: scripts with it
 go = "1.27.4"            # the same as the toolchain line of go.mod
 kind = "0.33.0"
 kubectl = "1.36.4"
@@ -101,9 +104,13 @@ run = [
   "protoc --proto_path=pkg/rpc/node/v1 --go_out=pkg/rpc/node/v1 --go_opt=paths=source_relative --go-grpc_out=pkg/rpc/node/v1 --go-grpc_opt=paths=source_relative node_agent.proto",
 ]
 
+[tasks."lint:leaks"]
+description = "gitleaks over the whole history (.gitleaks.toml) and actionlint over the workflows"
+run = ["gitleaks git --redact --no-banner --log-level warn", "actionlint"]
+
 [tasks.lint]
 description = "golangci-lint, for Linux as in CI (on macOS the Linux-only files would be left out and their helpers reported unused)"
-depends = ["cache-guard"]
+depends = ["lint:leaks", "cache-guard"]
 env = { GOOS = "linux" }
 run = "heavy -- golangci-lint run"
 
