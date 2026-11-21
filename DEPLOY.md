@@ -2662,6 +2662,8 @@ registry:
     registries: [docker.io, ghcr.io, quay.io, registry.k8s.io]   # built in
     extraRegistries: []     # - name: registry.example.com
                             #   url: https://registry.example.com
+    redirects:              # where a registry may redirect its MANIFEST requests to (host patterns)
+      registry.k8s.io: ["*.pkg.dev"]
 ```
 
 **The registry is installed only when something needs it:** `registry.cache.enabled` or `devices.statePersistence.enabled`, and a lab node has no other way to get an image, so the chart refuses `nodeAgent.enabled` without the cache (the cache is on by default). With both off and no node-agent the chart renders no zot Deployment, Service, Secret, ConfigMap or network policy, the agent has no registry address (a snapshot export is refused, PrewarmImages is off), and the operator and the agent get no registry setting. Switching the last feature off removes the zot Deployment but not the volume claim (`helm.sh/resource-policy: keep`), so the snapshots and the cache are found again when a feature is switched back on; delete the claim by hand when the data is not wanted. The registry Secret (the generated gate account) is made again with new values. `statePersistence.enabled` turns the device snapshots on, `cache.enabled` the image cache (the full zot image, about 70 MB
@@ -2684,6 +2686,21 @@ compressed on amd64 and arm64). Needs `nodeAgent.enabled`, and `registry.gate.ad
   registry that is not in the list is refused with `403` (`IMAGE_REGISTRY_NOT_ALLOWED`). zot keeps the cache under the
   repositories `c/REG/repo` (the tenant segment is dropped), readable and writable by the gate's account alone. **No pod of a lab carries an image pull
   secret**, and every container with such an address pulls with `imagePullPolicy: Always`, so the gate authorises every start.
+- **Redirects of an upstream registry.** The gate proves a pull by asking the upstream registry (a manifest `HEAD` with the pull's credentials) and
+  treats a redirect answer as inconclusive (`503`, `IMAGE_REGISTRY_UNAVAILABLE`). `registry.k8s.io` answers every manifest request with a `307` to a
+  regional Google Artifact Registry host (`*.pkg.dev`), so it needs an explicit exception: `registry.cache.redirects` maps a registry (built in or from
+  `extraRegistries`) to the host patterns its manifest requests may be redirected to, an exact host or one leading `*.` for subdomains only. The default is
+  `registry.k8s.io: ["*.pkg.dev"]`; a list set for a registry replaces its default (`[]` or `null` follows none), and a registry not in the map follows
+  no redirect. The gate follows a redirect (301, 302, 303, 307, 308; at most 3 in a row, each checked again against the original registry's patterns)
+  only when its `Location` (a relative one is resolved first) is `https`, has no userinfo and no port, names a host (not an IP address) that matches the
+  patterns; the request to it carries the method and `Accept` only. The pull's credentials are sent to the registry's own URL and its token realm
+  (`authHosts`) and to no redirect target. The final answer is judged as a direct one (200 proves, 401 and 403 refuse, 404 as before, anything else is
+  inconclusive), within the one time limit of a direct request (`GATE_UPSTREAM_TIMEOUT`). A bare `*`, an IP address, a port, a scheme, and a pattern
+  that is a public suffix alone (`*.com`, `*.co.uk`) are refused: the chart rejects malformed entries when it renders, and the gate refuses to start with a
+  list it cannot enforce (a changed list that is bad is not loaded and the old one stays in force, with an error in the log). The same list reaches the gate
+  in `registries.json` of the ConfigMap `laboratory-registry-gate`. Only the gate calls upstream registries (zot has no sync of its own), and the registry
+  pod's egress is open, so the redirect targets need no network rule here; a cluster that restricts egress by hosts must allow the targets
+  (`*.pkg.dev` for `registry.k8s.io`).
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.

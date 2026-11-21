@@ -389,21 +389,23 @@ rendered only then. When both are off there is no registry: no Deployment, Servi
 {{- end }}
 
 {{/*
-Upstream registries of the image cache as a JSON list of {name, url, authHosts}: the built-in
-ones named in registry.cache.registries, plus registry.cache.extraRegistries.
+Upstream registries of the image cache as a JSON list of {name, url, authHosts, redirects}: the built-in
+ones named in registry.cache.registries, plus registry.cache.extraRegistries. redirects is the list of host patterns a manifest request
+to the registry may be redirected to (registry.cache.redirects[<name>]); the gate checks every pattern when it loads the list.
 */}}
 {{- define "laboratory.cacheUpstreams" -}}
 {{- $known := dict "docker.io" "https://registry-1.docker.io" "ghcr.io" "https://ghcr.io" "quay.io" "https://quay.io" "registry.k8s.io" "https://registry.k8s.io" -}}
 {{- $out := list -}}
+{{- $redirects := default (dict) .Values.registry.cache.redirects -}}
 {{- range .Values.registry.cache.registries -}}
 {{- $url := index $known . -}}
 {{- if not $url -}}{{- fail (printf "registry.cache.registries: %q is not built in; add it to registry.cache.extraRegistries with its url" .) -}}{{- end -}}
 {{- /* The hosts whose token endpoint the registry's challenge may name besides its own (the gate follows no other realm): Docker Hub's token service. */ -}}
 {{- $auth := dict "docker.io" (list "auth.docker.io") "ghcr.io" (list "ghcr.io") "quay.io" (list "quay.io") -}}
-{{- $out = append $out (dict "name" . "url" $url "authHosts" (default (list) (index $auth .))) -}}
+{{- $out = append $out (dict "name" . "url" $url "authHosts" (default (list) (index $auth .)) "redirects" (default (list) (index $redirects .))) -}}
 {{- end -}}
 {{- range .Values.registry.cache.extraRegistries -}}
-{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url) "authHosts" (default (list) .authHosts)) -}}
+{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url) "authHosts" (default (list) .authHosts) "redirects" (default (list) (index $redirects .name))) -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
