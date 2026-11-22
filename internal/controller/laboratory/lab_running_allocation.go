@@ -229,15 +229,24 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		if template.Type != lab.DeviceTypeContainer {
 			continue
 		}
-		configured := deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
+		d := o.byName[template.Name]
+		// A device refused for its memory (above limits.device.maxMemory, never ran) is configured at nothing: it never starts. One
+		// that ran is configured at its declared size, the size it is recreated with.
+		refused := refusedForMemory(d, template.Name, template.Resources, r.Defaults)
+		configured := corev1.ResourceRequirements{}
+		if !refused {
+			configured = deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
+		}
 		request, limit := allocationPodResources([]corev1.Container{{Resources: configured}})
 		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, request)
 		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, limit)
-		d := o.byName[template.Name]
 		currentKey := "configured/" + template.Name
 		deviceKnown := false
 		if d != nil {
-			actual := deviceResources(d, r.Defaults)
+			actual := corev1.ResourceRequirements{}
+			if !refused {
+				actual = deviceResources(d, r.Defaults)
+			}
 			request = allocationMaximum(request, allocationAmounts(actual.Requests))
 			limit = allocationMaximum(limit, allocationAmounts(actual.Limits))
 			// An API-lost current Pod still names one physical obligation, rather
@@ -290,7 +299,7 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		}
 		o.add(currentKey, request)
 		o.known = o.known && deviceKnown
-		// Actual Pods/native reports can exceed today's clamped configuration.
+		// Actual Pods/native reports can exceed today's configuration (a CPU clamped to the maximum, a refused device).
 		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, allocationDifference(request, allocationAmounts(configured.Requests)))
 		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, allocationDifference(limit, allocationAmounts(configured.Limits)))
 	}

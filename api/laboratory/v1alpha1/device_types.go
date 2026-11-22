@@ -75,7 +75,9 @@ type DeviceSpec struct {
 // are omitted so the scheduler treats them as best-effort. Requests are what
 // capacity planning sums against node allocatable.
 //
-// Every value must be a positive quantity without an exponent: zero would remove the pod limit.
+// Every value must be a positive quantity without an exponent: zero would remove the pod limit. A CPU above the
+// laboratory's limits.device.maxCpu is clamped to it; a memory above limits.device.maxMemory is refused: the device does not
+// start and gets Ready=False with the reason DeviceMemoryAboveMaximum (its Lab too).
 type DeviceResources struct {
 	// +kubebuilder:validation:MaxLength=24
 	// +kubebuilder:validation:Pattern=`^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$`
@@ -223,6 +225,14 @@ type DeviceStatus struct {
 	// Bootstrap is the observed bootstrap of the device; absent for a device without one. Written by the launcher side (not yet built).
 	// +optional
 	Bootstrap *DeviceBootstrapStatus `json:"bootstrap,omitempty"`
+	// Conditions: Ready=False with a coded reason while the operator refuses to start the device, e.g.
+	// DeviceMemoryAboveMaximum (its memory is above limits.device.maxMemory; the message names both amounts).
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // DeviceCPUThrottle is the share of the CFS periods in which the device container was throttled (it used up its CPU limit

@@ -249,8 +249,9 @@ type Config struct {
 	// the pod is Guaranteed). Empty leaves such a device without resources.
 	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
-	// DeviceMaxCPU and DeviceMaxMemory are the chart maxima of one device (limits.device.maxCpu / maxMemory): a
-	// device object that asks for more (it predates the agent's check, or was made by hand) is clamped to them.
+	// DeviceMaxCPU and DeviceMaxMemory are the chart maxima of one device (limits.device.maxCpu / maxMemory). A device object
+	// that asks for more (it predates the agent's check, or was made by hand) gets its CPU clamped to DeviceMaxCPU; a memory above
+	// DeviceMaxMemory refuses it (Ready=False, reason DeviceMemoryAboveMaximum), it is never clamped.
 	DeviceMaxCPU    string `env:"DEVICE_MAX_CPU" envDefault:"2000m"`
 	DeviceMaxMemory string `env:"DEVICE_MAX_MEMORY" envDefault:"4Gi"`
 	// DeviceNoCPULimit runs devices that declare no cpuLimit with a CPU request only (limits.device.noCpuLimit).

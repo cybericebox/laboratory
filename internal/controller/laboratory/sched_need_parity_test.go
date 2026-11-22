@@ -20,7 +20,9 @@ func TestLabNeedMatchesOperator(t *testing.T) {
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l", Namespace: "ns"}, Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
 		{Name: "plain", Type: laboratoryv1alpha1.DeviceTypeContainer},
 		{Name: "sized", Type: laboratoryv1alpha1.DeviceTypeContainer, Resources: &laboratoryv1alpha1.DeviceResources{CPURequest: "200m", CPULimit: "300m", MemoryRequest: "256Mi"}},
-		{Name: "big", Type: laboratoryv1alpha1.DeviceTypeContainer, Resources: &laboratoryv1alpha1.DeviceResources{CPULimit: "4", MemoryLimit: "8Gi"}}, // clamped
+		{Name: "big", Type: laboratoryv1alpha1.DeviceTypeContainer, Resources: &laboratoryv1alpha1.DeviceResources{CPULimit: "4", MemoryLimit: "2Gi"}}, // cpu clamped, memory at the maximum
+		// Memory above the maximum: refused (C4), so neither side counts it, at a clamped size or any other.
+		{Name: "huge", Type: laboratoryv1alpha1.DeviceTypeContainer, Resources: &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", MemoryLimit: "8Gi"}},
 		{Name: "hub", Type: laboratoryv1alpha1.DeviceTypeHub},
 	}}}
 	var op amount
@@ -30,8 +32,18 @@ func TestLabNeedMatchesOperator(t *testing.T) {
 		}
 	}
 	cpu, mem := limits.LabNeed(&lab.Spec, defaults)
-	if op.cpu != cpu || op.mem != mem || cpu != 100+200+1000 {
+	if op.cpu != cpu || op.mem != mem || cpu != 100+200+1000 || mem != 128<<20+256<<20+2<<30 {
 		t.Fatalf("lab: operator %+v, agent cpu %d memory %d", op, cpu, mem)
+	}
+
+	// A device that already ran (here withdrawn back to Queued) is not refused by a lowered maximum: the scheduler still sends it again,
+	// counted at its declared size, as the device controller recreates it at that size.
+	huge := lab.Spec.Devices[3]
+	now := metav1.Now()
+	ran := &laboratoryv1alpha1.Device{Status: laboratoryv1alpha1.DeviceStatus{Scheduling: &laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, DispatchedAt: &now, Withdrawals: 1}}}
+	view := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{devicePodKey(lab.Namespace, lab.Name, huge.Name): ran}}
+	if p := s.devicePod(view, lab, huge, time.Now()); p == nil || p.need.mem != 8<<30 {
+		t.Fatalf("a device that ran must stay a member at its size: %+v", p)
 	}
 
 	for _, g := range []*laboratoryv1alpha1.LabGroup{

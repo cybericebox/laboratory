@@ -56,6 +56,9 @@ func (s *Scheduler) stoppedReservations(snap *clusterView) ([]corev1.Pod, map[st
 			case dep != nil:
 				spec = dep.Spec.Template.Spec
 			default:
+				if refusedForMemory(d, d.Spec.Name, d.Spec.Resources, s.Defaults) {
+					continue // refused for its memory: nothing runs and nothing can, so it holds nothing
+				}
 				resources := deviceRequests(d.Spec.Resources, s.Defaults)
 				if resources == nil {
 					unknown = true
