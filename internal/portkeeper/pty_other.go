@@ -16,6 +16,9 @@ func (OS) OpenPTY() (master, slave *os.File, name string, err error) {
 	return nil, nil, "", errNotLinux
 }
 func (OS) MakeRaw(*os.File) error { return errNotLinux }
-func (OS) StartConsole(string, []string, Identity, []string) (func() error, error) {
+func (OS) StartConsole(string, []string, Identity, []string) (*Process, error) {
 	return nil, errNotLinux
 }
+
+// BecomeSubreaper is Linux only.
+func BecomeSubreaper() error { return errNotLinux }

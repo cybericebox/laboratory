@@ -26,11 +26,16 @@ type fakeSys struct {
 	envs   [][]string
 	users  []Identity
 	n      int
+	// failures and process control
+	makeRawErr error
+	endAtOnce  bool
+	kills      int
+	opened     []*os.File
 }
 
 func pair(t *testing.T) (*os.File, *os.File) {
 	t.Helper()
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|sockCloexec, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +46,7 @@ func (f *fakeSys) OpenPTY() (master, slave *os.File, name string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, s := pair(f.t)
+	f.opened = append(f.opened, m)
 	f.n++
 	name = filepath.Join(f.dir, "pts"+strconv.Itoa(f.n))
 	if err := os.WriteFile(name, nil, 0o600); err != nil {
@@ -50,15 +56,38 @@ func (f *fakeSys) OpenPTY() (master, slave *os.File, name string, err error) {
 	_, slaveHeld := pair(f.t)
 	return m, slaveHeld, name, nil
 }
-func (f *fakeSys) MakeRaw(*os.File) error { return nil }
-func (f *fakeSys) StartConsole(slave string, argv []string, id Identity, env []string) (func() error, error) {
+func (f *fakeSys) MakeRaw(*os.File) error {
+	if f.makeRawErr != nil {
+		return f.makeRawErr
+	}
+	return nil
+}
+func (f *fakeSys) StartConsole(slave string, argv []string, id Identity, env []string) (*Process, error) {
 	f.mu.Lock()
 	f.starts = append(f.starts, argv)
 	f.envs = append(f.envs, env)
 	f.users = append(f.users, id)
+	endAtOnce := f.endAtOnce
 	f.mu.Unlock()
 	block := make(chan struct{})
-	return func() error { <-block; return nil }, nil
+	var once sync.Once
+	if endAtOnce {
+		once.Do(func() { close(block) })
+	}
+	return &Process{
+		Wait: func() error { <-block; return nil },
+		Kill: func() {
+			f.mu.Lock()
+			f.kills++
+			f.mu.Unlock()
+			once.Do(func() { close(block) })
+		},
+	}, nil
+}
+func (f *fakeSys) count(n *int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return *n
 }
 func (f *fakeSys) peer(name string) *os.File {
 	f.mu.Lock()
@@ -66,7 +95,7 @@ func (f *fakeSys) peer(name string) *os.File {
 	return f.peers[name]
 }
 
-func startKeeper(t *testing.T, spec Spec) (*fakeSys, string, string, context.CancelFunc) {
+func startKeeper(t *testing.T, spec Spec, mods ...func(*fakeSys)) (*fakeSys, string, string, context.CancelFunc) {
 	t.Helper()
 	sockets := shortDir(t)
 	root := t.TempDir()
@@ -74,6 +103,9 @@ func startKeeper(t *testing.T, spec Spec) (*fakeSys, string, string, context.Can
 		t.Fatal(err)
 	}
 	sys := &fakeSys{t: t, dir: t.TempDir(), peers: map[string]*os.File{}}
+	for _, m := range mods {
+		m(sys)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	me := Identity{UID: os.Getuid(), GID: os.Getgid()}
 	cfg := Config{Spec: spec, SocketDir: sockets, Root: root, Owner: &me, Env: []string{"PATH=/bin", "TERM=xterm"},
@@ -93,8 +125,12 @@ func startKeeper(t *testing.T, spec Spec) (*fakeSys, string, string, context.Can
 		}
 	})
 	for _, n := range spec.Names() {
-		sock := SocketPath(sockets, n)
-		eventually(t, "socket "+n, func() bool { _, err := os.Stat(sock); return err == nil })
+		sock, failed := SocketPath(sockets, n), filepath.Join(sockets, n+failedSuffix)
+		eventually(t, "port "+n, func() bool {
+			_, err1 := os.Stat(sock)
+			_, err2 := os.Stat(failed)
+			return err1 == nil || err2 == nil
+		})
 	}
 	return sys, sockets, root, cancel
 }
@@ -211,5 +247,38 @@ func TestKeeperSkipsAPortItCannotMake(t *testing.T) {
 	}
 	if !strings.Contains(consoleEnv([]string{"HOME=/root"}, Identity{UID: 1000, Home: "/home/a"})[1], "HOME=/home/a") {
 		t.Fatal("a non-root console user gets its own HOME")
+	}
+}
+
+// A port that cannot be made does not stop the others: its PTY is closed, the failure is recorded for the attach (exit ExitPortFailed),
+// and the other ports are served.
+func TestOneFailingPortLeavesTheOthers(t *testing.T) {
+	spec := Spec{Console: []ConsolePort{{Name: "console0"}}, Serial: []SerialPort{{Name: "serial0", Path: "/dev/ttyCON0"}}}
+	sys, sockets, _, _ := startKeeper(t, spec, func(f *fakeSys) { f.makeRawErr = errors.New("no termios") })
+	c := dialAttached(t, SocketPath(sockets, "console0"))
+	_ = c.Close()
+	var stderr strings.Builder
+	if code := attach(sockets, "serial0", strings.NewReader(""), io.Discard, &stderr, nil); code != ExitPortFailed || !strings.Contains(stderr.String(), "no termios") {
+		t.Fatalf("attach to the failed port: %d %q", code, stderr.String())
+	}
+	sys.mu.Lock()
+	serialMaster := sys.opened[0]
+	sys.mu.Unlock()
+	if _, err := serialMaster.Write([]byte("x")); err == nil {
+		t.Fatal("the PTY of the failed port must be closed")
+	}
+}
+
+// The console program is killed (its whole process group) when the keeper stops, and after it ended before it is started again.
+func TestConsoleProgramIsKilledOnShutdownAndRespawn(t *testing.T) {
+	sys, _, _, cancel := startKeeper(t, Spec{Console: []ConsolePort{{Name: "console0"}}})
+	eventually(t, "the program", func() bool { sys.mu.Lock(); defer sys.mu.Unlock(); return len(sys.starts) == 1 })
+	cancel()
+	eventually(t, "the kill on shutdown", func() bool { return sys.count(&sys.kills) >= 1 })
+
+	sys, _, _, _ = startKeeper(t, Spec{Console: []ConsolePort{{Name: "aux0"}}}, func(f *fakeSys) { f.endAtOnce = true })
+	eventually(t, "the respawn", func() bool { sys.mu.Lock(); defer sys.mu.Unlock(); return len(sys.starts) >= 2 })
+	if sys.count(&sys.kills) < 1 {
+		t.Fatal("the group of the ended program must be killed before the respawn")
 	}
 }

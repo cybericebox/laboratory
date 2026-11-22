@@ -1,8 +1,11 @@
 package portkeeper
 
 import (
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -14,6 +17,8 @@ const (
 	ExitBusy = 3
 	// ExitNoKeeper: no keeper serves the port, and none could be started (the device has no such port, or the keeper does not start).
 	ExitNoKeeper = 4
+	// ExitPortFailed: the keeper runs but could not make this port; the reason is written to stderr.
+	ExitPortFailed = 5
 )
 
 // attachRetry is how long an attach waits for a keeper it started to serve the port.
@@ -23,11 +28,21 @@ const attachRetry = 3 * time.Second
 // of the device access service's exec; Terminal false, so no line discipline is in between) until either side ends. When nobody
 // serves the socket it calls start once (a keeper killed by root in the device is started again: its lines restart) and retries.
 func Attach(dir, port string, stdin io.Reader, stdout io.Writer, start func() error) int {
+	return attach(dir, port, stdin, stdout, io.Discard, start)
+}
+
+func attach(dir, port string, stdin io.Reader, stdout, stderr io.Writer, start func() error) int {
 	if !ValidPortName(port) {
 		return ExitUsage
 	}
 	sock := SocketPath(dir, port)
 	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		if reason, rerr := os.ReadFile(filepath.Join(dir, port+failedSuffix)); rerr == nil {
+			_, _ = fmt.Fprintf(stderr, "port %s: %s\n", port, reason)
+			return ExitPortFailed
+		}
+	}
 	if err != nil && start != nil && start() == nil {
 		for deadline := time.Now().Add(attachRetry); err != nil && time.Now().Before(deadline); {
 			time.Sleep(50 * time.Millisecond)

@@ -76,7 +76,8 @@ func (OS) Drop(id Identity) error {
 }
 
 func (OS) StartKeeper(args []string, extra []*os.File) error {
-	return portkeeper.StartKeeperProcess(args, extra)
+	// The launcher's stderr is still the container log here (the stdio console, if any, replaces it later): the keeper logs there.
+	return portkeeper.StartKeeperProcess(args, extra, os.Stderr)
 }
 
 func (OS) OpenPTY() (master, slave *os.File, err error) {

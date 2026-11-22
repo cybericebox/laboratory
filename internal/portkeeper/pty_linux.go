@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -66,8 +68,9 @@ func (OS) MakeRaw(tty *os.File) error {
 	return ierr
 }
 
-// StartConsole runs the program with the slave as stdin, stdout, stderr and controlling terminal of a new session, as the user.
-func (OS) StartConsole(slave string, argv []string, id Identity, env []string) (func() error, error) {
+// StartConsole runs the program with the slave as stdin, stdout, stderr and controlling terminal of a new session (so a process group of
+// its own), as the user. The keeper's reaper collects it; Kill ends the whole group.
+func (OS) StartConsole(slave string, argv []string, id Identity, env []string) (*Process, error) {
 	tty, err := os.OpenFile(slave, os.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
 		return nil, err
@@ -91,11 +94,61 @@ func (OS) StartConsole(slave string, argv []string, id Identity, env []string) (
 		}
 		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(id.UID), Gid: uint32(id.GID), Groups: groups} //nolint:gosec // ids of /etc/passwd
 	}
+	reaper.once.Do(startReaper)
+	// The reaper must not collect the program before it is registered: it waits for this lock.
+	reaper.mu.Lock()
 	if err := cmd.Start(); err != nil {
+		reaper.mu.Unlock()
 		return nil, err
 	}
-	return cmd.Wait, nil
+	pid := cmd.Process.Pid
+	done := make(chan struct{})
+	reaper.waiters[pid] = done
+	reaper.mu.Unlock()
+	return &Process{
+		Wait: func() error {
+			<-done
+			_ = cmd.Process.Release()
+			return nil
+		},
+		Kill: func() { _ = unix.Kill(-pid, unix.SIGKILL) },
+	}, nil
 }
+
+// reaper collects every child of the keeper: the console programs (handed to their Wait) and, with PR_SET_CHILD_SUBREAPER, whatever
+// they left behind, so no zombie stays in the device.
+var reaper struct {
+	once    sync.Once
+	mu      sync.Mutex
+	waiters map[int]chan struct{}
+}
+
+func startReaper() {
+	reaper.waiters = map[int]chan struct{}{}
+	go func() {
+		for {
+			var ws unix.WaitStatus
+			pid, err := unix.Wait4(-1, &ws, 0, nil)
+			if err == unix.EINTR {
+				continue
+			}
+			if err != nil { // no child right now
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			reaper.mu.Lock()
+			if ch, ok := reaper.waiters[pid]; ok {
+				close(ch)
+				delete(reaper.waiters, pid)
+			}
+			reaper.mu.Unlock()
+		}
+	}()
+}
+
+// BecomeSubreaper makes the keeper the reaper of the orphans of its console programs (a daemon started from a console shell): they are
+// re-parented to the keeper, not to the service (process 1 of the container, which may never reap them).
+func BecomeSubreaper() error { return unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) }
 
 func control(f *os.File, fn func(fd int)) error {
 	rc, err := f.SyscallConn()

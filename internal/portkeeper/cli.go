@@ -69,7 +69,12 @@ func KeeperMain(args []string, resolve func(string) (Identity, error), stderr io
 		cfg.Owner = &Identity{UID: uid, GID: gid}
 	}
 	if *stdio >= 0 {
+		// Close-on-exec at once: the console programs the keeper starts must never inherit the service's terminal.
+		syscall.CloseOnExec(*stdio)
 		cfg.StdioMaster = os.NewFile(uintptr(*stdio), "stdio-console") //nolint:gosec // a descriptor number from the launcher
+	}
+	if err := BecomeSubreaper(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "port keeper: not a subreaper:", err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -88,25 +93,34 @@ func AttachMain(args []string) int {
 	if len(args) != 1 {
 		return ExitUsage
 	}
-	return Attach(SocketDir, args[0], os.Stdin, os.Stdout, func() error {
-		return StartKeeperProcess(KeeperArgs(SpecPath, nil, false), nil)
+	return attach(SocketDir, args[0], os.Stdin, os.Stdout, os.Stderr, func() error {
+		// A keeper started by an attach logs nowhere: the attach's stderr is a FIFO of the device access service that ends with it.
+		return StartKeeperProcess(KeeperArgs(SpecPath, nil, false), nil, nil)
 	})
 }
 
-// StartKeeperProcess starts this program as a keeper in a session of its own, with its stdio on /dev/null and extra as descriptors 3...;
-// it does not wait for it. Started by the launcher, it outlives the exec of the service (an exec does not end the children; the service,
-// process 1, becomes its parent).
-func StartKeeperProcess(args []string, extra []*os.File) error {
+// StartKeeperProcess starts this program as a keeper in a session of its own, with stdin and stdout on /dev/null, stderr on the given
+// file (the launcher passes the container log; nil is /dev/null) and extra as descriptors 3...; it does not wait for it. Started by the
+// launcher, it outlives the exec of the service (an exec does not end the children; the service, process 1, becomes its parent).
+func StartKeeperProcess(args []string, extra []*os.File, stderr *os.File) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(self, args...)
-	cmd.ExtraFiles = extra
-	cmd.Dir = "/"
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd := keeperCommand(self, args, extra, stderr)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	return cmd.Process.Release()
+}
+
+func keeperCommand(self string, args []string, extra []*os.File, stderr *os.File) *exec.Cmd {
+	cmd := exec.Command(self, args...)
+	cmd.ExtraFiles = extra
+	cmd.Dir = "/"
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if stderr != nil {
+		cmd.Stderr = stderr
+	}
+	return cmd
 }

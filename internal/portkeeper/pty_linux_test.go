@@ -4,12 +4,16 @@ package portkeeper
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The real keeper on Linux (design section 11, "keeper integration test"): /dev/ttyCON0 opens as a terminal and its bytes reach the
@@ -96,4 +100,104 @@ func TestKeeperOnRealPTYs(t *testing.T) {
 			t.Fatalf("respawned output %q: %v", out.String(), err)
 		}
 	}
+}
+
+// processes lists the live processes whose command line holds marker, and the zombies whose parent is this process.
+func processes(t *testing.T, marker string) (live, zombies int) {
+	t.Helper()
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			continue
+		}
+		fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
+		if len(fields) > 1 && fields[0] == "Z" && fields[1] == strconv.Itoa(os.Getpid()) {
+			zombies++
+		}
+		cmd, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if strings.Contains(string(cmd), marker) && len(fields) > 0 && fields[0] != "Z" {
+			live++
+		}
+	}
+	return live, zombies
+}
+
+func runKeeper(t *testing.T, spec Spec, stdio *os.File) (string, context.CancelFunc) {
+	t.Helper()
+	sockets := shortDir(t)
+	me := Identity{UID: os.Getuid(), GID: os.Getgid()}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = Run(ctx, Config{Spec: spec, SocketDir: sockets, Root: t.TempDir(), Owner: &me, Env: os.Environ(), Sys: OS{}, StdioMaster: stdio,
+			Resolve: func(string) (Identity, error) { return me, nil }})
+	}()
+	for _, n := range spec.Names() {
+		sock := SocketPath(sockets, n)
+		eventually(t, "socket "+n, func() bool { _, err := os.Stat(sock); return err == nil })
+	}
+	return sockets, cancel
+}
+
+// A console program gets descriptors 0, 1 and 2 only: the stdio master of the service (descriptor 3 from the launcher, inherited without
+// close-on-exec) never reaches it.
+func TestConsoleProgramGetsNoOtherDescriptor(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if _, err := unix.FcntlInt(w.Fd(), unix.F_SETFD, 0); err != nil { // as inherited from the launcher
+		t.Fatal(err)
+	}
+	spec := Spec{Console: []ConsolePort{{Name: "console0", Native: NativeStdio}, {Name: "aux0", Command: []string{"/bin/ls", "-l", "/proc/self/fd/"}}}}
+	sockets, _ := runKeeper(t, spec, w)
+	c := dialAttached(t, SocketPath(sockets, "aux0"))
+	defer func() { _ = c.Close() }()
+	var out strings.Builder
+	buf := make([]byte, 4096)
+	_ = c.SetReadDeadline(time.Now().Add(4 * time.Second))
+	for strings.Count(out.String(), "->") < 4 {
+		n, err := c.Read(buf)
+		out.Write(buf[:n])
+		if err != nil {
+			t.Fatalf("listing %q: %v", out.String(), err)
+		}
+	}
+	listing := out.String()
+	if strings.Contains(listing, "pipe:") {
+		t.Fatalf("the console program inherited the stdio master:\n%s", listing)
+	}
+	for _, line := range strings.Split(listing, "\n") {
+		if f := strings.Fields(line); len(f) > 2 && f[len(f)-2] == "->" {
+			if n, _ := strconv.Atoi(f[len(f)-3]); n > 2 && !strings.HasPrefix(f[len(f)-1], "/proc/") {
+				t.Fatalf("descriptor %d reached the console program: %s", n, line)
+			}
+		}
+	}
+}
+
+// What a console program leaves running is ended with its process group before the respawn, its orphans are reaped by the keeper
+// (subreaper), and the keeper stopping ends the program.
+func TestConsoleProgramGroupIsKilledAndReaped(t *testing.T) {
+	if err := BecomeSubreaper(); err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{Console: []ConsolePort{
+		{Name: "console0", Command: []string{"/bin/sh", "-c", "sleep 3001 & exit 0"}},
+		{Name: "aux0", Command: []string{"/bin/sleep", "3002"}},
+	}}
+	_, cancel := runKeeper(t, spec, nil)
+	eventually(t, "the long console program", func() bool { live, _ := processes(t, "3002"); return live == 1 })
+	time.Sleep(3500 * time.Millisecond) // two runs of console0 at least (respawn after 1 s, then 2 s)
+	if live, zombies := processes(t, "3001"); live != 0 || zombies != 0 {
+		t.Fatalf("left behind by the console program: %d running, %d zombies", live, zombies)
+	}
+	cancel()
+	eventually(t, "the program to end with the keeper", func() bool { live, _ := processes(t, "3002"); return live == 0 })
 }

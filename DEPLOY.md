@@ -1210,18 +1210,30 @@ its parent). For each port it opens a PTY from the container's own `/dev/ptmx` (
   root), with the container's environment and `TERM=vt100`; when it ends it is started again after 1 s, doubling to 30 s while it ends
   at once (a run of 10 s or more resets the delay), like a getty;
 - `native: stdio`: the launcher opens the PTY, gives the keeper the master and makes the slave the service's stdin, stdout and stderr
-  (so the service's output goes to the line, not to the container log);
+  (so the service's output goes to the line, not to the container log: the container log of a device with a `stdio` console shows only
+the launcher and the keeper);
 - `native: tcp`: the keeper dials `127.0.0.1:<port>` in the device and bridges it, dialling again with the same delays.
 
 Each line is served on a unix socket `/.cib/ports/<port>.sock` (directory 0700, socket 0600, root only), one client at a time: the keeper
 answers an accepted client with one byte (0x06) and then the raw bytes; a second client is closed at once. While no client is attached
-the keeper reads the line and drops the bytes, so a program never blocks. The PTYs live as long as the container, so a logged-in session
+the keeper reads the line and drops the bytes, so a program never blocks; a client that reads too slowly loses the oldest output (a
+bounded queue, like an overrun serial line) and one that takes nothing for 5 s is detached.
+
+The keeper is the subreaper of its console programs: each runs in a session (and process group) of its own; what it leaves running is
+ended with its group before the respawn and when the keeper stops, and its orphans are reaped by the keeper, so no zombie stays in the
+device. The stdio master is close-on-exec in the keeper: a console program, which may run as another user, never inherits the
+service's terminal. The keeper's messages go to the container log (it gets the launcher's stderr before the stdio console replaces it);
+a keeper started again by an attach logs nowhere. A port the keeper cannot make does not stop the others: it is recorded in
+`/.cib/ports/<port>.failed` with the reason.
+
+A `native: tcp` console is as private as the device and no more: any process in the device can connect to that loopback port too. The PTYs live as long as the container, so a logged-in session
 survives a reconnect of the line. Nothing listens on a network: `ss -lnt` in the device shows nothing new, `ss -lx` shows the
 keeper's sockets under `/.cib/ports`. What goes wrong with the ports (an unreadable list, a keeper that does not start) is written to
 the container log, and the service starts anyway, without its lines.
 
 `probe port-attach <port>` (what the device access service runs in the device, as root, `Terminal: false`) connects its stdin and
-stdout to the socket; exit 2 for a name that is not a port name, 3 when the line already has a client, 4 when no keeper serves it. When
+stdout to the socket; exit 2 for a name that is not a port name, 3 when the line already has a client, 4 when no keeper serves it, 5
+when the keeper could not make that port (the reason on stderr). When
 no keeper answers (root in the device killed it) the attach starts a new one and retries for 3 s: the lines of that device restart (a
 `stdio` line cannot be made again: its master went with the keeper that started with the service).
 
