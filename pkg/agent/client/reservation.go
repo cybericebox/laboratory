@@ -80,7 +80,18 @@ const (
 	ReasonAccessUnavailable = "ACCESS_UNAVAILABLE"
 	// ReasonChecksUnavailable: the lab has checks and this laboratory runs no lab checker.
 	ReasonChecksUnavailable = "CHECKS_UNAVAILABLE"
+	// ReasonConsoleCablesUnavailable: a device of the lab has a console or serial port, or the lab has a
+	// console cable, and this laboratory does not serve console lines (consoleCables.enabled is off;
+	// contract 3.1).
+	ReasonConsoleCablesUnavailable = "CONSOLE_CABLES_UNAVAILABLE"
 )
+
+// ReasonConsoleCableInvalid is the ErrorInfo reason of an InvalidArgument for a lab spec whose console
+// ports, serial ports or console cables break a rule the CRD cannot express (contract 3.1): an end that is
+// not a declared port of that kind, a port used by two cables, a port named like an interface of its
+// device, two stdio consoles on one device, a serial path used twice, vm-serial outside the vm profile.
+// The message names the device and the port.
+const ReasonConsoleCableInvalid = "CONSOLE_CABLE_INVALID"
 
 // Reasons of a FAILED item for the switches of a LabGroup's servers (LabGroupItem.vpn_enabled,
 // internet_enabled; contract 2.7).

@@ -19,6 +19,8 @@ package v1alpha1
 
 type ConnectionExpansion interface{}
 
+type ConsoleCableExpansion interface{}
+
 type DeviceExpansion interface{}
 
 type LabExpansion interface{}

@@ -207,7 +207,9 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				},
 				Constants: &protobuf.DeviceConstants{
 					MaxInterfacesPerContainer: names.MaxContainerInterfaces, MaxPortsPerSwitchOrHub: names.MaxSwitchPorts, HardMaxDevicesPerLab: names.MaxLabDevices,
+					MaxConsolePorts: names.MaxConsolePorts, MaxSerialPorts: names.MaxSerialPorts,
 				},
+				ConsoleCables: h.consoleCablesFeature(),
 				TenantQuota: &protobuf.TenantQuotaFeature{
 					HasCpuQuota: quota.HasCPU, CpuQuotaMillicores: quota.CPU, HasMemoryQuota: quota.HasMemory, MemoryQuotaBytes: quota.Memory,
 				},
@@ -295,6 +297,16 @@ func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeat
 func (h *Handler) vpnFeature() *protobuf.VPNFeature {
 	enabled := h.cluster().VPN
 	return &protobuf.VPNFeature{ReverseConnections: vpn.LabInitiatedBlockEnforced(), MaxGateways: int32(h.maxLabGateways()), Enabled: &enabled}
+}
+
+// consoleCablesFeature is whether devices may have console and serial ports and labs console cables (chart consoleCables.enabled), with
+// the limits the laboratory enforces.
+func (h *Handler) consoleCablesFeature() *protobuf.ConsoleCablesFeature {
+	return &protobuf.ConsoleCablesFeature{
+		Enabled:           h.cluster().ConsoleCables,
+		MaxCablesPerLab:   names.MaxConsoleCablesPerLab,
+		MaxBytesPerSecond: names.ConsoleLineMaxBytesPerSecond,
+	}
 }
 
 // cluster is what the laboratory serves: the configured switches, or everything on when none were given.

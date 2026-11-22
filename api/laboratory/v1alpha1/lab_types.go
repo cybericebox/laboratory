@@ -23,6 +23,11 @@ type LabSpec struct {
 	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
+	// ConsoleCables join a serial port of one device to a console port of another. They are not connections: a cable never reaches the
+	// lab network (Open vSwitch, a VNI). At most names.MaxConsoleCablesPerLab. Needs the chart's consoleCables.enabled.
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	ConsoleCables []ConsoleCableTemplate `json:"consoleCables,omitempty"`
 	// ImagePullSecret says that this lab brought pull credentials for its private images. The Secret
 	// (kubernetes.io/dockerconfigjson) is in the namespace laboratory-upstream, where only the registry gate reads it, and
 	// its name is computed from the namespace and the name of the lab; no pod references it. Only the management
@@ -103,6 +108,7 @@ type DHCPRange struct {
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
 // +kubebuilder:validation:XValidation:rule="self.type != 'container' || !has(self.interfaces) || size(self.interfaces) <= 16",message="a container device has at most 16 interfaces"
 // +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile == 'container' || self.type == 'container'",message="only a container device has a profile"
+// +kubebuilder:validation:XValidation:rule="self.type == 'container' || (!has(self.consolePorts) && !has(self.serialPorts))",message="only a container device has console and serial ports"
 type DeviceTemplate struct {
 	// Name becomes part of the lab's web address (<name>-<code>.<domain>), so
 	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).
@@ -131,6 +137,20 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:MaxItems=4
 	// +optional
 	Access []DeviceAccess `json:"access,omitempty"`
+	// ConsolePorts are the management lines of the device (console0, aux0): a program runs on each, or the device's own console is
+	// bridged to it (native). At most names.MaxConsolePorts; container devices only; set once, never changed.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=4
+	// +optional
+	ConsolePorts []ConsolePortSpec `json:"consolePorts,omitempty"`
+	// SerialPorts are the terminal lines of the device, character devices inside it (/dev/ttyCON<n>). At most names.MaxSerialPorts;
+	// container devices only; set once, never changed.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	SerialPorts []SerialPortSpec `json:"serialPorts,omitempty"`
 	// Internet is the device's reach to the public internet: allow (the default when empty; the device uses an Internet gateway when it
 	// shares a broadcast domain with one) or deny. A device with deny must not share a broadcast domain with an Internet gateway: the lab
 	// is refused otherwise (InternetDeniedDeviceOnInternetNetwork), so the guarantee never depends on an address or a firewall rule. It is
@@ -208,7 +228,10 @@ type LabStatus struct {
 	// +optional
 	DeviceNodes []string        `json:"deviceNodes,omitempty"`
 	Connections []ConnectionRef `json:"connections,omitempty"`
-	Access      []AccessEntry   `json:"access,omitempty"`
+	// ConsoleCables summarises the ConsoleCable objects of the lab (one entry per cable of spec.consoleCables that exists).
+	// +optional
+	ConsoleCables []ConsoleCableRef `json:"consoleCables,omitempty"`
+	Access        []AccessEntry     `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
 	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`

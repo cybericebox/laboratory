@@ -119,6 +119,13 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	for i := range st.Connections {
 		status.Connections = append(status.Connections, &protobuf.LabConnectionStatus{Name: st.Connections[i].Name, Ready: st.Connections[i].Ready})
 	}
+	for i := range st.ConsoleCables {
+		c := &st.ConsoleCables[i]
+		status.ConsoleCables = append(status.ConsoleCables, &protobuf.ConsoleCableStatus{
+			SerialDevice: c.Serial.Device, SerialPort: c.Serial.Port, ConsoleDevice: c.Console.Device, ConsolePort: c.Console.Port,
+			LineUp: c.LineUp, Reason: c.Reason,
+		})
+	}
 	for i := range st.Access {
 		a := &st.Access[i]
 		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
@@ -140,6 +147,9 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 		}
 		for _, c := range status.Connections {
 			c.Ready = false
+		}
+		for _, c := range status.ConsoleCables {
+			c.LineUp = false
 		}
 	}
 	dg, da := deployOf(l.Annotations)

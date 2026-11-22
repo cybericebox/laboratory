@@ -216,6 +216,7 @@ What a laboratory serves is set in the chart, once for the whole cluster. A lab 
 | `terminal.enabled` | off | the console: no device access DaemonSet, no console route. Refused: a `terminal` access | `ACCESS_UNAVAILABLE` |
 | `proxy.rdp.enabled`, `proxy.vnc.enabled` | off | not served yet: the proxy answers "does not exist" for those hosts, so a visitor learns nothing. Refused: an `rdp` / `vnc` access. They become usable once the proxy serves them (the chart refuses to render either on without the L7 proxy) | `ACCESS_UNAVAILABLE` |
 | `checks.enabled` | off | no checker DaemonSet. Refused: a Lab with `spec.checks` | `CHECKS_UNAVAILABLE` |
+| `consoleCables.enabled` | off | console lines (see "Console cables"). Refused: a Lab with a device that has `consolePorts` or `serialPorts`, or with `spec.consoleCables` | `CONSOLE_CABLES_UNAVAILABLE` |
 | `scheduler.enabled` | on | every pod starts as soon as it exists. Not a refusal: nothing is asked of it by a user object | - |
 
 The device access service (`terminal.enabled`) and the checker (`checks.enabled`) stay two separate DaemonSets. The VPN switch is independent of the proxy: `proxy.enabled=false` does not take the WireGuard demultiplexer away (`vpn.enabled` owns it). So an install that had `proxy.enabled=false` now gets the demultiplexer and, unless `proxy.networkPolicy.enabled=false`, its CiliumNetworkPolicy: a cluster without Cilium sets `proxy.networkPolicy.enabled=false`, and one that does not want the VPN at all sets `vpn.enabled=false` (or `proxy.wg.enabled=false`).
@@ -226,10 +227,11 @@ The device access service (`terminal.enabled`) and the checker (`checks.enabled`
 
 | CRD | Needs | API server (policy) | Agent | Operator |
 |---|---|---|---|---|
-| `Lab` | VPN, internet, proxy accesses, checks | yes (cluster and group switches) | yes | yes (`validateGateways`) |
+| `Lab` | VPN, internet, proxy accesses, checks, console lines | yes (cluster and group switches) | yes | yes (`validateGateways`) |
 | `LabGroup` | VPN, internet (switches on) | yes (cluster switches) | yes | pod is not made when off |
 | `LabGroupClient` | VPN | yes (cluster and group) | yes | yes (`Ready=false`, event) |
 | `LabGroupAccessPolicy` | VPN or the L7 proxy | yes (both off) | yes | no controller to refuse; not enforced by a missing consumer |
+| `Device` with console or serial ports, `ConsoleCable` | console lines | yes (`laboratory-feature-console`, rendered only while `consoleCables.enabled` is off; CREATE and spec-changing UPDATE) | - | not created when the feature is off |
 | `LabVPN`, `LabGateway`, `Device`, `Connection`, `Pool`, `ImagePull`, `LabTrafficReport`, `LabActivityReport` | made by our components after the user object was admitted | not guarded (a check here would only risk the teardown) | - | not created when the feature is off |
 | `Reservation`, `Tenant`, `MaintenanceWindow` | core | - | - | - |
 
@@ -1142,6 +1144,37 @@ one function (`stream.pass`); recording a console could be attached there later 
 first run needs one runc node and one Kata node (`hack/device-access-check.sh`).
 
 Check it: `kubectl -n laboratory-device-access get ds laboratory-device-access`, then open a console of a lab with `terminal.enabled` in its device template.
+
+## Console cables
+
+`consoleCables.enabled: true` (default `false`) lets a container device declare **console ports** and **serial ports** and a lab join them
+with **console cables**, like a console cable between a PC and a router. The design is `docs/internal-docs/laboratory/specs/console-ports-design.md`
+in the project root.
+
+- `devices[].consolePorts` (at most 4, `names.MaxConsolePorts`): `{name: console<n>|aux<n>, command, user}` runs the command on the line
+  (default `/bin/login` as root), respawned like a getty; `{name, native: {kind: stdio}}` makes the line the service's own terminal;
+  `{name, native: {kind: tcp, port}}` bridges a TCP port on the device's own loopback (an emulator's console).
+- `devices[].serialPorts` (at most 16, `names.MaxSerialPorts`): `{name: serial<n>, path}`, a character device inside the device, by default
+  `/dev/ttyCON<n>`.
+- `spec.consoleCables` (at most 64): `{serial: {device, port}, console: {device, port}}`. They are not `connections`: the operator makes a
+  `ConsoleCable` object per cable (owned by the Lab), never a `Connection`, so a cable never reaches Open vSwitch or a VNI.
+
+The ports of a Device are immutable (CEL), like its interfaces. The API server checks the shapes (names, the command path, `tcp` needs a
+port, one of `command` and `native`, the two ends of a cable). The management agent reports the feature in `GetFeatures.console_cables`
+(`enabled`, `max_cables_per_lab` 64, `max_bytes_per_second` 65536) and the port limits in `constants` (`max_console_ports`,
+`max_serial_ports`), and the lab status carries `console_cables` (both ends, `line_up`, `reason`); all of it is contract 3.1.
+
+The switch also renders the device access service (it moves the bytes of the lines between the nodes). With the switch off a lab that has a
+port or a cable is refused at the three layers of "Feature switches" with `CONSOLE_CABLES_UNAVAILABLE`; the policy
+`laboratory-feature-console` also refuses a Device with ports or a ConsoleCable made directly, not through a Lab.
+
+**Turning the switch off on a running laboratory.** Objects made while it was on stay and can still be deleted, and their metadata
+(finalizers, labels) still changes; but an UPDATE that changes the spec of a Lab with ports or cables, of a Device with ports or of a
+ConsoleCable is refused (`CONSOLE_CABLES_UNAVAILABLE`). Delete such labs, or turn the switch back on, before changing them.
+
+**Not complete yet.** This release has the API, the switch and the feature report. The operator side, the in-device port keeper, the relay
+between two devices (cross-node stream, `cable.sock`, the network policy and its chart values) and the node-agent that drives the lines
+come in the next steps of the design (phases 4 to 7); keep the switch off on a production laboratory until they are in.
 
 ## 6. Uninstall
 

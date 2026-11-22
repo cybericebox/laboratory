@@ -25,6 +25,14 @@ type ConnectionListerExpansion interface{}
 // ConnectionNamespaceLister.
 type ConnectionNamespaceListerExpansion interface{}
 
+// ConsoleCableListerExpansion allows custom methods to be added to
+// ConsoleCableLister.
+type ConsoleCableListerExpansion interface{}
+
+// ConsoleCableNamespaceListerExpansion allows custom methods to be added to
+// ConsoleCableNamespaceLister.
+type ConsoleCableNamespaceListerExpansion interface{}
+
 // DeviceListerExpansion allows custom methods to be added to
 // DeviceLister.
 type DeviceListerExpansion interface{}

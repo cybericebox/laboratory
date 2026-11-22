@@ -248,6 +248,7 @@ PROXY_VNC_ENABLED: {{ and .Values.proxy.enabled .Values.proxy.l7.enabled .Values
 CHECKS_ENABLED: {{ .Values.checks.enabled | quote }}
 ACTIVITY_REPORTS: {{ .Values.activityReports.enabled | quote }}
 TERMINAL_ENABLED: {{ .Values.terminal.enabled | quote }}
+CONSOLE_CABLES_ENABLED: {{ .Values.consoleCables.enabled | quote }}
 STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
 STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
 STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}

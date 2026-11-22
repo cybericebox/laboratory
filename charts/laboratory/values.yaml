@@ -261,6 +261,15 @@ terminal:
       cpu: 500m
       memory: 256Mi
       ephemeral-storage: 64Mi
+consoleCables:
+  # Console ports and console cables (docs/internal-docs/laboratory/specs/console-ports-design.md): a container device may declare console
+  # ports (devices[].consolePorts: a management line with the program that runs on it) and serial ports (devices[].serialPorts: a terminal
+  # line inside the device, /dev/ttyCON<n>), and a lab may join a serial port to a console port of another device with a console cable
+  # (spec.consoleCables). Off by default: a lab with a port or a cable is refused (CONSOLE_CABLES_UNAVAILABLE) by the agent, the operator
+  # and the API server. On, it also renders the device access service (it moves the bytes of the lines), and the management agent reports
+  # it in the features (console_cables). DEPLOY.md, "Console cables".
+  enabled: false
+
 microvm:
   # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).
   enabled: false

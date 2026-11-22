@@ -793,6 +793,18 @@ message LabStatus {
   int64 checks_run_ack = 45;
   // The gateways of the lab (contract 2.0), one entry per entry of spec.gateways, in spec order.
   repeated LabGatewayStatus gateways = 47;
+  // The console cables of the lab (contract 3.1), one entry per cable of spec.consoleCables that the laboratory made.
+  repeated ConsoleCableStatus console_cables = 48;
+}
+// ConsoleCableStatus is the state of one console line: its two ends (device and port names as in the spec) and whether the line is up;
+// reason is why it is down (WaitingForDevice, PortDown, PeerUnreachable), empty while it is up.
+message ConsoleCableStatus {
+  string serial_device = 1;
+  string serial_port = 2;
+  string console_device = 3;
+  string console_port = 4;
+  bool line_up = 5;
+  string reason = 6;
 }
 // LabGatewayStatus is the state of one gateway of a lab: a VPN entry or an Internet exit.
 message LabGatewayStatus {
@@ -1214,6 +1226,19 @@ message FeaturesResponse {
   // The registries the laboratory pulls lab images from (chart registry.allowedRegistries; contract 2.8). An image from another registry
   // is refused (PermissionDenied, ErrorInfo reason REGISTRY_NOT_ALLOWED). Absent = an agent older than the field: no list is enforced.
   AllowedRegistriesFeature allowed_registries = 24;
+  // Console ports and console cables (contract 3.1; chart consoleCables.enabled). Absent = an agent older than the field: no ports, no
+  // cables. When enabled is false a lab with a console or serial port or a console cable is refused (reason CONSOLE_CABLES_UNAVAILABLE).
+  ConsoleCablesFeature console_cables = 25;
+}
+
+// ConsoleCablesFeature: whether a lab may declare console ports, serial ports and console cables, and their limits. A spec whose ports or
+// cables break the rules (an end that is not a port of that kind, two cables on one port, a port named like an interface, two stdio
+// consoles on one device, ports on a device that is not a container) is refused with InvalidArgument and the ErrorInfo reason
+// CONSOLE_CABLE_INVALID.
+message ConsoleCablesFeature {
+  bool enabled = 1;
+  int32 max_cables_per_lab = 2;   // 64 (names.MaxConsoleCablesPerLab)
+  int32 max_bytes_per_second = 3; // per line and direction, 65536
 }
 
 // The list of allowed registries. any is true when every registry is allowed (the chart list holds "*"); registries is then empty.
@@ -1341,6 +1366,8 @@ message DeviceConstants {
   int32 max_interfaces_per_container = 1;
   int32 max_ports_per_switch_or_hub = 2;
   int32 hard_max_devices_per_lab = 3;
+  int32 max_console_ports = 4;   // console ports of one device (contract 3.1; names.MaxConsolePorts)
+  int32 max_serial_ports = 5;    // serial ports of one device (contract 3.1; names.MaxSerialPorts)
 }
 
 // The tenant's quota; has_* false = no limit on that resource.

@@ -31,6 +31,10 @@ func (c *FakeLaboratoryV1alpha1) Connections(namespace string) v1alpha1.Connecti
 	return newFakeConnections(c, namespace)
 }
 
+func (c *FakeLaboratoryV1alpha1) ConsoleCables(namespace string) v1alpha1.ConsoleCableInterface {
+	return newFakeConsoleCables(c, namespace)
+}
+
 func (c *FakeLaboratoryV1alpha1) Devices(namespace string) v1alpha1.DeviceInterface {
 	return newFakeDevices(c, namespace)
 }
