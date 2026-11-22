@@ -16,7 +16,10 @@ type Config struct {
 	Namespace     string        `env:"NAMESPACE,required"`
 	ClientSubnet  *net.IPNet    `env:"CLIENT_SUBNET,required"`
 	StatsInterval time.Duration `env:"STATS_INTERVAL" envDefault:"30s"`
-	WGInterface   string        `env:"WG_INTERFACE"     envDefault:"wg0"`
+	// HandshakeInterval is how often the pod looks for a new WireGuard handshake, so a client that connects shows as connected within
+	// it, not at the next StatsInterval. It reads the local device only and writes a client only when its handshake moved.
+	HandshakeInterval time.Duration `env:"HANDSHAKE_INTERVAL" envDefault:"2s"`
+	WGInterface       string        `env:"WG_INTERFACE"     envDefault:"wg0"`
 	// Firewall is how the pod forwards between the participants and the labs: "iptables" (the relation chains, with connection tracking) or
 	// "nft" (nftables sets, no connection tracking: see nft_forward_linux.go). VPN_FIREWALL.
 	Firewall string `env:"VPN_FIREWALL" envDefault:"iptables"`

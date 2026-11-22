@@ -70,7 +70,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 		return fmt.Errorf("setup LabVPNReconciler: %w", err)
 	}
 
-	go RunStats(ctx, mgr.GetClient(), wg, cfg)
+	go RunStats(ctx, mgr.GetClient(), wg, cfg.Namespace, cfg.StatsInterval, cfg.HandshakeInterval)
 	if err := mgr.Add(manager.RunnableFunc(func(runCtx context.Context) error {
 		if source != nil {
 			defer source.Close()

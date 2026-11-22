@@ -1480,7 +1480,7 @@ probes, no server), so a lab device finds nothing to reach there; its forwarding
 
 Also explicit values (each default mirrors the code default): `operator.groupNetworkPolicy.enabled` (true, the default-deny baseline of every
 group namespace; `operator.networkPolicy.enabled` is the policy of the operator pod itself), `devices.statePersistence.retentionInterval` (10m),
-`agent.id` (`laboratory-agent`) and `agent.tenantStatusInterval` (30s). The VPN pod samples its traffic statistics every `vpn.statsInterval` (30s).
+`agent.id` (`laboratory-agent`) and `agent.tenantStatusInterval` (30s). The VPN pod samples its traffic statistics every `vpn.statsInterval` (30s); a new WireGuard handshake (a client that connects) is published within 2 s, without waiting for that interval.
 
 **Defaults of the binaries that the chart also sets.** The operator's defaults are the safe ones the chart has: `OPERATOR_REQUIRE_ADMISSION_POLICY`,
 `AGENT_ENABLED` and `PROXY_ENABLED` are on, and `--leader-elect` is on (`--leader-elect=false` and `OPERATOR_REQUIRE_ADMISSION_POLICY=false` for a manager

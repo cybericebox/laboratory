@@ -7,12 +7,15 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
@@ -197,6 +200,65 @@ var _ = Describe(
 						return updated2.Status.AssignedIP
 					}, timeout, interval,
 				).ShouldNot(Or(BeEmpty(), Equal(assignedIP)))
+			},
+		)
+
+		It(
+			"reports a full VPN client pool on the client instead of failing the reconcile forever", func() {
+				// 254 addresses, bit 0 is the network address: 253 clients fill the pool of a group.
+				const capacity = 253
+				for i := range capacity {
+					c := &laboratoryv1alpha1.LabGroupClient{
+						ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("fill-%d", i), Namespace: lgNS},
+						Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: fmt.Sprintf("pk-fill-%d", i)},
+					}
+					Expect(k8sClient.Create(ctx, c)).To(Succeed())
+				}
+				Eventually(
+					func() int {
+						var list laboratoryv1alpha1.LabGroupClientList
+						_ = k8sClient.List(ctx, &list, client.InNamespace(lgNS))
+						n := 0
+						for i := range list.Items {
+							if list.Items[i].Status.AssignedIP != "" {
+								n++
+							}
+						}
+						return n
+					}, 2*time.Minute, interval,
+				).Should(Equal(capacity))
+
+				over := &laboratoryv1alpha1.LabGroupClient{
+					ObjectMeta: metav1.ObjectMeta{Name: "overflow", Namespace: lgNS},
+					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-overflow"},
+				}
+				Expect(k8sClient.Create(ctx, over)).To(Succeed())
+
+				Eventually(
+					func(g Gomega) {
+						var got laboratoryv1alpha1.LabGroupClient
+						g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "overflow", Namespace: lgNS}, &got)).To(Succeed())
+						g.Expect(got.Status.AssignedIP).To(BeEmpty())
+						ready := meta.FindStatusCondition(got.Status.Conditions, labstatus.ConditionReady)
+						g.Expect(ready).NotTo(BeNil())
+						g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+						g.Expect(ready.Reason).To(Equal(labstatus.ReasonVPNPoolExhausted))
+					}, timeout, interval,
+				).Should(Succeed())
+
+				Eventually(
+					func() []string {
+						var events corev1.EventList
+						_ = k8sClient.List(ctx, &events, client.InNamespace(lgNS))
+						var reasons []string
+						for _, e := range events.Items {
+							if e.InvolvedObject.Name == "overflow" && e.Type == corev1.EventTypeWarning {
+								reasons = append(reasons, e.Reason)
+							}
+						}
+						return reasons
+					}, timeout, interval,
+				).Should(ContainElement(labstatus.ReasonVPNPoolExhausted))
 			},
 		)
 	},
