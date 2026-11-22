@@ -33,7 +33,7 @@ asset_pattern = "zot-{{os(macos='darwin')}}-{{arch(x64='amd64')}}"
 bin = "zot"
 
 [env]
-# This module is built on its own: a go.work of a parent directory (the daemon's local workspace) must not change what it resolves.
+# This module is built on its own: a go.work of a parent directory (the local workspace of the platform backend) must not change what it resolves.
 GOWORK = "off"
 
 [tasks.cache-guard]
