@@ -22,8 +22,18 @@ func TestVerifyRefusesAnOldCRD(t *testing.T) {
 	noConsole := func(context.Context) ([]byte, error) {
 		return []byte(`{"status":{"properties":{"certificateEpoch":{"type":"integer"}}}}`), nil
 	}
-	if err := Verify(context.Background(), noConsole); err == nil || !strings.Contains(err.Error(), "consolePorts") {
-		t.Fatalf("CRDs without the console ports must be refused: %v", err)
+	if err := Verify(context.Background(), noConsole, ConsoleCables(true)); err == nil || !strings.Contains(err.Error(), "consolePorts") {
+		t.Fatalf("CRDs without the console ports must be refused while consoleCables.enabled is on: %v", err)
+	}
+	// with the switch off the operator never touches ConsoleCables: an upgrade may roll it out before the CRDs
+	if err := Verify(context.Background(), noConsole, ConsoleCables(false)); err != nil {
+		t.Fatalf("with console cables off the console fields are not required: %v", err)
+	}
+	if err := Verify(context.Background(), noConsole); err != nil {
+		t.Fatalf("without options the console fields are not required: %v", err)
+	}
+	if err := Verify(context.Background(), cur, ConsoleCables(true)); err != nil {
+		t.Fatalf("current CRDs with console cables on: %v", err)
 	}
 	if err := Verify(context.Background(), cur); err != nil {
 		t.Fatalf("a current CRD: %v", err)

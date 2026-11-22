@@ -17,9 +17,23 @@ import (
 // Required are the schema fields that came with this version (a JSON property name each, and the object it belongs to for the message).
 var Required = []struct{ Field, On string }{
 	{"certificateEpoch", "Tenant.status"},
-	// The console cables (Device.spec.consolePorts comes with the ConsoleCable CRD in the same crds/ directory): the operator watches
-	// ConsoleCables while consoleCables.enabled is on, which needs that CRD.
-	{"consolePorts", "Device.spec"},
+}
+
+// consoleCablesRequired is required only while consoleCables.enabled is on (Device.spec.consolePorts comes with the ConsoleCable CRD in
+// the same crds/ directory): only then does the operator watch ConsoleCables. With the switch off an upgrade may roll the operator out
+// before the CRDs, and the labs keep running (a missing ConsoleCable kind is no cable).
+var consoleCablesRequired = struct{ Field, On string }{"consolePorts", "Device.spec"}
+
+// Option adds what a switch of the chart needs to the check.
+type Option func(*[]struct{ Field, On string })
+
+// ConsoleCables requires the console cable CRDs when on is true (the chart's consoleCables.enabled).
+func ConsoleCables(on bool) Option {
+	return func(req *[]struct{ Field, On string }) {
+		if on {
+			*req = append(*req, consoleCablesRequired)
+		}
+	}
 }
 
 const groupVersionPath = "apis/laboratory.cybericebox.com/v1alpha1"
@@ -43,13 +57,17 @@ func FromDiscovery(d discovery.DiscoveryInterface) Fetch {
 }
 
 // Verify returns an error that names every missing field and says what to do.
-func Verify(ctx context.Context, fetch Fetch) error {
+func Verify(ctx context.Context, fetch Fetch, opts ...Option) error {
 	doc, err := fetch(ctx)
 	if err != nil {
 		return err
 	}
+	req := append([]struct{ Field, On string }(nil), Required...)
+	for _, o := range opts {
+		o(&req)
+	}
 	var missing []string
-	for _, r := range Required {
+	for _, r := range req {
 		if !bytes.Contains(doc, []byte(`"`+r.Field+`"`)) {
 			missing = append(missing, r.On+"."+r.Field)
 		}
@@ -61,11 +79,11 @@ func Verify(ctx context.Context, fetch Fetch) error {
 }
 
 // Wait retries Verify for up to timeout (the schema of a CRD applied a moment ago takes a few seconds to be published).
-func Wait(ctx context.Context, fetch Fetch, timeout time.Duration, log func(error)) error {
+func Wait(ctx context.Context, fetch Fetch, timeout time.Duration, log func(error), opts ...Option) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
-		err := Verify(ctx, fetch)
+		err := Verify(ctx, fetch, opts...)
 		if err == nil {
 			return nil
 		}

@@ -63,7 +63,7 @@ func Run() {
 		metrics = nil
 	}
 	// Enroll must never run against a CRD that would drop the enrollment epoch: refuse to start instead.
-	if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(k8s.Discovery()), 60*time.Second, func(err error) { log.Printf("%v", err) }); err != nil {
+	if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(k8s.Discovery()), 60*time.Second, func(err error) { log.Printf("%v", err) }, crdcheck.ConsoleCables(cfg.ConsoleCablesEnabled)); err != nil {
 		log.Fatalf("%v", err)
 	}
 	if cfg.MetricsAddr != "" {
