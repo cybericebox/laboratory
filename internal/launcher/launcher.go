@@ -253,6 +253,13 @@ func (l *run) startService() int {
 	if err != nil {
 		return fail("the service command was not found")
 	}
+	// The port keeper starts here, as root and after the bootstrap, so it outlives the exec as a child of the service.
+	if stdio := l.startPorts(*id); stdio != nil {
+		if err := l.sys.Stdio(stdio); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "launcher: console ports: the stdio console cannot become the service's terminal")
+		}
+		_ = stdio.Close()
+	}
 	if id != nil && (id.UID != 0 || id.GID != 0 || len(id.Groups) > 0) {
 		if err := l.sys.Drop(*id); err != nil {
 			return fail("cannot switch to the service user")

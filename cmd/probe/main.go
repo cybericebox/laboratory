@@ -3,6 +3,8 @@
 //	probe install DIR                            copy this program to DIR/probe (the init container)
 //	probe ready [-file F] [-port N -scheme S]    exit 0 when the container is ready (the kubelet's exec probe)
 //	probe check-exec JSON | check-file JSON      one observation of a lab check, answered as JSON (internal/probe)
+//	probe ports [-spec F] [-owner U:G]           the port keeper of a device with ports (internal/portkeeper)
+//	probe port-attach PORT                       stdin and stdout to a port of the keeper (device access)
 package main
 
 import (
@@ -11,6 +13,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cybericebox/laboratory/internal/portkeeper"
 	"github.com/cybericebox/laboratory/internal/probe"
 )
 
@@ -37,6 +40,10 @@ func main() {
 		launchMain(os.Args[2:])
 	case "stage":
 		stageMain(os.Args[2:])
+	case portkeeper.CommandKeeper:
+		os.Exit(portkeeper.KeeperMain(os.Args[2:], resolveConsoleUser, os.Stderr))
+	case portkeeper.CommandAttach:
+		os.Exit(portkeeper.AttachMain(os.Args[2:]))
 	case "ready":
 		fs := flag.NewFlagSet("ready", flag.ExitOnError)
 		file := fs.String("file", "", "marker file that must exist")

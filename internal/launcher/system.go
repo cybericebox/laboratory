@@ -10,6 +10,10 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/cybericebox/laboratory/internal/portkeeper"
 )
 
 // System is everything the launcher does to the machine that a test must not do for real: switching users, replacing the
@@ -27,6 +31,13 @@ type System interface {
 	Sleep(d time.Duration)
 	// Pause blocks until the container is told to stop (the device of a failed bootstrap waits, it is not restarted).
 	Pause()
+	// StartKeeper starts the port keeper (this program, "ports" mode) in a session of its own, with extra as descriptors 3...; it does not
+	// wait. The keeper outlives the exec of the service.
+	StartKeeper(args []string, extra []*os.File) error
+	// OpenPTY opens a PTY pair from the container's own /dev/ptmx (the stdio console).
+	OpenPTY() (master, slave *os.File, err error)
+	// Stdio makes the file the stdin, stdout and stderr of the process (the service inherits them through the exec).
+	Stdio(f *os.File) error
 }
 
 // ErrTimeout: the script did not finish within the time limit.
@@ -62,6 +73,34 @@ func (OS) Drop(id Identity) error {
 		return fmt.Errorf("setuid: %w", err)
 	}
 	return nil
+}
+
+func (OS) StartKeeper(args []string, extra []*os.File) error {
+	// The launcher's stderr is still the container log here (the stdio console, if any, replaces it later): the keeper logs there.
+	return portkeeper.StartKeeperProcess(args, extra, os.Stderr)
+}
+
+func (OS) OpenPTY() (master, slave *os.File, err error) {
+	master, slave, _, err = portkeeper.OS{}.OpenPTY()
+	return master, slave, err
+}
+
+func (OS) Stdio(f *os.File) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var derr error
+	if err := rc.Control(func(fd uintptr) {
+		for _, target := range []int{0, 1, 2} {
+			if derr = unix.Dup2(int(fd), target); derr != nil { //nolint:gosec // a file descriptor fits an int
+				return
+			}
+		}
+	}); err != nil {
+		return err
+	}
+	return derr
 }
 
 func (OS) Pause() {
