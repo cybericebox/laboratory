@@ -167,5 +167,28 @@ class ExistingRcTests(unittest.TestCase):
         self.assertEqual(out.getvalue(), "version=v1.10.0\ntag=v1.10.0-rc.1\n")
 
 
+
+class NewestLinesTests(unittest.TestCase):
+    def test_three_newest_by_number_not_by_text(self):
+        names = ["release/1.9", "release/1.10", "release/1.8", "release/1.11", "develop", "main"]
+        self.assertEqual(rv.newest_lines(names), ["release/1.11", "release/1.10", "release/1.9"])
+
+    def test_fewer_lines_than_the_count(self):
+        self.assertEqual(rv.newest_lines(["release/2.20"]), ["release/2.20"])
+        self.assertEqual(rv.newest_lines(["develop"]), [])
+
+    def test_other_names_are_ignored(self):
+        names = ["refs/heads/release/2.21", "release/2.22/x", "release/2.x", "security/2.21/abc1234", "backport/2.21/abc1234", "release/3"]
+        self.assertEqual(rv.newest_lines(names), ["release/2.21"])
+
+    def test_major_counts_first(self):
+        self.assertEqual(rv.newest_lines(["release/1.99", "release/2.0", "release/1.100"], 2), ["release/2.0", "release/1.100"])
+
+    def test_cli(self):
+        with mock.patch("sys.stdin", io.StringIO("refs/heads/release/1.10\nrefs/heads/release/1.12\nrefs/heads/develop\nrefs/heads/release/1.11\n")), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(rv.main(["newest-lines", "--count", "2"]), 0)
+        self.assertEqual(out.getvalue(), "release/1.12\nrelease/1.11\n")
+
+
 if __name__ == "__main__":
     unittest.main()

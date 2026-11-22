@@ -1,0 +1,63 @@
+name: Security fixes
+
+# A pull request into develop with the label security, once merged, is carried to the three newest release lines (release/X.Y): for each
+# line that does not have the change yet, a cherry-pick of the merge goes on the branch security/X.Y/<sha> and a pull request into the line
+# with the label security is opened (.github/scripts/security.sh). The owner merges each by hand, like any fix of a line: the Line gate
+# judges it (harness untouched; above 400 changed lines the label large-fix, which is carried over from the source pull request). A pick
+# that does not apply cleanly, or a change the API cannot express, gets an issue with the label security and the commands to do it by hand.
+# Only the newest line goes through staging (staging is skipped for now); see CONTRIBUTING.md "Releases".
+#
+# The branches require signed commits and a commit made with git on a runner is not signed, so the commit is made through the GitHub API
+# (GraphQL createCommitOnBranch, verified), as in backport.yml. Its message ends with the trailer "Carried-from: <merge commit>", by which
+# backport.sh knows, after the merge into the line, that the change is already in develop: nothing is sent back, no loop.
+# It uses only the token of the job (contents, pull requests and issues write, in this job alone): no other credential, no environment.
+# pull_request_target: the workflow and the checkout come from the default branch (develop), never from the pull request; the job runs
+# only code that is already merged into develop. It starts when the pull request is merged with the label, or when the label is added
+# after the merge (that is also how to start it again by hand: remove the label and add it).
+# The pull requests it opens start their checks in the approval-required state, and the Line gate (pull_request_target) may not start for
+# them at all: the owner closes and reopens such a pull request, which starts both (see "Pull requests that automation opens").
+# Dependabot's security updates do not carry the label: the owner adds it (after the merge is fine) when a line needs the update.
+# The setting "Allow GitHub Actions to create and approve pull requests" is required.
+on:
+  pull_request_target:
+    branches: [ develop ]
+    types: [ closed, labeled ]
+
+concurrency:
+  group: security-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  carry:
+    name: Pull requests into the supported lines
+    if: >-
+      github.event.pull_request.merged == true && (
+        (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'security')) ||
+        (github.event.action == 'labeled' && github.event.label.name == 'security'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Check repository (develop)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: Cherry-pick into the lines
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: .github/scripts/security.sh

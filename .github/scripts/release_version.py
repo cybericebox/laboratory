@@ -12,6 +12,9 @@ A release line is the branch release/X.Y. Everything is computed from the branch
   release_version.py stale-rc             stdin: the tags. Prints the candidates whose version has a final release (to be deleted)
   release_version.py prune [--from X.Y] [--keep N]
                                           stdin: the tags. Prints the final releases whose page and images are deleted (the git tag stays)
+  release_version.py newest-lines [--count N]
+                                          stdin: branch names (or refs/heads/...). Prints the N (default 3) newest release/X.Y, newest
+                                          first: the lines that take security fixes
 
 Final tags are vX.Y.Z (the old two-number vX.Y counts as vX.Y.0). Candidates are vX.Y.Z-rc.N. Any other tag is ignored.
 Z of the next candidate is 0 when the line has no final release, otherwise the newest final patch + 1, so after vX.Y.0 is promoted the
@@ -116,6 +119,18 @@ def prune(tags, keep=10, floor=(0, 0)):
     return sorted(doomed, key=lambda t: [int(p) for p in re.findall(r"\d+", t)])
 
 
+def newest_lines(branches, count=3):
+    """The `count` newest release lines among the branch names, newest first (release/X.Y only; any other name is ignored)."""
+    lines = {}
+    for b in branches:
+        name = b.strip().removeprefix("refs/heads/")
+        try:
+            lines[parse_line(line_of(name))] = name
+        except ValueError:
+            continue
+    return [lines[k] for k in sorted(lines, reverse=True)[:count]]
+
+
 def main(argv):
     if not argv:
         print(__doc__, file=sys.stderr)
@@ -150,6 +165,16 @@ def main(argv):
                     raise ValueError(f"unknown option {opt}")
             for t in prune(sys.stdin.read().split(), keep, floor):
                 print(t)
+        elif cmd == "newest-lines":
+            count = 3
+            while args:
+                opt = args.pop(0)
+                if opt == "--count":
+                    count = int(args.pop(0))
+                else:
+                    raise ValueError(f"unknown option {opt}")
+            for b in newest_lines(sys.stdin.read().split(), count):
+                print(b)
         else:
             raise ValueError(f"unknown command {cmd}")
     except (ValueError, IndexError) as e:

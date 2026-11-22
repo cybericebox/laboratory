@@ -7,6 +7,9 @@
 # require signed commits and only a commit made by GitHub is signed; one commit with the whole change goes on the new branch
 # backport/X.Y/<7 hex of AFTER>, and one pull request into develop is opened for it.
 #   - a commit already in develop, or whose change is already there (an empty pick), is left out; when nothing is left, nothing is opened;
+#   - a commit carried from develop by the Security workflow (security.sh) is left out: every commit it brings ends with the trailer
+#     "Carried-from: <commit of develop>", so the change is already in develop and is never sent back (no loop). The trailer is trusted
+#     because every merge into a line is the owner's, by hand;
 #   - the branch exists with a commit on it: this push was brought back before (a re-run does not open it twice); an empty branch left by
 #     a failed run is made again;
 #   - a pick does not apply cleanly, or the change cannot be sent through the API (a file mode, a symlink, a submodule, too large): no
@@ -65,6 +68,21 @@ Then open a pull request into $base. If $base already has this fix in another fo
   echo "::warning::${after:0:7} does not apply to $base: an issue was opened"
 }
 
+carried() { # carried COMMIT: true when every commit it brings has a Carried-from trailer naming a commit of develop
+  local c=$1 k from n=0 own=()
+  if [[ $(git rev-list --parents -n 1 "$c" | wc -w) -gt 2 ]]; then
+    while read -r k; do [[ -n "$k" ]] && own+=("$k"); done < <(git rev-list --no-merges "$c^1..$c")
+  else
+    own=("$c")
+  fi
+  for k in "${own[@]}"; do
+    from=$(git log -1 --format='%(trailers:key=Carried-from,valueonly)' "$k" | sed -n '/^[0-9a-f]\{40\}$/p' | tail -n 1)
+    [[ -n "$from" ]] && git merge-base --is-ancestor "$from" "$remote/$base" || return 1
+    n=$((n + 1))
+  done
+  [[ "$n" -gt 0 ]]
+}
+
 short=${after:0:7}
 branch="backport/$line/$short"
 todo=()
@@ -72,6 +90,8 @@ while read -r c; do
   [[ -n "$c" ]] || continue
   if git merge-base --is-ancestor "$c" "$remote/$base"; then
     echo "${c:0:7} is already in $base"
+  elif carried "$c"; then
+    echo "${c:0:7} was carried from $base by the Security workflow: it is already there"
   else
     todo+=("$c")
   fi
@@ -132,7 +152,7 @@ if [[ "$state" == new ]]; then
   } >"$msg"
   rc=0
   python3 "$here/backport_commit.py" body --base "$base_oid" --tree "$tree" --repo "$GITHUB_REPOSITORY" --branch "$branch" --head "$base_oid" \
-    --headline "$subject" --message-file "$msg" >"$req" 2>"$err" || rc=$?
+    --headline="$subject" --message-file "$msg" >"$req" 2>"$err" || rc=$?
   case "$rc" in
     0) ;;
     3) open_issue "$subject" "it cannot be sent through the GitHub commit API: $(cat "$err")"; exit 0 ;;
