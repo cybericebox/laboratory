@@ -22,7 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     # The Docker Hub credentials are secrets of the environment "build" (deployment branches: develop and release/*), so no workflow
     # holds a registry write credential outside an environment. A manual run on any other branch cannot read them.
-    environment: build
+    environment:
+      name: build
+      # The environment holds the Docker Hub secrets and their branch rule; it is not a place anything is deployed to
+      deployment: false
     strategy:
       fail-fast: false
       matrix:

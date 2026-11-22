@@ -42,7 +42,10 @@ jobs:
   retention:
     name: Apply the retention policy
     runs-on: ubuntu-latest
-    environment: release # the Docker Hub credentials: deployment branch main only
+    environment: # the Docker Hub credentials: deployment branch main only
+      name: release
+      # The environment holds the Docker Hub secrets and their branch rule; it is not a place anything is deployed to
+      deployment: false
     permissions:
       contents: write
     steps:
