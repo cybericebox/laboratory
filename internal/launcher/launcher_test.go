@@ -28,6 +28,13 @@ type fakeSys struct {
 	slept   []time.Duration
 	paused  bool
 	real    OS
+	// the port keeper
+	calls      []string // "keeper", "stdio", "drop", "exec" in the order they happened
+	keeperArgs []string
+	keeperFDs  int
+	keeperErr  error
+	ptyOpened  int
+	stdio      *os.File
 }
 
 func newFake() *fakeSys {
@@ -39,10 +46,30 @@ func (f *fakeSys) Chown(path string, uid, gid int) error {
 	f.chowns[filepath.Base(path)] = [2]int{uid, gid}
 	return nil
 }
-func (f *fakeSys) Drop(id Identity) error { f.dropped = &id; return nil }
+func (f *fakeSys) Drop(id Identity) error {
+	f.dropped = &id
+	f.calls = append(f.calls, "drop")
+	return nil
+}
 func (f *fakeSys) Exec(path string, argv, env []string) error {
 	f.exec.path, f.exec.argv, f.exec.env = path, argv, env
+	f.calls = append(f.calls, "exec")
 	return f.execErr
+}
+func (f *fakeSys) StartKeeper(args []string, extra []*os.File) error {
+	f.calls = append(f.calls, "keeper")
+	f.keeperArgs, f.keeperFDs = args, len(extra)
+	return f.keeperErr
+}
+func (f *fakeSys) OpenPTY() (master, slave *os.File, err error) {
+	f.ptyOpened++
+	r, w, err := os.Pipe()
+	return r, w, err
+}
+func (f *fakeSys) Stdio(slave *os.File) error {
+	f.calls = append(f.calls, "stdio")
+	f.stdio = slave
+	return nil
 }
 func (f *fakeSys) RunScript(ctx context.Context, interpreter, script string, env []string) error {
 	return f.real.RunScript(ctx, interpreter, script, env)
