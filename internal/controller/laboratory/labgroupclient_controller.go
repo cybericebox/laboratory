@@ -3,6 +3,7 @@ package laboratory
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -120,6 +123,9 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 
 		allocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolVPNClients, Namespace: lgc.Namespace, Size: 254, InUse: r.clientIndexesInUse(lgc.Namespace)}
 		idx, err := allocator.AllocateIndex(ctx)
+		if errors.Is(err, poolpkg.ErrFull) {
+			return r.poolExhausted(ctx, lgc, err), nil
+		}
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
 		}
@@ -190,6 +196,25 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		r.Recorder.Event(lgc, corev1.EventTypeNormal, labstatus.ReasonReady, "VPN client config ready")
 	}
 	return ctrl.Result{}, nil
+}
+
+// poolExhaustedRetry is how often a client that found the pool full tries again: an address comes free only some time after a client
+// of the group is deleted (see poolpkg.ForwardAllocator), and nothing else signals it.
+const poolExhaustedRetry = time.Minute
+
+// poolExhausted reports a full VPN client pool on the client (Ready=False, reason VPNPoolExhausted, one Warning event when the state is
+// entered) and asks for a slow retry instead of an error, which would requeue with backoff forever and show nothing on the object.
+func (r *LabGroupClientReconciler) poolExhausted(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient, cause error) ctrl.Result {
+	msg := fmt.Sprintf("no VPN address left for this client: %v; an address comes free a while after a client of the group is deleted", cause)
+	ready := meta.FindStatusCondition(lgc.Status.Conditions, labstatus.ConditionReady)
+	if ready == nil || ready.Reason != labstatus.ReasonVPNPoolExhausted || ready.Status != metav1.ConditionFalse {
+		labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonVPNPoolExhausted, msg)
+		if err := r.Status().Update(ctx, lgc); err != nil {
+			ctrl.LoggerFrom(ctx).V(1).Info("status update of a client without a VPN address failed", "reason", err.Error())
+		}
+		r.Recorder.Event(lgc, corev1.EventTypeWarning, labstatus.ReasonVPNPoolExhausted, msg)
+	}
+	return ctrl.Result{RequeueAfter: poolExhaustedRetry}
 }
 
 func (r *LabGroupClientReconciler) reconcileDelete(

@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sync"
 	"time"
@@ -34,6 +35,9 @@ type ForwardAllocator struct {
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
+
+// ErrFull is wrapped by AllocateIndex when the pool has no index left to hand out.
+var ErrFull = stderrors.New("pool is full")
 
 // Recent is how long an index handed out is safe from being taken back.
 const Recent = 2 * time.Minute
@@ -107,7 +111,7 @@ func (a *ForwardAllocator) AllocateIndex(ctx context.Context) (uint, error) {
 			}
 		}
 		if p.Status.Free == 0 {
-			return fmt.Errorf("pool %s/%s is full: every index is in use", a.Namespace, a.poolName())
+			return fmt.Errorf("pool %s/%s: %w: every index is in use", a.Namespace, a.poolName(), ErrFull)
 		}
 		start := p.Status.Cursor
 		if start >= p.Spec.Size {
@@ -128,7 +132,7 @@ func (a *ForwardAllocator) AllocateIndex(ctx context.Context) (uint, error) {
 				bit, found = nextClearWithinPool(bitmap, 0, p.Spec.Size)
 			}
 			if !found || p.Status.Free == 0 {
-				return fmt.Errorf("pool %s/%s has no free index that nothing refers to", a.Namespace, a.poolName())
+				return fmt.Errorf("pool %s/%s: %w: no free index that nothing refers to", a.Namespace, a.poolName(), ErrFull)
 			}
 			bitmap.Set(bit)
 			p.Status.Free--

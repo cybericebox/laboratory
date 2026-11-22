@@ -8,7 +8,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -93,40 +92,4 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}, builder.WithPredicates(clientPeerChanges())).
 		Complete(reconcileutil.Quiet(r))
-}
-
-// RunStats periodically reads WireGuard peer stats and writes them to LabGroupClient status.
-func RunStats(ctx context.Context, c client.Client, wg *vpn.WGManager, cfg *vpn.Config) {
-	ticker := time.NewTicker(cfg.StatsInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			dev, err := wg.Device()
-			if err != nil {
-				continue
-			}
-			var lgcList laboratoryv1alpha1.LabGroupClientList
-			if err := c.List(ctx, &lgcList, client.InNamespace(cfg.Namespace)); err != nil {
-				continue
-			}
-			for _, peer := range dev.Peers {
-				pubKey := peer.PublicKey.String()
-				for i := range lgcList.Items {
-					if lgcList.Items[i].Spec.PublicKey == pubKey {
-						patch := client.MergeFrom(lgcList.Items[i].DeepCopy())
-						lgcList.Items[i].Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
-							LastHandshake: metav1.NewTime(peer.LastHandshakeTime),
-							RxBytes:       peer.ReceiveBytes,
-							TxBytes:       peer.TransmitBytes,
-						}
-						_ = c.Status().Patch(ctx, &lgcList.Items[i], patch)
-						break
-					}
-				}
-			}
-		}
-	}
 }

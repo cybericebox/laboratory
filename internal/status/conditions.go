@@ -30,6 +30,8 @@ const (
 	ReasonPeerRegistered         = "PeerRegistered"
 	ReasonPullSecretMissing      = "PullSecretMissing"
 	ReasonCredentialNotSupported = "CredentialNotSupported"
+	// ReasonVPNPoolExhausted: every tunnel address of the group's VPN client pool is taken, so the client gets none.
+	ReasonVPNPoolExhausted = "VPNPoolExhausted"
 )
 
 // SetReady sets (or updates) the Ready condition on conds. generation is the
