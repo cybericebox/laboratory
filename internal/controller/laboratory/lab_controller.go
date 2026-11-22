@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/consolespec"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/keylock"
@@ -126,6 +127,7 @@ type LabReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices;connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/status;connections/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=consolecables,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns;labgateways,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns/status;labgateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns/finalizers;labgateways/finalizers,verbs=update
@@ -237,8 +239,8 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if err := r.materializeConnections(ctx, &lab); err != nil {
-		logger.Error(err, "materialize connections")
+	if err := r.materializeLinks(ctx, &lab); err != nil {
+		logger.Error(err, "materialize connections and console cables")
 		return ctrl.Result{}, err
 	}
 
@@ -385,6 +387,10 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	}
 	if conflicts := lab.Spec.InternetConflicts(); len(conflicts) > 0 {
 		return &internetDeniedError{conflicts: conflicts}
+	}
+	// Console ports and console cables: the rules the CRD cannot express (the agent refuses the same spec earlier).
+	if err := consolespec.Validate(&lab.Spec); err != nil {
+		return err
 	}
 	return r.validateBroadcastDomains(lab, switchDevices)
 }
@@ -558,6 +564,8 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				SecurityPreset: tmpl.SecurityPreset,
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Access:         tmpl.Access,
+				ConsolePorts:   tmpl.ConsolePorts,
+				SerialPorts:    tmpl.SerialPorts,
 				Resources:      tmpl.Resources,
 				WaitReadyFile:  tmpl.WaitReadyFile,
 				Service:        tmpl.Service,
@@ -924,6 +932,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 
+	cableRefs, err := r.consoleCableRefs(ctx, lab)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// A gateway is ready once its LabVPN / LabGateway reports Ready. The VPN pod admits client traffic to a gateway only while
 	// its status.gateways entry is ready, so this must be kept in sync.
 	gateways, err := r.readGatewayReadiness(ctx, lab)
@@ -989,6 +1002,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
 		slices.Equal(deviceNodes, lab.Status.DeviceNodes) &&
 		sameRefsByName(connRefs, lab.Status.Connections, func(ref laboratoryv1alpha1.ConnectionRef) string { return ref.Name }) &&
+		sameRefsByName(cableRefs, lab.Status.ConsoleCables, func(ref laboratoryv1alpha1.ConsoleCableRef) string { return ref.Name }) &&
 		reflect.DeepEqual(access, lab.Status.Access) &&
 		wasReady == allReady {
 		if newPhase != laboratoryv1alpha1.PhaseReady {
@@ -1005,6 +1019,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	lab.Status.Devices = refs
 	lab.Status.DeviceNodes = deviceNodes
 	lab.Status.Connections = connRefs
+	lab.Status.ConsoleCables = cableRefs
 	lab.Status.Phase = newPhase
 	lab.Status.Access = access
 
@@ -1433,6 +1448,7 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&laboratoryv1alpha1.Lab{}).
 		Watches(&laboratoryv1alpha1.Device{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.Connection{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.ConsoleCable{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.LabVPN{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).

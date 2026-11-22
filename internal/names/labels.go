@@ -41,6 +41,12 @@ const (
 	// LabelTerminal. The device access service runs only the command and user whose digest equals it, so a compromised proxy that holds a
 	// valid grant cannot choose a program or a user: it can only repeat what the Device says. Pod labels cannot carry a list, hence a digest.
 	LabelTerminalSpec = LabelPrefix + "terminal-spec"
+	// LabelPorts is the digest (consolespec.PortsHash) of the console and serial ports of a device, stamped by the operator on its pod. The
+	// device access service trusts sandbox labels only: it attaches a line only to a port of a list whose digest equals this label.
+	LabelPorts = LabelPrefix + "ports"
+	// AnnotationPortsSpec is the port list itself (JSON, package portkeeper) on the pod of a device with ports; the device container reads it
+	// through a downward API volume (PortsSpecVolume). Not secret: it is what the Device says.
+	AnnotationPortsSpec = LabelPrefix + "ports-spec"
 	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
@@ -171,6 +177,10 @@ const (
 	ProbeBinary = ProbeDir + "/probe"
 	// ProbeImageBinary is the probe in the node image, the image of the installing init container.
 	ProbeImageBinary = "/probe"
+	// PortsSpecVolume is the downward API volume with the port list of a device (portkeeper.SpecDir); PortsSocketVolume is the memory
+	// emptyDir of the keeper's unix sockets (portkeeper.SocketDir).
+	PortsSpecVolume   = "cib-portspec"
+	PortsSocketVolume = "cib-ports"
 	// ReadyFile is the marker an application creates when it is ready (WaitReadyFile).
 	ReadyFile = "/run/ready"
 )

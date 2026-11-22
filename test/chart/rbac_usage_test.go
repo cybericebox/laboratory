@@ -104,6 +104,7 @@ var kinds = map[string][2]string{
 	"LabGroupClient": {"laboratory.cybericebox.com", "labgroupclients"}, "Tenant": {"laboratory.cybericebox.com", "tenants"},
 	"ImagePull": {"laboratory.cybericebox.com", "imagepulls"}, "LabVPN": {"laboratory.cybericebox.com", "labvpns"},
 	"LabGateway": {"laboratory.cybericebox.com", "labgateways"}, "Pool": {"allocation.cybericebox.com", "pools"},
+	"ConsoleCable": {"laboratory.cybericebox.com", "consolecables"},
 }
 
 // typeOf names the Go type a write argument has, where it can be told from the declarations of the function: `&pkg.T{...}`,

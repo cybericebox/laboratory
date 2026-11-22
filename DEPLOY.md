@@ -1172,9 +1172,29 @@ port or a cable is refused at the three layers of "Feature switches" with `CONSO
 (finalizers, labels) still changes; but an UPDATE that changes the spec of a Lab with ports or cables, of a Device with ports or of a
 ConsoleCable is refused (`CONSOLE_CABLES_UNAVAILABLE`). Delete such labs, or turn the switch back on, before changing them.
 
-**Not complete yet.** This release has the API, the switch and the feature report. The operator side, the in-device port keeper, the relay
-between two devices (cross-node stream, `cable.sock`, the network policy and its chart values) and the node-agent that drives the lines
-come in the next steps of the design (phases 4 to 7); keep the switch off on a production laboratory until they are in.
+**What the operator does.** A Lab whose ports or cables break a rule the CRD cannot express is failed with the reason `ConsoleCableInvalid`
+(the agent refuses the same spec earlier: `InvalidArgument`, ErrorInfo reason `CONSOLE_CABLE_INVALID`): an end that is not a declared
+port of that kind, a port used by two cables, a port named like an interface of its device, two `stdio` consoles on one device, a serial
+path used twice, `vm-serial` (reserved with the vm profile), or a device with ports but no service command and user (it has to start
+through the launcher). For a valid lab it copies the ports onto the Devices, makes one `ConsoleCable` per cable (owned by the Lab, labelled
+with it, name from both ends; an unplugged or re-plugged cable deletes the old object) and lists them in `status.consoleCables`. A line
+that is down never holds the lab back from Ready.
+
+The pod of a device with ports always starts the launcher (`-ports /.cib/portspec/ports.json`), as root like any launcher start, and
+gets, besides what a launcher start already has:
+
+- the annotation `laboratory.cybericebox.com/ports-spec` (the port list, JSON; not secret) and a downward API volume `cib-portspec`
+  with it at `/.cib/portspec/ports.json`, read-only;
+- the label `laboratory.cybericebox.com/ports`, a digest of that list: the device access service reads sandbox labels only, so it
+  attaches a line only to a port of the list whose digest is on the pod;
+- the memory emptyDir `cib-ports` (1 Mi) at `/.cib/ports` for the port keeper's unix sockets.
+
+No capability, device node, device cgroup rule or host path is added. A device with ports but without a service command and its user, or
+on a laboratory without the node image, is refused (`BootstrapRefused` event, `status.bootstrap` Failed with the reason).
+
+**Not complete yet.** The in-device port keeper, the relay between two devices (cross-node stream, `cable.sock`, the network policy and
+its chart values) and the node-agent that drives the lines and writes the status of the cables come in the next steps of the design
+(phases 5 to 7); keep the switch off on a production laboratory until they are in.
 
 ## 6. Uninstall
 
@@ -1191,6 +1211,7 @@ kubectl delete crd \
   labs.laboratory.cybericebox.com \
   devices.laboratory.cybericebox.com \
   connections.laboratory.cybericebox.com \
+  consolecables.laboratory.cybericebox.com \
   labvpns.laboratory.cybericebox.com \
   labgateways.laboratory.cybericebox.com \
   labtrafficreports.laboratory.cybericebox.com \
@@ -2078,7 +2099,7 @@ A container or micro-VM device may carry a **bootstrap list** (files to place an
 
 How the pod of such a device differs from a plain one:
 
-- **The main container starts the launcher**, not the image's entrypoint: `/.cib/probe/probe launch [-bootstrap] [-attempt N] [-user U] [-workdir W] -- <service command and arguments>`. The launcher is a mode of the in-device `probe` program (package `internal/launcher`; no shell or libc needed in the image). It starts as **root** (`runAsUser: 0`), whatever user the image names, so it can place root-owned files. It then places the files (owner and group by name from the container's own `/etc/passwd` and `/etc/group`, or numeric), runs the script with its interpreter under the list's time limit (the text goes through a pipe, never a command line or a file; its output is discarded), overwrites and removes the list, and **replaces itself (exec) with the service** under the service user, with the supplementary groups and `HOME` of that user. Process 1 is the service. The service environment is what the container received (image env and the `<device>-env` Secret); nothing comes from the bootstrap.
+- **The main container starts the launcher**, not the image's entrypoint: `/.cib/probe/probe launch [-bootstrap] [-attempt N] [-ports F] [-user U] [-workdir W] -- <service command and arguments>` (a device with console or serial ports always starts this way, see "Console cables"). The launcher is a mode of the in-device `probe` program (package `internal/launcher`; no shell or libc needed in the image). It starts as **root** (`runAsUser: 0`), whatever user the image names, so it can place root-owned files. It then places the files (owner and group by name from the container's own `/etc/passwd` and `/etc/group`, or numeric), runs the script with its interpreter under the list's time limit (the text goes through a pipe, never a command line or a file; its output is discarded), overwrites and removes the list, and **replaces itself (exec) with the service** under the service user, with the supplementary groups and `HOME` of that user. Process 1 is the service. The service environment is what the container received (image env and the `<device>-env` Secret); nothing comes from the bootstrap.
 - **Delivery without traces.** The init container `cib-bootstrap` (node image, no capabilities, read-only root, root user) is the only container that mounts the Secret (volume `cib-bootstrap-src`, read-only, mode 0400, not optional: a pod without its list waits). It copies `bootstrap.json` into the memory-backed emptyDir `cib-bootstrap` (2 Mi), which the device container sees at `/.cib/boot`. After a successful bootstrap that directory holds only empty marker files. The list is also gone from the pod spec: the Secret is referenced by one volume only.
 - **Only on a clean filesystem.** The controller decides per pod and records it in the annotation `laboratory.cybericebox.com/bootstrap`: `run` (first start, reset to the original image, or a start from the base image because no saved state exists or the saved state came from a bootstrap that did not finish) or `skip` (the pod starts from a saved state: the launcher only starts the service, and the Secret and the stager are not in the pod). A rescue pod bootstraps nothing. A snapshot taken from a half-bootstrapped filesystem is deleted, never restored.
 - **Failure.** A failed file placement, a non-zero script exit or the time limit ends the launcher with exit code 78 and a termination message (JSON; a fixed phrase such as `the script exited with code 3`: never file contents, paths, script text or output). Three attempts (`internal/labchecks.BootstrapMaxAttempts`) with pauses of 10 s and 30 s (the launcher sleeps before the second and third attempt). After the third the device stays in `status.bootstrap.phase: failed` with the reason; the launcher then only waits, so nothing restarts in a loop. A reset of the device (`state.resetToken`) lets it try again. A device without state persistence retries in place (the kubelet restarts the container on a fresh writable layer, the list is still in the memory volume); a device with state persistence is a bare Pod that is recreated for each attempt, and the controller counts the attempts in the status.

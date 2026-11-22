@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,10 +16,12 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/consolespec"
 	"github.com/cybericebox/laboratory/internal/gatewayspec"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
 	"github.com/cybericebox/laboratory/internal/labchecks"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -255,7 +258,20 @@ func (h *Handler) admitVariant(v *labVariant, policy imagepolicy.Policy) error {
 	if err := h.requireTerminal(&v.spec); err != nil {
 		return invalid("variant %q: %v", v.id, err)
 	}
+	if err := consolespec.Validate(&v.spec); err != nil {
+		return consoleCableRefusal(fmt.Sprintf("variant %q: ", v.id), err)
+	}
 	return nil
+}
+
+// consoleCableRefusal is the gRPC status of a spec whose console ports, serial ports or console cables break a rule: InvalidArgument with
+// the ErrorInfo reason CONSOLE_CABLE_INVALID (the message names the variant, the device and the port).
+func consoleCableRefusal(prefix string, err error) error {
+	st := status.New(codes.InvalidArgument, prefix+err.Error())
+	if withInfo, derr := st.WithDetails(&errdetails.ErrorInfo{Reason: client.ReasonConsoleCableInvalid, Domain: client.ErrorDomain}); derr == nil {
+		st = withInfo
+	}
+	return st.Err()
 }
 
 // itemContract merges the variant's and the item's bootstrap lists and checks and validates them against the variant's spec.
