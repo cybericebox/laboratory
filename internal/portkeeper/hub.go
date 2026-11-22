@@ -32,7 +32,7 @@ type Hub struct {
 	line   io.Writer
 }
 
-// client is the attached connection and its writer: the handshake is its first queued item, so no output of the line can come before it.
+// client is the attached connection and its writer, which sends the handshake before it takes anything from the queue.
 type client struct {
 	conn net.Conn
 	out  chan []byte
@@ -103,7 +103,8 @@ func (h *Hub) Pump(r io.Reader) error {
 	}
 }
 
-// attach makes c the client and queues the handshake, in one step under the lock, so the handshake is the first item of its queue.
+// attach makes conn the client. Output of the line is queued from now on; the writer sends the handshake first, so it always comes first
+// (it is not in the queue, so a full queue cannot drop it).
 func (h *Hub) attach(conn net.Conn) *client {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -111,7 +112,6 @@ func (h *Hub) attach(conn net.Conn) *client {
 		return nil
 	}
 	c := &client{conn: conn, out: make(chan []byte, clientQueue)}
-	c.out <- []byte{AttachOK}
 	h.client = c
 	return c
 }
@@ -128,6 +128,10 @@ func (h *Hub) detach(c *client) {
 // write sends the queue to the client; a write that does not finish within the timeout detaches it.
 func (h *Hub) write(c *client) {
 	defer h.detach(c)
+	_ = c.conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
+	if _, err := c.conn.Write([]byte{AttachOK}); err != nil {
+		return
+	}
 	for b := range c.out {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
 		if _, err := c.conn.Write(b); err != nil {
