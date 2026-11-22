@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -48,9 +50,25 @@ func TestFeatureAdmissionConsoleCables(t *testing.T) {
 	refused(t, f.other.Create(ctx, lab(ns, "port", withConsolePort)), "CONSOLE_CABLES_UNAVAILABLE")
 	refused(t, f.other.Create(ctx, lab(ns, "cable", withConsoleCable)), "CONSOLE_CABLES_UNAVAILABLE")
 	accepted(t, f.other.Create(ctx, lab(ns, "plain", nil)))
+	// a Device or a ConsoleCable made directly (not through a Lab) is refused too
+	dev := func(name string, ports bool) *laboratoryv1alpha1.Device {
+		d := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: laboratoryv1alpha1.DeviceSpec{LabRef: "l", Name: name, Type: laboratoryv1alpha1.DeviceTypeContainer}}
+		if ports {
+			d.Spec.SerialPorts = []laboratoryv1alpha1.SerialPortSpec{{Name: "serial0"}}
+		}
+		return d
+	}
+	refused(t, f.other.Create(ctx, dev("pc1", true)), "CONSOLE_CABLES_UNAVAILABLE")
+	accepted(t, f.other.Create(ctx, dev("pc2", false)))
+	cc := &laboratoryv1alpha1.ConsoleCable{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: ns}, Spec: laboratoryv1alpha1.ConsoleCableSpec{LabRef: "l",
+		Serial: laboratoryv1alpha1.PortRef{Device: "pc1", Port: "serial0"}, Console: laboratoryv1alpha1.PortRef{Device: "r1", Port: "console0"}}}
+	refused(t, f.other.Create(ctx, cc), "CONSOLE_CABLES_UNAVAILABLE")
 
 	on := startFeatureCluster(t, nil, "--set", "consoleCables.enabled=true")
 	ns = on.group(t, "cc-on", nil, nil)
 	accepted(t, on.other.Create(ctx, lab(ns, "port", withConsolePort)))
 	accepted(t, on.other.Create(ctx, lab(ns, "cable", withConsoleCable)))
+	accepted(t, on.other.Create(ctx, &laboratoryv1alpha1.ConsoleCable{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: ns}, Spec: laboratoryv1alpha1.ConsoleCableSpec{LabRef: "l",
+		Serial: laboratoryv1alpha1.PortRef{Device: "pc1", Port: "serial0"}, Console: laboratoryv1alpha1.PortRef{Device: "r1", Port: "console0"}}}))
 }

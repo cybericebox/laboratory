@@ -231,7 +231,8 @@ The device access service (`terminal.enabled`) and the checker (`checks.enabled`
 | `LabGroup` | VPN, internet (switches on) | yes (cluster switches) | yes | pod is not made when off |
 | `LabGroupClient` | VPN | yes (cluster and group) | yes | yes (`Ready=false`, event) |
 | `LabGroupAccessPolicy` | VPN or the L7 proxy | yes (both off) | yes | no controller to refuse; not enforced by a missing consumer |
-| `LabVPN`, `LabGateway`, `Device`, `Connection`, `ConsoleCable`, `Pool`, `ImagePull`, `LabTrafficReport`, `LabActivityReport` | made by our components after the user object was admitted | not guarded (a check here would only risk the teardown) | - | not created when the feature is off |
+| `Device` with console or serial ports, `ConsoleCable` | console lines | yes (`laboratory-feature-console`, rendered only while `consoleCables.enabled` is off; CREATE and spec-changing UPDATE) | - | not created when the feature is off |
+| `LabVPN`, `LabGateway`, `Device`, `Connection`, `Pool`, `ImagePull`, `LabTrafficReport`, `LabActivityReport` | made by our components after the user object was admitted | not guarded (a check here would only risk the teardown) | - | not created when the feature is off |
 | `Reservation`, `Tenant`, `MaintenanceWindow` | core | - | - | - |
 
 **What the daemon must read** (contract 2.8, additive): `GetFeatures.vpn.enabled`, `internet.enabled`, `access.rdp`, `access.vnc`; the reasons `VPN_UNAVAILABLE`, `INTERNET_UNAVAILABLE`, `ACCESS_UNAVAILABLE`, `CHECKS_UNAVAILABLE` of `CreateLabs`, `CreateLabGroupClients`, `SetLabGroupAccess`, `CreateLabGroups` and `UpdateLabGroups` are a planning error, not a retry. A `CreateLabGroups` item in the old shape (neither switch) on a laboratory without a VPN or without an internet gateway is not refused: it gets those servers off.
@@ -1164,7 +1165,8 @@ port, one of `command` and `native`, the two ends of a cable). The management ag
 `max_serial_ports`), and the lab status carries `console_cables` (both ends, `line_up`, `reason`); all of it is contract 3.1.
 
 The switch also renders the device access service (it moves the bytes of the lines between the nodes). With the switch off a lab that has a
-port or a cable is refused at the three layers of "Feature switches" with `CONSOLE_CABLES_UNAVAILABLE`.
+port or a cable is refused at the three layers of "Feature switches" with `CONSOLE_CABLES_UNAVAILABLE`; the policy
+`laboratory-feature-console` also refuses a Device with ports or a ConsoleCable made directly, not through a Lab.
 
 **Not complete yet.** This release has the API, the switch and the feature report. The operator side, the in-device port keeper, the relay
 between two devices (cross-node stream, `cable.sock`, the network policy and its chart values) and the node-agent that drives the lines
