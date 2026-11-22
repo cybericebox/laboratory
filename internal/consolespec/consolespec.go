@@ -20,6 +20,10 @@ import (
 // client.ReasonConsoleCableInvalid).
 const ReasonInvalid = "ConsoleCableInvalid"
 
+// MaxPortsSpecBytes bounds the port list of one device (the JSON in the pod annotation names.AnnotationPortsSpec): all the annotations
+// of a pod together may take 256 KiB, and four console commands of 32 arguments of 4 KiB would pass that.
+const MaxPortsSpecBytes = 64 << 10
+
 // Error is a refusal: the device and the port it is about (either may be empty) and why.
 type Error struct {
 	Device, Port string
@@ -83,8 +87,12 @@ func Validate(spec *laboratoryv1alpha1.LabSpec) error {
 			}
 			mine[s.Name] = port{serial: true}
 		}
-		if err := KeeperSpec(deviceSpecOf(d)).Validate(); err != nil {
+		ks := KeeperSpec(deviceSpecOf(d))
+		if err := ks.Validate(); err != nil {
 			return refuse(d.Name, "", "%s", strings.TrimPrefix(err.Error(), portkeeper.ErrInvalid.Error()+": "))
+		}
+		if n := len(Marshal(ks)); n > MaxPortsSpecBytes {
+			return refuse(d.Name, "", "has a port list of %d bytes, more than %d (shorten the console commands)", n, MaxPortsSpecBytes)
 		}
 		ports[d.Name] = mine
 	}

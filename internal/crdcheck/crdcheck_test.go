@@ -16,7 +16,14 @@ func TestVerifyRefusesAnOldCRD(t *testing.T) {
 		t.Fatalf("an old CRD must be refused with the fix: %v", err)
 	}
 	cur := func(context.Context) ([]byte, error) {
+		return []byte(`{"status":{"properties":{"certificateEpoch":{"type":"integer"}}},"spec":{"properties":{"consolePorts":{}}}}`), nil
+	}
+	// the CRDs of the console cables: without them an operator with the ConsoleCable watch could not run (helm does not apply crds/)
+	noConsole := func(context.Context) ([]byte, error) {
 		return []byte(`{"status":{"properties":{"certificateEpoch":{"type":"integer"}}}}`), nil
+	}
+	if err := Verify(context.Background(), noConsole); err == nil || !strings.Contains(err.Error(), "consolePorts") {
+		t.Fatalf("CRDs without the console ports must be refused: %v", err)
 	}
 	if err := Verify(context.Background(), cur); err != nil {
 		t.Fatalf("a current CRD: %v", err)

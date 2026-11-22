@@ -17,6 +17,9 @@ import (
 // Required are the schema fields that came with this version (a JSON property name each, and the object it belongs to for the message).
 var Required = []struct{ Field, On string }{
 	{"certificateEpoch", "Tenant.status"},
+	// The console cables (Device.spec.consolePorts comes with the ConsoleCable CRD in the same crds/ directory): the operator watches
+	// ConsoleCables while consoleCables.enabled is on, which needs that CRD.
+	{"consolePorts", "Device.spec"},
 }
 
 const groupVersionPath = "apis/laboratory.cybericebox.com/v1alpha1"

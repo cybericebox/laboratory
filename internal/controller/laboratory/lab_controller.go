@@ -1448,12 +1448,15 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&laboratoryv1alpha1.Lab{}).
 		Watches(&laboratoryv1alpha1.Device{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.Connection{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
-		Watches(&laboratoryv1alpha1.ConsoleCable{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.LabVPN{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		WithOptions(controller.Options{MaxConcurrentReconciles: max(r.Workers, 1)})
+	// The ConsoleCable watch only while the laboratory serves console lines: with the switch off the operator needs no ConsoleCable CRD.
+	if r.consoleCablesOn() {
+		b = b.Watches(&laboratoryv1alpha1.ConsoleCable{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper()))
+	}
 	if r.PinEvents != nil {
 		b = b.WatchesRawSource(source.Channel(r.PinEvents, &handler.TypedEnqueueRequestForObject[*laboratoryv1alpha1.Lab]{}))
 	}

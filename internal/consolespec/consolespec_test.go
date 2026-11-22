@@ -97,6 +97,14 @@ func TestValidateRefusals(t *testing.T) {
 		"serial port twice": {func(l *laboratoryv1alpha1.LabSpec) {
 			l.ConsoleCables = append(l.ConsoleCables, cable("pc1", "serial0", "r1", "aux0"))
 		}, "used by more than one console cable"},
+		"port list too big for its annotation": {func(l *laboratoryv1alpha1.LabSpec) {
+			long := make([]string, 32)
+			long[0] = "/bin/sh"
+			for i := 1; i < len(long); i++ {
+				long[i] = strings.Repeat("x", 4000)
+			}
+			l.Devices[0].ConsolePorts[0].Command = long
+		}, "port list"},
 		"too many cables": {func(l *laboratoryv1alpha1.LabSpec) {
 			for len(l.ConsoleCables) <= 64 {
 				l.ConsoleCables = append(l.ConsoleCables, cable("pc1", "serial0", "r1", "console0"))

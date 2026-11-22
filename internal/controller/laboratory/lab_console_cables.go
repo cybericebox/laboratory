@@ -37,12 +37,27 @@ func (r *LabReconciler) materializeLinks(ctx context.Context, lab *laboratoryv1a
 	return r.syncConsoleCables(ctx, lab)
 }
 
-// syncConsoleCables makes the ConsoleCables of the spec and removes the ones it no longer has.
+// consoleCablesOn says the laboratory serves console lines (consoleCables.enabled; nil switches: everything). Only then does the operator
+// watch ConsoleCables, so an upgrade with the switch off needs no new CRD to keep the labs running.
+func (r *LabReconciler) consoleCablesOn() bool { return r.Switches == nil || r.Switches.ConsoleCables }
+
+// noCableKind says the API server does not know the ConsoleCable kind (the CRDs of this release were not applied: helm upgrade does not
+// apply crds/). A lab then has no cable; a lab that declares one is refused by the switch or waits for the CRD.
+func noCableKind(err error) bool { return meta.IsNoMatchError(err) }
+
+// syncConsoleCables makes the ConsoleCables of the spec and removes the ones it no longer has. A lab without cables on a laboratory with
+// the switch off makes no ConsoleCable call at all.
 func (r *LabReconciler) syncConsoleCables(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	if len(lab.Spec.ConsoleCables) == 0 && !r.consoleCablesOn() {
+		return nil
+	}
 	if err := r.materializeConsoleCables(ctx, lab); err != nil {
 		return err
 	}
-	return r.pruneConsoleCables(ctx, lab)
+	if err := r.pruneConsoleCables(ctx, lab); err != nil && !noCableKind(err) {
+		return err
+	}
+	return nil
 }
 
 // materializeConsoleCables creates the ConsoleCable of every cable of the spec that has none.
@@ -99,8 +114,14 @@ func (r *LabReconciler) consoleCableRefs(ctx context.Context, lab *laboratoryv1a
 	if len(lab.Spec.ConsoleCables) == 0 && len(lab.Status.ConsoleCables) == 0 {
 		return nil, nil
 	}
+	if len(lab.Spec.ConsoleCables) == 0 && !r.consoleCablesOn() {
+		return nil, nil
+	}
 	var list laboratoryv1alpha1.ConsoleCableList
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
+		if noCableKind(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var out []laboratoryv1alpha1.ConsoleCableRef

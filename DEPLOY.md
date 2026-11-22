@@ -1172,6 +1172,13 @@ port or a cable is refused at the three layers of "Feature switches" with `CONSO
 (finalizers, labels) still changes; but an UPDATE that changes the spec of a Lab with ports or cables, of a Device with ports or of a
 ConsoleCable is refused (`CONSOLE_CABLES_UNAVAILABLE`). Delete such labs, or turn the switch back on, before changing them.
 
+**Upgrade.** Apply the chart's CRDs before `helm upgrade` (`kubectl apply --server-side -f charts/laboratory/crds/`; helm does not
+update `crds/`): the operator and the agent refuse to start on CRDs without `Device.spec.consolePorts`, and the operator watches the
+new `ConsoleCable` kind while the switch is on. With the switch off it makes no ConsoleCable call for a lab without cables.
+
+A device's port list (its JSON) is at most 64 KiB (`consolespec.MaxPortsSpecBytes`; the annotations of a pod are capped at 256 KiB):
+a longer one is refused with `CONSOLE_CABLE_INVALID`.
+
 **What the operator does.** A Lab whose ports or cables break a rule the CRD cannot express is failed with the reason `ConsoleCableInvalid`
 (the agent refuses the same spec earlier: `InvalidArgument`, ErrorInfo reason `CONSOLE_CABLE_INVALID`): an end that is not a declared
 port of that kind, a port used by two cables, a port named like an interface of its device, two `stdio` consoles on one device, a serial
@@ -3105,6 +3112,10 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.35 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
+   - the CRDs of the console cables are applied (step 1: the new `consolecables` CRD and the `consolePorts`/`serialPorts` fields): the
+     operator and the agent wait for `Device.spec.consolePorts` in the published schema and exit after 60 s without it. The operator
+     watches ConsoleCables only while `consoleCables.enabled` is on, and a missing ConsoleCable kind counts as no cable, so a lab never
+     fails because of it;
    - apart from step 2, nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
 
 ### Device resources (R-2)
