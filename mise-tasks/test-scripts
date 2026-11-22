@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Tests of the release helpers (.github/scripts: version arithmetic, line gate, promote gate, backport, retention, registry helpers) and of scripts/dev.sh; no Docker, no network"
+#MISE description="Tests of the release helpers (.github/scripts: version arithmetic, line gate, promote gate, backport, security carry, retention, registry helpers) and of scripts/dev.sh; no Docker, no network"
 set -euo pipefail
 cd "${MISE_PROJECT_ROOT:?run through mise}"
 export PYTHONDONTWRITEBYTECODE=1
