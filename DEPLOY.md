@@ -1168,6 +1168,10 @@ The switch also renders the device access service (it moves the bytes of the lin
 port or a cable is refused at the three layers of "Feature switches" with `CONSOLE_CABLES_UNAVAILABLE`; the policy
 `laboratory-feature-console` also refuses a Device with ports or a ConsoleCable made directly, not through a Lab.
 
+**Turning the switch off on a running laboratory.** Objects made while it was on stay and can still be deleted, and their metadata
+(finalizers, labels) still changes; but an UPDATE that changes the spec of a Lab with ports or cables, of a Device with ports or of a
+ConsoleCable is refused (`CONSOLE_CABLES_UNAVAILABLE`). Delete such labs, or turn the switch back on, before changing them.
+
 **Not complete yet.** This release has the API, the switch and the feature report. The operator side, the in-device port keeper, the relay
 between two devices (cross-node stream, `cable.sock`, the network policy and its chart values) and the node-agent that drives the lines
 come in the next steps of the design (phases 4 to 7); keep the switch off on a production laboratory until they are in.
