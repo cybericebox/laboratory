@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -94,8 +95,16 @@ func AttachMain(args []string) int {
 		return ExitUsage
 	}
 	return attach(SocketDir, args[0], os.Stdin, os.Stdout, os.Stderr, func() error {
-		// A keeper started by an attach logs nowhere: the attach's stderr is a FIFO of the device access service that ends with it.
-		return StartKeeperProcess(KeeperArgs(SpecPath, nil, false), nil, nil)
+		// Not the attach's stderr (a FIFO of the device access service that ends with the attach): keeper.log in the socket directory.
+		logFile, err := keeperLog(SocketDir)
+		if err != nil {
+			logFile = nil
+		}
+		err = StartKeeperProcess(KeeperArgs(SpecPath, nil, false), nil, logFile)
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		return err
 	})
 }
 
@@ -123,4 +132,25 @@ func keeperCommand(self string, args []string, extra []*os.File, stderr *os.File
 		cmd.Stderr = stderr
 	}
 	return cmd
+}
+
+const (
+	// keeperLogFile is where a keeper started by an attach writes its messages (root only, in the socket directory); keeperLogMax bounds
+	// it: a bigger log starts over when the next keeper is started.
+	keeperLogFile = "keeper.log"
+	keeperLogMax  = 256 << 10
+)
+
+func keeperLog(dir string) (*os.File, error) {
+	path := filepath.Join(dir, keeperLogFile)
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if st, err := os.Stat(path); err == nil && st.Size() > keeperLogMax {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	_ = f.Chmod(0o600)
+	return f, nil
 }

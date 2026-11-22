@@ -269,7 +269,8 @@ func TestOneFailingPortLeavesTheOthers(t *testing.T) {
 	}
 }
 
-// The console program is killed (its whole process group) when the keeper stops, and after it ended before it is started again.
+// The console program is killed (its whole process group) when the keeper stops; a program that ended by itself (a logout) is started
+// again without killing its group, so what it left running stays, like on a real machine.
 func TestConsoleProgramIsKilledOnShutdownAndRespawn(t *testing.T) {
 	sys, _, _, cancel := startKeeper(t, Spec{Console: []ConsolePort{{Name: "console0"}}})
 	eventually(t, "the program", func() bool { sys.mu.Lock(); defer sys.mu.Unlock(); return len(sys.starts) == 1 })
@@ -278,7 +279,7 @@ func TestConsoleProgramIsKilledOnShutdownAndRespawn(t *testing.T) {
 
 	sys, _, _, _ = startKeeper(t, Spec{Console: []ConsolePort{{Name: "aux0"}}}, func(f *fakeSys) { f.endAtOnce = true })
 	eventually(t, "the respawn", func() bool { sys.mu.Lock(); defer sys.mu.Unlock(); return len(sys.starts) >= 2 })
-	if sys.count(&sys.kills) < 1 {
-		t.Fatal("the group of the ended program must be killed before the respawn")
+	if n := sys.count(&sys.kills); n != 0 {
+		t.Fatalf("a logout must not kill the group of the program: %d kills", n)
 	}
 }

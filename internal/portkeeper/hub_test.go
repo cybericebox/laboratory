@@ -93,6 +93,7 @@ func TestHubOneClientDropsWhileUnattached(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the program blocked while no client was attached")
 	}
+	time.Sleep(100 * time.Millisecond) // the pump hands the bytes on right after it read them: let it drop them before anyone attaches
 
 	c := dialAttached(t, sock)
 	// a second attach is refused

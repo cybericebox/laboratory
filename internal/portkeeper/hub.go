@@ -36,6 +36,8 @@ type Hub struct {
 type client struct {
 	conn net.Conn
 	out  chan []byte
+	// done is closed by detach: the writer stops, so a detached client leaves no goroutine and no queue behind.
+	done chan struct{}
 	once sync.Once
 }
 
@@ -111,7 +113,7 @@ func (h *Hub) attach(conn net.Conn) *client {
 	if h.client != nil {
 		return nil
 	}
-	c := &client{conn: conn, out: make(chan []byte, clientQueue)}
+	c := &client{conn: conn, out: make(chan []byte, clientQueue), done: make(chan struct{})}
 	h.client = c
 	return c
 }
@@ -122,7 +124,10 @@ func (h *Hub) detach(c *client) {
 		h.client = nil
 	}
 	h.mu.Unlock()
-	c.once.Do(func() { _ = c.conn.Close() })
+	c.once.Do(func() {
+		close(c.done)
+		_ = c.conn.Close()
+	})
 }
 
 // write sends the queue to the client; a write that does not finish within the timeout detaches it.
@@ -132,21 +137,17 @@ func (h *Hub) write(c *client) {
 	if _, err := c.conn.Write([]byte{AttachOK}); err != nil {
 		return
 	}
-	for b := range c.out {
-		_ = c.conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
-		if _, err := c.conn.Write(b); err != nil {
+	for {
+		select {
+		case <-c.done:
 			return
-		}
-		if !h.isClient(c) {
-			return
+		case b := <-c.out:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
+			if _, err := c.conn.Write(b); err != nil {
+				return
+			}
 		}
 	}
-}
-
-func (h *Hub) isClient(c *client) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.client == c
 }
 
 // Serve accepts clients on ln until it is closed: the first one gets the line, any other is closed at once.

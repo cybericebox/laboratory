@@ -251,11 +251,11 @@ func manufacturedLine(ctx context.Context, cfg Config, c ConsolePort, h *Hub, lo
 			logf("console port %s: the program cannot be started: %v", c.Name, err)
 			return err
 		}
-		// The keeper stopping ends the program; after it ended, what it left in its process group is ended too, before the respawn.
+		// The keeper stopping ends the program and its process group. A program that ends by itself (a logout) is only started again:
+		// what it left running stays, as on a real machine, and the keeper (the subreaper) reaps it when it ends.
 		stop := context.AfterFunc(ctx, p.Kill)
 		err = p.Wait()
 		stop()
-		p.Kill()
 		return err
 	})
 	return nil

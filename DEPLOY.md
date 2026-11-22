@@ -1217,13 +1217,16 @@ the launcher and the keeper);
 Each line is served on a unix socket `/.cib/ports/<port>.sock` (directory 0700, socket 0600, root only), one client at a time: the keeper
 answers an accepted client with one byte (0x06) and then the raw bytes; a second client is closed at once. While no client is attached
 the keeper reads the line and drops the bytes, so a program never blocks; a client that reads too slowly loses the oldest output (a
-bounded queue, like an overrun serial line) and one that takes nothing for 5 s is detached.
+bounded queue of 64 chunks of up to 4 KiB, like an overrun serial line) and one that takes nothing for 5 s is detached. Bulk output
+(`cat` of a large file, a fast log on a `stdio` console) can therefore lose bytes on the way to a slow reader, as on a real 115200-baud
+line: a console is for interactive work, not a file transfer path.
 
-The keeper is the subreaper of its console programs: each runs in a session (and process group) of its own; what it leaves running is
-ended with its group before the respawn and when the keeper stops, and its orphans are reaped by the keeper, so no zombie stays in the
-device. The stdio master is close-on-exec in the keeper: a console program, which may run as another user, never inherits the
+The keeper is the subreaper of its console programs: each runs in a session (and process group) of its own. When a program ends by itself
+(a logout) it is only started again: as on a real machine the kernel hangs up the jobs of the terminal, and what was detached from it
+(`nohup`, `setsid`, a daemon) keeps running; the keeper reaps it when it ends, so no zombie stays in the device. Only when the keeper
+stops is the group of the current program killed. The stdio master is close-on-exec in the keeper: a console program, which may run as another user, never inherits the
 service's terminal. The keeper's messages go to the container log (it gets the launcher's stderr before the stdio console replaces it);
-a keeper started again by an attach logs nowhere. A port the keeper cannot make does not stop the others: it is recorded in
+a keeper started again by an attach logs to `/.cib/ports/keeper.log` (root only; a log above 256 KiB starts over at the next start). A port the keeper cannot make does not stop the others: it is recorded in
 `/.cib/ports/<port>.failed` with the reason.
 
 A `native: tcp` console is as private as the device and no more: any process in the device can connect to that loopback port too. The PTYs live as long as the container, so a logged-in session
@@ -1234,7 +1237,8 @@ the container log, and the service starts anyway, without its lines.
 `probe port-attach <port>` (what the device access service runs in the device, as root, `Terminal: false`) connects its stdin and
 stdout to the socket; exit 2 for a name that is not a port name, 3 when the line already has a client, 4 when no keeper serves it, 5
 when the keeper could not make that port (the reason on stderr). When
-no keeper answers (root in the device killed it) the attach starts a new one and retries for 3 s: the lines of that device restart (a
+no keeper answers (root in the device killed it) the attach starts a new one and retries for 3 s, and only then reports a port recorded as
+failed (exit 5), so a record left by an earlier keeper does not stop it: the lines of that device restart (a
 `stdio` line cannot be made again: its master went with the keeper that started with the service).
 
 **Not complete yet.** The relay between two devices (the device access service running `port-attach` on both ends, the cross-node

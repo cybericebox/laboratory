@@ -182,22 +182,41 @@ func TestConsoleProgramGetsNoOtherDescriptor(t *testing.T) {
 	}
 }
 
-// What a console program leaves running is ended with its process group before the respawn, its orphans are reaped by the keeper
-// (subreaper), and the keeper stopping ends the program.
-func TestConsoleProgramGroupIsKilledAndReaped(t *testing.T) {
+// What a console program leaves running when it ends by itself (a logout) is not killed by the keeper: as on a real machine the kernel
+// hangs up the jobs of the terminal, and a daemon (nohup, setsid) stays running; the keeper (subreaper) reaps it when it ends: no zombie. The keeper stopping ends the current program.
+func TestConsoleProgramLeftoversStayAndAreReaped(t *testing.T) {
 	if err := BecomeSubreaper(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { killMarked(t, "3001") })
 	spec := Spec{Console: []ConsolePort{
-		{Name: "console0", Command: []string{"/bin/sh", "-c", "sleep 3001 & exit 0"}},
+		{Name: "console0", Command: []string{"/bin/sh", "-c", "nohup sleep 3001 >/dev/null 2>&1 & sleep 0.5; exit 0"}},
 		{Name: "aux0", Command: []string{"/bin/sleep", "3002"}},
 	}}
 	_, cancel := runKeeper(t, spec, nil)
 	eventually(t, "the long console program", func() bool { live, _ := processes(t, "3002"); return live == 1 })
-	time.Sleep(3500 * time.Millisecond) // two runs of console0 at least (respawn after 1 s, then 2 s)
-	if live, zombies := processes(t, "3001"); live != 0 || zombies != 0 {
-		t.Fatalf("left behind by the console program: %d running, %d zombies", live, zombies)
+	time.Sleep(4500 * time.Millisecond) // two runs of console0 at least (0.5 s each, respawn after 1 s, then 2 s)
+	live, zombies := processes(t, "3001")
+	if live < 2 || zombies != 0 {
+		t.Fatalf("after two logouts: %d left running (want at least 2), %d zombies", live, zombies)
 	}
+	killMarked(t, "3001") // the daemons end: the keeper reaps them
+	eventually(t, "the leftovers to be reaped", func() bool { live, zombies := processes(t, "3001"); return live == 0 && zombies == 0 })
 	cancel()
 	eventually(t, "the program to end with the keeper", func() bool { live, _ := processes(t, "3002"); return live == 0 })
+}
+
+func killMarked(t *testing.T, marker string) {
+	t.Helper()
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		cmd, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if strings.Contains(string(cmd), marker) {
+			_ = unix.Kill(pid, unix.SIGKILL)
+		}
+	}
 }

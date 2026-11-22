@@ -36,13 +36,9 @@ func attach(dir, port string, stdin io.Reader, stdout, stderr io.Writer, start f
 		return ExitUsage
 	}
 	sock := SocketPath(dir, port)
+	// Dial; when nobody answers, start a keeper and dial again; only then is a record of a failed port the answer (a record left by a
+	// keeper that is gone says nothing about the next one).
 	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		if reason, rerr := os.ReadFile(filepath.Join(dir, port+failedSuffix)); rerr == nil {
-			_, _ = fmt.Fprintf(stderr, "port %s: %s\n", port, reason)
-			return ExitPortFailed
-		}
-	}
 	if err != nil && start != nil && start() == nil {
 		for deadline := time.Now().Add(attachRetry); err != nil && time.Now().Before(deadline); {
 			time.Sleep(50 * time.Millisecond)
@@ -50,6 +46,10 @@ func attach(dir, port string, stdin io.Reader, stdout, stderr io.Writer, start f
 		}
 	}
 	if err != nil {
+		if reason, rerr := os.ReadFile(filepath.Join(dir, port+failedSuffix)); rerr == nil {
+			_, _ = fmt.Fprintf(stderr, "port %s: %s\n", port, reason)
+			return ExitPortFailed
+		}
 		return ExitNoKeeper
 	}
 	defer func() { _ = conn.Close() }()
