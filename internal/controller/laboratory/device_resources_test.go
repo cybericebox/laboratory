@@ -106,7 +106,8 @@ func TestDeviceResourcesMapsAreIndependent(t *testing.T) {
 }
 
 // A zero, negative or overflowing value of an object that predates the validation never reaches the pod as "no limit":
-// it is skipped (the next candidate or the default applies) and a value over the chart maximum is clamped.
+// it is skipped (the next candidate or the default applies). A CPU over the chart maximum is clamped; a memory over it is not
+// (such a device is refused before any pod is built, see refuseMemoryAboveMaximum).
 func TestDeviceResourcesRefuseZeroAndClamp(t *testing.T) {
 	d := &laboratoryv1alpha1.Device{}
 	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPULimit: "0", CPURequest: "-5", MemoryLimit: "1e30", MemoryRequest: "512Mi"}
@@ -121,6 +122,6 @@ func TestDeviceResourcesRefuseZeroAndClamp(t *testing.T) {
 	capped := DeviceDefaults{CPU: "250m", Memory: "256Mi", MaxCPU: "2000m", MaxMemory: "4Gi"}
 	rr = deviceResources(big, capped)
 	wantQty(t, rr.Limits, corev1.ResourceCPU, "2")
-	wantQty(t, rr.Limits, corev1.ResourceMemory, "4Gi")
-	wantQty(t, rr.Requests, corev1.ResourceMemory, "4Gi")
+	wantQty(t, rr.Limits, corev1.ResourceMemory, "100Gi")
+	wantQty(t, rr.Requests, corev1.ResourceMemory, "100Gi")
 }

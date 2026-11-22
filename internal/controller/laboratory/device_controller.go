@@ -240,13 +240,16 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	err = r.Get(ctx, types.NamespacedName{Name: workloadName(device), Namespace: device.Namespace}, &dep)
 
 	if errors.IsNotFound(err) {
+		if stop, refuseErr := r.refuseMemoryAboveMaximum(ctx, device, false); stop {
+			return ctrl.Result{}, refuseErr // refused for good, with a condition and an event: a change of the device starts it again
+		}
 		if !suspended {
 			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
 				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
 			}
 		}
 		if err := r.createDeployment(ctx, device, replicas); err != nil {
-			if stderrors.Is(err, errProfileUnsupported) {
+			if stderrors.Is(err, errProfileUnsupported) || isMemoryRefusal(err) {
 				return ctrl.Result{}, nil // refused for good, with an event: nothing to retry
 			}
 			return ctrl.Result{}, err
@@ -599,6 +602,9 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	if err := r.refuseUnrunnableProfile(device); err != nil {
+		return err
+	}
+	if err := r.memoryAboveMaximum(device); err != nil {
 		return err
 	}
 	if err := r.refuseUnbootstrappable(device); err != nil {

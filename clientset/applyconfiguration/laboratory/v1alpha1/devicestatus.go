@@ -17,6 +17,10 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+)
+
 // DeviceStatusApplyConfiguration represents a declarative configuration of the DeviceStatus type for use
 // with apply.
 //
@@ -49,6 +53,9 @@ type DeviceStatusApplyConfiguration struct {
 	CPUThrottle *DeviceCPUThrottleApplyConfiguration `json:"cpuThrottle,omitempty"`
 	// Bootstrap is the observed bootstrap of the device; absent for a device without one. Written by the launcher side (not yet built).
 	Bootstrap *DeviceBootstrapStatusApplyConfiguration `json:"bootstrap,omitempty"`
+	// Conditions: Ready=False with a coded reason while the operator refuses to start the device, e.g.
+	// DeviceMemoryAboveMaximum (its memory is above limits.device.maxMemory; the message names both amounts).
+	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // DeviceStatusApplyConfiguration constructs a declarative configuration of the DeviceStatus type for use with
@@ -176,5 +183,18 @@ func (b *DeviceStatusApplyConfiguration) WithCPUThrottle(value *DeviceCPUThrottl
 // If called multiple times, the Bootstrap field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithBootstrap(value *DeviceBootstrapStatusApplyConfiguration) *DeviceStatusApplyConfiguration {
 	b.Bootstrap = value
+	return b
+}
+
+// WithConditions adds the given value to the Conditions field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Conditions field.
+func (b *DeviceStatusApplyConfiguration) WithConditions(values ...*v1.ConditionApplyConfiguration) *DeviceStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConditions")
+		}
+		b.Conditions = append(b.Conditions, *values[i])
+	}
 	return b
 }

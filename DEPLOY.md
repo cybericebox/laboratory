@@ -3058,9 +3058,13 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 - A device resource value must be a positive quantity (no exponent, at most 24 characters) and at most 1024 cores or 1 TiB. The agent
   refuses `"0"`, negative, overflowing and out-of-bound values on CreateLabs with an error that names the device; the CRD has the same
   pattern. The sums use saturating arithmetic.
-- The operator ignores such a value on an object that got past the check (the next candidate or the default is used) and clamps
-  anything above the chart maximum to it (`limits.device.maxCpu` / `maxMemory`, passed to the operator as `DEVICE_MAX_CPU` /
-  `DEVICE_MAX_MEMORY`), so a pod never runs without limits.
+- The operator ignores such a value on an object that got past the check (the next candidate or the default is used), so a pod never
+  runs without limits. A CPU above the chart maximum (`limits.device.maxCpu`, `DEVICE_MAX_CPU` for the operator) is clamped to it.
+  A memory above `limits.device.maxMemory` (`DEVICE_MAX_MEMORY`) is **refused, never clamped**: the device gets no pod and
+  `Device.status.conditions` Ready=False with the reason `DeviceMemoryAboveMaximum` and a message naming the requested and the maximum
+  amounts, plus a Warning event; its Lab fails (Ready=False, the same reason and event) and creates none of its devices. Nothing counts
+  a refused device (the scheduler, the agent's reservation fit, the lab's configured allocation). A device exactly at the maximum is
+  accepted. The agent already refuses such a lab on CreateLabs, so this only stops an object made by hand.
 
 ### Image policy and the registry forwarder (R-3)
 

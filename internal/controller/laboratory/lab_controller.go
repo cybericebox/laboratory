@@ -1192,16 +1192,19 @@ func (r *LabReconciler) modesOrRefuse(ctx context.Context, lab *laboratoryv1alph
 	return false, ctrl.Result{}, nil
 }
 
-// refuseLab fails the lab with the reason of its validation, as a condition and an event. A lab refused for a server its group has
+// refuseLab fails the lab with the reason of its validation, as a condition and an event: the coded reason of a refusal that has one
+// (a Reason() method, e.g. DeviceMemoryAboveMaximum), else ValidationFailed. A lab refused for a server its group has
 // switched off is looked at again later (the switch may be turned on), any other refusal waits for a change of the lab.
 func (r *LabReconciler) refuseLab(ctx context.Context, lab *laboratoryv1alpha1.Lab, validationErr error, serverOff bool) (ctrl.Result, error) {
 	// Surface the specific validation reason — it was previously discarded, leaving the Lab in Failed with no user-visible cause.
 	lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
-	labstatus.SetReady(
-		&lab.Status.Conditions, lab.Generation, false,
-		labstatus.ReasonValidationFailed, validationErr.Error(),
-	)
-	r.Recorder.Event(lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, validationErr.Error())
+	reason := labstatus.ReasonValidationFailed
+	var coded interface{ Reason() string }
+	if stderrors.As(validationErr, &coded) && coded.Reason() != "" {
+		reason = coded.Reason()
+	}
+	labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, reason, validationErr.Error())
+	r.Recorder.Event(lab, corev1.EventTypeWarning, reason, validationErr.Error())
 	if statusErr := r.Status().Update(ctx, lab); statusErr != nil {
 		log.FromContext(ctx).Error(statusErr, "update status after graph validation failure")
 	}

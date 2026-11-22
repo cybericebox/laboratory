@@ -27,6 +27,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/tenant"
@@ -704,8 +705,8 @@ func (p *schedPod) recordTimes(ps *laboratoryv1alpha1.PodSchedule) {
 	p.withdrawals, p.schedulerMessage, p.onBudget = ps.Withdrawals, ps.SchedulerMessage, ps.OnBudget
 }
 
-// devicePod is the schedPod of a container device of a lab; nil for another type of device, and for a not dispatched pod of
-// a failed lab (its graph did not validate: it gets no Devices), which is no member of its gang: nothing of it waits or is
+// devicePod is the schedPod of a container device of a lab; nil for another type of device, for a not dispatched pod of a
+// device refused for its memory, and for a not dispatched pod of a failed lab (its graph did not validate: it gets no Devices), which is no member of its gang: nothing of it waits or is
 // waited for, while what it already dispatched still counts.
 func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t laboratoryv1alpha1.DeviceTemplate, now time.Time) *schedPod {
 	if t.Type != laboratoryv1alpha1.DeviceTypeContainer {
@@ -732,7 +733,9 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 			}
 		}
 	}
-	if lab.Status.Phase == laboratoryv1alpha1.PhaseFailed && !p.dispatched() {
+	// A device refused for its memory (above limits.device.maxMemory) never starts: like a failed lab's, it waits for nothing and
+	// counts nothing, at a clamped size or any other (limits.LabNeed skips it the same way).
+	if (lab.Status.Phase == laboratoryv1alpha1.PhaseFailed || limits.CheckDeviceMemory(t.Name, t.Resources, s.Defaults) != nil) && !p.dispatched() {
 		return nil
 	}
 	return p

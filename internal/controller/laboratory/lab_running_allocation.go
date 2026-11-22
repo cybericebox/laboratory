@@ -6,6 +6,7 @@ import (
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/limits"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -229,7 +230,12 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		if template.Type != lab.DeviceTypeContainer {
 			continue
 		}
-		configured := deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
+		// A device refused for its memory (above limits.device.maxMemory) is configured at nothing: it never starts.
+		refused := limits.CheckDeviceMemory(template.Name, template.Resources, r.Defaults) != nil
+		configured := corev1.ResourceRequirements{}
+		if !refused {
+			configured = deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
+		}
 		request, limit := allocationPodResources([]corev1.Container{{Resources: configured}})
 		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, request)
 		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, limit)
@@ -237,7 +243,10 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		currentKey := "configured/" + template.Name
 		deviceKnown := false
 		if d != nil {
-			actual := deviceResources(d, r.Defaults)
+			actual := corev1.ResourceRequirements{}
+			if !refused {
+				actual = deviceResources(d, r.Defaults)
+			}
 			request = allocationMaximum(request, allocationAmounts(actual.Requests))
 			limit = allocationMaximum(limit, allocationAmounts(actual.Limits))
 			// An API-lost current Pod still names one physical obligation, rather
@@ -290,7 +299,7 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		}
 		o.add(currentKey, request)
 		o.known = o.known && deviceKnown
-		// Actual Pods/native reports can exceed today's clamped configuration.
+		// Actual Pods/native reports can exceed today's configuration (a CPU clamped to the maximum, a refused device).
 		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, allocationDifference(request, allocationAmounts(configured.Requests)))
 		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, allocationDifference(limit, allocationAmounts(configured.Limits)))
 	}

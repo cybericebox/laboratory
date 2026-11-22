@@ -25,7 +25,9 @@ package v1alpha1
 // are omitted so the scheduler treats them as best-effort. Requests are what
 // capacity planning sums against node allocatable.
 //
-// Every value must be a positive quantity without an exponent: zero would remove the pod limit.
+// Every value must be a positive quantity without an exponent: zero would remove the pod limit. A CPU above the
+// laboratory's limits.device.maxCpu is clamped to it; a memory above limits.device.maxMemory is refused: the device does not
+// start and gets Ready=False with the reason DeviceMemoryAboveMaximum (its Lab too).
 type DeviceResourcesApplyConfiguration struct {
 	CPURequest    *string `json:"cpuRequest,omitempty"`
 	MemoryRequest *string `json:"memoryRequest,omitempty"`

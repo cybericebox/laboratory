@@ -272,10 +272,16 @@ func TestRunningAllocationDefaultsClampsAndStorage(t *testing.T) {
 	if a.ConfiguredRequests.CPUMillicores != 250 || a.ConfiguredLimits.MemoryBytes != 512<<20 || a.AllocatedRequests.CPUMillicores != 300 || a.SnapshotQuotaBytes != 90 || a.StorageState != "Unknown" || a.PhysicalStorageBytesAvailable || a.Used != nil || a.UsageAvailable {
 		t.Fatalf("defaults/storage/lost holds: %+v", a)
 	}
-	l.Spec.Devices[0].Resources = &lab.DeviceResources{CPULimit: "64", MemoryLimit: "100Gi"}
+	l.Spec.Devices[0].Resources = &lab.DeviceResources{CPULimit: "64", MemoryLimit: "4Gi"}
 	a = runningAllocation(t, r, l, d)
 	if a.ConfiguredRequests.CPUMillicores != 2000 || a.ConfiguredLimits.MemoryBytes != 4<<30 || a.AllocatedRequests.CPUMillicores != 2000 {
-		t.Fatalf("clamps: %+v", a)
+		t.Fatalf("cpu clamp, memory at the maximum: %+v", a)
+	}
+	// A memory above the maximum refuses the device (never clamped): it is configured at nothing.
+	l.Spec.Devices[0].Resources = &lab.DeviceResources{CPULimit: "64", MemoryLimit: "100Gi"}
+	a = runningAllocation(t, r, l, d)
+	if a.ConfiguredRequests.CPUMillicores != 0 || a.ConfiguredRequests.MemoryBytes != 0 || a.ConfiguredLimits.MemoryBytes != 0 {
+		t.Fatalf("a refused device is configured at nothing: %+v", a)
 	}
 }
 

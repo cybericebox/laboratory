@@ -16,6 +16,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/gatewayspec"
 	"github.com/cybericebox/laboratory/internal/imagepolicy"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -64,6 +65,11 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 		}
 	}
 	if refusal = r.validateRegistries(lab); refusal != nil {
+		return refusal, false, nil
+	}
+	// a device whose memory is above limits.device.maxMemory is refused, never clamped (the agent refuses it at creation; this catches a
+	// Lab made by hand): the lab fails with the reason DeviceMemoryAboveMaximum and none of its devices is created
+	if refusal = limits.CheckLabDeviceMemory(&lab.Spec, r.Defaults); refusal != nil {
 		return refusal, false, nil
 	}
 	off, err := r.groupServerOff(ctx, lab)

@@ -1,6 +1,8 @@
 package limits
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -12,8 +14,9 @@ import (
 type DeviceDefaults struct {
 	CPU    string
 	Memory string
-	// MaxCPU and MaxMemory are the chart maxima of one device (limits.device.max*): a larger value of an existing
-	// object is clamped to them. Empty or "0" = no maximum beyond the absolute bound of the limits package.
+	// MaxCPU and MaxMemory are the chart maxima of one device (limits.device.max*). A larger CPU of an existing object is
+	// clamped to MaxCPU; a larger memory refuses the device (CheckDeviceMemory): it is never started at a clamped size.
+	// Empty or "0" = no maximum beyond the absolute bound of the limits package.
 	MaxCPU    string
 	MaxMemory string
 	// NoCPULimit runs a device that declares no CPU limit of its own with a CPU request only: no hard cap, so it bursts to the
@@ -40,8 +43,60 @@ func ProfileOverhead(profile laboratoryv1alpha1.DeviceProfile, defaults DeviceDe
 	return cpu, mem
 }
 
+// ReasonDeviceMemoryAboveMaximum is the coded reason of a device refused because its memory is above limits.device.maxMemory.
+const ReasonDeviceMemoryAboveMaximum = "DeviceMemoryAboveMaximum"
+
+// MemoryAboveMaximumError refuses a device whose memory (limit, else request, else the default) is above the chart maximum.
+type MemoryAboveMaximumError struct {
+	Device             string
+	Requested, Maximum resource.Quantity
+}
+
+func (e *MemoryAboveMaximumError) Error() string {
+	return fmt.Sprintf("device %q requests %s of memory, above the maximum of %s per device (limits.device.maxMemory): the device is refused",
+		e.Device, e.Requested.String(), e.Maximum.String())
+}
+
+// Reason is the coded reason of the refusal (the Ready condition and the event).
+func (e *MemoryAboveMaximumError) Reason() string { return ReasonDeviceMemoryAboveMaximum }
+
+// CheckDeviceMemory refuses a container device whose memory is above defaults.MaxMemory: nil, or a *MemoryAboveMaximumError
+// naming the requested and the maximum amounts. No maximum (empty or "0") refuses nothing.
+func CheckDeviceMemory(name string, spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDefaults) error {
+	if _, err := DeviceQuantity(defaults.MaxMemory, false); err != nil {
+		return nil
+	}
+	maxQ, err := resource.ParseQuantity(defaults.MaxMemory)
+	if err != nil {
+		return nil
+	}
+	var memReq, memLim string
+	if spec != nil {
+		memReq, memLim = spec.MemoryRequest, spec.MemoryLimit
+	}
+	mem, ok := pick(false, "", memLim, memReq, defaults.Memory)
+	if !ok || mem.Cmp(maxQ) <= 0 {
+		return nil
+	}
+	return &MemoryAboveMaximumError{Device: name, Requested: mem, Maximum: maxQ}
+}
+
+// CheckLabDeviceMemory is CheckDeviceMemory for the container devices of a lab: the refusal of the first one above the maximum.
+func CheckLabDeviceMemory(spec *laboratoryv1alpha1.LabSpec, defaults DeviceDefaults) error {
+	for i := range spec.Devices {
+		d := &spec.Devices[i]
+		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
+			continue
+		}
+		if err := CheckDeviceMemory(d.Name, d.Resources, defaults); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // pick is the first usable candidate: a quantity that parses, is positive and within the absolute bound, clamped to the
-// chart maximum maxQ. False when none is usable.
+// chart maximum maxQ ("" = not clamped). False when none is usable.
 func pick(isCPU bool, maxQ string, candidates ...string) (resource.Quantity, bool) {
 	for _, c := range candidates {
 		if c == "" {
@@ -67,8 +122,9 @@ func pick(isCPU bool, maxQ string, candidates ...string) (resource.Quantity, boo
 // DevicePodResources returns the requests and the limits of a device container. Memory is one amount for both (limit,
 // else request, else the default). CPU may burst: the request is cpuRequest (else cpuLimit, else the default) and the
 // limit is cpuLimit (else the request, or none with defaults.NoCPULimit), never below the request. A quantity that does not parse, is zero or negative
-// (it would remove the limit) or is beyond the absolute bound is skipped, and one above the chart maximum is clamped to
-// it, so an object that predates the validation cannot run a pod without limits. Both nil when nothing is set.
+// (it would remove the limit) or is beyond the absolute bound is skipped, so an object that predates the validation cannot run
+// a pod without limits. A CPU above the chart maximum is clamped to it; memory is not (a device above limits.device.maxMemory
+// is refused before any pod is built, see CheckDeviceMemory). Both nil when nothing is set.
 func DevicePodResources(spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDefaults) (requests, limits corev1.ResourceList) {
 	var cpuReq, cpuLim, memReq, memLim string
 	if spec != nil {
@@ -95,7 +151,7 @@ func DevicePodResources(spec *laboratoryv1alpha1.DeviceResources, defaults Devic
 			add(corev1.ResourceCPU, req, lim)
 		}
 	}
-	if mem, ok := pick(false, defaults.MaxMemory, memLim, memReq, defaults.Memory); ok {
+	if mem, ok := pick(false, "", memLim, memReq, defaults.Memory); ok {
 		add(corev1.ResourceMemory, mem, mem.DeepCopy())
 	}
 	return requests, limits
@@ -109,11 +165,11 @@ func DeviceRequests(spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDef
 }
 
 // LabNeed is what the pods of a lab's container devices request together, as the scheduler counts them (DeviceRequests
-// per device; switches and hubs run no pod).
+// per device; switches and hubs run no pod, and a device refused by CheckDeviceMemory never starts and counts nothing).
 func LabNeed(spec *laboratoryv1alpha1.LabSpec, defaults DeviceDefaults) (cpu, mem int64) {
 	for i := range spec.Devices {
 		d := &spec.Devices[i]
-		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
+		if d.Type != laboratoryv1alpha1.DeviceTypeContainer || CheckDeviceMemory(d.Name, d.Resources, defaults) != nil {
 			continue
 		}
 		if r := DeviceRequests(d.Resources, defaults); r != nil {
