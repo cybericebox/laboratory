@@ -45,6 +45,9 @@ type Device struct {
 	PodUID      string
 	// TerminalSpec is the digest of the terminal command and user the operator stamped (names.LabelTerminalSpec); empty when there is none.
 	TerminalSpec string
+	// LabUID is the UID of the Lab on the sandbox (names.LabelLabUID); Ports is the digest of its port list (names.LabelPorts), empty
+	// for a device without ports.
+	LabUID, Ports string
 }
 
 // Resolve finds the container of a lab device, and only that.
@@ -124,7 +127,7 @@ func resolve(ctx context.Context, rt Runtime, t Target, needConsole bool) (Devic
 				return Device{}, err
 			}
 			if up {
-				found = append(found, Device{ContainerID: c.ID, PodUID: uid, TerminalSpec: l[names.LabelTerminalSpec]})
+				found = append(found, Device{ContainerID: c.ID, PodUID: uid, TerminalSpec: l[names.LabelTerminalSpec], LabUID: l[names.LabelLabUID], Ports: l[names.LabelPorts]})
 			}
 		}
 	}

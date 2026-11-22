@@ -2,7 +2,9 @@
 {{- /*
 The listener of the device access service is plain HTTP on the pod network and trusts its caller: this policy is the whole protection of
 it. Ingress only from the L7 proxy pods (their namespace and label), on the stream port, and only with the console on; nothing else may
-connect, not another pod of the cluster and not another namespace. No egress at all: the service talks to the runtime through a socket and to nothing on the network.
+connect, not another pod of the cluster and not another namespace. With console cables on, the device access pods also reach each other on
+the cable port (consoleCables.port), and nothing else: the cable stream of a line between two nodes (authenticated by its own HMAC key), never
+the lab network. Without cables there is no egress at all: the service talks to the runtime through a socket and to nothing on the network.
 */ -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -25,7 +27,18 @@ spec:
         - ports:
             - port: {{ .Values.terminal.port | quote }}
               protocol: TCP
-    {{- else }}
+    {{- end }}
+    {{- if .Values.consoleCables.enabled }}
+    - fromEndpoints:
+        - matchLabels:
+            {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 12 }}
+            k8s:io.kubernetes.pod.namespace: {{ include "laboratory.deviceAccess.namespace" . }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.consoleCables.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- if not (or .Values.terminal.enabled .Values.consoleCables.enabled) }}
     # Only the lab checker uses the service (over a unix socket), so nothing connects over the network. An empty rule makes ingress default-deny.
     - {}
     {{- end }}
@@ -37,7 +50,18 @@ spec:
             - port: {{ $.Values.terminal.metricsPort | quote }}
               protocol: TCP
     {{- end }}
-  # An empty rule makes egress default-deny.
   egress:
+    {{- if .Values.consoleCables.enabled }}
+    - toEndpoints:
+        - matchLabels:
+            {{- include "laboratory.deviceAccess.selectorLabels" . | nindent 12 }}
+            k8s:io.kubernetes.pod.namespace: {{ include "laboratory.deviceAccess.namespace" . }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.consoleCables.port | quote }}
+              protocol: TCP
+    {{- else }}
+    # An empty rule makes egress default-deny.
     - {}
+    {{- end }}
 {{- end }}

@@ -1107,7 +1107,7 @@ next start remove execs and FIFOs a crash left behind (containerd does not kill 
 | L7 proxy: Role in the service's own namespace, `endpointslices` get/list/watch | the address of the service pod on that node (the headless Service `laboratory-device-access` has one EndpointSlice per ready pod: an address and a node name). The proxy reads **no pod**: pod specs of the operator or the registry never become readable by the internet-facing proxy. The namespace holds nothing else |
 
 **Network.** The listener is bound to the pod IP only (downward API), not to every interface. The Cilium policy of the service admits ingress only from the pods `app=laboratory-proxy-l7` of the proxy namespace on `terminal.port`, and has no
-egress. The egress of the L7 proxy is narrowed to: the API server, the **device pods** of lab group namespaces (the namespace's group label *and* the pod's
+egress (with `consoleCables.enabled` the device access pods also reach each other on `consoleCables.port`, and nothing else: see "Console cables"). The egress of the L7 proxy is narrowed to: the API server, the **device pods** of lab group namespaces (the namespace's group label *and* the pod's
 `laboratory.cybericebox.com/device` label, no longer every pod of the namespace) and, with the console on, the service pods on their one port. What the proxy
 dials in those namespaces is the web port of the pod behind the Service of an exposed device and nothing else (its traffic reports and the report preparation go
 through the API server).
@@ -1241,9 +1241,56 @@ no keeper answers (root in the device killed it) the attach starts a new one and
 failed (exit 5), so a record left by an earlier keeper does not stop it: the lines of that device restart (a
 `stdio` line cannot be made again: its master went with the keeper that started with the service).
 
-**Not complete yet.** The relay between two devices (the device access service running `port-attach` on both ends, the cross-node
-stream, `cable.sock`, the network policy and its chart values) and the node-agent that drives the lines and writes the status of the
-cables come in the next steps of the design (phases 6 and 7); keep the switch off on a production laboratory until they are in.
+**The relay (the device access service).** The line of a cable is moved by the device access services of the nodes of its two ends,
+never over the lab network or a device NIC: a cable works with every lab interface down.
+
+- **Attach.** An end is attached by running `/.cib/probe/probe port-attach <port>` in the device through the service's containerd exec
+  (root in the device with the container's own process block and capability sets, no terminal, so raw bytes). The device is found by
+  the white list of the device access service (a sandbox with the operator's UIDs, never the VPN, a gateway or a system pod, by namespace,
+  lab and device), its pod must carry the lab's UID (`laboratory.cybericebox.com/lab-uid`: a lab deleted and made again with the same
+  names is another lab), and the port list the node-agent sends must have the digest of the pod's `laboratory.cybericebox.com/ports`
+  label and contain the port with its kind. Nothing else runs: the service builds the command itself. An attach answers with the byte
+  0x06 once the keeper took it; an attach that ends first (exit 3 busy, 4 no keeper, 5 the port failed) is a line that is down
+  (`PortDown`), tried again.
+- **cable.sock.** The node-agent of a node tells the service of the same node, over `<consoleCables.socketDir>/cable.sock` (a node
+  directory only the two pods mount; mode 0660 for group `consoleCables.socketGid`, and the peer must be user `socketUid` of group
+  `socketGid`, checked with `SO_PEERCRED`), the whole set of lines of its node (PUT `/v1/lines`) and reads their state. A line names
+  the ConsoleCable (namespace, name, UID), the lab and its UID, both ends with their port lists, and the role of the node: `owner`
+  (the console end runs here) or `serial` (only the serial end runs here). There is no field for a program, a container or a user, an
+  unknown field is refused, and at most 500 lines are taken per node. The service still has no Kubernetes API rights.
+- **Same node.** The owner attaches both ends and copies the bytes in its own process.
+- **Two nodes.** The owner dials the device access pod of the serial end's node at its pod IP and `consoleCables.port` (default 8081):
+  a WebSocket on the pod network. The first message names the cable, its UID, the lab and its UID and both ends, with the dialer's time,
+  a 16-byte nonce and an HMAC-SHA256 over every field, with the key of the Secret `laboratory-console-cable-key` of the device access
+  namespace (64 random characters made once by the chart, kept across upgrades; no other component mounts it; delete it and upgrade to
+  rotate: the pods read the file again when it changes, and lines reconnect once both ends have the new key). The acceptor checks the MAC
+  in constant time, the time within 30 s of its own clock and that the nonce was not seen, then serves it only for a line its own
+  node-agent gave it with the `serial` role and the same cable, UID, lab, lab UID and ends: a holder of the key can reach nothing but
+  the serial port of a cable that exists, and never a device of another lab or tenant. Its reply is signed over the request's nonce,
+  so the owner knows it talks to a holder of the key. Then raw bytes in binary frames both ways. A newer authenticated stream for the
+  same line replaces an older one (an owner that restarted).
+- **Limits.** Each direction of a line is capped at 64 KiB/s (`max_bytes_per_second` of the feature; a real 115200-baud line is
+  about 11 KiB/s) and blocks when the far side does not read; a write that is not taken for 30 s ends the line.
+- **Retry.** A line that is down is tried again after 0.5 s, doubling to 10 s (back to 0.5 s after a line that stayed up 10 s). A
+  device restart ends its attach: the line goes down and is attached again to the new keeper (the console program starts fresh). A
+  restart of a device access pod drops the lines of its node; the node-agent gives them again within a second and the keepers keep
+  their PTYs, so a logged-in session survives.
+- **Network policy** (`terminal.networkPolicy.enabled`, Cilium): ingress on `consoleCables.port` only from the device access pods,
+  egress of the device access pods only to the device access pods on that port; nothing else is opened (the proxy still reaches only the
+  console port, and only with `terminal.enabled`). The stream is authenticated on its own, so a cluster without Cilium (kind) still
+  refuses every unsigned or replayed request; the policy keeps everything else off the port.
+- **Metrics.** `device_access_console_lines{role,state}` (lines of the node, up and down) and `device_access_bytes_total{kind="line"}`;
+  refused cable streams count in `device_access_refused_total{code="cable-…"}`. The log has one line when a line goes up or down
+  (cable, role, reason), never its bytes.
+
+| Value | Meaning |
+|---|---|
+| `consoleCables.port` (8081) | the port of the cable stream between the device access pods (on the pod IP) |
+| `consoleCables.socketDir` (`/run/cybericebox/console-cables`) | the node directory of `cable.sock` (hostPath of the device access pod and the node-agent) |
+| `consoleCables.socketUid`, `consoleCables.socketGid` (0, 0) | the user and group the node-agent runs as: the socket is 0660 for that group and the peer must be that user |
+
+**Not complete yet.** The node-agent that drives the lines (the owner by the console end, the peer address, a reschedule) and writes
+the status of the cables comes in the next step of the design (phase 7); keep the switch off on a production laboratory until it is in.
 
 ## 6. Uninstall
 

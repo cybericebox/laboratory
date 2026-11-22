@@ -5,9 +5,6 @@
 package consolespec
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -156,14 +153,8 @@ func KeeperSpec(d *laboratoryv1alpha1.DeviceSpec) portkeeper.Spec {
 }
 
 // Marshal is the JSON of a port list, the value of the pod annotation names.AnnotationPortsSpec and the file the keeper reads.
-func Marshal(s portkeeper.Spec) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
+func Marshal(s portkeeper.Spec) string { return string(portkeeper.Marshal(s)) }
 
 // PortsHash is the label value names.LabelPorts of a port list: the first 32 hex characters of the SHA-256 of its JSON. The device
 // access service trusts sandbox labels only, so it checks a port name against the list whose digest this is, without the Kubernetes API.
-func PortsHash(s portkeeper.Spec) string {
-	sum := sha256.Sum256([]byte(Marshal(s)))
-	return hex.EncodeToString(sum[:])[:32]
-}
+func PortsHash(s portkeeper.Spec) string { return portkeeper.Hash(s) }

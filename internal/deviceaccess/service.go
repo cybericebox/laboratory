@@ -83,6 +83,9 @@ type Config struct {
 	Log    logr.Logger
 	// Tap, when set, sees every byte of a console in both directions (see stream.pass). Nothing sets it today.
 	Tap Tap
+	// CableKey is the key of the cable stream between the device access services (chart consoleCables). Nil: no cable stream is
+	// accepted or dialled; lines with both ends on this node still work.
+	CableKey *CableKey
 }
 
 // Service serves consoles.
@@ -95,6 +98,8 @@ type Service struct {
 	m       *metrics
 	reg     *prometheus.Registry
 	counter limiter
+	cable   *cableAuth
+	lines   *lineSet
 
 	mu       sync.Mutex
 	stopping bool
@@ -107,6 +112,8 @@ func New(c Config) *Service {
 	reg := prometheus.NewRegistry()
 	s := &Service{rt: c.Runtime, auth: c.Auth, lim: c.Limits.withDefaults(), log: c.Log, tap: c.Tap, reg: reg, m: newMetrics(reg), active: map[*stream]struct{}{}}
 	s.counter = limiter{perClient: map[string]int{}, perLab: map[string]int{}}
+	s.cable = &cableAuth{key: c.CableKey, nonces: newNonceCache(maxNonces), now: time.Now}
+	s.lines = &lineSet{svc: s, lines: map[string]*line{}}
 	return s
 }
 
@@ -157,6 +164,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		st.stop(wire.ReasonShutdown)
 	}
 	s.mu.Unlock()
+	s.lines.stopAll()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {

@@ -67,3 +67,9 @@ func peerIs(uid, gid int) PeerCheck {
 		return nil
 	}
 }
+
+// ListenCable makes cable.sock, the socket of the node-agent of this node (it sets the console lines of the node, see lines.go): the same
+// rules as the checker socket, mode 0660 for group gid, and a peer that is not user peerUID with primary group gid is closed at once.
+func ListenCable(path string, gid, peerUID int) (net.Listener, error) {
+	return ListenChecker(path, gid, peerUID)
+}

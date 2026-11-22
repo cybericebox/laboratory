@@ -46,7 +46,8 @@ func TestAttach(t *testing.T) {
 	}
 	eventually(t, "the bytes on the line", func() bool { return end.input() == "enable\n" })
 	go func() { _, _ = end.pw.Write([]byte("r1#")) }()
-	eventually(t, "the line output", func() bool { return out.String() == "r1#" })
+	// the first byte on stdout says the line is attached (the device access service waits for it), then the bytes of the line
+	eventually(t, "the line output", func() bool { return out.String() == string([]byte{AttachOK})+"r1#" })
 	if started != 1 {
 		t.Fatalf("the keeper was started %d times", started)
 	}

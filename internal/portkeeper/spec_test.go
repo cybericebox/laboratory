@@ -70,3 +70,21 @@ func TestParseRefusesUnknownKeysAndDefaults(t *testing.T) {
 		t.Fatal("socket path")
 	}
 }
+
+// Hash is the digest the operator stamps on the pod (names.LabelPorts): stable for the same list, different for another one, and the
+// lookups name a port only with the kind it has.
+func TestHashAndLookups(t *testing.T) {
+	s := Spec{Console: []ConsolePort{{Name: "console0"}}, Serial: []SerialPort{{Name: "serial0", Path: "/dev/ttyCON0"}}}
+	h := Hash(s)
+	if len(h) != 32 || Hash(s) != h {
+		t.Fatalf("hash %q", h)
+	}
+	other := s
+	other.Serial = []SerialPort{{Name: "serial1", Path: "/dev/ttyCON1"}}
+	if Hash(other) == h {
+		t.Fatal("another list must have another hash")
+	}
+	if !s.HasConsole("console0") || s.HasConsole("serial0") || !s.HasSerial("serial0") || s.HasSerial("console0") {
+		t.Fatal("lookups by kind")
+	}
+}
