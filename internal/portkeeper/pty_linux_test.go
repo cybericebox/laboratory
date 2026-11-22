@@ -144,8 +144,10 @@ func runKeeper(t *testing.T, spec Spec, stdio *os.File) (string, context.CancelF
 	return sockets, cancel
 }
 
-// A console program gets descriptors 0, 1 and 2 only: the stdio master of the service (descriptor 3 from the launcher, inherited without
-// close-on-exec) never reaches it.
+// The stdio master of the service (descriptor 3 from the launcher, inherited without close-on-exec) never reaches a console program. The
+// test compares by identity: no descriptor of the program is the master (here a pipe that stands for it, matched by its inode) or a PTY
+// master (/dev/ptmx). Other descriptors the test process inherited from its own environment (a CI runner's pipes) are not the keeper's
+// and are not judged.
 func TestConsoleProgramGetsNoOtherDescriptor(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -155,6 +157,11 @@ func TestConsoleProgramGetsNoOtherDescriptor(t *testing.T) {
 	if _, err := unix.FcntlInt(w.Fd(), unix.F_SETFD, 0); err != nil { // as inherited from the launcher
 		t.Fatal(err)
 	}
+	var st unix.Stat_t
+	if err := unix.Fstat(int(w.Fd()), &st); err != nil { //nolint:gosec // a file descriptor fits an int
+		t.Fatal(err)
+	}
+	master := fmt.Sprintf("pipe:[%d]", st.Ino)
 	spec := Spec{Console: []ConsolePort{{Name: "console0", Native: NativeStdio}, {Name: "aux0", Command: []string{"/bin/ls", "-l", "/proc/self/fd/"}}}}
 	sockets, _ := runKeeper(t, spec, w)
 	c := dialAttached(t, SocketPath(sockets, "aux0"))
@@ -170,14 +177,13 @@ func TestConsoleProgramGetsNoOtherDescriptor(t *testing.T) {
 		}
 	}
 	listing := out.String()
-	if strings.Contains(listing, "pipe:") {
-		t.Fatalf("the console program inherited the stdio master:\n%s", listing)
-	}
 	for _, line := range strings.Split(listing, "\n") {
-		if f := strings.Fields(line); len(f) > 2 && f[len(f)-2] == "->" {
-			if n, _ := strconv.Atoi(f[len(f)-3]); n > 2 && !strings.HasPrefix(f[len(f)-1], "/proc/") {
-				t.Fatalf("descriptor %d reached the console program: %s", n, line)
-			}
+		f := strings.Fields(line)
+		if len(f) < 3 || f[len(f)-2] != "->" {
+			continue
+		}
+		if target := strings.Trim(f[len(f)-1], "'\r"); target == master || target == "/dev/ptmx" || target == "/dev/pts/ptmx" {
+			t.Fatalf("descriptor %s of the console program is the stdio master (%s):\n%s", f[len(f)-3], target, listing)
 		}
 	}
 }
