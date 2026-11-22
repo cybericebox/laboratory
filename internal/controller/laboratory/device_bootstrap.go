@@ -13,10 +13,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/consolespec"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/labchecks"
 	"github.com/cybericebox/laboratory/internal/launcher"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/portkeeper"
 )
 
 // Device bootstrap, the controller side (the launcher is package internal/launcher; docs/specs/lab-checks-bootstrap-contract.md).
@@ -74,7 +76,8 @@ func launchModeFor(d *laboratoryv1alpha1.Device, plan podPlan) launchMode {
 	switch {
 	case bootstrapEnabled(d) && !plan.Restored:
 		return launchRun
-	case bootstrapEnabled(d) || len(serviceArgv(d)) > 0:
+	case bootstrapEnabled(d) || len(serviceArgv(d)) > 0 || d.Spec.HasPorts():
+		// A device with console or serial ports always starts through the launcher: it starts the port keeper.
 		return launchSkip
 	}
 	return launchNone
@@ -88,6 +91,15 @@ func (e *errBootstrapRefused) Error() string { return "bootstrap refused: " + e.
 // refuseUnbootstrappable fails closed when the controller cannot start the device the way its spec asks: a bootstrap with
 // no known service command (nothing to run afterwards), or no launcher image (the node image that carries the program).
 func (r *DeviceReconciler) refuseUnbootstrappable(device *laboratoryv1alpha1.Device) error {
+	if device.Spec.HasPorts() && device.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+		// Defence in depth (the agent and the lab validation refuse this): the port keeper is started by the launcher.
+		switch {
+		case device.Spec.Service == nil || len(serviceArgv(device)) == 0 || device.Spec.Service.User == "":
+			return &errBootstrapRefused{reason: "the device has console or serial ports, so it starts through the launcher, and it needs a service command and its user"}
+		case r.NetConfigImage == "":
+			return &errBootstrapRefused{reason: "the device has console or serial ports, and this laboratory has no node image to start the launcher from"}
+		}
+	}
 	if !bootstrapEnabled(device) {
 		return nil
 	}
@@ -163,6 +175,10 @@ func (r *DeviceReconciler) withLauncher(device *laboratoryv1alpha1.Device, spec 
 	} else if bootstrapEnabled(device) {
 		annotations[names.AnnotationBootstrap] = names.BootstrapSkip
 	}
+	if device.Spec.HasPorts() {
+		r.withPortKeeper(device, spec, annotations)
+		cmd = append(cmd, "-ports", portkeeper.SpecPath)
+	}
 	if device.Spec.Service.User != "" {
 		cmd = append(cmd, "-user", device.Spec.Service.User)
 	}
@@ -225,6 +241,35 @@ func (r *DeviceReconciler) withLauncher(device *laboratoryv1alpha1.Device, spec 
 		SuccessThreshold: 1,
 		FailureThreshold: bootstrapStartupFailureThreshold,
 	}
+}
+
+// portSocketsSize is the memory volume of the keeper's sockets (a unix socket takes no space; the limit only bounds what root in the
+// device could write there).
+var portSocketsSize = resource.MustParse("1Mi")
+
+// withPortKeeper gives the device container its port list and the directory of the keeper's sockets. The list is the pod annotation
+// names.AnnotationPortsSpec, read through a downward API volume (not secret, so no Secret and no init container); the sockets live in a
+// memory emptyDir that only the keeper and the device access service's attach (both root in the device) use. Nothing here adds a
+// capability, a device node or a host path.
+func (r *DeviceReconciler) withPortKeeper(device *laboratoryv1alpha1.Device, spec *corev1.PodSpec, annotations map[string]string) {
+	annotations[names.AnnotationPortsSpec] = consolespec.Marshal(consolespec.KeeperSpec(&device.Spec))
+	spec.Volumes = append(spec.Volumes,
+		corev1.Volume{Name: names.PortsSpecVolume, VolumeSource: corev1.VolumeSource{DownwardAPI: &corev1.DownwardAPIVolumeSource{
+			DefaultMode: ptrInt32(0o444),
+			Items: []corev1.DownwardAPIVolumeFile{{
+				Path:     portkeeper.SpecFile,
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.annotations['" + names.AnnotationPortsSpec + "']"},
+			}},
+		}}},
+		corev1.Volume{Name: names.PortsSocketVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium: corev1.StorageMediumMemory, SizeLimit: ptrQuantity(portSocketsSize.DeepCopy()),
+		}}},
+	)
+	c := &spec.Containers[0]
+	c.VolumeMounts = append(c.VolumeMounts,
+		corev1.VolumeMount{Name: names.PortsSpecVolume, MountPath: portkeeper.SpecDir, ReadOnly: true},
+		corev1.VolumeMount{Name: names.PortsSocketVolume, MountPath: portkeeper.SocketDir},
+	)
 }
 
 // ensureProbeInstall adds the emptyDir with the in-device program, the init container that fills it and the read-only mount

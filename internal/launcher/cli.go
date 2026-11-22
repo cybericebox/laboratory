@@ -13,7 +13,7 @@ import (
 
 // Main is the "launch" command of the in-device program:
 //
-//	probe launch [-bootstrap] [-attempt N] [-dir D] [-user U] [-workdir W] -- COMMAND [ARGS...]
+//	probe launch [-bootstrap] [-attempt N] [-dir D] [-ports F] [-user U] [-workdir W] -- COMMAND [ARGS...]
 //
 // It returns an exit code only when the service did not start.
 func Main(args []string, stderr io.Writer) int {
@@ -25,6 +25,7 @@ func Main(args []string, stderr io.Writer) int {
 	fs.StringVar(&cfg.Dir, "dir", names.BootstrapDir, "directory with the bootstrap list")
 	fs.StringVar(&cfg.User, "user", "", "service user (name, uid, name:group, uid:gid); empty is root")
 	fs.StringVar(&cfg.WorkDir, "workdir", "", "working directory of the service")
+	fs.StringVar(&cfg.Ports, "ports", "", "port list of the device (portkeeper.SpecPath): start the port keeper before the service")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}

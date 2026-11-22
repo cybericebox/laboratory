@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/consolespec"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -551,6 +552,11 @@ func (r *DeviceReconciler) workloadTemplateFor(device *laboratoryv1alpha1.Device
 	if enabled, command, user := device.TerminalSettings(); enabled {
 		labels[names.LabelTerminal] = valueTrue
 		labels[names.LabelTerminalSpec] = names.TerminalSpecHash(command, user)
+	}
+	// The device access service attaches a console line only to a port of the list whose digest is this label (it reads sandbox labels
+	// only, never the Kubernetes API).
+	if device.Spec.HasPorts() {
+		labels[names.LabelPorts] = consolespec.PortsHash(consolespec.KeeperSpec(&device.Spec))
 	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods

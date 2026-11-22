@@ -155,7 +155,7 @@ func Run() {
 	if dc, err := discovery.NewDiscoveryClientForConfig(restCfg); err != nil {
 		setupLog.Error(err, "unable to build the discovery client")
 		os.Exit(1)
-	} else if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(dc), 60*time.Second, func(err error) { setupLog.Info("waiting for the CRDs", "reason", err.Error()) }); err != nil {
+	} else if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(dc), 60*time.Second, func(err error) { setupLog.Info("waiting for the CRDs", "reason", err.Error()) }, crdcheck.ConsoleCables(cfg.ConsoleCablesEnabled)); err != nil {
 		setupLog.Error(err, "the CRDs are older than this release")
 		os.Exit(1)
 	}

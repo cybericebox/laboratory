@@ -40,6 +40,8 @@ type Config struct {
 	User string
 	// WorkDir is the working directory of the service; empty keeps "/".
 	WorkDir string
+	// Ports is the port list of the device (portkeeper.SpecPath); empty: the device has no console or serial port.
+	Ports string
 	// Command is the service: program and arguments.
 	Command []string
 	// TerminationLog is where the termination message goes; empty is DefaultTerminationLog.

@@ -173,6 +173,7 @@ rules:
 - apiGroups:
   - laboratory.cybericebox.com
   resources:
+  - consolecables
   - imagepulls
   verbs:
   - create
