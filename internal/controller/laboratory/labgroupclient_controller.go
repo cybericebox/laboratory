@@ -13,7 +13,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -175,7 +174,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 	// Requeue softly until LabGroup endpoint/server pubkey land so the wg.conf
 	// gets refreshed without depending solely on the cross-resource watch.
 	if serverPubKey == "" || endpoint == "" {
-		if labstatus.IsReady(lgc.Status.Conditions) || len(lgc.Status.Conditions) == 0 {
+		if labstatus.IsReady(lgc.Status.Conditions) || len(lgc.Status.Conditions) == 0 || readyReason(lgc) == labstatus.ReasonVPNPoolExhausted {
 			labstatus.SetReady(
 				&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonWaitingForVPNServer,
 				"waiting for parent LabGroup VPN endpoint/public key",
@@ -206,15 +205,23 @@ const poolExhaustedRetry = time.Minute
 // entered) and asks for a slow retry instead of an error, which would requeue with backoff forever and show nothing on the object.
 func (r *LabGroupClientReconciler) poolExhausted(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient, cause error) ctrl.Result {
 	msg := fmt.Sprintf("no VPN address left for this client: %v; an address comes free a while after a client of the group is deleted", cause)
-	ready := meta.FindStatusCondition(lgc.Status.Conditions, labstatus.ConditionReady)
-	if ready == nil || ready.Reason != labstatus.ReasonVPNPoolExhausted || ready.Status != metav1.ConditionFalse {
+	if readyReason(lgc) != labstatus.ReasonVPNPoolExhausted || labstatus.IsReady(lgc.Status.Conditions) {
 		labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonVPNPoolExhausted, msg)
 		if err := r.Status().Update(ctx, lgc); err != nil {
-			ctrl.LoggerFrom(ctx).V(1).Info("status update of a client without a VPN address failed", "reason", err.Error())
+			ctrl.LoggerFrom(ctx).Info("status update of a client without a VPN address failed", "reason", err.Error())
+			return ctrl.Result{RequeueAfter: poolExhaustedRetry}
 		}
 		r.Recorder.Event(lgc, corev1.EventTypeWarning, labstatus.ReasonVPNPoolExhausted, msg)
 	}
 	return ctrl.Result{RequeueAfter: poolExhaustedRetry}
+}
+
+// readyReason is the reason of the Ready condition ("" without one).
+func readyReason(lgc *laboratoryv1alpha1.LabGroupClient) string {
+	if c := meta.FindStatusCondition(lgc.Status.Conditions, labstatus.ConditionReady); c != nil {
+		return c.Reason
+	}
+	return ""
 }
 
 func (r *LabGroupClientReconciler) reconcileDelete(
