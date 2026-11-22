@@ -25,6 +25,8 @@ import (
 type Interface interface {
 	// Connections returns a ConnectionInformer.
 	Connections() TypedConnectionInformer
+	// ConsoleCables returns a ConsoleCableInformer.
+	ConsoleCables() TypedConsoleCableInformer
 	// Devices returns a DeviceInformer.
 	Devices() TypedDeviceInformer
 	// Labs returns a LabInformer.
@@ -67,6 +69,11 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // Connections returns a TypedConnectionInformer.
 func (v *version) Connections() TypedConnectionInformer {
 	return &connectionInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// ConsoleCables returns a TypedConsoleCableInformer.
+func (v *version) ConsoleCables() TypedConsoleCableInformer {
+	return &consoleCableInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // Devices returns a TypedDeviceInformer.

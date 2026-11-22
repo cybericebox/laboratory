@@ -41,7 +41,9 @@ type LabStatusApplyConfiguration struct {
 	// only: the admission policy lets the lab checker of a node write the results of a lab only when its own node is listed here.
 	DeviceNodes []string                          `json:"deviceNodes,omitempty"`
 	Connections []ConnectionRefApplyConfiguration `json:"connections,omitempty"`
-	Access      []AccessEntryApplyConfiguration   `json:"access,omitempty"`
+	// ConsoleCables summarises the ConsoleCable objects of the lab (one entry per cable of spec.consoleCables that exists).
+	ConsoleCables []ConsoleCableRefApplyConfiguration `json:"consoleCables,omitempty"`
+	Access        []AccessEntryApplyConfiguration     `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
 	// ImageCache records whether this lab pulls its images through the platform
@@ -172,6 +174,19 @@ func (b *LabStatusApplyConfiguration) WithConnections(values ...*ConnectionRefAp
 			panic("nil value passed to WithConnections")
 		}
 		b.Connections = append(b.Connections, *values[i])
+	}
+	return b
+}
+
+// WithConsoleCables adds the given value to the ConsoleCables field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ConsoleCables field.
+func (b *LabStatusApplyConfiguration) WithConsoleCables(values ...*ConsoleCableRefApplyConfiguration) *LabStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConsoleCables")
+		}
+		b.ConsoleCables = append(b.ConsoleCables, *values[i])
 	}
 	return b
 }

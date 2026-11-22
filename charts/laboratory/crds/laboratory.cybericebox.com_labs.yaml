@@ -102,6 +102,68 @@ spec:
                   - endpoints
                   type: object
                 type: array
+              consoleCables:
+                description: |-
+                  ConsoleCables join a serial port of one device to a console port of another. They are not connections: a cable never reaches the
+                  lab network (Open vSwitch, a VNI). At most names.MaxConsoleCablesPerLab. Needs the chart's consoleCables.enabled.
+                items:
+                  description: 'ConsoleCableTemplate is an entry of Lab.spec.consoleCables:
+                    one serial end, one console end, on two devices.'
+                  properties:
+                    console:
+                      description: PortRef names one port of one device of the same
+                        Lab.
+                      properties:
+                        device:
+                          description: Device is the name of a device of the lab (DeviceTemplate.name).
+                          maxLength: 35
+                          minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                          type: string
+                        port:
+                          description: Port is the name of a console port or a serial
+                            port of that device.
+                          maxLength: 9
+                          pattern: ^(serial|console|aux)(0|[1-9][0-9]?)$
+                          type: string
+                      required:
+                      - device
+                      - port
+                      type: object
+                    serial:
+                      description: PortRef names one port of one device of the same
+                        Lab.
+                      properties:
+                        device:
+                          description: Device is the name of a device of the lab (DeviceTemplate.name).
+                          maxLength: 35
+                          minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                          type: string
+                        port:
+                          description: Port is the name of a console port or a serial
+                            port of that device.
+                          maxLength: 9
+                          pattern: ^(serial|console|aux)(0|[1-9][0-9]?)$
+                          type: string
+                      required:
+                      - device
+                      - port
+                      type: object
+                  required:
+                  - console
+                  - serial
+                  type: object
+                  x-kubernetes-validations:
+                  - message: the serial end names a serial port
+                    rule: self.serial.port.startsWith('serial')
+                  - message: the console end names a console port
+                    rule: '!self.console.port.startsWith(''serial'')'
+                  - message: the two ends of a console cable are on two different
+                      devices
+                    rule: self.serial.device != self.console.device
+                maxItems: 64
+                type: array
               devices:
                 description: Devices of the lab, switches and hubs included. The ceiling
                   is fixed in code (names.MaxLabDevices).
@@ -184,6 +246,83 @@ spec:
                             done.'
                           type: boolean
                       type: object
+                    consolePorts:
+                      description: |-
+                        ConsolePorts are the management lines of the device (console0, aux0): a program runs on each, or the device's own console is
+                        bridged to it (native). At most names.MaxConsolePorts; container devices only; set once, never changed.
+                      items:
+                        description: ConsolePortSpec is a management line of a device.
+                          At most one of Command and Native; neither means the default
+                          command (/bin/login).
+                        properties:
+                          command:
+                            description: |-
+                              Command runs on the line, respawned when it ends; empty means /bin/login. The same rules as the terminal command: an absolute program
+                              path outside /proc and /sys, at most 32 arguments of at most 4096 bytes.
+                            items:
+                              maxLength: 4096
+                              type: string
+                            maxItems: 32
+                            type: array
+                          name:
+                            description: Name is console<n> or aux<n>, n from 0 to
+                              99. Port names and interface names share one space per
+                              device.
+                            maxLength: 9
+                            pattern: ^(console|aux)(0|[1-9][0-9]?)$
+                            type: string
+                          native:
+                            description: Native says where the device already puts
+                              its console (an emulator); the keeper bridges it to
+                              the line instead of running a command.
+                            properties:
+                              kind:
+                                description: |-
+                                  Kind is stdio (the service's own terminal) or tcp (a port on the device's loopback). vm-serial (NativeConsoleVMSerial) is reserved
+                                  with the vm profile and not in the enum yet, like the profile itself.
+                                enum:
+                                - stdio
+                                - tcp
+                                type: string
+                              port:
+                                description: Port on 127.0.0.1 inside the device (tcp
+                                  only).
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - kind
+                            type: object
+                            x-kubernetes-validations:
+                            - message: tcp needs a port
+                              rule: self.kind != 'tcp' || (has(self.port) && self.port
+                                > 0)
+                            - message: only a tcp console has a port
+                              rule: self.kind == 'tcp' || !has(self.port)
+                          user:
+                            description: User of the command; empty means root (login
+                              needs root).
+                            maxLength: 128
+                            type: string
+                        required:
+                        - name
+                        type: object
+                        x-kubernetes-validations:
+                        - message: a console port takes a command (with a user) or
+                            a native source, not both
+                          rule: '!has(self.native) || ((!has(self.command) || size(self.command)
+                            == 0) && !has(self.user))'
+                        - message: the console command starts with an absolute program
+                            path outside /proc and /sys
+                          rule: '!has(self.command) || size(self.command) == 0 ||
+                            (self.command[0].startsWith(''/'') && !self.command[0].startsWith(''/proc/'')
+                            && !self.command[0].startsWith(''/sys/''))'
+                      maxItems: 4
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     image:
                       type: string
                     interfaces:
@@ -403,6 +542,34 @@ spec:
                       - standard
                       - extended
                       type: string
+                    serialPorts:
+                      description: |-
+                        SerialPorts are the terminal lines of the device, character devices inside it (/dev/ttyCON<n>). At most names.MaxSerialPorts;
+                        container devices only; set once, never changed.
+                      items:
+                        description: SerialPortSpec is a terminal line of a connector
+                          device.
+                        properties:
+                          name:
+                            description: Name is serial<n>, n from 0 to 99.
+                            maxLength: 8
+                            pattern: ^serial(0|[1-9][0-9]?)$
+                            type: string
+                          path:
+                            description: |-
+                              Path of the character device inside the device; empty means /dev/ttyCON<n>, n the number of the name. /dev/tty, /dev/console and
+                              /dev/ptmx are never a path (the pattern refuses them).
+                            maxLength: 24
+                            pattern: ^/dev/tty[A-Z][A-Za-z0-9]{0,14}$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     service:
                       description: |-
                         Service is the service command of a container device, set by the platform from the image configuration. Empty fields
@@ -456,6 +623,9 @@ spec:
                   - message: only a container device has a profile
                     rule: '!has(self.profile) || self.profile == ''container'' ||
                       self.type == ''container'''
+                  - message: only a container device has console and serial ports
+                    rule: self.type == 'container' || (!has(self.consolePorts) &&
+                      !has(self.serialPorts))
                 maxItems: 64
                 type: array
               gateways:
@@ -740,6 +910,67 @@ spec:
                       type: boolean
                   required:
                   - name
+                  type: object
+                type: array
+              consoleCables:
+                description: ConsoleCables summarises the ConsoleCable objects of
+                  the lab (one entry per cable of spec.consoleCables that exists).
+                items:
+                  description: ConsoleCableRef summarises a ConsoleCable in the status
+                    of its Lab.
+                  properties:
+                    console:
+                      description: PortRef names one port of one device of the same
+                        Lab.
+                      properties:
+                        device:
+                          description: Device is the name of a device of the lab (DeviceTemplate.name).
+                          maxLength: 35
+                          minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                          type: string
+                        port:
+                          description: Port is the name of a console port or a serial
+                            port of that device.
+                          maxLength: 9
+                          pattern: ^(serial|console|aux)(0|[1-9][0-9]?)$
+                          type: string
+                      required:
+                      - device
+                      - port
+                      type: object
+                    lineUp:
+                      type: boolean
+                    name:
+                      type: string
+                    reason:
+                      description: Reason is the reason of the cable's Ready condition
+                        while the line is down.
+                      type: string
+                    serial:
+                      description: PortRef names one port of one device of the same
+                        Lab.
+                      properties:
+                        device:
+                          description: Device is the name of a device of the lab (DeviceTemplate.name).
+                          maxLength: 35
+                          minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                          type: string
+                        port:
+                          description: Port is the name of a console port or a serial
+                            port of that device.
+                          maxLength: 9
+                          pattern: ^(serial|console|aux)(0|[1-9][0-9]?)$
+                          type: string
+                      required:
+                      - device
+                      - port
+                      type: object
+                  required:
+                  - console
+                  - name
+                  - serial
                   type: object
                 type: array
               deviceNodes:

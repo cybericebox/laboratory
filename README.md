@@ -106,6 +106,7 @@ Everything is a Kubernetes custom resource in the API group `laboratory.cyberice
 | `Lab` | One task instance: its devices, connections, gateways and checks |
 | `Device` | A machine, a switch or a hub of a lab |
 | `Connection` | A cable between two ports |
+| `ConsoleCable` | A console line between a serial port of one device and a console port of another; never part of the lab network |
 | `LabGroupClient` | One WireGuard peer of a person in a group. The operator generates its keys and a ready client config |
 | `LabGroupAccessPolicy` | Who in the group may reach what |
 | `Reservation` | Room held ahead of time for labs that will start later |
@@ -381,6 +382,7 @@ created with `kubectl`.
 | `proxy.enabled`, `proxy.l7.enabled` | on | No browser access of any kind | `ACCESS_UNAVAILABLE` |
 | `terminal.enabled` | off | No browser console | `ACCESS_UNAVAILABLE` |
 | `checks.enabled` | off | No checks; labs that declare checks are refused | `CHECKS_UNAVAILABLE` |
+| `consoleCables.enabled` | off | No console lines; labs with console or serial ports or console cables are refused | `CONSOLE_CABLES_UNAVAILABLE` |
 | `scheduler.enabled` | on | Every pod starts as soon as it exists | - |
 
 A backend reads the current state with `GetFeatures` before it offers a feature to its users.

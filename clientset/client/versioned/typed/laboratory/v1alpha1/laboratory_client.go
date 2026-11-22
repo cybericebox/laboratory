@@ -28,6 +28,7 @@ import (
 type LaboratoryV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	ConnectionsGetter
+	ConsoleCablesGetter
 	DevicesGetter
 	LabsGetter
 	LabActivityReportsGetter
@@ -50,6 +51,10 @@ type LaboratoryV1alpha1Client struct {
 
 func (c *LaboratoryV1alpha1Client) Connections(namespace string) ConnectionInterface {
 	return newConnections(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) ConsoleCables(namespace string) ConsoleCableInterface {
+	return newConsoleCables(c, namespace)
 }
 
 func (c *LaboratoryV1alpha1Client) Devices(namespace string) DeviceInterface {

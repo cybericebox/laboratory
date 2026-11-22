@@ -32,6 +32,9 @@ type LabSpecApplyConfiguration struct {
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
+	// ConsoleCables join a serial port of one device to a console port of another. They are not connections: a cable never reaches the
+	// lab network (Open vSwitch, a VNI). At most names.MaxConsoleCablesPerLab. Needs the chart's consoleCables.enabled.
+	ConsoleCables []ConsoleCableTemplateApplyConfiguration `json:"consoleCables,omitempty"`
 	// ImagePullSecret says that this lab brought pull credentials for its private images. The Secret
 	// (kubernetes.io/dockerconfigjson) is in the namespace laboratory-upstream, where only the registry gate reads it, and
 	// its name is computed from the namespace and the name of the lab; no pod references it. Only the management
@@ -92,6 +95,19 @@ func (b *LabSpecApplyConfiguration) WithConnections(values ...*ConnectionTemplat
 			panic("nil value passed to WithConnections")
 		}
 		b.Connections = append(b.Connections, *values[i])
+	}
+	return b
+}
+
+// WithConsoleCables adds the given value to the ConsoleCables field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ConsoleCables field.
+func (b *LabSpecApplyConfiguration) WithConsoleCables(values ...*ConsoleCableTemplateApplyConfiguration) *LabSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConsoleCables")
+		}
+		b.ConsoleCables = append(b.ConsoleCables, *values[i])
 	}
 	return b
 }

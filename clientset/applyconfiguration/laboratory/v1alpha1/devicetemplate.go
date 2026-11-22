@@ -41,6 +41,12 @@ type DeviceTemplateApplyConfiguration struct {
 	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
 	// and rdp. At most one entry per kind.
 	Access []DeviceAccessApplyConfiguration `json:"access,omitempty"`
+	// ConsolePorts are the management lines of the device (console0, aux0): a program runs on each, or the device's own console is
+	// bridged to it (native). At most names.MaxConsolePorts; container devices only; set once, never changed.
+	ConsolePorts []ConsolePortSpecApplyConfiguration `json:"consolePorts,omitempty"`
+	// SerialPorts are the terminal lines of the device, character devices inside it (/dev/ttyCON<n>). At most names.MaxSerialPorts;
+	// container devices only; set once, never changed.
+	SerialPorts []SerialPortSpecApplyConfiguration `json:"serialPorts,omitempty"`
 	// Internet is the device's reach to the public internet: allow (the default when empty; the device uses an Internet gateway when it
 	// shares a broadcast domain with one) or deny. A device with deny must not share a broadcast domain with an Internet gateway: the lab
 	// is refused otherwise (InternetDeniedDeviceOnInternetNetwork), so the guarantee never depends on an address or a firewall rule. It is
@@ -131,6 +137,32 @@ func (b *DeviceTemplateApplyConfiguration) WithAccess(values ...*DeviceAccessApp
 			panic("nil value passed to WithAccess")
 		}
 		b.Access = append(b.Access, *values[i])
+	}
+	return b
+}
+
+// WithConsolePorts adds the given value to the ConsolePorts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ConsolePorts field.
+func (b *DeviceTemplateApplyConfiguration) WithConsolePorts(values ...*ConsolePortSpecApplyConfiguration) *DeviceTemplateApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConsolePorts")
+		}
+		b.ConsolePorts = append(b.ConsolePorts, *values[i])
+	}
+	return b
+}
+
+// WithSerialPorts adds the given value to the SerialPorts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the SerialPorts field.
+func (b *DeviceTemplateApplyConfiguration) WithSerialPorts(values ...*SerialPortSpecApplyConfiguration) *DeviceTemplateApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithSerialPorts")
+		}
+		b.SerialPorts = append(b.SerialPorts, *values[i])
 	}
 	return b
 }

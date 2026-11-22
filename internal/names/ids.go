@@ -21,6 +21,15 @@ const (
 	// thousands of direct connections.
 	MaxContainerInterfaces = 16
 	MaxSwitchPorts         = 48
+	// MaxConsolePorts and MaxSerialPorts are the most console ports (console<n>, aux<n>) and serial ports (serial<n>) of one container
+	// device; the CRD carries the same numbers. A connector device needs one serial port per cable, so the serial cap is the NIC cap.
+	MaxConsolePorts = 4
+	MaxSerialPorts  = 16
+	// MaxConsoleCablesPerLab is the most console cables of one lab: the device ceiling (the CRD carries the same number).
+	MaxConsoleCablesPerLab = MaxLabDevices
+	// ConsoleLineMaxBytesPerSecond caps one console line per direction (a real 115200-baud line is about 11 KiB/s), so a cable is never
+	// a bulk path through a node.
+	ConsoleLineMaxBytesPerSecond = 64 << 10
 	// MaxDeployAfter is the most deploy_after keys of one object.
 	MaxDeployAfter = 32
 

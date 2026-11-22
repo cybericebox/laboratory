@@ -5,7 +5,7 @@ no management agent at all). The same rule is made by the agent (early, with a s
 fails validation); see DEPLOY.md, "Feature switches".
 
  1. Cluster switches (vpn.enabled, inetGateway.enabled, proxy.enabled with terminal.enabled, proxy.rdp.enabled, proxy.vnc.enabled,
-    checks.enabled) are rendered into the policy: a validation exists only for a feature that is OFF.
+    checks.enabled, consoleCables.enabled) are rendered into the policy: a validation exists only for a feature that is OFF.
  2. The switches of a LabGroup (spec.vpn.enabled, spec.gateway.enabled) reach the policies as labels of the group's namespace, which the
     operator copies and only the operator may set (laboratory-group-namespace-label). A lab, a client or a policy lives in that namespace.
 
@@ -42,7 +42,14 @@ spec:
       expression: "object.spec.?devices.orValue([]).map(d, d.?access.orValue([]).map(a, a.kind)).flatten()"
     - name: labels
       expression: "namespaceObject.metadata.?labels.orValue({})"
+    - name: consoleLines
+      expression: "object.spec.?consoleCables.orValue([]).size() > 0 || object.spec.?devices.orValue([]).exists(d, d.?consolePorts.orValue([]).size() > 0 || d.?serialPorts.orValue([]).size() > 0)"
   validations:
+    {{- if not .Values.consoleCables.enabled }}
+    - expression: "variables.settled || !variables.consoleLines"
+      message: "CONSOLE_CABLES_UNAVAILABLE: the lab has console or serial ports or console cables but this laboratory does not serve console lines (consoleCables.enabled is off)"
+      reason: Forbidden
+    {{- end }}
     {{- if not $vpn }}
     - expression: "variables.settled || !variables.gateways.exists(g, g.kind == 'vpn')"
       message: "VPN_UNAVAILABLE: the lab has a VPN gateway but this laboratory runs no VPN (vpn.enabled is off)"

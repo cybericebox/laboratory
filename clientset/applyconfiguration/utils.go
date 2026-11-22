@@ -69,6 +69,20 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.ConnectionStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConnectionTemplate"):
 		return &applyconfigurationlaboratoryv1alpha1.ConnectionTemplateApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsoleCable"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsoleCableApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsoleCableEndStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsoleCableEndStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsoleCableRef"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsoleCableRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsoleCableSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsoleCableSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsoleCableStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsoleCableStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsoleCableTemplate"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsoleCableTemplateApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ConsolePortSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.ConsolePortSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Device"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceAccess"):
@@ -221,6 +235,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.MaintenanceWindowSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NamedPodSchedule"):
 		return &applyconfigurationlaboratoryv1alpha1.NamedPodScheduleApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NativeConsoleSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.NativeConsoleSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkIPRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkIPRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkSubnetRef"):
@@ -237,6 +253,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):
 		return &applyconfigurationlaboratoryv1alpha1.PodScheduleApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PortRef"):
+		return &applyconfigurationlaboratoryv1alpha1.PortRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Reservation"):
 		return &applyconfigurationlaboratoryv1alpha1.ReservationApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ReservationSpec"):
@@ -253,6 +271,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.RuntimeAllocationApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("SchedulingStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.SchedulingStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("SerialPortSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.SerialPortSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Tenant"):
 		return &applyconfigurationlaboratoryv1alpha1.TenantApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantEnrollment"):

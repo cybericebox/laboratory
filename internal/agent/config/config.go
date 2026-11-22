@@ -130,6 +130,9 @@ type Config struct {
 	// ActivityReports is the chart's activityReports.enabled (off by default): raw activity facts for the platform, see GetLabGroupActivity.
 	ActivityReports bool `env:"ACTIVITY_REPORTS" envDefault:"false"`
 	TerminalEnabled bool `env:"TERMINAL_ENABLED" envDefault:"false"`
+	// ConsoleCablesEnabled is the chart's consoleCables.enabled (off by default): devices may declare console and serial ports and a lab
+	// may have console cables; a lab with them is refused while it is off (CONSOLE_CABLES_UNAVAILABLE).
+	ConsoleCablesEnabled bool `env:"CONSOLE_CABLES_ENABLED" envDefault:"false"`
 	// The feature switches of the laboratory (chart vpn.enabled, inetGateway.enabled, proxy.enabled with proxy.rdp.enabled and
 	// proxy.vnc.enabled), the same variables the operator reads: what a Lab may ask for, reported in GetFeatures.
 	VPNEnabled      bool `env:"VPN_ENABLED" envDefault:"true"`
@@ -308,5 +311,5 @@ func (c *Config) ValidateLifecycle() error {
 
 // Switches is what the laboratory serves, from the chart (package switches).
 func (c *Config) Switches() switches.Cluster {
-	return switches.Cluster{VPN: c.VPNEnabled, Internet: c.InternetEnabled, L7: c.ProxyL7Enabled, Terminal: c.TerminalEnabled, RDP: c.ProxyRDPEnabled, VNC: c.ProxyVNCEnabled, Checks: c.ChecksEnabled}
+	return switches.Cluster{VPN: c.VPNEnabled, Internet: c.InternetEnabled, L7: c.ProxyL7Enabled, Terminal: c.TerminalEnabled, RDP: c.ProxyRDPEnabled, VNC: c.ProxyVNCEnabled, Checks: c.ChecksEnabled, ConsoleCables: c.ConsoleCablesEnabled}
 }

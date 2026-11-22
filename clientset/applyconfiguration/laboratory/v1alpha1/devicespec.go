@@ -40,6 +40,12 @@ type DeviceSpecApplyConfiguration struct {
 	// Access lists how the device is reached besides its network: http (a web port behind the L7 proxy), terminal, and the reserved vnc
 	// and rdp. At most one entry per kind.
 	Access []DeviceAccessApplyConfiguration `json:"access,omitempty"`
+	// ConsolePorts are the management lines of the device (console0, aux0): a program runs on each, or the device's own console is
+	// bridged to it (native). At most names.MaxConsolePorts; container devices only; set once, never changed.
+	ConsolePorts []ConsolePortSpecApplyConfiguration `json:"consolePorts,omitempty"`
+	// SerialPorts are the terminal lines of the device, character devices inside it (/dev/ttyCON<n>). At most names.MaxSerialPorts;
+	// container devices only; set once, never changed.
+	SerialPorts []SerialPortSpecApplyConfiguration `json:"serialPorts,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 	// State is the optional state-persistence policy and operator controls of
@@ -147,6 +153,32 @@ func (b *DeviceSpecApplyConfiguration) WithAccess(values ...*DeviceAccessApplyCo
 			panic("nil value passed to WithAccess")
 		}
 		b.Access = append(b.Access, *values[i])
+	}
+	return b
+}
+
+// WithConsolePorts adds the given value to the ConsolePorts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ConsolePorts field.
+func (b *DeviceSpecApplyConfiguration) WithConsolePorts(values ...*ConsolePortSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConsolePorts")
+		}
+		b.ConsolePorts = append(b.ConsolePorts, *values[i])
+	}
+	return b
+}
+
+// WithSerialPorts adds the given value to the SerialPorts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the SerialPorts field.
+func (b *DeviceSpecApplyConfiguration) WithSerialPorts(values ...*SerialPortSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithSerialPorts")
+		}
+		b.SerialPorts = append(b.SerialPorts, *values[i])
 	}
 	return b
 }

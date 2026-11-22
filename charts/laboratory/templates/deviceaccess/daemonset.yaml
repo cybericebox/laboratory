@@ -2,7 +2,7 @@
 {{- /*
 The device access service (docs/specs/2026-11-12-device-access-and-checks.md, section 3; DEPLOY.md, "Device console"): a DaemonSet on the lab
 nodes, one container, the only component that holds the container runtime socket. It opens a shell in a lab device for the L7
-proxy, which is the only caller its network policy admits. Made only while terminal.enabled is true.
+proxy, which is the only caller its network policy admits. Made while terminal.enabled, checks.enabled or consoleCables.enabled is true.
 */ -}}
 {{- $socket := include "laboratory.deviceAccess.socket" . }}
 {{- $lim := .Values.terminal.limits }}

@@ -118,6 +118,80 @@ spec:
                   one. It is drawn when the Device is created and never changes. Empty on a
                   Device that predates codes: its workload keeps the name of the Device.
                 type: string
+              consolePorts:
+                description: |-
+                  ConsolePorts are the management lines of the device (console0, aux0): a program runs on each, or the device's own console is
+                  bridged to it (native). At most names.MaxConsolePorts; container devices only; set once, never changed.
+                items:
+                  description: ConsolePortSpec is a management line of a device. At
+                    most one of Command and Native; neither means the default command
+                    (/bin/login).
+                  properties:
+                    command:
+                      description: |-
+                        Command runs on the line, respawned when it ends; empty means /bin/login. The same rules as the terminal command: an absolute program
+                        path outside /proc and /sys, at most 32 arguments of at most 4096 bytes.
+                      items:
+                        maxLength: 4096
+                        type: string
+                      maxItems: 32
+                      type: array
+                    name:
+                      description: Name is console<n> or aux<n>, n from 0 to 99. Port
+                        names and interface names share one space per device.
+                      maxLength: 9
+                      pattern: ^(console|aux)(0|[1-9][0-9]?)$
+                      type: string
+                    native:
+                      description: Native says where the device already puts its console
+                        (an emulator); the keeper bridges it to the line instead of
+                        running a command.
+                      properties:
+                        kind:
+                          description: |-
+                            Kind is stdio (the service's own terminal) or tcp (a port on the device's loopback). vm-serial (NativeConsoleVMSerial) is reserved
+                            with the vm profile and not in the enum yet, like the profile itself.
+                          enum:
+                          - stdio
+                          - tcp
+                          type: string
+                        port:
+                          description: Port on 127.0.0.1 inside the device (tcp only).
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - kind
+                      type: object
+                      x-kubernetes-validations:
+                      - message: tcp needs a port
+                        rule: self.kind != 'tcp' || (has(self.port) && self.port >
+                          0)
+                      - message: only a tcp console has a port
+                        rule: self.kind == 'tcp' || !has(self.port)
+                    user:
+                      description: User of the command; empty means root (login needs
+                        root).
+                      maxLength: 128
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: a console port takes a command (with a user) or a native
+                      source, not both
+                    rule: '!has(self.native) || ((!has(self.command) || size(self.command)
+                      == 0) && !has(self.user))'
+                  - message: the console command starts with an absolute program path
+                      outside /proc and /sys
+                    rule: '!has(self.command) || size(self.command) == 0 || (self.command[0].startsWith(''/'')
+                      && !self.command[0].startsWith(''/proc/'') && !self.command[0].startsWith(''/sys/''))'
+                maxItems: 4
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               image:
                 type: string
               imageDigests:
@@ -320,6 +394,33 @@ spec:
                 - standard
                 - extended
                 type: string
+              serialPorts:
+                description: |-
+                  SerialPorts are the terminal lines of the device, character devices inside it (/dev/ttyCON<n>). At most names.MaxSerialPorts;
+                  container devices only; set once, never changed.
+                items:
+                  description: SerialPortSpec is a terminal line of a connector device.
+                  properties:
+                    name:
+                      description: Name is serial<n>, n from 0 to 99.
+                      maxLength: 8
+                      pattern: ^serial(0|[1-9][0-9]?)$
+                      type: string
+                    path:
+                      description: |-
+                        Path of the character device inside the device; empty means /dev/ttyCON<n>, n the number of the name. /dev/tty, /dev/console and
+                        /dev/ptmx are never a path (the pattern refuses them).
+                      maxLength: 24
+                      pattern: ^/dev/tty[A-Z][A-Za-z0-9]{0,14}$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               service:
                 description: Service is the service command of a container device
                   (see DeviceTemplate).
@@ -479,6 +580,15 @@ spec:
             - name
             - type
             type: object
+            x-kubernetes-validations:
+            - message: the console ports of a device are immutable
+              rule: has(self.consolePorts) == has(oldSelf.consolePorts) && (!has(self.consolePorts)
+                || self.consolePorts == oldSelf.consolePorts)
+            - message: the serial ports of a device are immutable
+              rule: has(self.serialPorts) == has(oldSelf.serialPorts) && (!has(self.serialPorts)
+                || self.serialPorts == oldSelf.serialPorts)
+            - message: only a container device has console and serial ports
+              rule: self.type == 'container' || (!has(self.consolePorts) && !has(self.serialPorts))
           status:
             description: DeviceStatus defines the observed state of Device.
             properties:

@@ -90,6 +90,12 @@ func TestCreateLabsRefusedByClusterSwitches(t *testing.T) {
 		{"http without the proxy", func(s *switches.Cluster) { s.L7 = false }, access(laboratoryv1alpha1.AccessHTTP), client.ReasonAccessUnavailable},
 		{"rdp", func(s *switches.Cluster) { s.RDP = false }, access(laboratoryv1alpha1.AccessRDP), client.ReasonAccessUnavailable},
 		{"vnc", func(s *switches.Cluster) { s.VNC = false }, access(laboratoryv1alpha1.AccessVNC), client.ReasonAccessUnavailable},
+		{"console port", func(s *switches.Cluster) { s.ConsoleCables = false }, func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].ConsolePorts = []laboratoryv1alpha1.ConsolePortSpec{{Name: "console0"}}
+		}, client.ReasonConsoleCablesUnavailable},
+		{"serial port", func(s *switches.Cluster) { s.ConsoleCables = false }, func(s *laboratoryv1alpha1.LabSpec) {
+			s.Devices[0].SerialPorts = []laboratoryv1alpha1.SerialPortSpec{{Name: "serial0"}}
+		}, client.ReasonConsoleCablesUnavailable},
 	} {
 		h := switchedHandler(t, offFeatures(c.off))
 		res := createContractLab(t, h, &protobuf.LabVariant{SpecJson: contractSpecJSON(t, c.spec, "web")}, &protobuf.LabItem{})

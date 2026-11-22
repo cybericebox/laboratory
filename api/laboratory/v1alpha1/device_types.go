@@ -5,6 +5,9 @@ import (
 )
 
 // DeviceSpec defines the desired state of Device.
+// +kubebuilder:validation:XValidation:rule="has(self.consolePorts) == has(oldSelf.consolePorts) && (!has(self.consolePorts) || self.consolePorts == oldSelf.consolePorts)",message="the console ports of a device are immutable"
+// +kubebuilder:validation:XValidation:rule="has(self.serialPorts) == has(oldSelf.serialPorts) && (!has(self.serialPorts) || self.serialPorts == oldSelf.serialPorts)",message="the serial ports of a device are immutable"
+// +kubebuilder:validation:XValidation:rule="self.type == 'container' || (!has(self.consolePorts) && !has(self.serialPorts))",message="only a container device has console and serial ports"
 type DeviceSpec struct {
 	// LabRef is the name of the parent Lab.
 	// +kubebuilder:validation:Required
@@ -29,6 +32,20 @@ type DeviceSpec struct {
 	// +kubebuilder:validation:MaxItems=4
 	// +optional
 	Access []DeviceAccess `json:"access,omitempty"`
+	// ConsolePorts are the management lines of the device (console0, aux0): a program runs on each, or the device's own console is
+	// bridged to it (native). At most names.MaxConsolePorts; container devices only; set once, never changed.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=4
+	// +optional
+	ConsolePorts []ConsolePortSpec `json:"consolePorts,omitempty"`
+	// SerialPorts are the terminal lines of the device, character devices inside it (/dev/ttyCON<n>). At most names.MaxSerialPorts;
+	// container devices only; set once, never changed.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	SerialPorts []SerialPortSpec `json:"serialPorts,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
