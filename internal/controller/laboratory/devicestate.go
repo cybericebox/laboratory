@@ -224,15 +224,18 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 	}
 
 	// A pod stuck Terminating on a lost node is force-deleted after a timeout; the device is then recreated from its last snapshot.
-	if gone, err := r.forceDeleteLostPods(ctx, pods); gone || err != nil {
-		return ctrl.Result{RequeueAfter: time.Second}, err
+	if gone, err := r.forceDeleteLostPods(ctx, pods); err != nil {
+		return ctrl.Result{}, err
+	} else if gone {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	if spec.ResetToken != st.ResetToken {
 		return r.resetDevice(ctx, device, pods)
 	}
 
-	// A device whose memory is above the maximum is refused before it is queued, and never gets a pod.
+	// A device whose memory is above the maximum is refused before it is queued, and never gets a pod; one that has a pod, or ran
+	// (its pod ended), is recreated at its declared size and warned.
 	if stop, err := r.refuseMemoryAboveMaximum(ctx, device, len(pods) > 0); stop {
 		return ctrl.Result{}, err
 	}
@@ -534,7 +537,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	if err := r.refuseUnrunnableProfile(device); err != nil {
 		return err
 	}
-	if err := r.memoryAboveMaximum(device); err != nil {
+	if err := r.memoryAboveMaximum(device); err != nil && !deviceRan(device) {
 		return err
 	}
 	if err := r.refuseUnbootstrappable(device); err != nil {

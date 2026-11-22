@@ -27,7 +27,6 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
-	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/tenant"
@@ -733,9 +732,10 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 			}
 		}
 	}
-	// A device refused for its memory (above limits.device.maxMemory) never starts: like a failed lab's, it waits for nothing and
-	// counts nothing, at a clamped size or any other (limits.LabNeed skips it the same way).
-	if (lab.Status.Phase == laboratoryv1alpha1.PhaseFailed || limits.CheckDeviceMemory(t.Name, t.Resources, s.Defaults) != nil) && !p.dispatched() {
+	// A device refused for its memory (above limits.device.maxMemory, and it never ran) never starts: like a failed lab's, it waits for
+	// nothing and counts nothing, at a clamped size or any other (limits.LabNeed skips it the same way). One that ran is sent again and
+	// counted at its declared size, the size the device controller recreates it with.
+	if (lab.Status.Phase == laboratoryv1alpha1.PhaseFailed || refusedForMemory(snap.devices[key], t.Name, t.Resources, s.Defaults)) && !p.dispatched() {
 		return nil
 	}
 	return p

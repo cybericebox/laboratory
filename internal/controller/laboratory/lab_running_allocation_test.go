@@ -277,11 +277,15 @@ func TestRunningAllocationDefaultsClampsAndStorage(t *testing.T) {
 	if a.ConfiguredRequests.CPUMillicores != 2000 || a.ConfiguredLimits.MemoryBytes != 4<<30 || a.AllocatedRequests.CPUMillicores != 2000 {
 		t.Fatalf("cpu clamp, memory at the maximum: %+v", a)
 	}
-	// A memory above the maximum refuses the device (never clamped): it is configured at nothing.
+	// A memory above the maximum is never clamped: this device already ran, so it is configured at its declared size (the size it
+	// is recreated with); one that never ran is refused and configured at nothing.
 	l.Spec.Devices[0].Resources = &lab.DeviceResources{CPULimit: "64", MemoryLimit: "100Gi"}
 	a = runningAllocation(t, r, l, d)
-	if a.ConfiguredRequests.CPUMillicores != 0 || a.ConfiguredRequests.MemoryBytes != 0 || a.ConfiguredLimits.MemoryBytes != 0 {
-		t.Fatalf("a refused device is configured at nothing: %+v", a)
+	if a.ConfiguredRequests.CPUMillicores != 2000 || a.ConfiguredLimits.MemoryBytes != 100<<30 {
+		t.Fatalf("a device that ran is configured at its declared size: %+v", a)
+	}
+	if !deviceRan(d) || refusedForMemory(d, "web", l.Spec.Devices[0].Resources, r.Defaults) || !refusedForMemory(nil, "web", l.Spec.Devices[0].Resources, r.Defaults) {
+		t.Fatal("refusedForMemory: a device that ran is never refused, one that does not exist yet is")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +19,7 @@ import (
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/limits"
+	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
@@ -28,6 +30,7 @@ func TestDeviceMemoryAboveMaximumIsRefused(t *testing.T) {
 	scheme := pruneScheme(t)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
+	_ = policyv1.AddToScheme(scheme)
 	e := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "config", "crd", "bases")}, ErrorIfCRDPathMissing: true, BinaryAssetsDirectory: getFirstFoundEnvTestBinaryDir()}
 	cfg, err := e.Start()
 	if err != nil {
@@ -111,6 +114,116 @@ func TestDeviceMemoryAboveMaximumIsRefused(t *testing.T) {
 		}
 		if cond := meta.FindStatusCondition(got.Status.Conditions, labstatus.ConditionReady); cond != nil {
 			t.Fatalf("no refusal condition: %+v", cond)
+		}
+	})
+
+	// Review item 3: a device whose workload exists already (made before this rule, or before the maximum was lowered) is left alone:
+	// the Deployment stays, the device is not refused, and it is warned once that it is above the current maximum.
+	t.Run("device whose workload exists", func(t *testing.T) {
+		rec := record.NewFakeRecorder(10)
+		r := &DeviceReconciler{Client: c, Scheme: scheme, Recorder: rec, Defaults: defaults}
+		d := device("running", "8Gi")
+		labels, selector, _, spec := r.workloadTemplate(d)
+		one := int32(1)
+		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: ns, Labels: labels},
+			Spec: appsv1.DeploymentSpec{Replicas: &one, Selector: &metav1.LabelSelector{MatchLabels: selector}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: spec}}}
+		if err := c.Create(ctx, dep); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(d)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil || dep.DeletionTimestamp != nil {
+			t.Fatalf("the running workload must stay: %v", err)
+		}
+		var got lab.Device
+		if err := c.Get(ctx, client.ObjectKeyFromObject(d), &got); err != nil {
+			t.Fatal(err)
+		}
+		if cond := meta.FindStatusCondition(got.Status.Conditions, labstatus.ConditionReady); cond != nil {
+			t.Fatalf("a running device is not refused: %+v", cond)
+		}
+		warn := meta.FindStatusCondition(got.Status.Conditions, ConditionMemoryAboveMaximum)
+		if warn == nil || warn.Status != metav1.ConditionTrue || warn.Reason != limits.ReasonDeviceMemoryAboveMaximum || !strings.Contains(warn.Message, "8Gi") {
+			t.Fatalf("warning condition %+v", warn)
+		}
+		if ev := <-rec.Events; !strings.HasPrefix(ev, "Warning "+limits.ReasonDeviceMemoryAboveMaximum) {
+			t.Errorf("event: %q", ev)
+		}
+		select {
+		case ev := <-rec.Events:
+			t.Errorf("a second event: %q", ev)
+		default:
+		}
+	})
+
+	// Review item 2: a device that already ran (its pod ended, or the scheduler withdrew it) is recreated at its declared size and
+	// warned, not refused: its scheduling record keeps meaning a pod.
+	t.Run("device that already ran", func(t *testing.T) {
+		r := &DeviceReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10), Defaults: defaults}
+		d := device("ran", "8Gi")
+		now := metav1.Now()
+		d.Status.Scheduling = &lab.PodSchedule{State: lab.PodStarted, DispatchedAt: &now, StartedAt: &now}
+		if err := c.Status().Update(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(d)}); err != nil {
+			t.Fatal(err)
+		}
+		var dep appsv1.Deployment
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: workloadName(d)}, &dep); err != nil {
+			t.Fatalf("a device that ran is recreated: %v", err)
+		}
+		if m := dep.Spec.Template.Spec.Containers[0].Resources.Limits.Memory(); m.Value() != 8<<30 {
+			t.Fatalf("recreated at its declared size: %v", m)
+		}
+		var got lab.Device
+		if err := c.Get(ctx, client.ObjectKeyFromObject(d), &got); err != nil {
+			t.Fatal(err)
+		}
+		if meta.FindStatusCondition(got.Status.Conditions, labstatus.ConditionReady) != nil || meta.FindStatusCondition(got.Status.Conditions, ConditionMemoryAboveMaximum) == nil {
+			t.Fatalf("conditions %+v", got.Status.Conditions)
+		}
+	})
+
+	// Review item 1: a running lab whose device is above a lowered maximum keeps running: no Failed, a warning condition and event.
+	t.Run("running lab above a lowered maximum", func(t *testing.T) {
+		rec := record.NewFakeRecorder(10)
+		r := &LabReconciler{Client: c, Scheme: scheme, Recorder: rec, Defaults: defaults}
+		l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: ns}, Spec: lab.LabSpec{Devices: []lab.DeviceTemplate{
+			{Name: "big", Type: lab.DeviceTypeContainer, Image: "nginx:alpine", Resources: &lab.DeviceResources{MemoryLimit: "8Gi"}},
+		}}}
+		if err := c.Create(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+		existing := &lab.Device{ObjectMeta: metav1.ObjectMeta{Name: "running-big", Namespace: ns, Labels: map[string]string{names.LabelLab: l.Name}},
+			Spec: lab.DeviceSpec{LabRef: l.Name, Name: "big", Type: lab.DeviceTypeContainer, Image: "nginx:alpine", Code: "crb", Resources: &lab.DeviceResources{MemoryLimit: "8Gi"}}}
+		if err := c.Create(ctx, existing); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if refusal, _, err := r.validateGatewaysAndServers(ctx, l); err != nil || refusal != nil {
+				t.Fatalf("a lab whose device exists is not refused: %v %v", refusal, err)
+			}
+		}
+		var got lab.Lab
+		if err := c.Get(ctx, client.ObjectKeyFromObject(l), &got); err != nil {
+			t.Fatal(err)
+		}
+		warn := meta.FindStatusCondition(got.Status.Conditions, ConditionMemoryAboveMaximum)
+		if got.Status.Phase == lab.PhaseFailed || warn == nil || warn.Status != metav1.ConditionTrue || warn.Reason != limits.ReasonDeviceMemoryAboveMaximum ||
+			!strings.Contains(warn.Message, `"big"`) || !strings.Contains(warn.Message, "4Gi") {
+			t.Fatalf("phase %s warning %+v", got.Status.Phase, warn)
+		}
+		if ev := <-rec.Events; !strings.HasPrefix(ev, "Warning "+limits.ReasonDeviceMemoryAboveMaximum) {
+			t.Errorf("event: %q", ev)
+		}
+		select {
+		case ev := <-rec.Events:
+			t.Errorf("a second event: %q", ev)
+		default:
 		}
 	})
 

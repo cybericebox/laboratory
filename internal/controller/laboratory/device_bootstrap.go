@@ -110,8 +110,8 @@ func (r *DeviceReconciler) refusedForGood(ctx context.Context, device *laborator
 		return true, nil
 	}
 	if isMemoryRefusal(err) {
-		_, serr := r.refuseMemoryAboveMaximum(ctx, device, false)
-		return true, serr
+		stop, serr := r.refuseMemoryAboveMaximum(ctx, device, false)
+		return stop, serr
 	}
 	return r.handleRefusal(ctx, device, err)
 }

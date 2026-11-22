@@ -36,6 +36,16 @@ func TestLabNeedMatchesOperator(t *testing.T) {
 		t.Fatalf("lab: operator %+v, agent cpu %d memory %d", op, cpu, mem)
 	}
 
+	// A device that already ran (here withdrawn back to Queued) is not refused by a lowered maximum: the scheduler still sends it again,
+	// counted at its declared size, as the device controller recreates it at that size.
+	huge := lab.Spec.Devices[3]
+	now := metav1.Now()
+	ran := &laboratoryv1alpha1.Device{Status: laboratoryv1alpha1.DeviceStatus{Scheduling: &laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, DispatchedAt: &now, Withdrawals: 1}}}
+	view := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{devicePodKey(lab.Namespace, lab.Name, huge.Name): ran}}
+	if p := s.devicePod(view, lab, huge, time.Now()); p == nil || p.need.mem != 8<<30 {
+		t.Fatalf("a device that ran must stay a member at its size: %+v", p)
+	}
+
 	for _, g := range []*laboratoryv1alpha1.LabGroup{
 		{},
 		{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true}}},

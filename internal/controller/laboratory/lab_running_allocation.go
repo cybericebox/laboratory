@@ -6,7 +6,6 @@ import (
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/limits"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -230,8 +229,10 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		if template.Type != lab.DeviceTypeContainer {
 			continue
 		}
-		// A device refused for its memory (above limits.device.maxMemory) is configured at nothing: it never starts.
-		refused := limits.CheckDeviceMemory(template.Name, template.Resources, r.Defaults) != nil
+		d := o.byName[template.Name]
+		// A device refused for its memory (above limits.device.maxMemory, never ran) is configured at nothing: it never starts. One
+		// that ran is configured at its declared size, the size it is recreated with.
+		refused := refusedForMemory(d, template.Name, template.Resources, r.Defaults)
 		configured := corev1.ResourceRequirements{}
 		if !refused {
 			configured = deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
@@ -239,7 +240,6 @@ func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, 
 		request, limit := allocationPodResources([]corev1.Container{{Resources: configured}})
 		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, request)
 		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, limit)
-		d := o.byName[template.Name]
 		currentKey := "configured/" + template.Name
 		deviceKnown := false
 		if d != nil {

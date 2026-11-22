@@ -2,7 +2,6 @@ package laboratory
 
 import (
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	corev1 "k8s.io/api/core/v1"
@@ -57,7 +56,7 @@ func (s *Scheduler) stoppedReservations(snap *clusterView) ([]corev1.Pod, map[st
 			case dep != nil:
 				spec = dep.Spec.Template.Spec
 			default:
-				if limits.CheckDeviceMemory(d.Spec.Name, d.Spec.Resources, s.Defaults) != nil {
+				if refusedForMemory(d, d.Spec.Name, d.Spec.Resources, s.Defaults) {
 					continue // refused for its memory: nothing runs and nothing can, so it holds nothing
 				}
 				resources := deviceRequests(d.Spec.Resources, s.Defaults)

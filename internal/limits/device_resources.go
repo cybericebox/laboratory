@@ -53,7 +53,7 @@ type MemoryAboveMaximumError struct {
 }
 
 func (e *MemoryAboveMaximumError) Error() string {
-	return fmt.Sprintf("device %q requests %s of memory, above the maximum of %s per device (limits.device.maxMemory): the device is refused",
+	return fmt.Sprintf("device %q requests %s of memory, above the maximum of %s per device (limits.device.maxMemory)",
 		e.Device, e.Requested.String(), e.Maximum.String())
 }
 

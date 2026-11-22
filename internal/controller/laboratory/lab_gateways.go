@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,13 +70,76 @@ func (r *LabReconciler) validateGatewaysAndServers(ctx context.Context, lab *lab
 	if refusal = r.validateRegistries(lab); refusal != nil {
 		return refusal, false, nil
 	}
-	// a device whose memory is above limits.device.maxMemory is refused, never clamped (the agent refuses it at creation; this catches a
-	// Lab made by hand): the lab fails with the reason DeviceMemoryAboveMaximum and none of its devices is created
-	if refusal = limits.CheckLabDeviceMemory(&lab.Spec, r.Defaults); refusal != nil {
-		return refusal, false, nil
+	if refusal, err = r.validateDeviceMemory(ctx, lab); refusal != nil || err != nil {
+		return refusal, false, err
 	}
 	off, err := r.groupServerOff(ctx, lab)
 	return off, off != nil, err
+}
+
+// validateDeviceMemory refuses a lab with a device whose memory is above limits.device.maxMemory and that does not exist yet (owner
+// decision C4: refused, never clamped; the agent refuses it at creation, this catches a Lab made by hand): the lab fails with the reason
+// DeviceMemoryAboveMaximum and none of its devices is created. A device that exists already (the lab ran before the maximum was lowered,
+// or before this rule) is not refused: the lab keeps running and gets the warning condition MemoryAboveMaximum and one Warning event.
+func (r *LabReconciler) validateDeviceMemory(ctx context.Context, lab *laboratoryv1alpha1.Lab) (refusal error, err error) {
+	var above []string
+	var existing map[string]bool
+	for i := range lab.Spec.Devices {
+		d := &lab.Spec.Devices[i]
+		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
+			continue
+		}
+		e := limits.CheckDeviceMemory(d.Name, d.Resources, r.Defaults)
+		if e == nil {
+			continue
+		}
+		if existing == nil {
+			if existing, err = r.labDeviceNames(ctx, lab); err != nil {
+				return nil, err
+			}
+		}
+		if !existing[d.Name] {
+			return e, nil
+		}
+		above = append(above, e.Error())
+	}
+	return nil, r.noteDevicesAboveMaximum(ctx, lab, above)
+}
+
+// labDeviceNames are the device names of the lab's Device objects.
+func (r *LabReconciler) labDeviceNames(ctx context.Context, lab *laboratoryv1alpha1.Lab) (map[string]bool, error) {
+	var list laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(list.Items))
+	for i := range list.Items {
+		if list.Items[i].Spec.LabRef == lab.Name {
+			out[list.Items[i].Spec.Name] = true
+		}
+	}
+	return out, nil
+}
+
+// noteDevicesAboveMaximum keeps the warning condition MemoryAboveMaximum of the lab: True while existing devices are above the current
+// maximum (above holds their messages), gone otherwise. The status is written, and a Warning event recorded, only when it changes.
+func (r *LabReconciler) noteDevicesAboveMaximum(ctx context.Context, lab *laboratoryv1alpha1.Lab, above []string) error {
+	orig := lab.DeepCopy()
+	msg := ""
+	if len(above) == 0 {
+		meta.RemoveStatusCondition(&lab.Status.Conditions, ConditionMemoryAboveMaximum)
+	} else {
+		msg = strings.Join(above, "; ") + ": these devices exist already, so they keep running at that size and the lab is not refused"
+		meta.SetStatusCondition(&lab.Status.Conditions, metav1.Condition{Type: ConditionMemoryAboveMaximum, Status: metav1.ConditionTrue, ObservedGeneration: lab.Generation,
+			Reason: limits.ReasonDeviceMemoryAboveMaximum, Message: msg})
+	}
+	if equality.Semantic.DeepEqual(orig.Status.Conditions, lab.Status.Conditions) {
+		return nil
+	}
+	if msg != "" && r.Recorder != nil {
+		r.Recorder.Event(lab, corev1.EventTypeWarning, limits.ReasonDeviceMemoryAboveMaximum, msg)
+	}
+	return r.Status().Patch(ctx, lab, client.MergeFrom(orig))
 }
 
 // validateRegistries refuses a lab with a device image from a registry that is not on the list of allowed registries. An image of the

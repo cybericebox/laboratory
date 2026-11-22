@@ -3060,11 +3060,16 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
   pattern. The sums use saturating arithmetic.
 - The operator ignores such a value on an object that got past the check (the next candidate or the default is used), so a pod never
   runs without limits. A CPU above the chart maximum (`limits.device.maxCpu`, `DEVICE_MAX_CPU` for the operator) is clamped to it.
-  A memory above `limits.device.maxMemory` (`DEVICE_MAX_MEMORY`) is **refused, never clamped**: the device gets no pod and
-  `Device.status.conditions` Ready=False with the reason `DeviceMemoryAboveMaximum` and a message naming the requested and the maximum
-  amounts, plus a Warning event; its Lab fails (Ready=False, the same reason and event) and creates none of its devices. Nothing counts
-  a refused device (the scheduler, the agent's reservation fit, the lab's configured allocation). A device exactly at the maximum is
-  accepted. The agent already refuses such a lab on CreateLabs, so this only stops an object made by hand.
+  A memory above `limits.device.maxMemory` (`DEVICE_MAX_MEMORY`) is **never clamped**. A device that does not exist yet, or never ran,
+  is **refused**: it gets no pod and `Device.status.conditions` Ready=False with the reason `DeviceMemoryAboveMaximum` and a message
+  naming the requested and the maximum amounts, plus a Warning event; a Lab with such a device fails (Ready=False, the same reason and
+  event) and creates none of its devices. Nothing counts a refused device (the scheduler, the agent's reservation fit, the lab's
+  configured allocation). A device exactly at the maximum is accepted. The agent already refuses such a lab on CreateLabs, so this only
+  stops an object made by hand.
+- A device that **already exists** above the maximum (the maximum was lowered, or the lab predates this rule) is not refused and its
+  lab does not fail: a running pod is left alone, and a device that already ran (its pod ended, or the scheduler withdrew it) is
+  recreated at its **declared** size and counted at that size. The Device and its Lab get the warning condition `MemoryAboveMaximum`
+  (True, reason `DeviceMemoryAboveMaximum`) and one Warning event; the condition goes when the maximum is raised again.
 
 ### Image policy and the registry forwarder (R-3)
 

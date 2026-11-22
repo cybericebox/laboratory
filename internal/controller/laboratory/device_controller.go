@@ -239,10 +239,12 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	var dep appsv1.Deployment
 	err = r.Get(ctx, types.NamespacedName{Name: workloadName(device), Namespace: device.Namespace}, &dep)
 
+	// A device above the memory maximum that never ran is refused for good (condition and event; a change of the device or of the
+	// maximum starts it again); one whose workload exists, or that ran, is only warned.
+	if stop, refuseErr := r.refuseMemoryAboveMaximum(ctx, device, !errors.IsNotFound(err)); stop {
+		return ctrl.Result{}, refuseErr
+	}
 	if errors.IsNotFound(err) {
-		if stop, refuseErr := r.refuseMemoryAboveMaximum(ctx, device, false); stop {
-			return ctrl.Result{}, refuseErr // refused for good, with a condition and an event: a change of the device starts it again
-		}
 		if !suspended {
 			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
 				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
@@ -604,7 +606,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	if err := r.refuseUnrunnableProfile(device); err != nil {
 		return err
 	}
-	if err := r.memoryAboveMaximum(device); err != nil {
+	if err := r.memoryAboveMaximum(device); err != nil && !deviceRan(device) {
 		return err
 	}
 	if err := r.refuseUnbootstrappable(device); err != nil {
