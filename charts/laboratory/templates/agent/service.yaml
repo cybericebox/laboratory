@@ -1,4 +1,5 @@
 {{- if .Values.agent.enabled }}
+{{- $open := eq (include "laboratory.exposure" .) "open" }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -12,10 +13,17 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  # The entry of the platform's backend: the load balancer outside the cluster (infrastructure) sends the agent port to the node port of the
-  # nodes that run the agent. mTLS stays (certificate-server.yaml). Local keeps the caller's address.
+  {{- if $open }}
+  # exposure=open: the public listener of the lab load balancer (infrastructure) sends the agent port to the node port of the nodes that run the
+  # agent; Local keeps the caller's address, which the policy checks against agent.networkPolicy.ingressFrom.fromCIDR. In-cluster callers keep
+  # dialling the Service name. mTLS stays (certificate-server.yaml).
   type: NodePort
   externalTrafficPolicy: Local
+  {{- else }}
+  # closed and partial: in-cluster only. The platform's backend dials laboratory-agent.<namespace>.svc over the pod network and verifies the
+  # certificate's name (agent.domain); no node port, no load balancer.
+  type: ClusterIP
+  {{- end }}
   selector:
     app: laboratory-agent
   ports:
@@ -23,7 +31,9 @@ spec:
       port: {{ .Values.agent.grpcPort }}
       targetPort: {{ .Values.agent.grpcPort }}
       protocol: TCP
+      {{- if $open }}
       {{- with .Values.agent.service.nodePort }}
       nodePort: {{ . }}
+      {{- end }}
       {{- end }}
 {{- end }}

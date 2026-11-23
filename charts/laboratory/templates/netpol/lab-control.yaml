@@ -1,0 +1,40 @@
+{{- /*
+Default-deny ingress in the namespaces of the lab-control pool (internal-docs infrastructure/specs/cluster-layout.md 18.1, 18.4, S3). The
+platform pool shares a Cilium tunnel with this pool, so the firewall cannot hold the ports there: a pod of the platform must find nothing in
+these namespaces but what a component explicitly admits (the agent's gRPC port for the backend, netpol/agent.yaml). The policies select every
+endpoint of the namespace and hold one empty rule, which admits nothing; Cilium joins them with each component's own policy, so what a component
+admits stays admitted:
+  - the release namespace: the operator (netpol/controller.yaml), the lab scheduler (netpol/lab-scheduler.yaml), the registry (netpol/registry.yaml),
+    and the checker of the lab pool (checker/netpol.yaml, already closed). The node-agent and node-state run on the host network, which pod
+    policies do not govern.
+  - the agent's namespace: the agent alone.
+Ingress only: Cilium enforces egress on an endpoint only where a policy has egress rules, so the components' egress stays as their policies say.
+The kubelet's probes come from the local host, which Cilium admits by default.
+*/ -}}
+{{- if (.Values.operator.networkPolicy | default dict).enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector: {}
+  ingress:
+    - {}
+{{- end }}
+{{- if and .Values.agent.enabled (.Values.agent.networkPolicy | default dict).enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-default-deny-ingress
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector: {}
+  ingress:
+    - {}
+{{- end }}

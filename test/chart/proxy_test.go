@@ -183,8 +183,8 @@ func TestL7MaxConnectionsFitTheMemoryLimit(t *testing.T) {
 	}
 }
 
-// The entries are NodePort Services that keep the client's address: the L7 proxy, the VPN (in every demux mode) and the agent. A fixed node port
-// and annotations are values; nothing names a shared address any more.
+// The entries are NodePort Services that keep the client's address: the L7 proxy, the VPN (in every demux mode) and, with exposure=open, the
+// agent (TestAgentServiceFollowsExposure has its other modes). A fixed node port and annotations are values; nothing names a shared address any more.
 func TestEntryServicesAreNodePortsWithLocalTraffic(t *testing.T) {
 	for _, c := range []struct {
 		tpl, name, ns string
@@ -193,7 +193,7 @@ func TestEntryServicesAreNodePortsWithLocalTraffic(t *testing.T) {
 	}{
 		{"templates/proxy/service.yaml", "laboratory-proxy-l7", "laboratory-proxy", []string{"--set", "proxy.l7.service.nodePort=30443", "--set", "proxy.l7.service.annotations.lb\\.example\\.com/pool=edge"}, "proxy.l7"},
 		{"templates/wg/service.yaml", "laboratory-proxy-wg", "laboratory-wg", []string{"--set", "proxy.wg.nodePort=30820", "--set", "proxy.wg.service.annotations.lb\\.example\\.com/pool=edge"}, "proxy.wg"},
-		{"templates/agent/service.yaml", "laboratory-agent", "laboratory-agent", []string{"--set", "agent.enabled=true", "--set", "agent.service.nodePort=30454", "--set", "agent.service.annotations.lb\\.example\\.com/pool=edge"}, "agent"},
+		{"templates/agent/service.yaml", "laboratory-agent", "laboratory-agent", []string{"--set", "agent.enabled=true", "--set", "exposure=open", "--set", "agent.networkPolicy.ingressFrom.fromCIDR[0]=198.51.100.0/24", "--set", "agent.service.nodePort=30454", "--set", "agent.service.annotations.lb\\.example\\.com/pool=edge"}, "agent"},
 	} {
 		for _, mode := range []string{"userspace", "tc", "xdp"} {
 			var svc corev1.Service

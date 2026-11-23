@@ -2,10 +2,14 @@
 CiliumNetworkPolicy for the laboratory-controller-manager Deployment
 (singleton, namespace .Release.Namespace, pod labels
 control-plane: controller-manager + laboratory.selectorLabels — see
-charts/laboratory/templates/operator/deployment.yaml). No ingress: the
-controller is only ever a client (to the Kubernetes API server); egress is
-locked to kube-apiserver, mirroring the toEntities: [kube-apiserver] shape
-used by vpnCiliumPolicy/gatewayCiliumPolicy in
+charts/laboratory/templates/operator/deployment.yaml).
+
+Ingress: the operator serves no API. No webhook is registered (internal/cmds/manager/manager.go: "No webhook is served"), the CRDs have no
+conversion webhook, and gateway statistics reach it through the API (LabEgressReport), not by a pull. It listens on the health port 8081 (the
+kubelet's probes, from the local host, which Cilium admits by default) and, with operator.metrics.enabled, on the metrics port for a scraper
+in the cluster. So: the metrics port from the cluster when it is on, otherwise an explicit default deny (the empty rule).
+
+Egress is locked to kube-apiserver, mirroring the toEntities: [kube-apiserver] shape used by vpnCiliumPolicy/gatewayCiliumPolicy in
 internal/controller/laboratory/labgroup_controller.go.
 */}}
 {{- if .Values.operator.networkPolicy.enabled }}
@@ -21,6 +25,19 @@ spec:
     matchLabels:
       control-plane: controller-manager
       {{- include "laboratory.selectorLabels" . | nindent 6 }}
+  ingress:
+  {{- if .Values.operator.metrics.enabled }}
+    # The metrics port (operator.metrics): scraped from inside the cluster.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: {{ .Values.operator.metrics.port | quote }}
+              protocol: TCP
+  {{- else }}
+    # An empty rule makes ingress default-deny.
+    - {}
+  {{- end }}
   egress:
     - toEntities:
         - kube-apiserver
