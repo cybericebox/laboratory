@@ -679,7 +679,7 @@ Three endpoints, all off by default, plain HTTP at `/metrics`, no authentication
 |---|---|---|
 | Operator | `operator.metrics.enabled`, `.port`, `.scrapeAnnotations` | 8080 |
 | Node-agent (host network: open on the node's address, restrict it with the node firewall) | `nodeAgent.metrics.*` | 9442 |
-| Agent | `agent.metrics.*` (with `agent.networkPolicy.enabled` the port is opened to the cluster) | 9443 |
+| Agent | `agent.metrics.*` (with `agent.networkPolicy.enabled` the port is opened to the cluster, never to the world) | 9443 |
 
 `scrapeAnnotations: true` puts `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` on the pod, for a Prometheus that finds
 pods by annotation; no ServiceMonitor is needed. No metric has a lab, pod, device, namespace or group name as a label; the labels are the
@@ -1956,19 +1956,37 @@ leaves them Pending) and owns the taints; the only values are the tolerations of
 The pods of the lab pool hold no registry credential and no image pull secret; the pods of the lab-control pool keep the platform's `imagePullSecrets`. The firewall
 between the pools (a lab node reaches nothing of the control pool) is infrastructure's.
 
-**The entry** has no Gateway: three components are reached from outside the cluster through `NodePort` Services with `externalTrafficPolicy: Local`, behind load balancers
-that infrastructure makes. The client's address reaches the pod as the TCP peer (the load balancer must preserve it), and each load balancer health-checks the nodes it targets,
+**The entry** has no Gateway: the proxy and the VPN, and with `exposure: open` the agent, are reached from outside the cluster through `NodePort` Services with
+`externalTrafficPolicy: Local`, behind load balancers that infrastructure makes. The client's address reaches the pod as the TCP peer (the load balancer must preserve it), and each load balancer health-checks the nodes it targets,
 so a node without a pod of the component takes no traffic.
 
 | Service | Port | Values |
 | --- | --- | --- |
 | `laboratory-proxy-l7` (namespace `laboratory-proxy`) | TCP 443 to the proxy's own TLS (`proxy-tls`) | `proxy.l7.service.nodePort`, `proxy.l7.service.annotations` |
-| `laboratory-agent` | `agent.grpcPort` (mTLS stays) | `agent.service.nodePort`, `agent.service.annotations` |
+| `laboratory-agent` (only with `exposure: open`; otherwise `ClusterIP`) | `agent.grpcPort` (mTLS stays) | `agent.service.nodePort`, `agent.service.annotations` |
 | `laboratory-proxy-wg` (namespace `laboratory-wg`) | UDP `proxy.wg.publicPort` to 51820, in every demux mode | `proxy.wg.nodePort`, `proxy.wg.service.annotations` |
 | `laboratory-registry` | TCP 5443, the gate (nodes, by `registry.gate.address`) | `registry.gate.service.nodePort`, `registry.gate.service.annotations` |
 
-The pod policies admit the `world` entity on the container port of the proxy and the agent. Whether Cilium classes a `Local` NodePort client as `world`, and whether `host` or `remote-node`
-must be added for the node health check, is proved on the staging cluster (`docs/laboratory/specs/pools-release.md`, S3). The proxy and the demux use **no cluster DNS**: the proxy takes the
+**Exposure** (`exposure`: `closed`, `partial` by default, `open`; infrastructure's `LABORATORY_EXPOSURE`) decides the agent's entry. With `closed` and `partial` the agent is
+in-cluster only: its Service is `ClusterIP` and the platform's backend dials `laboratory-agent.laboratory-agent.svc:<agent.grpcPort>` over the pod network, verifying the
+certificate's name (`agent.domain`). With `open` the Service is the `NodePort` above for a public listener, and its policy admits the allowlist
+`agent.networkPolicy.ingressFrom.fromCIDR` (required; never `0.0.0.0/0`); in-cluster callers keep the Service name. `agent.service.nodePort` and `fromCIDR` are refused
+without `open`. The proxy and the VPN are public in `partial` and `open` (`closed` changes nothing for them yet).
+
+**Ingress of the lab-control pool.** The platform pool shares a tunnel with this pool, so its namespaces (the release namespace and the agent's) hold a default-deny ingress
+policy (`laboratory-default-deny-ingress`, every endpoint, one empty rule), and each component admits only its real callers:
+
+| Component | Admitted | Values |
+| --- | --- | --- |
+| agent | gRPC port: `agent.networkPolicy.ingressFrom.fromEndpoints` (default namespace `platform`, `app: backend`; each entry names its namespace); with `open` also `fromCIDR`; metrics port from the cluster when `agent.metrics.enabled` | `agent.networkPolicy.*` |
+| operator | nothing (no webhook, no conversion webhook, gateway statistics through the API); metrics port from the cluster when `operator.metrics.enabled` | `operator.networkPolicy.enabled` |
+| lab scheduler | nothing (a client of the API server only) | `labScheduler.networkPolicy.enabled` |
+| registry gate | 5443 from the lab nodes, the operator and the agent (below) | `registry.networkPolicy.enabled` |
+
+The kubelet's probes come from the local host, which Cilium admits by default; `kubectl port-forward` enters a pod through the kubelet and is not affected. The proxy's pod
+policy admits the `world` entity on its container port. Whether Cilium classes a `Local` NodePort client as `world`, and whether `host` or `remote-node`
+must be added for the node health check, is proved on the staging cluster (`docs/laboratory/specs/pools-release.md`, S3); for the agent with `open`, a health check from an
+address outside the cluster must be in `fromCIDR`. The proxy and the demux use **no cluster DNS**: the proxy takes the
 address of a device pod from the Device it watches, the demux the VPN pod's address from `LabGroup.status.vpn.backend`, and both fail closed (`404`, `503`, no table entry) when it is missing or stale. The
 agent and the operator keep one DNS rule each, for the gate's Service name and the upstream registries.
 
@@ -3072,8 +3090,9 @@ The laboratory, the platform's backend and frontends and infrastructure are rele
    the old gate does not know the new one. Labs and VPN and gateway pods made before the upgrade keep the old reference in their spec and fail at their next
    pull (every pull is `Always`): upgrade between events, and recreate them. Never roll the node-agent DaemonSet before the registry pod is ready (one
    `helm upgrade` installs both).
-4. **The entry changes.** The proxy, the agent and the VPN are NodePort Services with `externalTrafficPolicy: Local` behind a load balancer of infrastructure
-   (see "Pools and the entry"); the proxy takes the client address as the TCP peer.
+4. **The entry changes.** The proxy and the VPN (and the agent with `exposure: open`) are NodePort Services with `externalTrafficPolicy: Local` behind a load balancer of
+   infrastructure (see "Pools and the entry"); the proxy takes the client address as the TCP peer. With the default `exposure: partial` the agent is a `ClusterIP` Service the
+   backend dials by name.
 5. **Rollback** restores the old behaviour only together with the old backend and frontends.
 
 ### Cache prewarm

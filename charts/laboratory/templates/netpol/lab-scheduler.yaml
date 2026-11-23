@@ -1,0 +1,22 @@
+{{- if and .Values.labScheduler.enabled .Values.labScheduler.networkPolicy.enabled }}
+{{- /*
+The lab scheduler (templates/lab-scheduler/scheduler.yaml) is only a client: it watches pods and nodes and writes bindings and its lease through
+the API server. It serves no extender and no webhook. Its one listener, the secure port 10259, answers the kubelet's probes (/livez, /readyz)
+from the local host, which Cilium admits by default; nothing scrapes it. So ingress is default deny. Egress is left as it is.
+*/ -}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/component: lab-scheduler
+      {{- include "laboratory.selectorLabels" . | nindent 6 }}
+  # An empty rule makes ingress default-deny.
+  ingress:
+    - {}
+{{- end }}

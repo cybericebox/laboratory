@@ -367,6 +367,9 @@ BANDWIDTH_ENTRY_OVERHEAD_FACTOR: {{ .Values.bandwidth.entryOverheadFactor | quot
 {{/*
 Labels that select the snapshot registry pod.
 */}}
+{{- /* The exposure mode of the laboratory (cluster-layout 18.9): closed, partial (default) or open. validate.yaml refuses any other value. */}}
+{{- define "laboratory.exposure" -}}{{ .Values.exposure | default "partial" }}{{- end }}
+
 {{- define "laboratory.registrySelector" -}}
 app: laboratory-registry
 {{- end }}

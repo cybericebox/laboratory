@@ -27,6 +27,15 @@ pools:
   labControl:
     tolerations: []
 
+# Who reaches the laboratory from outside the cluster (internal-docs infrastructure/specs/cluster-layout.md 18.9), set from infrastructure's
+# LABORATORY_EXPOSURE: closed, partial (the default) or open. Today it decides the agent's entry:
+#   closed, partial: the agent is in-cluster only, a ClusterIP Service; the platform's backend dials its Service name (agent.networkPolicy.ingressFrom);
+#   open: also a public listener, a NodePort Service with externalTrafficPolicy Local behind the lab load balancer, admitted from
+#         agent.networkPolicy.ingressFrom.fromCIDR only (required, non-empty).
+# The L7 proxy and the VPN are public in partial and open; their policy sources for closed (internal listeners for the user VPN, 18.10) are not
+# built yet, so closed is partial for them.
+exposure: partial
+
 # ============================================================
 # Operator configuration
 # ============================================================
@@ -311,6 +320,9 @@ labScheduler:
   # node with a better match wins over any difference in fullness and the fuller node only breaks a tie between equal matches (the
   # preference terms differ by a third of the normalised range at least, and the fit score is at most 100 x fitWeight).
   affinityWeight: 12
+  # Ingress default deny for the scheduler's pods (netpol/lab-scheduler.yaml): nothing calls it but the kubelet's probes.
+  networkPolicy:
+    enabled: true
   image:
     repository: registry.k8s.io/kube-scheduler
     # Empty = the cluster's own version (a scheduler must not be newer than the API server).
@@ -1362,8 +1374,9 @@ agent:
 
   # gRPC port the agent listens on (TLS).
   grpcPort: 5454
-  # The entry: a NodePort Service with externalTrafficPolicy Local; the load balancer outside the cluster (infrastructure) sends the platform's
-  # calls to the nodes that run the agent. mTLS stays. nodePort: a fixed number for the target group (30000-32767), empty = Kubernetes picks one.
+  # The Service laboratory-agent: ClusterIP with exposure closed or partial (the backend dials laboratory-agent.<namespace>.svc); with exposure
+  # open a NodePort with externalTrafficPolicy Local, which the public listener of the lab load balancer (infrastructure) targets. mTLS stays.
+  # nodePort: a fixed number for the target group (30000-32767), empty = Kubernetes picks one; refused unless exposure is open.
   service:
     nodePort: null
     annotations: {}
@@ -1453,6 +1466,17 @@ agent:
 
   networkPolicy:
     enabled: true
+    # Who may call the gRPC port (cluster-layout 15, 18.4). Everything else of the agent's namespace is closed (default deny).
+    ingressFrom:
+      # The in-cluster callers, by Cilium endpoint labels; each entry must name the namespace (k8s:io.kubernetes.pod.namespace). Default: the
+      # platform's backend. Every exposure mode.
+      fromEndpoints:
+        - k8s:io.kubernetes.pod.namespace: platform
+          app: backend
+      # exposure=open only (and then required): the source CIDRs admitted through the public listener (infrastructure's
+      # LABORATORY_AGENT_ALLOW_CIDRS). The load balancer keeps the client's address, so these are the callers' own addresses; a health check
+      # of the load balancer from an address outside the cluster must be in the list too. Never 0.0.0.0/0 or ::/0.
+      fromCIDR: []
 
 # ============================================================
 # Tenant images

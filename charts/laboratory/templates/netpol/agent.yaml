@@ -1,19 +1,24 @@
 {{/*
-NetworkPolicy + CiliumNetworkPolicy for the laboratory-agent Deployment
-(singleton, namespace .Values.agent.namespace, pod label
-app: laboratory-agent — see charts/laboratory/templates/agent/deployment.yaml).
+NetworkPolicy + CiliumNetworkPolicy for the laboratory-agent Deployment (namespace .Values.agent.namespace, pod label app: laboratory-agent, see
+templates/agent/deployment.yaml).
 
-Ingress (TCP .Values.agent.grpcPort): the Service is a NodePort with externalTrafficPolicy Local (templates/agent/service.yaml), so the
-connection of the platform's backend arrives from outside the cluster with its own address: the `world` entity. The port is the only one open
-to it, and mTLS decides who is let in. Whether Cilium classes a Local NodePort client as `world` (and whether `host` or `remote-node` must be
-added for the node health check) is proved on the staging cluster (docs/laboratory/specs/pools-release.md, S3). The vanilla NetworkPolicy
-below only keeps an ipBlock peer for .Values.operator.proxySourceCIDRs, a fallback for hostNetwork proxy sources on non-Cilium clusters
-(e.g. Kind).
+Ingress (cluster-layout 15, 18.4, 18.9). The agent serves one thing, the gRPC API on .Values.agent.grpcPort (mTLS; Enroll without a client
+certificate), plus the optional metrics port. Its callers, read from the code and the deployment:
+  - the platform's backend (backend internal/delivery/infrastructure/labagent/dial.go): it dials the agent's Service name over the pod network
+    (the trusted platform <-> lab-control tunnel). Admitted by pod identity, agent.networkPolicy.ingressFrom.fromEndpoints (default: namespace
+    platform, app: backend). Every exposure mode.
+  - exposure=open only: callers outside the cluster through the public listener of the lab load balancer (a laptop backend, another platform),
+    from the allowlist agent.networkPolicy.ingressFrom.fromCIDR and nothing else; the "world" entity is never admitted.
+  - agent.metrics.enabled only: a scraper in the cluster on the metrics port (no scraper exists today).
+Not a network caller: the kubelet's probes (tcpSocket on the gRPC port) come from the local host, which Cilium admits by default; kubectl
+port-forward enters the pod through the kubelet, not the pod network (test/e2e/reservation_agent_test.go). No other pod of the laboratory dials
+the agent. The namespace's default deny (netpol/lab-control.yaml) closes everything else.
 
-Egress is handled entirely by the CiliumNetworkPolicy below (toEntities:
-[kube-apiserver] only, mirroring vpnCiliumPolicy/gatewayCiliumPolicy in
-internal/controller/laboratory/labgroup_controller.go); the native
-NetworkPolicy here only governs ingress.
+The vanilla NetworkPolicy only keeps an ipBlock peer for .Values.operator.proxySourceCIDRs (hostNetwork sources of non-Cilium development
+clusters, e.g. Kind). Cilium joins its rules with the CiliumNetworkPolicy's, so it holds no rule without a source: a rule with ports and no
+"from" would admit the whole internet.
+
+Egress is handled entirely by the CiliumNetworkPolicy below; the native NetworkPolicy here only governs ingress.
 */}}
 {{- if and .Values.agent.enabled .Values.agent.networkPolicy.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -39,11 +44,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.agent.grpcPort }}
-    {{- end }}
-    {{- if .Values.agent.metrics.enabled }}
-    - ports:
-        - protocol: TCP
-          port: {{ .Values.agent.metrics.port }}
+    {{- else }} []
     {{- end }}
 ---
 apiVersion: cilium.io/v2
@@ -58,12 +59,29 @@ spec:
     matchLabels:
       app: laboratory-agent
   ingress:
-    - fromEntities:
-        - world
+  {{- with .Values.agent.networkPolicy.ingressFrom.fromEndpoints }}
+    # The in-cluster callers: the platform's backend.
+    - fromEndpoints:
+        {{- range . }}
+        - matchLabels:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: {{ $.Values.agent.grpcPort | quote }}
+              protocol: TCP
+  {{- end }}
+  {{- if eq (include "laboratory.exposure" .) "open" }}
+    # exposure=open: the public listener of the lab load balancer, from the allowlist only.
+    - fromCIDR:
+        {{- range .Values.agent.networkPolicy.ingressFrom.fromCIDR }}
+        - {{ . | quote }}
+        {{- end }}
       toPorts:
         - ports:
             - port: {{ .Values.agent.grpcPort | quote }}
               protocol: TCP
+  {{- end }}
   {{- if .Values.agent.metrics.enabled }}
     # The metrics port (agent.metrics): scraped from inside the cluster.
     - fromEntities:

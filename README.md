@@ -397,9 +397,11 @@ A backend reads the current state with `GetFeatures` before it offers a feature 
   vSwitch runs inside the node-agent, which also loads the modules and sets the kernel parameters it needs.
 - **cert-manager**, for the wildcard certificate of the proxy and the server certificate of the agent. With a public
   certificate authority the wildcard certificate needs a DNS challenge; a self-signed issuer is enough for development.
-- **DNS**: a wildcard record for the lab domain, a name for the VPN endpoint and a name for the agent.
-- **Load balancers** made by the infrastructure: the proxy (TCP 443), the agent, the VPN (UDP 51820) and the registry gate (internal, for the lab nodes)
-  target `NodePort` Services with `externalTrafficPolicy: Local`, so the client address reaches the pod.
+- **DNS**: a wildcard record for the lab domain and a name for the VPN endpoint; a public record for the agent only with `exposure: open` (its
+  certificate name is issued by DNS-01 either way).
+- **Load balancers** made by the infrastructure: the proxy (TCP 443), the VPN (UDP 51820), the registry gate (internal, for the lab nodes) and, only with
+  `exposure: open`, the agent target `NodePort` Services with `externalTrafficPolicy: Local`, so the client address reaches the pod. By default
+  (`exposure: partial`) the agent is a `ClusterIP` Service the platform's backend dials in the cluster.
 - `kubectl` 1.35 or newer and `helm` 3.12 or newer.
 
 Laboratory targets plain Linux machines and is developed against k0s. A `kind` cluster works for local development.
