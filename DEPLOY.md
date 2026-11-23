@@ -1267,8 +1267,9 @@ the boot messages. Until then the feature is built and unit-tested only; every c
   (a netfilter `LOG` rule that logs every packet) is left out and counted in that notice line, so the login stays usable. The follow is
   by timestamp, so a burst that wraps the ring buffer between two polls loses what was overwritten.
 - **Timestamps.** `CONFIG_PRINTK=y` and `CONFIG_PRINTK_TIME=y` are in `kernel/microvm/cybericebox.fragment` and checked at the kernel
-  build; to be verified on a KVM node. At run time the keeper reads `/sys/module/printk/parameters/time`: with `N` (`printk.time=0`)
-  the line shows the notice instead of a log that would lose messages without a word.
+  build; to be verified on a KVM node. At run time the keeper reads `/sys/module/printk/parameters/time` before the first read and on
+  every dump: with `N` (`printk.time=0`), or when a message without a timestamp follows one with it, the line shows the notice instead of
+  a log that would lose messages without a word.
 - **How it is read, and the privileges.** `syslog(2)` `SYSLOG_ACTION_READ_ALL` (and `SIZE_BUFFER` for the size, one buffer kept across
   polls), by the keeper, which runs as root in the device with the device's own capability set: no capability is added (no
   `CAP_SYSLOG`), no device node (`/dev/kmsg` is not in a container's `/dev` and the device cgroup does not allow it), no volume, no
@@ -1282,12 +1283,17 @@ the boot messages. Until then the feature is built and unit-tested only; every c
   microVM device only, and the keeper itself reads nothing unless the kernel command line is a Kata guest's
   (`systemd.unit=kata-containers.target`). If that check, the timestamp check or a read fails, the line shows one line
   `[kernel log not available: <why>]` to each client and the keeper never tries again; the login works as before.
-- **Rolling upgrades.** A device access service of an older release refuses a port list with `kernel_log` (its parser takes no
-  unknown field), which would take every line of that device down. So the node-agent publishes on its Node the annotation
-  `cybericebox.com/console-kernel-log`: `ready` when the device access service of the node answers on `cable.sock` with the feature
-  `kernel-log`, else `unavailable: CONSOLE_KERNEL_LOG_UNSUPPORTED: ...` (or `CONSOLE_RELAY_UNREACHABLE`). The management agent reports
-  `console_cables.kernel_log` only when every lab node ready for pods says `ready`, besides the lines being enabled and `microvm.enabled`.
-  A caller sends `kernelLog` only while it reports true.
+- **Rolling upgrades and rollbacks.** The guarantee is on the node side: a node that cannot do the kernel log never loses the other
+  lines of a device. The digest of a port list (the pod label `laboratory.cybericebox.com/ports`) leaves `kernel_log` out, so it is
+  the same for every release, and the node-agent never sends `kernel_log` to the device access service (the service checks port names
+  and kinds only; the kernel log is the keeper's, which reads the list the operator wrote into the pod). A device access service of a
+  release before the flag, which refuses an unknown field, therefore never sees it. The feature flag is best effort on top of that:
+  the node-agent publishes `cybericebox.com/console-kernel-log` on its Node, `ready:1 <relay key>` when the device access service of
+  the node answers on `cable.sock` with the feature `kernel-log`, else `unavailable: CONSOLE_KERNEL_LOG_UNSUPPORTED: ...` (or
+  `CONSOLE_RELAY_UNREACHABLE`). The value names the relay key of the process that answered, so a ready left behind by an earlier process
+  (a rolled-back service is a new process with a new key) no longer counts. The management agent reports `console_cables.kernel_log`
+  only when every lab node ready for pods has a ready value of this revision with the relay key now on the node, besides the lines
+  being enabled and `microvm.enabled` (the answer is cached for 5 s). A caller sends `kernelLog` only while it reports true.
 - Not shown: anything after the container (and its keeper) is gone, a kernel panic, the firmware or a bootloader (there is none: direct
   kernel boot). That is step 2 of the research note (a serial socket of the hypervisor), with the same field.
 
@@ -1406,8 +1412,8 @@ The operator gets `patch` on `consolecables` (the stamp only; the spec is immuta
 **What the agent reports.** The node-agent keeps the annotation `cybericebox.com/console-relay` on its node: `ready` once the device
 access service of the node answers on `cable.sock` with the relay of this release, `unavailable: CONSOLE_RELAY_UNREACHABLE: …` (or
 `CONSOLE_RELAY_OUTDATED`) otherwise (the admission policy of the node-agent lets it change this annotation of its own node and no other).
-Beside it, `cybericebox.com/console-kernel-log` says whether that service understands port lists with `kernel_log` (`ready`, or
-`unavailable: CONSOLE_KERNEL_LOG_UNSUPPORTED: …`; the same policy); `GetFeatures.console_cables.kernel_log` needs it on every lab node.
+Beside it, `cybericebox.com/console-kernel-log` says whether that service knows the kernel log of a console port (`ready:1 <relay key>`,
+or `unavailable: CONSOLE_KERNEL_LOG_UNSUPPORTED: …`; the same policy); `GetFeatures.console_cables.kernel_log` needs it on every lab node.
 With the switch off the node-agent writes nothing: no annotation, no line, no status.
 
 **The relay keys.** With the switch on the node-agent also puts the public key the device access process of its node reports on

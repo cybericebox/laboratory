@@ -40,7 +40,9 @@ func (*OSKernelLog) Guest() (bool, string) {
 	return true, ""
 }
 
-// ReadAll is syslog(SYSLOG_ACTION_READ_ALL) into a buffer of the ring buffer's size. The result is valid until the next call.
+// ReadAll is syslog(SYSLOG_ACTION_READ_ALL) into a buffer of the ring buffer's size. The buffer is kept and reused: the result is valid
+// until the next call, so there is one reader per OSKernelLog (the follower of the one kernel log port of a device; a list has at most
+// one). The mutex only keeps a second reader from corrupting the buffer; it does not make the results of two readers independent.
 func (o *OSKernelLog) ReadAll() ([]byte, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

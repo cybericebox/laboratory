@@ -243,9 +243,27 @@ func Marshal(s Spec) []byte {
 // Hash is the digest of a port list that the operator stamps on the pod of the device (names.LabelPorts): the first 32 hex characters
 // of the SHA-256 of its JSON. The device access service recomputes it from the list the node-agent sends and attaches a line only when
 // it equals the label of the sandbox, so the list cannot name a port the device does not have.
+//
+// The kernel log flag is left out of the digest: it says nothing about which ports the device has, and leaving it out keeps the digest
+// equal across releases (a node-agent of a release before the flag computes the list without it, and the operator labels the pod with
+// the digest of the list with it).
 func Hash(s Spec) string {
-	sum := sha256.Sum256(Marshal(s))
+	sum := sha256.Sum256(Marshal(s.WithoutKernelLog()))
 	return hex.EncodeToString(sum[:])[:32]
+}
+
+// WithoutKernelLog is a copy of the list with the kernel log flag off on every port: what the device access service gets (it checks port
+// names and kinds only, and a service of a release before the flag refuses a list that has it).
+func (s Spec) WithoutKernelLog() Spec {
+	out := Spec{Serial: s.Serial}
+	if s.Console != nil {
+		out.Console = make([]ConsolePort, len(s.Console))
+		for i, c := range s.Console {
+			c.KernelLog = false
+			out.Console[i] = c
+		}
+	}
+	return out
 }
 
 // HasConsole and HasSerial say the list declares the port with that kind.

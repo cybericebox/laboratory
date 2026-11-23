@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,9 +34,13 @@ func TestFeaturesReportConsoleCables(t *testing.T) {
 		"on, a node of an older release": {true, map[string]string{"w1": ready, "w2": ready}, true, map[string]string{"w2": "-"}, false},
 		"on, a relay without the kernel log": {true, map[string]string{"w1": ready, "w2": ready}, true,
 			map[string]string{"w2": nodeagent.Unavailable(nodeagent.CodeKernelLogUnsupported, "x")}, false},
-		"on, a node without relay":  {true, map[string]string{"w1": ready, "w2": "-"}, false, nil, false},
-		"on, a relay not answering": {true, map[string]string{"w1": ready, "w2": nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "x")}, false, nil, false},
-		"on, a relay disabled":      {true, map[string]string{"w1": nodeagent.PreflightDisabled}, false, nil, false},
+		// a ready value left by an earlier process of the service (a rollback starts a new one, with a new relay key)
+		"on, a stale ready of another relay key": {true, map[string]string{"w1": ready, "w2": ready}, true,
+			map[string]string{"w2": nodeagent.KernelLogReady(strings.Repeat("o", 43))}, false},
+		"on, a ready without revision": {true, map[string]string{"w1": ready, "w2": ready}, true, map[string]string{"w2": "ready"}, false},
+		"on, a node without relay":     {true, map[string]string{"w1": ready, "w2": "-"}, false, nil, false},
+		"on, a relay not answering":    {true, map[string]string{"w1": ready, "w2": nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "x")}, false, nil, false},
+		"on, a relay disabled":         {true, map[string]string{"w1": nodeagent.PreflightDisabled}, false, nil, false},
 	} {
 		for _, microVM := range []bool{false, true} {
 			f := testFeatures
@@ -49,7 +54,8 @@ func TestFeaturesReportConsoleCables(t *testing.T) {
 					Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
 				if ann != "-" {
 					n.Annotations[names.AnnotationConsoleRelay] = ann
-					n.Annotations[names.AnnotationConsoleKernelLog] = ready
+					n.Annotations[names.AnnotationConsoleRelayKey] = strings.Repeat("k", 43)
+					n.Annotations[names.AnnotationConsoleKernelLog] = nodeagent.KernelLogReady(strings.Repeat("k", 43))
 				}
 				if kl, ok := c.old[node]; ok {
 					delete(n.Annotations, names.AnnotationConsoleKernelLog)

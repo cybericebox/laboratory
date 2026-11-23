@@ -83,9 +83,9 @@ func TestKernelLogFollowsOnlyNewLines(t *testing.T) {
 	src := bootLog()
 	f := newKmsgFollower(src)
 	_ = f.dump()
-	src.add("<6>[    1.500000] second line of the same microsecond", "<4>[    7.000001] nft: LOG IN=eth0", "continuation without a prefix")
+	src.add("<6>[    1.500000] second line of the same microsecond", "<4>[    7.000001] nft: LOG IN=eth0", "<4>[    7.000001] the same microsecond")
 	got := string(f.poll())
-	want := "[    1.500000] second line of the same microsecond\r\n[    7.000001] nft: LOG IN=eth0\r\ncontinuation without a prefix\r\n"
+	want := "[    1.500000] second line of the same microsecond\r\n[    7.000001] nft: LOG IN=eth0\r\n[    7.000001] the same microsecond\r\n"
 	if got != want {
 		t.Fatalf("poll %q, want %q", got, want)
 	}
@@ -267,11 +267,36 @@ func TestPrintkTime(t *testing.T) {
 	}
 }
 
-// A poll never runs before the first dump: it starts nothing and writes nothing.
-func TestKernelLogPollBeforeDumpWritesNothing(t *testing.T) {
-	f := newKmsgFollower(bootLog())
-	if b := f.poll(); len(b) != 0 {
-		t.Fatalf("a poll before the dump: %q", b)
+// A poll before the first dump writes the whole ring buffer (the dump), never a part of it.
+func TestKernelLogPollBeforeDumpIsTheDump(t *testing.T) {
+	want := string(newKmsgFollower(bootLog()).dump())
+	if got := string(newKmsgFollower(bootLog()).poll()); got != want {
+		t.Fatalf("a poll before the dump: %q, want the dump %q", got, want)
+	}
+}
+
+// Timestamps that stop (printk.time turned off at run time) turn the kernel log off with the notice: the cursor would lose messages
+// without a word. printk.time is checked again on every dump.
+func TestKernelLogWithoutTimestampsShowsTheNotice(t *testing.T) {
+	src := bootLog()
+	f := newKmsgFollower(src)
+	_ = f.dump()
+	src.add("a message without a timestamp")
+	if got := string(f.poll()); !strings.Contains(got, "kernel log not available: a kernel message has no timestamp") {
+		t.Fatalf("poll %q", got)
+	}
+	if got := string(f.dump()); !strings.Contains(got, "kernel log not available") {
+		t.Fatalf("dump %q", got)
+	}
+
+	src = bootLog()
+	f = newKmsgFollower(src)
+	_ = f.dump()
+	src.mu.Lock()
+	src.guest = false // printk.time=N now (OSKernelLog.Guest reads it)
+	src.mu.Unlock()
+	if got := string(f.dump()); !strings.Contains(got, "kernel log not available") || strings.Contains(got, "Linux version") {
+		t.Fatalf("a dump after printk.time went off: %q", got)
 	}
 }
 

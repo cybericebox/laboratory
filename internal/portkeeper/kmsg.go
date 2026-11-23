@@ -80,11 +80,15 @@ type kmsgKey struct {
 
 func (k kmsgKey) after(o kmsgKey) bool { return k.ts > o.ts || (k.ts == o.ts && k.n > o.n) }
 
-// parseKmsg splits a READ_ALL buffer into lines with their keys.
-func parseKmsg(b []byte) ([]kmsgLine, []kmsgKey) {
+// errNoTimestamp: a line without a timestamp came after one with it (printk.time turned off at run time); the cursor needs them.
+const errNoTimestamp = "a kernel message has no timestamp (printk.time is off)"
+
+// parseKmsg splits a READ_ALL buffer into lines with their keys. ok is false when a line without a timestamp follows one with it.
+func parseKmsg(b []byte) ([]kmsgLine, []kmsgKey, bool) {
 	var lines []kmsgLine
 	var keys []kmsgKey
 	ts, n := int64(0), -1
+	stamped := false
 	for _, raw := range strings.Split(string(b), "\n") {
 		raw = strings.TrimSuffix(raw, "\r")
 		if raw == "" {
@@ -92,15 +96,18 @@ func parseKmsg(b []byte) ([]kmsgLine, []kmsgKey) {
 		}
 		text := stripLevel(raw)
 		if t, ok := timestamp(text); ok {
+			stamped = true
 			if t != ts {
 				ts, n = t, -1
 			}
+		} else if stamped {
+			return nil, nil, false
 		}
 		n++
 		lines = append(lines, kmsgLine{ts: ts, text: text})
 		keys = append(keys, kmsgKey{ts: ts, n: n})
 	}
-	return lines, keys
+	return lines, keys, true
 }
 
 // stripLevel drops the "<level>" prefix of a record.
@@ -198,7 +205,17 @@ func (f *kmsgFollower) read() ([]kmsgLine, []kmsgKey) {
 		return nil, nil
 	}
 	f.lastLen, f.lastTail = len(b), string(b[max(0, len(b)-kmsgTail):])
-	return parseKmsg(b)
+	return f.parse(b)
+}
+
+// parse is parseKmsg that turns the kernel log off when the timestamps stop.
+func (f *kmsgFollower) parse(b []byte) ([]kmsgLine, []kmsgKey) {
+	lines, keys, ok := parseKmsg(b)
+	if !ok {
+		f.off = errNoTimestamp
+		return nil, nil
+	}
+	return lines, keys
 }
 
 // kmsgTail is how much of the end of a read is kept to see that nothing changed.
@@ -215,7 +232,7 @@ func (f *kmsgFollower) unchanged() (bool, []kmsgLine, []kmsgKey) {
 		return true, nil, nil
 	}
 	f.lastLen, f.lastTail = len(b), string(b[max(0, len(b)-kmsgTail):])
-	lines, keys := parseKmsg(b)
+	lines, keys := f.parse(b)
 	return false, lines, keys
 }
 
@@ -223,8 +240,14 @@ func (f *kmsgFollower) notice() []byte {
 	return lineOut("[kernel log not available: " + f.off + "]")
 }
 
-// dump is the whole ring buffer (the newest kmsgDumpMax bytes) for a client that just attached; it moves the cursor to its end.
+// dump is the whole ring buffer (the newest kmsgDumpMax bytes) for a client that just attached; it moves the cursor to its end. The
+// guest and its printk.time are checked again for every dump (a parameter turned off since the last client counts).
 func (f *kmsgFollower) dump() []byte {
+	if f.checked && f.off == "" {
+		if ok, reason := f.src.Guest(); !ok {
+			f.off = reason
+		}
+	}
 	lines, keys := f.read()
 	if f.off != "" {
 		return f.notice()
@@ -259,9 +282,8 @@ func (f *kmsgFollower) poll() []byte {
 		return nil
 	}
 	if !f.seen {
-		// only a dump starts the follow: a poll before it would write a part of the ring buffer
-		_ = f.dump()
-		return nil
+		// only a dump starts the follow: a poll before it writes the whole ring buffer, never a part of it
+		return f.dump()
 	}
 	same, lines, keys := f.unchanged()
 	if same {

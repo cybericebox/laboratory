@@ -5,7 +5,8 @@ its own node (the node name is in the bound token of its pod) and change nothing
 which may only be "true", the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field) and the
 annotations cybericebox.com/runtime-observation, the result of its start-up check, and cybericebox.com/console-relay, the state of the
 console line relay of the node, and cybericebox.com/console-kernel-log, whether the relay of the node understands port lists with the kernel
-log of a console port (each ready, disabled or "unavailable: <CODE>: <detail>"), and laboratory.cybericebox.com/console-relay-key,
+log of a console port ("ready:<revision> <relay key>" or "unavailable: <CODE>: <detail>"; the others ready, disabled or "unavailable: <CODE>:
+<detail>"), and laboratory.cybericebox.com/console-relay-key,
 the public key of the device access process of the node (an Ed25519 key: the other nodes verify the console lines of this node with it, so
 no node-agent may publish a key on another node).
 The annotation cybericebox.com/state-persistence is node-state's (templates/node-state/admission-policy.yaml). See DEPLOY.md, "Which nodes
@@ -14,7 +15,8 @@ run labs".
 {{- $nodeAgent := printf "system:serviceaccount:%s:laboratory-node-agent" .Release.Namespace }}
 {{- $nodeState := printf "system:serviceaccount:%s:laboratory-node-state" .Release.Namespace }}
 {{- $key := "laboratory.cybericebox.com/node-agent-ready" }}
-{{- $annotationKeys := "['cybericebox.com/runtime-observation', 'cybericebox.com/console-relay', 'cybericebox.com/console-kernel-log']" }}
+{{- $annotationKeys := "['cybericebox.com/runtime-observation', 'cybericebox.com/console-relay']" }}
+{{- $kernelLogKey := "cybericebox.com/console-kernel-log" }}
 {{- $relayKey := "laboratory.cybericebox.com/console-relay-key" }}
 {{- $ownKeys := "['cybericebox.com/runtime-observation', 'cybericebox.com/console-relay', 'cybericebox.com/console-kernel-log', 'laboratory.cybericebox.com/console-relay-key']" }}
 apiVersion: admissionregistration.k8s.io/v1
@@ -63,6 +65,9 @@ spec:
       reason: Forbidden
     - expression: "variables.newAnnotations.all(k, !(k in {{ $annotationKeys }}) || variables.newAnnotations[k].matches('^(ready|disabled|unavailable: [A-Z0-9_]+: .{0,500})$'))"
       message: "the check annotations are ready, disabled or unavailable: CODE: detail"
+      reason: Forbidden
+    - expression: "!('{{ $kernelLogKey }}' in variables.newAnnotations) || variables.newAnnotations['{{ $kernelLogKey }}'].matches('^(ready:[0-9]{1,4} [A-Za-z0-9_-]{43}|unavailable: [A-Z0-9_]+: .{0,500})$')"
+      message: "the console kernel log annotation is ready:<revision> <relay key> or unavailable: CODE: detail"
       reason: Forbidden
     - expression: "!('{{ $relayKey }}' in variables.newAnnotations) || variables.newAnnotations['{{ $relayKey }}'].matches('^[A-Za-z0-9_-]{43}$')"
       message: "the console relay key is an Ed25519 public key, base64url without padding"

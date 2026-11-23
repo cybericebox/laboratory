@@ -1,7 +1,9 @@
 package nodeagent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -424,11 +426,75 @@ func TestConsoleCableSyncKernelLogAnnotation(t *testing.T) {
 		var got string
 		s.KernelLog = func(v string) { got = v }
 		_ = s.Sync(context.Background())
-		if code := KernelLogCodeOf(got, got != ""); code != c.code {
+		if code := KernelLogCodeOf(got, got != "", relayKeyOf("n1")); code != c.code {
 			t.Errorf("%s: annotation %q, code %q, want %q", name, got, code, c.code)
 		}
 	}
-	if KernelLogCodeOf("", false) != CodeNodeUnconfirmed || KernelLogCodeOf("whatever", true) != CodeNodeUnconfirmed || KernelLogCodeOf("ready", true) != "" {
-		t.Fatal("KernelLogCodeOf")
+	key := relayKeyOf("n1")
+	for v, want := range map[string]string{
+		KernelLogReady(key):              "",
+		"ready":                          CodeNodeUnconfirmed, // no revision, no key
+		"ready:0 " + key:                 CodeNodeUnconfirmed, // an older revision
+		KernelLogReady(relayKeyOf("n2")): CodeNodeUnconfirmed, // left by another process of the service (a rollback)
+		"whatever":                       CodeNodeUnconfirmed,
+		Unavailable(CodeKernelLogUnsupported, "x"): CodeKernelLogUnsupported,
+	} {
+		if got := KernelLogCodeOf(v, true, key); got != want {
+			t.Errorf("%q: %q, want %q", v, got, want)
+		}
+	}
+	if KernelLogCodeOf("", false, key) != CodeNodeUnconfirmed || KernelLogCodeOf(KernelLogReady(""), true, "") != CodeNodeUnconfirmed {
+		t.Fatal("KernelLogCodeOf without a value or a key")
+	}
+}
+
+// The device access service never gets the kernel log flag: it checks port names and kinds only, the keeper in the device reads its own
+// list, and a service of a release before the flag would refuse a list that has it (and with it every line of the device). The list it
+// gets still has the digest of the pod label, which leaves the flag out.
+func TestConsoleCableSyncLeavesTheKernelLogOutOfTheLines(t *testing.T) {
+	cable := &fakeCable{state: upState, old: true}
+	r1 := ccDevice("r1", "l1", "n1", false)
+	r1.Spec.Profile = laboratoryv1alpha1.DeviceProfileMicroVM
+	for i := range r1.Spec.ConsolePorts {
+		r1.Spec.ConsolePorts[i].KernelLog = i == 0
+	}
+	s, c, _ := ccSync(t, "n1", cable, ccCable("l1"), r1, ccDevice("pc1", "l1", "n1", true))
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(cable.last.Lines) != 1 {
+		t.Fatalf("lines %+v", cable.last.Lines)
+	}
+	ports := cable.last.Lines[0].Console.Ports
+	if strings.Contains(string(ports), "kernel_log") {
+		t.Fatalf("the service got the kernel log flag: %s", ports)
+	}
+	// what a parser of a release before the flag does with it
+	type oldPort struct {
+		Name    string   `json:"name"`
+		Command []string `json:"command,omitempty"`
+		User    string   `json:"user,omitempty"`
+		Native  string   `json:"native,omitempty"`
+		Port    int      `json:"port,omitempty"`
+	}
+	var old struct {
+		Console []oldPort               `json:"console,omitempty"`
+		Serial  []portkeeper.SerialPort `json:"serial,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(ports))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&old); err != nil {
+		t.Fatalf("an older service refuses the list: %v", err)
+	}
+	full := consolespec.KeeperSpec(&r1.Spec)
+	if !full.Console[0].KernelLog {
+		t.Fatal("the keeper's own list keeps the flag")
+	}
+	ks, err := portkeeper.Parse(ports)
+	if err != nil || portkeeper.Hash(ks) != consolespec.PortsHash(full) {
+		t.Fatalf("the list does not have the digest of the pod label: %v", err)
+	}
+	if !cableStatus(t, c, "l1").LineUp {
+		t.Fatal("the line is not up")
 	}
 }

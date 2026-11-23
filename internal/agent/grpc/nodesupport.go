@@ -129,7 +129,7 @@ func verifyKernelLog(nodes []corev1.Node, selector map[string]string, toleration
 		}
 		checked++
 		v, ok := n.Annotations[names.AnnotationConsoleKernelLog]
-		if code := nodeagent.KernelLogCodeOf(v, ok); code != "" {
+		if code := nodeagent.KernelLogCodeOf(v, ok, n.Annotations[names.AnnotationConsoleRelayKey]); code != "" {
 			byCode[code]++
 		}
 	}
