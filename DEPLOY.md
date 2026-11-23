@@ -1260,25 +1260,46 @@ never over the lab network or a device NIC: a cable works with every lab interfa
   unknown field is refused, and at most 500 lines are taken per node. The service still has no Kubernetes API rights.
 - **Same node.** The owner attaches both ends and copies the bytes in its own process.
 - **Two nodes.** The owner dials the device access pod of the serial end's node at its pod IP and `consoleCables.port` (default 8081):
-  a WebSocket on the pod network. The first message names the cable, its UID, the lab and its UID and both ends, with the dialer's time,
-  a 16-byte nonce and an HMAC-SHA256 over every field, with the key of the Secret `laboratory-console-cable-key` of the device access
-  namespace (64 random characters made once by the chart, kept across upgrades; no other component mounts it; delete it and upgrade to
-  rotate: the pods read the file again when it changes, and lines reconnect once both ends have the new key). The acceptor checks the MAC
-  in constant time, the time within 30 s of its own clock and that the nonce was not seen, then serves it only for a line its own
-  node-agent gave it with the `serial` role and the same cable, UID, lab, lab UID and ends: a holder of the key can reach nothing but
-  the serial port of a cable that exists, and never a device of another lab or tenant. Its reply is signed over the request's nonce,
-  so the owner knows it talks to a holder of the key. Then raw bytes in binary frames both ways. A newer authenticated stream for the
-  same line replaces an older one (an owner that restarted).
+  a WebSocket on the pod network, never the lab network.
+  - **Keys.** The master key is the Secret `laboratory-console-cable-key` of the device access namespace (`key`, and `previous` during a
+    rotation). The operator makes it once, when it is missing (32 random bytes, hex), and never reads or changes it; the chart renders no
+    key, so `helm template` or a GitOps render never makes a new one. Only the device access pods mount it. Each node signs with its node
+    key, HMAC-SHA256(master, node name).
+  - **Handshake.** The first message names the dialer's node, the cable, its UID, the lab and its UID and both ends, with the dialer's
+    time, a 16-byte nonce and an HMAC-SHA256 over every field with the dialer's node key. The acceptor checks the MAC (constant time,
+    under `key` or `previous`), the time within 30 s of its own clock and that the nonce was not seen, then serves it only for a line
+    its own node-agent gave it with the `serial` role, the same cable, UID, lab, lab UID and ends, **and the dialer's node equal to the
+    node of the console end** as that node-agent sees it. Its reply carries its own fresh nonce and is signed over both nonces, so the
+    owner knows it talks to a holder of the key. A refusal before authentication is not signed, and a nonce that is not 32 hex
+    characters is never echoed. A newer authenticated stream for the same line replaces an older one.
+  - **Transport.** Every message after the handshake is one frame sealed with AES-256-GCM; each direction has its own key,
+    HMAC(node key, direction, dialer nonce, acceptor nonce, cable UID), and a sequence number from 0 that is part of the GCM nonce and
+    authenticated. Nobody on the path can read the line, inject, change, drop, reorder, replay or splice a frame (from the other direction
+    or another session): the receiver ends the line on anything but the next frame under its own key. A signed open replayed by someone
+    on the path (even one whose original never arrived) is accepted at most once and yields a stream the replayer can neither read nor
+    write, since it lacks the node key and the acceptor's nonce is new.
+  - **Abuse bounds.** At most 64 handshakes are pending at once, 4 from one address, each must send its first message within 3 s; the
+    nonce cache holds 20000 nonces, at most 2000 of one address (an address over its quota loses its own oldest), and when full forgets
+    the oldest, so a flood never locks the lines of everybody else.
+  - **Rotation.** Put the current key under `previous` and a new one under `key` (`kubectl -n laboratory-device-access edit secret
+    laboratory-console-cable-key`), wait until every device access pod reads the files (about a minute; lines keep running and new
+    streams are signed with the new key and accepted with either), then remove `previous`. Deleting the Secret makes the operator create
+    a fresh key; lines across nodes then reconnect once every pod has it.
 - **Limits.** Each direction of a line is capped at 64 KiB/s (`max_bytes_per_second` of the feature; a real 115200-baud line is
-  about 11 KiB/s) and blocks when the far side does not read; a write that is not taken for 30 s ends the line.
+  about 11 KiB/s) and blocks when the far side does not read; a write that is not taken for 30 s ends the line. A node runs at most 500
+  lines. Past that the lines are taken in a fixed order (the oldest cable first, then namespace and name) and the labs share the node:
+  one line of each lab in turn, so a lab with many cables cannot take the lines of the others. A refused line is reported with the reason
+  `NodeLineLimit`.
 - **Retry.** A line that is down is tried again after 0.5 s, doubling to 10 s (back to 0.5 s after a line that stayed up 10 s). A
   device restart ends its attach: the line goes down and is attached again to the new keeper (the console program starts fresh). A
   restart of a device access pod drops the lines of its node; the node-agent gives them again within a second and the keepers keep
   their PTYs, so a logged-in session survives.
 - **Network policy** (`terminal.networkPolicy.enabled`, Cilium): ingress on `consoleCables.port` only from the device access pods,
   egress of the device access pods only to the device access pods on that port; nothing else is opened (the proxy still reaches only the
-  console port, and only with `terminal.enabled`). The stream is authenticated on its own, so a cluster without Cilium (kind) still
-  refuses every unsigned or replayed request; the policy keeps everything else off the port.
+  console port, and only with `terminal.enabled`). With the Cilium policies off the chart renders a plain NetworkPolicy
+  `laboratory-device-access-cables` instead: ingress on the cable port only from the device access pods, the console port only from the
+  L7 proxy pods, the metrics port as open as without a policy (it needs a CNI that enforces NetworkPolicy). The stream is authenticated
+  and sealed on its own either way.
 - **Metrics.** `device_access_console_lines{role,state}` (lines of the node, up and down) and `device_access_bytes_total{kind="line"}`;
   refused cable streams count in `device_access_refused_total{code="cable-…"}`. The log has one line when a line goes up or down
   (cable, role, reason), never its bytes.

@@ -11,9 +11,10 @@ import (
 //     there is no field for a program, a container or a user: the service runs only "probe port-attach <port>" in a lab device it found
 //     itself.
 //   - the cable stream between the device access services of two nodes (CablePath, a WebSocket on the pod network): the owner of a line
-//     dials the service of the node of the serial end. The first message is CableOpen, authenticated with an HMAC of a key only the device
-//     access pods hold, with a time and a nonce; the reply is authenticated the same way. Then binary messages both ways: Data frames with
-//     the raw bytes of the line and one Close frame with a reason.
+//     dials the service of the node of the serial end. The first message is CableOpen, authenticated with an HMAC of the dialer's node key
+//     (derived from a key only the device access pods hold and the dialer's node name), with a time and a nonce; the reply is authenticated
+//     the same way and adds the acceptor's nonce. Then every binary message is sealed (AES-256-GCM with keys of this session, derived from
+//     the node key and both nonces, and a sequence number per direction): Data frames with the raw bytes of the line and one Close frame.
 
 // LinesPath is the endpoint of cable.sock: PUT sets the lines of the node (the body is a LinesRequest), GET reads their state; both
 // answer a LinesReply.
@@ -24,7 +25,7 @@ const CablePath = "/v1/cable"
 
 // RelayVersion is the version of the line relay a service speaks. The node-agent publishes the feature only when the service of its node
 // answers with this version or a later one.
-const RelayVersion = 1
+const RelayVersion = 2
 
 // Roles of a line on a node.
 const (
@@ -40,6 +41,8 @@ const (
 	LineWaitingForDevice = "WaitingForDevice"
 	LinePortDown         = "PortDown"
 	LinePeerUnreachable  = "PeerUnreachable"
+	// LineNodeLineLimit: the node runs MaxLinesPerNode lines already; the line is not started (each lab gets a fair share of the node).
+	LineNodeLineLimit = "NodeLineLimit"
 )
 
 // LineEnd is one end of a line: a device of the lab, the port, and the device's whole port list (the JSON of the keeper's list) whose
@@ -65,6 +68,11 @@ type LineSpec struct {
 	Role    string  `json:"role"`
 	// Peer (owner only) is host:port of the device access pod on the node of the serial end; empty when the serial end runs on this node.
 	Peer string `json:"peer,omitempty"`
+	// ConsoleNode (serial role only) is the node of the console end: the only node whose device access service may open the stream.
+	ConsoleNode string `json:"consoleNode,omitempty"`
+	// Created is the creation time of the ConsoleCable (Unix seconds): with the namespace and name it orders the lines when the node is
+	// full, so the same set always keeps the same lines.
+	Created int64 `json:"created,omitempty"`
 }
 
 // LinesRequest is the whole set of lines of the node. A line that is not in it is stopped.
@@ -102,7 +110,9 @@ type PortRef struct {
 
 // CableOpen is the first message of a cable stream. Every field but MAC is covered by MAC (see the deviceaccess package, cable_auth.go).
 type CableOpen struct {
-	V         int     `json:"v"`
+	V int `json:"v"`
+	// Node is the node of the dialer; its node key signs the request, and the acceptor serves it only from the console end's node.
+	Node      string  `json:"node"`
 	Namespace string  `json:"namespace"`
 	Name      string  `json:"name"`
 	UID       string  `json:"uid"`
@@ -116,13 +126,15 @@ type CableOpen struct {
 	MAC   string `json:"mac"`
 }
 
-// CableReply answers a CableOpen. Nonce repeats the nonce of the request and MAC covers it with OK and Error, so the dialer knows the
-// answer comes from a holder of the key and belongs to its request.
+// CableReply answers a CableOpen. Nonce repeats the nonce of the request (or is empty when that nonce was malformed) and Accept is the
+// acceptor's own nonce; MAC covers both with OK and Error, so the dialer knows the answer comes from a holder of the key and belongs to its
+// request. The session keys are derived from both nonces.
 type CableReply struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
-	Nonce string `json:"nonce"`
-	MAC   string `json:"mac"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+	Nonce  string `json:"nonce"`
+	Accept string `json:"accept,omitempty"`
+	MAC    string `json:"mac"`
 }
 
 // CodePortDown is the refusal of a cable stream whose serial port cannot be attached now (busy, no keeper, the port failed).

@@ -56,6 +56,10 @@ type Config struct {
 	CablePeerUID int    `env:"CABLE_PEER_UID" envDefault:"0"`
 	CableListen  string `env:"CABLE_LISTEN"`
 	CableKeyFile string `env:"CABLE_KEY_FILE"`
+	// CableKeyPreviousFile is the key being rotated out (accepted, never used to sign); the file may be absent.
+	CableKeyPreviousFile string `env:"CABLE_KEY_PREVIOUS_FILE"`
+	// NodeName is the node of the pod (downward API): its node key signs the cable streams it dials.
+	NodeName string `env:"NODE_NAME"`
 
 	PerClient int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
 	PerLab    int           `env:"LIMIT_PER_LAB" envDefault:"10"`
@@ -131,9 +135,10 @@ func run(cfg Config) error {
 	lim.KeyRecheck = cfg.KeyReload
 	var cableKey *deviceaccess.CableKey
 	if cfg.CableKeyFile != "" {
-		cableKey = deviceaccess.NewCableKey(cfg.CableKeyFile)
+		cableKey = deviceaccess.NewCableKey(cfg.CableKeyFile, cfg.CableKeyPreviousFile)
 	}
-	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL), CableKey: cableKey})
+	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL),
+		CableKey: cableKey, NodeName: cfg.NodeName})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())
@@ -169,8 +174,8 @@ func run(cfg Config) error {
 	}
 	listeners := []*http.Server{api, metrics}
 	if cfg.CableListen != "" {
-		if cableKey == nil {
-			return errors.New("CABLE_LISTEN needs CABLE_KEY_FILE")
+		if cableKey == nil || cfg.NodeName == "" {
+			return errors.New("CABLE_LISTEN needs CABLE_KEY_FILE and NODE_NAME")
 		}
 		cable := deviceaccess.NewHTTPServer(cfg.CableListen, svc.CableHandler())
 		servers = append(servers, cable)

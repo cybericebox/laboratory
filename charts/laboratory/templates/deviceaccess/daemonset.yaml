@@ -125,6 +125,13 @@ spec:
               value: {{ printf "$(POD_IP):%d" (int .Values.consoleCables.port) | quote }}
             - name: CABLE_KEY_FILE
               value: /etc/device-access/cable-key/key
+            - name: CABLE_KEY_PREVIOUS_FILE
+              value: /etc/device-access/cable-key/previous
+            # The node key of this pod is derived from the master key and the node name; the acceptor checks the dialer's node.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             {{- end }}
           ports:
             - name: stream
@@ -216,10 +223,13 @@ spec:
           hostPath:
             path: {{ .Values.consoleCables.socketDir | quote }}
             type: DirectoryOrCreate
+        # Made once by the operator when it is missing and never changed by it afterwards (no helm lookup: a render never makes a new
+        # key). Optional: the pod starts before the operator made it; lines across nodes wait for the file.
         - name: cable-key
           secret:
             secretName: laboratory-console-cable-key
             defaultMode: 0400
+            optional: true
         {{- end }}
         - name: tmp
           emptyDir:

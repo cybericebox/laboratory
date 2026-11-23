@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -126,20 +126,55 @@ func TestConsoleCablesDeviceAccess(t *testing.T) {
 	}
 }
 
-// The key is a Secret of the device access namespace, long and random, mounted by the device access DaemonSet only.
+// The key is not rendered by the chart (a render without a cluster would make a new one each time): the operator makes the Secret once,
+// with a create-only right in the device access namespace, and the DaemonSet mounts it as optional, with the previous key of a rotation.
 func TestConsoleCableKey(t *testing.T) {
-	var s corev1.Secret
-	render(t, "templates/deviceaccess/console-cable-key.yaml", &s, cablesOn...)
-	if s.Namespace != "laboratory-device-access" || len(s.StringData["key"]) != 64 {
-		t.Fatalf("secret %s/%s, key of %d bytes", s.Namespace, s.Name, len(s.StringData["key"]))
-	}
 	out, err := helmTemplate(t, cablesOn...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, doc := range strings.Split(out, "\n---\n") {
-		if strings.Contains(doc, "laboratory-console-cable-key") && !strings.Contains(doc, "name: laboratory-device-access\n") && !strings.Contains(doc, "kind: Secret") {
-			t.Errorf("the key is referenced outside the device access DaemonSet:\n%s", doc)
+	if strings.Contains(out, "kind: Secret\nmetadata:\n  name: laboratory-console-cable-key") {
+		t.Fatal("the chart renders the cable key")
+	}
+	var ds appsv1.DaemonSet
+	render(t, "templates/deviceaccess/daemonset.yaml", &ds, cablesOn...)
+	for _, v := range ds.Spec.Template.Spec.Volumes {
+		if v.Name == "cable-key" && (v.Secret == nil || v.Secret.Optional == nil || !*v.Secret.Optional) {
+			t.Errorf("the key volume must be optional: %+v", v)
+		}
+	}
+	if e := envOf(ds.Spec.Template.Spec.Containers[0]); e["CABLE_KEY_PREVIOUS_FILE"].Value != "/etc/device-access/cable-key/previous" ||
+		e["NODE_NAME"].ValueFrom == nil || e["NODE_NAME"].ValueFrom.FieldRef.FieldPath != "spec.nodeName" {
+		t.Errorf("env %+v", e)
+	}
+	role, err := helmTemplate(t, append(append([]string{}, cablesOn...), "-s", "templates/deviceaccess/access-keys-rbac.yaml")...)
+	if err != nil || !strings.Contains(role, "resources: [ secrets ]\n    verbs: [ create ]") || strings.Contains(role, "secrets ]\n    verbs: [ get") {
+		t.Errorf("the operator may create the key Secret and nothing more:\n%s", role)
+	}
+	off, _ := helmTemplate(t, append(append([]string{}, consoleOn...), "-s", "templates/deviceaccess/access-keys-rbac.yaml")...)
+	if strings.Contains(off, "secrets") {
+		t.Error("console cables off, but the operator may create Secrets")
+	}
+}
+
+// Without the Cilium policies a plain NetworkPolicy keeps the cable port to the device access pods; with them, or with the cables off, none.
+func TestConsoleCablesKubernetesNetworkPolicy(t *testing.T) {
+	var np networkingv1.NetworkPolicy
+	render(t, "templates/deviceaccess/netpol-k8s.yaml", &np, append(append([]string{}, cablesOn...), "--set", "terminal.networkPolicy.enabled=false")...)
+	if np.Namespace != "laboratory-device-access" || np.Spec.PodSelector.MatchLabels["app"] != "laboratory-device-access" || len(np.Spec.Ingress) != 2 {
+		t.Fatalf("policy %+v", np)
+	}
+	cable := np.Spec.Ingress[0]
+	if len(cable.From) != 1 || cable.From[0].PodSelector.MatchLabels["app"] != "laboratory-device-access" || cable.From[0].NamespaceSelector != nil ||
+		len(cable.Ports) != 1 || cable.Ports[0].Port.IntValue() != 8081 {
+		t.Errorf("cable rule %+v", cable)
+	}
+	if metrics := np.Spec.Ingress[1]; len(metrics.From) != 0 || metrics.Ports[0].Port.IntValue() != 9102 {
+		t.Errorf("metrics rule %+v", metrics)
+	}
+	for _, extra := range [][]string{append([]string{}, cablesOn...), append(append([]string{}, consoleOn...), "--set", "terminal.networkPolicy.enabled=false")} {
+		if out, err := helmTemplate(t, append(extra, "-s", "templates/deviceaccess/netpol-k8s.yaml")...); err == nil && strings.Contains(out, "kind: NetworkPolicy") {
+			t.Errorf("rendered with %v", extra)
 		}
 	}
 }

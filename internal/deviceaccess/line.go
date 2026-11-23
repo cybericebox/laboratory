@@ -38,7 +38,8 @@ var (
 // lineChunk is the most bytes one read of a side returns; lineBurst is the burst of the rate cap.
 const (
 	lineChunk = 4 << 10
-	lineBurst = 2 * lineChunk
+	// lineBurst is at least the largest frame the stream gives (wire.MaxData); the relay also never waits for more than it at once.
+	lineBurst = wire.MaxData
 )
 
 // errAttachRefused is an attach that ended before the keeper accepted it (busy, no keeper, the port failed).
@@ -164,9 +165,17 @@ func (s *Service) attachPort(ctx context.Context, e endRef) (*portAttach, string
 		if err == nil {
 			return p, "", nil
 		}
-		st := <-exited
+		// The exec is removed first; its exit code (when the runtime still reports it) says why the attach ended.
 		p.close("")
-		return nil, wire.LinePortDown, attachExit(st)
+		select {
+		case st, ok := <-exited:
+			if ok {
+				return nil, wire.LinePortDown, attachExit(st)
+			}
+		case <-ctx.Done():
+		case <-time.After(s.lim.Cleanup):
+		}
+		return nil, wire.LinePortDown, errAttachRefused
 	case <-timer.C:
 		p.close("")
 		return nil, wire.LinePortDown, errors.New("the attach did not answer in time")
@@ -208,15 +217,20 @@ func (s *Service) relay(ctx context.Context, a, b side, reason func(int) string)
 				ended <- srcIdx
 				return
 			}
-			if err := lim.WaitN(ctx, len(p)); err != nil {
-				ended <- -1
-				return
+			// at most lineBurst at a time: WaitN refuses more than the burst, which would end the line
+			for len(p) > 0 {
+				chunk := p[:min(len(p), lineBurst)]
+				if err := lim.WaitN(ctx, len(chunk)); err != nil {
+					ended <- -1
+					return
+				}
+				if err := dst.write(chunk); err != nil {
+					ended <- 1 - srcIdx
+					return
+				}
+				bytes.Add(float64(len(chunk)))
+				p = p[len(chunk):]
 			}
-			if err := dst.write(p); err != nil {
-				ended <- 1 - srcIdx
-				return
-			}
-			bytes.Add(float64(len(p)))
 		}
 	}
 	go pump(a, b, 0, "to-serial")

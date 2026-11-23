@@ -119,29 +119,81 @@ func validateLine(l wire.LineSpec) error {
 		if l.Peer != "" {
 			return errors.New("a serial-end line has no peer")
 		}
+		if l.ConsoleNode == "" || len(l.ConsoleNode) > maxName {
+			return errors.New("a serial-end line names the node of its console end")
+		}
 	default:
 		return errors.New("unknown role")
 	}
 	return nil
 }
 
-// SyncLines makes the lines of the node the given set and returns their state.
+// admitLines is the lines the node runs, at most MaxLinesPerNode, and the ones it refuses for the limit. The order is deterministic
+// whatever the order of the request: by the creation of the cable, then by namespace and name. The labs share the node fairly: one
+// line of each lab in turn (labs ordered by their first line), so a lab with many cables cannot take the lines of the others.
+func admitLines(lines []wire.LineSpec) (admitted, refused []wire.LineSpec) {
+	sorted := append([]wire.LineSpec(nil), lines...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		if a.Created != b.Created {
+			return a.Created < b.Created
+		}
+		return lineID(a.Namespace, a.Name) < lineID(b.Namespace, b.Name)
+	})
+	var labs []string
+	byLab := map[string][]wire.LineSpec{}
+	for _, l := range sorted {
+		lab := l.Namespace + "/" + l.Lab
+		if _, ok := byLab[lab]; !ok {
+			labs = append(labs, lab)
+		}
+		byLab[lab] = append(byLab[lab], l)
+	}
+	for round := 0; ; round++ {
+		any := false
+		for _, lab := range labs {
+			if round >= len(byLab[lab]) {
+				continue
+			}
+			any = true
+			if len(admitted) < MaxLinesPerNode {
+				admitted = append(admitted, byLab[lab][round])
+			} else {
+				refused = append(refused, byLab[lab][round])
+			}
+		}
+		if !any {
+			return admitted, refused
+		}
+	}
+}
+
+// SyncLines makes the lines of the node the given set and returns their state; a line refused for the limit of the node is in the answer
+// with the reason wire.LineNodeLineLimit.
 func (s *Service) SyncLines(req wire.LinesRequest) wire.LinesReply {
 	set := s.lines
-	desired := map[string]wire.LineSpec{}
-	keys := map[string]string{}
+	var valid []wire.LineSpec
+	seen := map[string]bool{}
 	for _, l := range req.Lines {
 		if err := validateLine(l); err != nil {
 			s.log.Info("console line refused", "namespace", l.Namespace, "cable", l.Name, "reason", err.Error())
 			continue
 		}
-		if len(desired) >= MaxLinesPerNode {
-			s.log.Info("console line refused: too many lines on this node", "namespace", l.Namespace, "cable", l.Name, "limit", MaxLinesPerNode)
-			continue
+		if id := lineID(l.Namespace, l.Name); !seen[id] {
+			seen[id] = true
+			valid = append(valid, l)
 		}
+	}
+	admitted, refused := admitLines(valid)
+	desired := map[string]wire.LineSpec{}
+	keys := map[string]string{}
+	for _, l := range admitted {
 		raw, _ := json.Marshal(l)
 		id := lineID(l.Namespace, l.Name)
 		desired[id], keys[id] = l, string(raw)
+	}
+	if len(refused) > 0 {
+		s.log.Info("console lines refused: the node runs the most lines it may", "refused", len(refused), "limit", MaxLinesPerNode)
 	}
 	set.mu.Lock()
 	s.mu.Lock()
@@ -162,7 +214,11 @@ func (s *Service) SyncLines(req wire.LinesRequest) wire.LinesReply {
 		}
 	}
 	set.mu.Unlock()
-	return s.LineStates()
+	reply := s.LineStates()
+	for _, l := range refused {
+		reply.Lines = append(reply.Lines, wire.LineState{Namespace: l.Namespace, Name: l.Name, UID: l.UID, Role: l.Role, Reason: wire.LineNodeLineLimit})
+	}
+	return reply
 }
 
 // LineStates is the state of every line of the node, sorted by cable.
@@ -220,7 +276,7 @@ func (set *lineSet) start(spec wire.LineSpec, key string) *line {
 }
 
 // accepting is the serial-end line that a cable stream asks for: the same cable (name and UID), the same lab and lab UID and the same two
-// ends, given to this node with the serial-end role. nil otherwise.
+// ends, given to this node with the serial-end role, and dialled from the node of its console end. nil otherwise.
 func (set *lineSet) accepting(r wire.CableOpen) *line {
 	set.mu.Lock()
 	defer set.mu.Unlock()
@@ -229,7 +285,7 @@ func (set *lineSet) accepting(r wire.CableOpen) *line {
 		return nil
 	}
 	sp := l.spec
-	if sp.Role != wire.RoleSerial || sp.UID != r.UID || sp.Lab != r.Lab || sp.LabUID != r.LabUID ||
+	if sp.Role != wire.RoleSerial || sp.ConsoleNode != r.Node || sp.UID != r.UID || sp.Lab != r.Lab || sp.LabUID != r.LabUID ||
 		sp.Serial.Device != r.Serial.Device || sp.Serial.Port != r.Serial.Port || sp.Console.Device != r.Console.Device || sp.Console.Port != r.Console.Port {
 		return nil
 	}
