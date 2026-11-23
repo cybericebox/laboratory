@@ -2,7 +2,8 @@
 {{- /*
 The device access service (docs/specs/2026-11-12-device-access-and-checks.md, section 3; DEPLOY.md, "Device console"): a DaemonSet on the lab
 nodes, one container, the only component that holds the container runtime socket. It opens a shell in a lab device for the L7
-proxy, which is the only caller its network policy admits. Made while terminal.enabled, checks.enabled or consoleCables.enabled is true.
+proxy, runs the probe for the lab checker and moves the bytes of console lines (consoleCables). Made while terminal.enabled, checks.enabled
+or consoleCables.enabled is true.
 */ -}}
 {{- $socket := include "laboratory.deviceAccess.socket" . }}
 {{- $lim := .Values.terminal.limits }}
@@ -111,11 +112,32 @@ spec:
             - name: CHECKER_MAX_CONCURRENT
               value: {{ .Values.checks.maxConcurrent | quote }}
             {{- end }}
+            {{- if .Values.consoleCables.enabled }}
+            # Console lines: cable.sock for the node-agent of this node and the cable stream from the device access pods of the other nodes
+            # (on the pod IP). The stream is signed with an identity the process makes at start (in memory); there is no shared key.
+            - name: CABLE_SOCKET
+              value: {{ printf "%s/cable.sock" (trimSuffix "/" .Values.consoleCables.socketDir) | quote }}
+            - name: CABLE_PEER_UID
+              value: {{ .Values.consoleCables.socketUid | quote }}
+            - name: CABLE_GID
+              value: {{ .Values.consoleCables.socketGid | quote }}
+            - name: CABLE_LISTEN
+              value: {{ printf "$(POD_IP):%d" (int .Values.consoleCables.port) | quote }}
+            # The node this pod names in the streams it dials; the acceptor serves it only for lines whose console end runs there.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- end }}
           ports:
             - name: stream
               containerPort: {{ .Values.terminal.port }}
             - name: metrics
               containerPort: {{ .Values.terminal.metricsPort }}
+            {{- if .Values.consoleCables.enabled }}
+            - name: cable
+              containerPort: {{ .Values.consoleCables.port }}
+            {{- end }}
           securityContext:
             # No privilege and no capability. Root, because the runtime socket is root:root 0660 on k0s and the FIFO directory is made by
             # this user for the root shim to open: a root user without capabilities may use both, since it owns them. A non-root user works
@@ -158,6 +180,10 @@ spec:
             - name: checker-socket
               mountPath: {{ .Values.checks.socketDir | quote }}
             {{- end }}
+            {{- if .Values.consoleCables.enabled }}
+            - name: cable-socket
+              mountPath: {{ .Values.consoleCables.socketDir | quote }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             # The access public keys of the tenants (public data, mirrored by the operator): the service verifies the grant of a console with them.
@@ -183,6 +209,12 @@ spec:
         - name: checker-socket
           hostPath:
             path: {{ .Values.checks.socketDir | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
+        {{- if .Values.consoleCables.enabled }}
+        - name: cable-socket
+          hostPath:
+            path: {{ .Values.consoleCables.socketDir | quote }}
             type: DirectoryOrCreate
         {{- end }}
         - name: tmp

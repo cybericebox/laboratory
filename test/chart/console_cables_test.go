@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -71,4 +73,155 @@ func TestFeatureAdmissionConsoleCables(t *testing.T) {
 	accepted(t, on.other.Create(ctx, lab(ns, "cable", withConsoleCable)))
 	accepted(t, on.other.Create(ctx, &laboratoryv1alpha1.ConsoleCable{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: ns}, Spec: laboratoryv1alpha1.ConsoleCableSpec{LabRef: "l",
 		Serial: laboratoryv1alpha1.PortRef{Device: "pc1", Port: "serial0"}, Console: laboratoryv1alpha1.PortRef{Device: "r1", Port: "console0"}}}))
+}
+
+var cablesOn = append(append([]string{}, agentSet...), "--set", "consoleCables.enabled=true")
+
+// With console cables on, the device access service gets cable.sock (in the node directory it shares with the node-agent), the listener of
+// the cable stream on its pod IP and the key of that stream, which no other component mounts.
+func TestConsoleCablesDeviceAccess(t *testing.T) {
+	var ds appsv1.DaemonSet
+	render(t, "templates/deviceaccess/daemonset.yaml", &ds, cablesOn...)
+	spec := ds.Spec.Template.Spec
+	env := envOf(spec.Containers[0])
+	want := map[string]string{
+		"CABLE_SOCKET": "/run/cybericebox/console-cables/cable.sock", "CABLE_PEER_UID": "0", "CABLE_GID": "0",
+		"CABLE_LISTEN": "$(POD_IP):8081",
+	}
+	for k, v := range want {
+		if env[k].Value != v {
+			t.Errorf("%s = %q, want %q", k, env[k].Value, v)
+		}
+	}
+	port := false
+	for _, p := range spec.Containers[0].Ports {
+		port = port || p.Name == "cable" && p.ContainerPort == 8081
+	}
+	if !port {
+		t.Error("the cable port is not declared")
+	}
+	var hostDir string
+	for _, v := range spec.Volumes {
+		if v.Name == "cable-socket" && v.HostPath != nil {
+			hostDir = v.HostPath.Path
+		}
+		if v.Secret != nil && strings.Contains(v.Secret.SecretName, "cable") {
+			t.Errorf("a cable key Secret is mounted: %+v", v)
+		}
+	}
+	if hostDir != "/run/cybericebox/console-cables" {
+		t.Errorf("volumes: %q", hostDir)
+	}
+
+	// off: nothing of it
+	var off appsv1.DaemonSet
+	render(t, "templates/deviceaccess/daemonset.yaml", &off, consoleOn...)
+	for k := range envOf(off.Spec.Template.Spec.Containers[0]) {
+		if strings.HasPrefix(k, "CABLE_") {
+			t.Errorf("console cables off, but %s is set", k)
+		}
+	}
+	if out, err := helmTemplate(t, append(append([]string{}, consoleOn...), "-s", "templates/deviceaccess/console-cable-key.yaml")...); err == nil && strings.Contains(out, "kind: Secret") {
+		t.Error("console cables off, but the key is rendered")
+	}
+}
+
+// There is no shared key: each device access process makes its own identity at start. The chart renders no key Secret, the DaemonSet mounts
+// none, the operator gets no right on Secrets there, and the pod knows its node (the name it signs as).
+func TestConsoleCablesHaveNoSharedKey(t *testing.T) {
+	out, err := helmTemplate(t, cablesOn...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "laboratory-console-cable-key") || strings.Contains(out, "CABLE_KEY") {
+		t.Fatal("the chart still renders or mounts a cable key")
+	}
+	var ds appsv1.DaemonSet
+	render(t, "templates/deviceaccess/daemonset.yaml", &ds, cablesOn...)
+	if e := envOf(ds.Spec.Template.Spec.Containers[0]); e["NODE_NAME"].ValueFrom == nil || e["NODE_NAME"].ValueFrom.FieldRef.FieldPath != "spec.nodeName" {
+		t.Errorf("env %+v", e)
+	}
+	role, err := helmTemplate(t, append(append([]string{}, cablesOn...), "-s", "templates/deviceaccess/access-keys-rbac.yaml")...)
+	if err != nil || strings.Contains(role, "secrets") {
+		t.Errorf("the operator may touch Secrets in the device access namespace:\n%s", role)
+	}
+}
+
+// Without the Cilium policies a plain NetworkPolicy keeps the cable port to the device access pods; with them, or with the cables off, none.
+func TestConsoleCablesKubernetesNetworkPolicy(t *testing.T) {
+	var np networkingv1.NetworkPolicy
+	render(t, "templates/deviceaccess/netpol-k8s.yaml", &np, append(append([]string{}, cablesOn...), "--set", "terminal.networkPolicy.enabled=false")...)
+	if np.Namespace != "laboratory-device-access" || np.Spec.PodSelector.MatchLabels["app"] != "laboratory-device-access" || len(np.Spec.Ingress) != 2 {
+		t.Fatalf("policy %+v", np)
+	}
+	cable := np.Spec.Ingress[0]
+	if len(cable.From) != 1 || cable.From[0].PodSelector.MatchLabels["app"] != "laboratory-device-access" || cable.From[0].NamespaceSelector != nil ||
+		len(cable.Ports) != 1 || cable.Ports[0].Port.IntValue() != 8081 {
+		t.Errorf("cable rule %+v", cable)
+	}
+	if metrics := np.Spec.Ingress[1]; len(metrics.From) != 0 || metrics.Ports[0].Port.IntValue() != 9102 {
+		t.Errorf("metrics rule %+v", metrics)
+	}
+	for _, extra := range [][]string{append([]string{}, cablesOn...), append(append([]string{}, consoleOn...), "--set", "terminal.networkPolicy.enabled=false")} {
+		if out, err := helmTemplate(t, append(extra, "-s", "templates/deviceaccess/netpol-k8s.yaml")...); err == nil && strings.Contains(out, "kind: NetworkPolicy") {
+			t.Errorf("rendered with %v", extra)
+		}
+	}
+}
+
+type ciliumPeer struct {
+	MatchLabels map[string]string `json:"matchLabels"`
+}
+
+type ciliumRule struct {
+	FromEndpoints []ciliumPeer `json:"fromEndpoints"`
+	ToEndpoints   []ciliumPeer `json:"toEndpoints"`
+	ToPorts       []struct {
+		Ports []struct {
+			Port string `json:"port"`
+		} `json:"ports"`
+	} `json:"toPorts"`
+}
+
+type ciliumPolicy struct {
+	Spec struct {
+		Ingress []ciliumRule `json:"ingress"`
+		Egress  []ciliumRule `json:"egress"`
+	} `json:"spec"`
+}
+
+func rulePorts(r ciliumRule) string {
+	var out []string
+	for _, tp := range r.ToPorts {
+		for _, p := range tp.Ports {
+			out = append(out, p.Port)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// The Cilium policy of the service with console cables: the device access pods reach each other on the cable port and nothing else; the
+// proxy still only on the stream port, and only with the console on.
+func TestConsoleCablesNetworkPolicy(t *testing.T) {
+	var p ciliumPolicy
+	render(t, "templates/deviceaccess/netpol.yaml", &p, cablesOn...)
+	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].FromEndpoints) != 1 || p.Spec.Ingress[0].FromEndpoints[0].MatchLabels["app"] != "laboratory-device-access" ||
+		p.Spec.Ingress[0].FromEndpoints[0].MatchLabels["k8s:io.kubernetes.pod.namespace"] != "laboratory-device-access" ||
+		rulePorts(p.Spec.Ingress[0]) != "8081" {
+		t.Errorf("ingress: %+v", p.Spec.Ingress)
+	}
+	if len(p.Spec.Egress) != 1 || len(p.Spec.Egress[0].ToEndpoints) != 1 || p.Spec.Egress[0].ToEndpoints[0].MatchLabels["app"] != "laboratory-device-access" ||
+		rulePorts(p.Spec.Egress[0]) != "8081" {
+		t.Errorf("egress: %+v", p.Spec.Egress)
+	}
+	var both ciliumPolicy
+	render(t, "templates/deviceaccess/netpol.yaml", &both, append(append([]string{}, cablesOn...), "--set", "terminal.enabled=true")...)
+	if len(both.Spec.Ingress) != 2 || both.Spec.Ingress[0].FromEndpoints[0].MatchLabels["app"] != "laboratory-proxy-l7" || rulePorts(both.Spec.Ingress[0]) != "8080" {
+		t.Errorf("ingress with the console: %+v", both.Spec.Ingress)
+	}
+	var none ciliumPolicy
+	render(t, "templates/deviceaccess/netpol.yaml", &none, consoleOn...)
+	if len(none.Spec.Egress) != 1 || len(none.Spec.Egress[0].ToEndpoints) != 0 {
+		t.Errorf("without cables there is no egress: %+v", none.Spec.Egress)
+	}
 }

@@ -25,7 +25,8 @@ const (
 const attachRetry = 3 * time.Second
 
 // Attach is probe port-attach: it connects to the keeper's socket of the port and copies bytes between it and stdin/stdout (the FIFOs
-// of the device access service's exec; Terminal false, so no line discipline is in between) until either side ends. When nobody
+// of the device access service's exec; Terminal false, so no line discipline is in between) until either side ends. Once attached it
+// writes AttachOK to stdout before any byte of the line. When nobody
 // serves the socket it calls start once (a keeper killed by root in the device is started again: its lines restart) and retries.
 func Attach(dir, port string, stdin io.Reader, stdout io.Writer, start func() error) int {
 	return attach(dir, port, stdin, stdout, io.Discard, start)
@@ -56,6 +57,11 @@ func attach(dir, port string, stdin io.Reader, stdout, stderr io.Writer, start f
 	ack := make([]byte, 1)
 	if _, err := io.ReadFull(conn, ack); err != nil || ack[0] != AttachOK {
 		return ExitBusy
+	}
+	// The first byte on stdout tells the device access service that the line is attached (the keeper accepted this client); every byte
+	// after it is the line's. Without it the service could not tell a running attach from one that is about to fail.
+	if _, err := stdout.Write([]byte{AttachOK}); err != nil {
+		return 0
 	}
 	done := make(chan struct{}, 2)
 	go func() {

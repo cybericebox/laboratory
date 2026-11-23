@@ -269,6 +269,19 @@ consoleCables:
   # and the API server. On, it also renders the device access service (it moves the bytes of the lines), and the management agent reports
   # it in the features (console_cables). DEPLOY.md, "Console cables".
   enabled: false
+  # The port of the cable stream: the device access pod on the node of a line's console end dials the device access pod on the node of the
+  # serial end, on the pod network (never the lab network), at the pod IP and this port. Each device access process signs the handshake with
+  # its own Ed25519 identity (made at start, in memory; its node-agent publishes the public key on its Node) and the stream is sealed with
+  # per-session AES-GCM keys from an X25519 exchange. There is no shared key. With terminal.networkPolicy.enabled the Cilium policy admits only
+  # device access pods on this port and gives them egress to it and nothing else; with it off a plain NetworkPolicy keeps the port to the
+  # device access pods. DEPLOY.md, "Console cables".
+  port: 8081
+  # The node directory of cable.sock: the node-agent of a node tells the device access service of the same node, over this unix socket, which
+  # lines to run (mode 0660 for group socketGid, and the peer must be user socketUid of group socketGid: the node-agent, root). Both pods
+  # mount it; nothing else does.
+  socketDir: /run/cybericebox/console-cables
+  socketUid: 0
+  socketGid: 0
 
 microvm:
   # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).

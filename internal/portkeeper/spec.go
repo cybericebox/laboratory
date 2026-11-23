@@ -8,6 +8,8 @@
 package portkeeper
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,6 +219,41 @@ func Parse(b []byte) (Spec, error) {
 		return Spec{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	return s, s.Validate()
+}
+
+// Marshal is the JSON of a port list: the value of the pod annotation the operator writes, the file the keeper reads, and what Hash
+// digests.
+func Marshal(s Spec) []byte {
+	b, _ := json.Marshal(s)
+	return b
+}
+
+// Hash is the digest of a port list that the operator stamps on the pod of the device (names.LabelPorts): the first 32 hex characters
+// of the SHA-256 of its JSON. The device access service recomputes it from the list the node-agent sends and attaches a line only when
+// it equals the label of the sandbox, so the list cannot name a port the device does not have.
+func Hash(s Spec) string {
+	sum := sha256.Sum256(Marshal(s))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
+// HasConsole and HasSerial say the list declares the port with that kind.
+func (s Spec) HasConsole(name string) bool {
+	for _, c := range s.Console {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// HasSerial says the list declares the serial port.
+func (s Spec) HasSerial(name string) bool {
+	for _, p := range s.Serial {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // SocketPath is the unix socket of a port.

@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -46,6 +48,17 @@ type Config struct {
 	CheckerUID           int    `env:"CHECKER_UID" envDefault:"65532"`
 	CheckerMaxSeconds    int    `env:"CHECKER_MAX_SECONDS" envDefault:"120"`
 	CheckerMaxConcurrent int    `env:"CHECKER_MAX_CONCURRENT" envDefault:"8"`
+
+	// Console lines (chart consoleCables.enabled; empty: none). CableSocket is cable.sock, the socket of the node-agent of this node, in a
+	// node directory the two pods share (file mode 0660 for group CableGID and the peer credentials of user CablePeerUID and group CableGID).
+	// CableListen is the listener of the cable stream from the device access pods of other nodes (the pod IP and consoleCables.port). The
+	// stream is authenticated with an Ed25519 identity this process makes at start and keeps in memory; there is no key file.
+	CableSocket  string `env:"CABLE_SOCKET"`
+	CableGID     int    `env:"CABLE_GID" envDefault:"0"`
+	CablePeerUID int    `env:"CABLE_PEER_UID" envDefault:"0"`
+	CableListen  string `env:"CABLE_LISTEN"`
+	// NodeName is the node of the pod (downward API): its node key signs the cable streams it dials.
+	NodeName string `env:"NODE_NAME"`
 
 	PerClient int           `env:"LIMIT_PER_CLIENT" envDefault:"3"`
 	PerLab    int           `env:"LIMIT_PER_LAB" envDefault:"10"`
@@ -119,11 +132,29 @@ func run(cfg Config) error {
 	lim.PerClient, lim.PerLab, lim.PerNode = cfg.PerClient, cfg.PerLab, cfg.PerNode
 	lim.Idle, lim.Lifetime = cfg.Idle, cfg.Lifetime
 	lim.KeyRecheck = cfg.KeyReload
-	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL)})
+	// The identity of the cable stream: new for every process, never written anywhere (the node-agent publishes its public half).
+	id, err := deviceaccess.NewIdentity()
+	if err != nil {
+		return err
+	}
+	// The cable port is the same on every device access pod (the chart's consoleCables.port): the port of this listener is the only port
+	// a peer is dialled on.
+	cablePort := 0
+	if cfg.CableListen != "" {
+		_, p, err := net.SplitHostPort(cfg.CableListen)
+		if err == nil {
+			cablePort, err = strconv.Atoi(p)
+		}
+		if err != nil || cablePort <= 0 || cablePort > 65535 {
+			return fmt.Errorf("CABLE_LISTEN %q has no port", cfg.CableListen)
+		}
+	}
+	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL),
+		Identity: id, NodeName: cfg.NodeName, CablePort: cablePort})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())
-	errc := make(chan error, 3)
+	errc := make(chan error, 5)
 	servers := []*http.Server{api, metrics}
 	if cfg.CheckerSocket != "" {
 		ln, err := deviceaccess.ListenChecker(cfg.CheckerSocket, cfg.CheckerGID, cfg.CheckerUID)
@@ -139,7 +170,31 @@ func run(cfg Config) error {
 		}()
 		log.Info("checker socket", "path", cfg.CheckerSocket)
 	}
-	for _, srv := range []*http.Server{api, metrics} {
+	if cfg.CableSocket != "" {
+		ln, err := deviceaccess.ListenCable(cfg.CableSocket, cfg.CableGID, cfg.CablePeerUID)
+		if err != nil {
+			return fmt.Errorf("cable.sock: %w", err)
+		}
+		sock := deviceaccess.NewHTTPServer("", svc.CableSockHandler())
+		servers = append(servers, sock)
+		go func() {
+			if err := sock.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+		log.Info("cable socket", "path", cfg.CableSocket)
+	}
+	listeners := []*http.Server{api, metrics}
+	if cfg.CableListen != "" {
+		if cfg.NodeName == "" {
+			return errors.New("CABLE_LISTEN needs NODE_NAME")
+		}
+		cable := deviceaccess.NewHTTPServer(cfg.CableListen, svc.CableHandler())
+		servers = append(servers, cable)
+		listeners = append(listeners, cable)
+		log.Info("cable stream listener", "listen", cfg.CableListen)
+	}
+	for _, srv := range listeners {
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- err
