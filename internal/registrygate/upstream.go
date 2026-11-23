@@ -23,9 +23,6 @@ type Registry struct {
 	// AuthHosts are the hosts besides the registry's own whose token endpoint this registry's challenge may name (Docker Hub:
 	// auth.docker.io). A realm anywhere else is refused: the credentials of a pull are never sent to a host the entry does not name.
 	AuthHosts []string
-	// Redirects are the host patterns (normalized by ParseRedirectPatterns) a MANIFEST request to this registry may be redirected to
-	// (registry.k8s.io answers every manifest with a 307 to a regional Artifact Registry host). Empty: no redirect is followed, as always.
-	Redirects []string
 }
 
 // realmAllowed says whether a token realm may receive the pull's credentials: https, on the registry's own host or one of its AuthHosts;
@@ -61,9 +58,6 @@ func (c Creds) anonymous() bool { return c.User == "" && c.Pass == "" }
 // Upstream calls the upstream registries: the token dance, the HEAD that proves access, the GET that fills.
 type Upstream struct {
 	HTTP *http.Client
-	// Timeout is the one deadline of a manifest proof that follows redirects, the whole chain included (the header timeout of a direct
-	// request). Zero: none besides the transport's.
-	Timeout time.Duration
 	// Now is the clock of the token cache (tests).
 	Now func() time.Time
 
@@ -81,7 +75,6 @@ type token struct {
 func NewUpstream(headerTimeout time.Duration) *Upstream {
 	tr := netguard.NewTransport(headerTimeout, nil) // refuses internal addresses for redirect hops; the tests replace the transport, production code never does
 	return &Upstream{
-		Timeout: headerTimeout,
 		HTTP: &http.Client{
 			Transport:     tr,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -103,12 +96,11 @@ type Object struct {
 func (o Object) path() string { return "/v2/" + o.Repo + "/" + o.Kind + "/" + o.Ref }
 
 // Check is the proof of 5.2: the HEAD of the object with the pull's credentials (a token for repository:<repo>:pull first when the
-// registry asks for one). Only a DIRECT 200 from the registry is Allowed (or, for a manifest of a registry with Redirects, the 200 at the end of redirects to the hosts that list allows, judged as a direct answer, credentials never sent to them). 401, 403 and a refused token are Denied. A 404 is NotFound:
+// registry asks for one). A 200 from the registry is Allowed, and so is a redirect (301, 302, 303, 307, 308) of a MANIFEST head (registry.k8s.io answers every manifest with a 307): the registry answered the request that carried the pull's credentials and says the manifest is there; the target is never requested. 401, 403 and a refused token are Denied. A 404 is NotFound:
 // GHCR, Docker Hub and others answer 404, not 401, for a private repository the caller cannot read, but the same 404 answers a ref that
 // is only missing, and the ref is the caller's choice, so the proof alone cannot tell them apart: the cache decides (a 404 on a ref that
 // was already proven is a revocation; a 404 on any other ref is recorded for that ref only). 429, 5xx, a timeout, DNS and anything
-// else are Unreachable. A redirect is never a proof (a registry may redirect without having looked at who asks, and a 200 of a CDN says
-// nothing about the credentials): a redirected answer is inconclusive, Unreachable. A token alone is no proof either (Docker Hub gives
+// else are Unreachable. A redirect of a BLOB head is no proof and stays inconclusive, Unreachable. A token alone is no proof either (Docker Hub gives
 // an empty-scope token for a repository one cannot read): only the HEAD is. credKey names the credentials in the token cache (the HMAC
 // hash, never the secret).
 func (u *Upstream) Check(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, error) {
@@ -118,12 +110,6 @@ func (u *Upstream) Check(ctx context.Context, reg Registry, o Object, c Creds, c
 
 // Proof is Check that also returns the headers of the answer (Docker-Content-Digest of a tag).
 func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, credKey string) (Outcome, http.Header, error) {
-	follows := len(reg.Redirects) > 0 && o.Kind == kindManifests
-	if follows && u.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, u.Timeout)
-		defer cancel()
-	}
 	resp, err := u.do(ctx, http.MethodHead, reg, o, c, credKey)
 	if errors.Is(err, errTokenRefused) {
 		return Denied, nil, nil
@@ -134,27 +120,18 @@ func (u *Upstream) Proof(ctx context.Context, reg Registry, o Object, c Creds, c
 	if err != nil {
 		return Unreachable, nil, err
 	}
-	redirected := false
-	if follows {
-		// Only for a registry that lists redirect hosts: a redirect to a listed host is followed. The final answer is judged as a direct one,
-		// except that a refusal from the target is not a denial (see below).
-		var ok bool
-		first := resp
-		if resp, ok, err = u.followProof(ctx, reg, resp, http.MethodHead, o); err != nil {
-			return Unreachable, nil, err
-		} else if !ok {
-			return Unreachable, nil, nil
-		}
-		redirected = resp != first
-	}
 	defer drain(resp)
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return Allowed, resp.Header.Clone(), nil
-	case http.StatusUnauthorized, http.StatusForbidden:
-		if redirected {
-			return Unreachable, nil, nil // the target never saw the credentials: its refusal is an outage of the transport, not a denial (classify)
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		// registry.k8s.io answers every manifest HEAD with a 307 to a regional host. For a manifest the redirect is the registry saying that the
+		// manifest is there (it answered the request that carried the pull's credentials): the target is never requested, so no credentials and
+		// no request of the gate reach a host the registry names. A blob head that redirects stays inconclusive (the cases below).
+		if o.Kind == kindManifests {
+			return Allowed, resp.Header.Clone(), nil
 		}
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return Denied, nil, nil
 	case http.StatusNotFound:
 		return NotFound, nil, nil

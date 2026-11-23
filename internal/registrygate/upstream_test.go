@@ -142,10 +142,9 @@ func TestFetchRefusesARedirectToAnotherHostOverPlainHTTP(t *testing.T) {
 	}
 }
 
-// A redirect is no proof of access: a registry may redirect without looking at who asks, and a 200 of a CDN says nothing about the
-// credentials. The proof must be a direct 200; a redirected answer, whatever it ends in, is inconclusive (Unreachable), never Allowed
-// and never a denial. A redirect over plain http to another host is not followed at all.
-func TestARedirectIsNoProof(t *testing.T) {
+// A redirect answer to the manifest HEAD counts as the manifest existing (registry.k8s.io answers every manifest with a 307), whatever
+// the target would say: the target is never requested. A redirect of a blob HEAD is still no proof (Unreachable).
+func TestAManifestRedirectIsAProofWithoutFollowing(t *testing.T) {
 	f := newFakeUpstream(t)
 	f.users["alice"] = "pw"
 	f.repos["org/private"] = map[string]bool{"alice": true}
@@ -158,19 +157,18 @@ func TestARedirectIsNoProof(t *testing.T) {
 
 	for _, code := range []int{0, 401, 403, 404, 500} {
 		f.cdnStatus = code
-		if o, _ := u.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o != Unreachable {
-			t.Errorf("redirected manifest (the CDN answers %d): inconclusive, got %v", code, o)
+		if o, _ := u.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o != Allowed {
+			t.Errorf("redirected manifest (the CDN would answer %d): %v, want Allowed", code, o)
 		}
 	}
-	if len(f.authSeen) != 0 {
-		t.Fatalf("the gate must not follow a redirect for a proof: %q", f.authSeen)
+	if len(f.authSeen) != 0 || f.n("cdn") != 0 {
+		t.Fatalf("the gate must not request the redirect target for a proof: %q %d", f.authSeen, f.n("cdn"))
 	}
-	f.cdnStatus = 0
-	f.plainCDN = true
-	f.redirect = true
-	u2 := NewUpstream(5 * time.Second)
-	if o, _ := u2.Check(ctx, reg, obj("org/private", d), Creds{"alice", "pw"}, "h"); o == Allowed {
-		t.Fatalf("a redirect over plain http to another host is not followed: %v", o)
+
+	f.redirectManifests, f.redirect, f.redirectHeads = false, true, true
+	bd := f.put("org/private", "blobs", []byte("layer"))
+	if o, _ := u.Check(ctx, reg, Object{Repo: "org/private", Kind: "blobs", Ref: bd}, Creds{"alice", "pw"}, "h"); o != Unreachable {
+		t.Fatalf("a redirected blob head is no proof: %v", o)
 	}
 }
 

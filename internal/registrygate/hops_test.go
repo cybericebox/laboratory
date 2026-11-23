@@ -51,20 +51,15 @@ func TestFetchDoesNotFollowARedirectToAnInternalEndpoint(t *testing.T) {
 	}
 }
 
-// A name that resolves to the loopback is refused when the connection is made (DNS rebinding), on the fill path and on a manifest proof.
+// A name that resolves to the loopback is refused when the connection is made (DNS rebinding), on the fill path (a manifest proof does not follow a redirect at all).
 func TestARedirectToANameThatResolvesToTheLoopbackIsRefusedAtDialTime(t *testing.T) {
 	reg, _, hits := redirector(t, func(*httptest.Server) string { return "https://rebind.test/x" })
-	reg.Redirects = []string{"rebind.test"}
 	u := NewUpstream(2 * time.Second)
 	u.HTTP.Transport = netguard.NewTransport(2*time.Second, netguardtest.DNSServer(t))
 
 	resp, out, err := u.Fetch(context.Background(), reg, Object{Repo: "o/r", Kind: kindBlobs, Ref: "sha256:00"}, Creds{}, "")
 	if resp != nil || out == Allowed || err == nil || !strings.Contains(err.Error(), "internal address") {
 		t.Fatalf("fill path: %v %v %v", resp != nil, out, err)
-	}
-	pout, _, perr := u.Proof(context.Background(), reg, Object{Repo: "o/r", Kind: kindManifests, Ref: "latest"}, Creds{}, "")
-	if pout == Allowed || perr == nil || !strings.Contains(perr.Error(), "internal address") {
-		t.Fatalf("proof: %v %v", pout, perr)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("the target was reached: %d", hits.Load())

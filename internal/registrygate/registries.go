@@ -50,12 +50,11 @@ func (s *RegistrySet) Names() []string {
 	return out
 }
 
-// ParseRegistries reads [{"name": "ghcr.io", "url": "https://ghcr.io", "authHosts": ["auth.example"], "redirects": ["*.pkg.dev"]}, ...] (authHosts and redirects optional; redirects are the hosts a manifest request may be redirected to, see ParseRedirectPatterns; a bad pattern refuses the whole list). A URL is https, or http for a registry inside the cluster.
+// ParseRegistries reads [{"name": "ghcr.io", "url": "https://ghcr.io", "authHosts": ["auth.example"]}, ...] (authHosts optional). A URL is https, or http for a registry inside the cluster.
 func ParseRegistries(data []byte) ([]Registry, error) {
 	var raw []struct {
 		Name, URL string
 		AuthHosts []string
-		Redirects []string
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("registries: %w", err)
@@ -70,11 +69,7 @@ func ParseRegistries(data []byte) ([]Registry, error) {
 		if e.Name == "docker.io" && len(hosts) == 0 {
 			hosts = []string{"auth.docker.io"} // Hub's challenge names its token service
 		}
-		redirects, err := ParseRedirectPatterns(e.Redirects)
-		if err != nil {
-			return nil, fmt.Errorf("registries: %q: %w", e.Name, err)
-		}
-		out = append(out, Registry{Name: e.Name, URL: u, AuthHosts: hosts, Redirects: redirects})
+		out = append(out, Registry{Name: e.Name, URL: u, AuthHosts: hosts})
 	}
 	return out, nil
 }

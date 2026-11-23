@@ -276,23 +276,6 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "registry.cache: an upstream registry cannot be named %q (the repository namespaces lab, base and platform belong to the registry itself)" .name) }}
 {{- end }}
 {{- end }}
-{{- /* registry.cache.redirects: a map of a served registry to a list of host patterns ("host" or "*.host"); the gate checks the patterns again
-(no public suffix alone, no IP address) and refuses to load a list it cannot enforce. */}}
-{{- $served := include "laboratory.cacheRegistryNames" . | splitList "," }}
-{{- range $name, $patterns := (default (dict) .Values.registry.cache.redirects) }}
-{{- /* A built-in registry the cache does not serve (registry.k8s.io is in the default map) is simply unused; any other name is a typo. */}}
-{{- if not (or (has $name $served) (has $name (list "docker.io" "ghcr.io" "quay.io" "registry.k8s.io"))) }}
-{{- fail (printf "registry.cache.redirects: %q is not a registry the cache serves (served: %s)" $name (join ", " $served)) }}
-{{- end }}
-{{- if not (kindIs "slice" $patterns) }}
-{{- fail (printf "registry.cache.redirects.%s must be a list of host patterns" $name) }}
-{{- end }}
-{{- range $patterns }}
-{{- if not (and (kindIs "string" .) (regexMatch "^(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" .)) }}
-{{- fail (printf "registry.cache.redirects.%s: %v is not a host or *.host pattern (lower case, at least two labels, no scheme, port, path or bare *)" $name .) }}
-{{- end }}
-{{- end }}
-{{- end }}
 {{- /* The cache is on: every image of a lab goes through it, none is pulled directly. So every registry a lab image may come from (the allowed
 list plus the registries of the platform's own images) must be one the cache serves, and "*" (any registry) cannot be served. */}}
 {{- if .Values.registry.cache.enabled }}

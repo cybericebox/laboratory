@@ -8,16 +8,13 @@ import (
 	"testing"
 )
 
-// redirectRegistry makes the rig's upstream answer every manifest with a 307 to https://<host>/..., lists patterns for it, and makes the
+// redirectRegistry makes the rig's upstream answer every manifest with a 307 to https://<host>/..., and makes the
 // names resolve to the test CDN (the dial is redirected: no name leaves the loopback).
-func (r *rig) redirectRegistry(host string, patterns []string) {
+func (r *rig) redirectRegistry(host string) {
 	r.t.Helper()
 	r.up.mu.Lock()
 	r.up.redirectManifests, r.up.redirectHost = true, host
 	r.up.mu.Unlock()
-	reg := r.up.registry("up")
-	reg.Redirects = patterns
-	r.cache.Registries.Set([]Registry{reg})
 	tr := r.cache.Up.HTTP.Transport.(*http.Transport).Clone()
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		var d net.Dialer
@@ -43,14 +40,14 @@ func (r *rig) noAuthReachedTheCDN() {
 	}
 }
 
-// registry.k8s.io: every manifest is a 307 to a regional host. With that host on the registry's list the image is proved and served.
-func TestRedirectedManifestOfAListedRegistryIsProvedAndServed(t *testing.T) {
+// registry.k8s.io: every manifest is a 307 to a regional host. The redirect proves the manifest, and the fill that follows reaches the target without the credentials.
+func TestRedirectedManifestIsProvedAndServed(t *testing.T) {
 	r := newRig(t)
 	layer := bytes.Repeat([]byte("L"), 1024)
 	ld := r.up.put("library/nginx", "blobs", layer)
 	cfg := r.up.put("library/nginx", "blobs", []byte("{}"))
 	md := r.up.put("library/nginx", "manifests", manifestBody(cfg, ld))
-	r.redirectRegistry("example.com", []string{"example.com"}) // the test CDN's certificate names example.com
+	r.redirectRegistry("example.com") // the test CDN's certificate names example.com
 
 	code, body, hdr := r.pull("GET", mpath("library/nginx", md), "", "", nil)
 	if code != 200 || hdr.Get("Docker-Content-Digest") != md || !bytes.Contains(body, []byte(ld)) {
@@ -70,25 +67,4 @@ func TestRedirectedManifestOfAListedRegistryIsProvedAndServed(t *testing.T) {
 		t.Fatalf("with credentials: %d", code)
 	}
 	r.noAuthReachedTheCDN()
-}
-
-// A target outside the list, or a registry that has no list, stays what it is today: inconclusive, 503 IMAGE_REGISTRY_UNAVAILABLE.
-func TestRedirectOutsideTheListIsStillUnavailable(t *testing.T) {
-	for name, c := range map[string]struct {
-		host     string
-		patterns []string
-	}{
-		"target outside the patterns": {"eu.other.test", []string{"*.pkg.test"}},
-		"registry without a list":     {"example.com", nil},
-	} {
-		r := newRig(t)
-		md := r.up.put("library/nginx", "manifests", manifestBody(r.up.put("library/nginx", "blobs", []byte("{}"))))
-		r.redirectRegistry(c.host, c.patterns)
-		if code, body, _ := r.pull("GET", mpath("library/nginx", md), "", "", nil); code != 503 || !bytes.Contains(body, []byte(reasonUnavailable)) {
-			t.Errorf("%s: %d %s", name, code, body)
-		}
-		if r.inZot("c/up/library/nginx", "manifests", md) {
-			t.Errorf("%s: stored", name)
-		}
-	}
 }
