@@ -652,7 +652,8 @@ laboratory.cybericebox.com/component: gateway
 {{- /* The external IP of a public entry Service (proxy.l7.service.externalIPs, proxy.wg.service.externalIPs, agent.service.externalIPs): the
        address of a passthrough load balancer that delivers to the node with its own address and port as the destination (Google; infrastructure
        cluster-layout 18.5, G1), so Cilium serves address:port on the node. An external IP is a frontend on every node of the cluster: at most one
-       plain IPv4 address, never the wildcard or a loopback address. Called with (dict "name" <value path> "list" <value>). */ -}}
+       plain IPv4 address, never the wildcard, a loopback address, link-local 169.254.0.0/16 (the cloud metadata service), multicast 224.0.0.0/4 or
+       reserved 240.0.0.0/4 (224.0.0.0/3 with the limited broadcast 255.255.255.255). Called with (dict "name" <value path> "list" <value>). */ -}}
 {{- define "laboratory.assertExternalIPs" -}}
 {{- $name := .name -}}
 {{- if not (kindIs "slice" .list) -}}
@@ -666,8 +667,9 @@ laboratory.cybericebox.com/component: gateway
 {{- if not (regexMatch "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$" $ip) -}}
 {{- fail (printf "%s: %q is not a plain IPv4 address (a.b.c.d, no prefix, no name, no leading zeros)" $name $ip) -}}
 {{- end -}}
-{{- if or (eq $ip "0.0.0.0") (hasPrefix "127." $ip) -}}
-{{- fail (printf "%s: %q is not allowed: name the load balancer's own address" $name $ip) -}}
+{{- $first := atoi (index (splitList "." $ip) 0) -}}
+{{- if or (eq $ip "0.0.0.0") (hasPrefix "127." $ip) (hasPrefix "169.254." $ip) (ge $first 224) -}}
+{{- fail (printf "%s: %q is not allowed: name the load balancer's own address (not the wildcard, loopback, link-local 169.254/16, multicast or reserved 224/3)" $name $ip) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

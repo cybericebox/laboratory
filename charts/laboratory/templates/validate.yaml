@@ -358,6 +358,9 @@ list plus the registries of the platform's own images) must be one the cache ser
 {{- if not (has $exposure (list "closed" "partial" "open")) }}
 {{- fail (printf "exposure must be closed, partial or open (got %q)" $exposure) }}
 {{- end }}
+{{- if .Values.registry.gate.service.externalIPs }}
+{{- fail "registry.gate.service.externalIPs is set: the registry gate takes no external IP (its callers are the lab nodes; on Google its load balancer port is its node port, see registry.gate.address)" }}
+{{- end }}
 {{- if .Values.agent.enabled }}
 {{- $np := .Values.agent.networkPolicy | default dict }}
 {{- if not (kindIs "map" $np) }}
