@@ -1328,11 +1328,16 @@ and the `status.nodeName` of the Devices of their ends, and puts the whole set o
   serial end runs on another node, the address of the ready device access pod of that node (its pod IP, from the pod cache: the
   node-agent may read pods, the service may not). Without such a pod, or while the serial end has no node, the line is not given and
   the cable says `PeerUnreachable` or `WaitingForDevice`;
-- a cable whose **serial end** only runs on the node is given with the role `serial`: the service of that node accepts the owner's stream
-  for it and for nothing else;
+- a cable whose **serial end** only runs on the node is given with the role `serial` and the node of the console end: the service of that
+  node accepts the owner's stream for it, from that node only, and for nothing else;
 - the owner's node-agent writes `ConsoleCable.status`: the node and the attach of each end, `lineUp`, and the `Ready` condition
   (`LineUp`, or `WaitingForDevice`, `PortDown`, `PeerUnreachable`); the operator sums it into `Lab.status.consoleCables` and the
-  agent into `LabStatus.console_cables`. A down line never holds a lab or a device back from Ready.
+  agent into `LabStatus.console_cables`. A down line never holds a lab or a device back from Ready. A line the node cannot run because
+  it runs 500 already says `NodeLineLimit`;
+- the operator stamps each ConsoleCable with the node of its console end (annotation `laboratory.cybericebox.com/console-node`, from the
+  console Device's `status.nodeName`), and the admission policy `laboratory-node-agent-console-cable-status` lets a node-agent write the
+  status of a cable only when that stamp names the node of its bound token (a status write cannot change the stamp). Until the stamp
+  follows a moved console end the new owner runs the line but leaves the status for the next pass.
 
 | Event | What happens |
 |---|---|
@@ -1346,11 +1351,12 @@ and the `status.nodeName` of the Devices of their ends, and puts the whole set o
 
 The node-agent gets, with the switch on, `get/list/watch` on `consolecables` and `get/update/patch` on `consolecables/status` (none of
 it with the switch off), the directory of `cable.sock` (`consoleCables.socketDir`) and the namespace and port of the device access pods.
+The operator gets `patch` on `consolecables` (the stamp only; the spec is immutable).
 
 **What the agent reports.** The node-agent keeps the annotation `cybericebox.com/console-relay` on its node: `ready` once the device
 access service of the node answers on `cable.sock` with the relay of this release, `unavailable: CONSOLE_RELAY_UNREACHABLE: …` (or
-`CONSOLE_RELAY_OUTDATED`) otherwise, `disabled` with the switch off (the admission policy of the node-agent lets it change this
-annotation of its own node and no other). `GetFeatures.console_cables.enabled` is true only when the switch is on **and** every lab node
+`CONSOLE_RELAY_OUTDATED`) otherwise (the admission policy of the node-agent lets it change this annotation of its own node and no other).
+With the switch off the node-agent writes nothing: no annotation, no line, no status. `GetFeatures.console_cables.enabled` is true only when the switch is on **and** every lab node
 that is ready for pods, and at least one, says `ready`; the backend's `ConsoleCablesAvailable` follows it. The reason of a node that
 does not is on the Node, not in the answer (the feature has no reason field).
 

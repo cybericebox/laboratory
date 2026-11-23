@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"encoding/json"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -60,13 +61,42 @@ func (r *LabReconciler) syncConsoleCables(ctx context.Context, lab *laboratoryv1
 	return nil
 }
 
-// materializeConsoleCables creates the ConsoleCable of every cable of the spec that has none.
+// consoleNodes is the node of every device of the lab (Device.status.nodeName), by the device's name in the lab.
+func (r *LabReconciler) consoleNodes(ctx context.Context, lab *laboratoryv1alpha1.Lab) (map[string]string, error) {
+	var list laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for i := range list.Items {
+		d := &list.Items[i]
+		if d.Spec.LabRef == lab.Name {
+			out[d.Spec.Name] = d.Status.NodeName
+		}
+	}
+	return out, nil
+}
+
+// materializeConsoleCables creates the ConsoleCable of every cable of the spec that has none, and keeps the annotation
+// names.AnnotationConsoleNode of every cable equal to the node of its console end: the admission policy of the node-agent lets only the
+// node-agent of that node write the cable's status.
 func (r *LabReconciler) materializeConsoleCables(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	if len(lab.Spec.ConsoleCables) == 0 {
+		return nil
+	}
+	nodes, err := r.consoleNodes(ctx, lab)
+	if err != nil {
+		return err
+	}
 	for _, tmpl := range lab.Spec.ConsoleCables {
 		name := consoleCableName(lab.Name, tmpl)
+		node := nodes[tmpl.Console.Device]
 		var existing laboratoryv1alpha1.ConsoleCable
 		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing)
 		if err == nil {
+			if err := r.stampConsoleNode(ctx, &existing, node); err != nil {
+				return err
+			}
 			continue
 		}
 		if !errors.IsNotFound(err) {
@@ -76,6 +106,9 @@ func (r *LabReconciler) materializeConsoleCables(ctx context.Context, lab *labor
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lab.Namespace, Labels: deviceLabels(lab)},
 			Spec:       laboratoryv1alpha1.ConsoleCableSpec{LabRef: lab.Name, Serial: tmpl.Serial, Console: tmpl.Console},
 		}
+		if node != "" {
+			cc.Annotations = map[string]string{names.AnnotationConsoleNode: node}
+		}
 		if err := controllerutil.SetOwnerReference(lab, cc, r.Scheme); err != nil {
 			return err
 		}
@@ -84,6 +117,19 @@ func (r *LabReconciler) materializeConsoleCables(ctx context.Context, lab *labor
 		}
 	}
 	return nil
+}
+
+// stampConsoleNode puts the node of the console end on the cable (a merge patch of that annotation only; none while the device has no node).
+func (r *LabReconciler) stampConsoleNode(ctx context.Context, c *laboratoryv1alpha1.ConsoleCable, node string) error {
+	if c.Annotations[names.AnnotationConsoleNode] == node {
+		return nil
+	}
+	var value any
+	if node != "" {
+		value = node
+	}
+	body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]any{names.AnnotationConsoleNode: value}}})
+	return client.IgnoreNotFound(r.Patch(ctx, c, client.RawPatch(types.MergePatchType, body)))
 }
 
 // pruneConsoleCables deletes the ConsoleCables of the lab that its spec no longer has (an unplugged or re-plugged cable).

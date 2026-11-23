@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/switches"
 )
 
@@ -65,5 +66,39 @@ func TestConsoleCableWatchFollowsTheSwitch(t *testing.T) {
 	off.ConsoleCables = false
 	if (&LabReconciler{Switches: &off}).consoleCablesOn() || !(&LabReconciler{}).consoleCablesOn() {
 		t.Fatal("the switch decides the ConsoleCable watch (nil switches: everything on)")
+	}
+}
+
+// The operator stamps each cable with the node of its console end (the admission policy of the node-agent reads it), and moves the stamp
+// when the device moves.
+func TestConsoleCablesCarryTheConsoleNode(t *testing.T) {
+	ctx := context.Background()
+	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l", Namespace: "ns", UID: "lab-uid"}, Spec: laboratoryv1alpha1.LabSpec{
+		ConsoleCables: []laboratoryv1alpha1.ConsoleCableTemplate{{Serial: laboratoryv1alpha1.PortRef{Device: "pc1", Port: "serial0"},
+			Console: laboratoryv1alpha1.PortRef{Device: "r1", Port: "console0"}}}}}
+	r1 := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: "l-r1", Namespace: "ns", Labels: map[string]string{names.LabelLab: "l"}},
+		Spec: laboratoryv1alpha1.DeviceSpec{LabRef: "l", Name: "r1"}, Status: laboratoryv1alpha1.DeviceStatus{NodeName: "n1"}}
+	c, _ := cableClient(t, nil)
+	if err := c.Create(ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	r := &LabReconciler{Client: c, Scheme: c.Scheme()}
+	if err := r.materializeConsoleCables(ctx, lab); err != nil {
+		t.Fatal(err)
+	}
+	name := consoleCableName("l", lab.Spec.ConsoleCables[0])
+	var cc laboratoryv1alpha1.ConsoleCable
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns", Name: name}, &cc); err != nil || cc.Annotations[names.AnnotationConsoleNode] != "n1" {
+		t.Fatalf("%v %v", err, cc.Annotations)
+	}
+	r1.Status.NodeName = "n2"
+	if err := c.Update(ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.materializeConsoleCables(ctx, lab); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns", Name: name}, &cc); err != nil || cc.Annotations[names.AnnotationConsoleNode] != "n2" {
+		t.Fatalf("the stamp did not follow the device: %v %v", err, cc.Annotations)
 	}
 }

@@ -44,6 +44,9 @@ const (
 	// LabelPorts is the digest (consolespec.PortsHash) of the console and serial ports of a device, stamped by the operator on its pod. The
 	// device access service trusts sandbox labels only: it attaches a line only to a port of a list whose digest equals this label.
 	LabelPorts = LabelPrefix + "ports"
+	// AnnotationConsoleNode is the node of the console end of a ConsoleCable (the Device's status.nodeName), stamped by the operator. The
+	// admission policy of the node-agent lets only the node-agent of that node write the status of the cable.
+	AnnotationConsoleNode = LabelPrefix + "console-node"
 	// AnnotationPortsSpec is the port list itself (JSON, package portkeeper) on the pod of a device with ports; the device container reads it
 	// through a downward API volume (PortsSpecVolume). Not secret: it is what the Device says.
 	AnnotationPortsSpec = LabelPrefix + "ports-spec"

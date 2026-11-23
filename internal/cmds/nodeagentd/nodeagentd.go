@@ -363,12 +363,11 @@ func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightRe
 	return pre
 }
 
-// setupConsoleCables drives the console lines of this node (consoleCables.enabled) and keeps the annotation of the relay on the node:
-// "disabled" with the switch off; with it on, the answer of the device access service of the node on cable.sock. The labeler asserts the
-// value with its other annotations; a change is also put on the node at once.
+// setupConsoleCables drives the console lines of this node (consoleCables.enabled) and keeps the annotation of the relay on the node: the
+// answer of the device access service of the node on cable.sock. The labeler asserts the value with its other annotations; a change is also
+// put on the node at once. With the switch off nothing is started and nothing is written: the node stays as it was.
 func setupConsoleCables(mgr ctrl.Manager, cfg *nodeagent.Config, labeler *nodeagent.NodeLabeler, log logr.Logger) {
 	if !cfg.ConsoleCables {
-		labeler.SetAnnotation(names.AnnotationConsoleRelay, nodeagent.PreflightDisabled)
 		return
 	}
 	labeler.SetAnnotation(names.AnnotationConsoleRelay, nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "not asked yet"))

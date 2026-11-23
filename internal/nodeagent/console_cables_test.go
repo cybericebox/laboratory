@@ -27,7 +27,7 @@ import (
 // The reasons of a line are the reasons of the ConsoleCable's Ready condition.
 func TestLineReasonsAreTheCableReasons(t *testing.T) {
 	if wire.LineWaitingForDevice != laboratoryv1alpha1.ConsoleCableReasonWaitingForDevice || wire.LinePortDown != laboratoryv1alpha1.ConsoleCableReasonPortDown ||
-		wire.LinePeerUnreachable != laboratoryv1alpha1.ConsoleCableReasonPeerUnreachable {
+		wire.LinePeerUnreachable != laboratoryv1alpha1.ConsoleCableReasonPeerUnreachable || wire.LineNodeLineLimit != laboratoryv1alpha1.ConsoleCableReasonNodeLineLimit {
 		t.Fatal("the line reasons differ from the ConsoleCable reasons")
 	}
 }
@@ -90,10 +90,13 @@ func ccDevice(name, lab, node string, serial bool) *laboratoryv1alpha1.Device {
 	return d
 }
 
+// ccCable is a cable whose console end the operator stamped on n1.
 func ccCable(lab string) *laboratoryv1alpha1.ConsoleCable {
 	return &laboratoryv1alpha1.ConsoleCable{
 		ObjectMeta: metav1.ObjectMeta{Name: lab + "-cable", Namespace: ccNS, UID: types.UID(lab + "-cable-uid"), Labels: map[string]string{names.LabelLab: lab},
-			OwnerReferences: []metav1.OwnerReference{{APIVersion: "laboratory.cybericebox.com/v1alpha1", Kind: "Lab", Name: lab, UID: types.UID(lab + "-uid"), Controller: ptrBool(true)}}},
+			Annotations:       map[string]string{names.AnnotationConsoleNode: "n1"},
+			CreationTimestamp: metav1.Unix(1_700_000_000, 0),
+			OwnerReferences:   []metav1.OwnerReference{{APIVersion: "laboratory.cybericebox.com/v1alpha1", Kind: "Lab", Name: lab, UID: types.UID(lab + "-uid"), Controller: ptrBool(true)}}},
 		Spec: laboratoryv1alpha1.ConsoleCableSpec{LabRef: lab, Serial: laboratoryv1alpha1.PortRef{Device: "pc1", Port: "serial0"},
 			Console: laboratoryv1alpha1.PortRef{Device: "r1", Port: "console0"}},
 	}
@@ -180,8 +183,8 @@ func TestConsoleCableSyncTwoNodes(t *testing.T) {
 	if err := s2.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(serial.last.Lines) != 1 || serial.last.Lines[0].Role != wire.RoleSerial || serial.last.Lines[0].Peer != "" {
-		t.Fatalf("serial lines %+v", serial.last.Lines)
+	if len(serial.last.Lines) != 1 || serial.last.Lines[0].Role != wire.RoleSerial || serial.last.Lines[0].Peer != "" || serial.last.Lines[0].ConsoleNode != "n1" {
+		t.Fatalf("serial lines (the acceptor must know the console end's node) %+v", serial.last.Lines)
 	}
 	if st := cableStatus(t, c2, "l1"); st.Console.NodeName != "" || len(st.Conditions) != 0 {
 		t.Fatalf("the serial node wrote the status: %+v", st)
@@ -249,6 +252,7 @@ func TestConsoleCableSyncReschedule(t *testing.T) {
 	if err := c.Update(ctx, &moved); err != nil {
 		t.Fatal(err)
 	}
+	// the operator has not moved the stamp yet: the old owner (still stamped) writes the line down
 	if err := s.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -259,8 +263,13 @@ func TestConsoleCableSyncReschedule(t *testing.T) {
 	if st.LineUp || st.Console.NodeName != "n3" {
 		t.Fatalf("the old owner must write the line down: %+v", st)
 	}
-	// the new owner writes; the old one does not overwrite it any more
+	// the operator stamps the new node and the new owner writes; the old one does not touch it any more
 	var cc laboratoryv1alpha1.ConsoleCable
+	_ = c.Get(ctx, types.NamespacedName{Namespace: ccNS, Name: "l1-cable"}, &cc)
+	cc.Annotations[names.AnnotationConsoleNode] = "n3"
+	if err := c.Update(ctx, &cc); err != nil {
+		t.Fatal(err)
+	}
 	_ = c.Get(ctx, types.NamespacedName{Namespace: ccNS, Name: "l1-cable"}, &cc)
 	cc.Status.LineUp = true
 	if err := c.Status().Update(ctx, &cc); err != nil {
@@ -299,5 +308,47 @@ func TestRelayCodeOf(t *testing.T) {
 	}
 	if RelayCodeOf("", false) != CodeNodeUnconfirmed {
 		t.Error("a node without the annotation")
+	}
+}
+
+// A node-agent writes only the cables the operator stamped with its node (the admission policy refuses the others): before the stamp
+// follows the console end it gives the line but leaves the status alone.
+func TestConsoleCableSyncWritesOnlyStampedCables(t *testing.T) {
+	cc := ccCable("l1")
+	cc.Annotations[names.AnnotationConsoleNode] = "n9"
+	cable := &fakeCable{state: upState}
+	s, c, _ := ccSync(t, "n1", cable, cc, ccDevice("r1", "l1", "n1", false), ccDevice("pc1", "l1", "n1", true))
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(cable.last.Lines) != 1 {
+		t.Fatal("the line is still given")
+	}
+	if st := cableStatus(t, c, "l1"); len(st.Conditions) != 0 || st.LineUp {
+		t.Fatalf("a cable stamped with another node was written: %+v", st)
+	}
+}
+
+// The lines go in the order of the cables' creation, and a line the service refuses for the limit of the node says NodeLineLimit.
+func TestConsoleCableSyncOrderAndNodeLimit(t *testing.T) {
+	old, young := ccCable("l1"), ccCable("l2")
+	young.CreationTimestamp = metav1.Unix(1_800_000_000, 0)
+	cable := &fakeCable{state: func(l wire.LineSpec) wire.LineState {
+		if l.Lab == "l2" {
+			return wire.LineState{Namespace: l.Namespace, Name: l.Name, UID: l.UID, Role: l.Role, Reason: wire.LineNodeLineLimit}
+		}
+		return upState(l)
+	}}
+	s, c, _ := ccSync(t, "n1", cable, young, old, ccDevice("r1", "l1", "n1", false), ccDevice("pc1", "l1", "n1", true),
+		ccDevice("r1", "l2", "n1", false), ccDevice("pc1", "l2", "n1", true))
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(cable.last.Lines) != 2 || cable.last.Lines[0].Lab != "l1" || cable.last.Lines[0].Created != 1_700_000_000 {
+		t.Fatalf("order %+v", cable.last.Lines)
+	}
+	cond := meta.FindStatusCondition(cableStatus(t, c, "l2").Conditions, labstatus.ConditionReady)
+	if cond == nil || cond.Reason != laboratoryv1alpha1.ConsoleCableReasonNodeLineLimit {
+		t.Fatalf("condition %+v", cond)
 	}
 }

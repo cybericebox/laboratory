@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,8 +42,11 @@ import (
 //
 // The owner's node-agent writes ConsoleCable.status (both nodes, both attaches, lineUp, the Ready condition with the reasons
 // WaitingForDevice, PortDown, PeerUnreachable); the operator sums them into the Lab status. A cable whose console end moved to another
-// node is written down once by the old owner (unless the new one has already written it), so a status never claims a line that nobody
-// runs. Nothing here waits for a line: a device is Ready without its lines.
+// node is written down once by the old owner (unless the new one has already written it or the operator has moved the stamp), so a
+// status never claims a line that nobody runs. A node-agent writes only cables whose annotation names.AnnotationConsoleNode, which the
+// operator stamps from the console device, names its node (an admission policy enforces it). The lines go in the order of the cables'
+// creation; a line the service refuses because the node is full gets the reason NodeLineLimit. Nothing here waits for a line: a device is
+// Ready without its lines.
 
 // Codes of the annotation names.AnnotationConsoleRelay. The management agent reports console cables only when every lab node says ready.
 const (
@@ -211,6 +215,14 @@ func (s *ConsoleCableSync) Sync(ctx context.Context) error {
 			req.Lines = append(req.Lines, *v.line)
 		}
 	}
+	// the order the service keeps lines in when the node is full: the oldest cable first, then namespace and name
+	sort.SliceStable(req.Lines, func(i, j int) bool {
+		a, b := req.Lines[i], req.Lines[j]
+		if a.Created != b.Created {
+			return a.Created < b.Created
+		}
+		return a.Namespace+"/"+a.Name < b.Namespace+"/"+b.Name
+	})
 	reply, err := s.Cable.PutLines(ctx, req)
 	if err != nil {
 		s.relay(Unavailable(CodeRelayUnreachable, "the device access service of this node does not answer on cable.sock"))
@@ -308,7 +320,7 @@ func (s *ConsoleCableSync) view(c *laboratoryv1alpha1.ConsoleCable, devs map[str
 		return v
 	}
 	spec := wire.LineSpec{Namespace: c.Namespace, Name: c.Name, UID: string(c.UID), Lab: c.Spec.LabRef, LabUID: labUID,
-		Serial: lineEnd(serial, c.Spec.Serial.Port), Console: lineEnd(console, c.Spec.Console.Port)}
+		Serial: lineEnd(serial, c.Spec.Serial.Port), Console: lineEnd(console, c.Spec.Console.Port), Created: c.CreationTimestamp.Unix()}
 	switch {
 	case v.consoleNode == s.NodeName:
 		spec.Role = wire.RoleOwner
@@ -325,7 +337,11 @@ func (s *ConsoleCableSync) view(c *laboratoryv1alpha1.ConsoleCable, devs map[str
 		}
 		v.line = &spec
 	case v.serialNode == s.NodeName:
-		spec.Role = wire.RoleSerial
+		if v.consoleNode == "" {
+			return v
+		}
+		// the acceptor serves the stream only from the node of the console end
+		spec.Role, spec.ConsoleNode = wire.RoleSerial, v.consoleNode
 		v.line = &spec
 	}
 	return v
@@ -344,7 +360,13 @@ func (s *ConsoleCableSync) writeStatuses(ctx context.Context, views []cableView,
 	for _, v := range views {
 		key := types.NamespacedName{Namespace: v.cable.Namespace, Name: v.cable.Name}
 		var want laboratoryv1alpha1.ConsoleCableStatus
+		// The admission policy lets this node-agent write only a cable the operator stamped with this node: until the stamp follows a
+		// moved console end, the cable is left for the next pass (or for the node-agent of the node it names).
+		stamped := v.cable.Annotations[names.AnnotationConsoleNode] == s.NodeName
 		switch {
+		case v.consoleNode == s.NodeName && !stamped:
+			now[key] = true
+			continue
 		case v.consoleNode == s.NodeName:
 			now[key] = true
 			st, given := states[key]
@@ -358,7 +380,7 @@ func (s *ConsoleCableSync) writeStatuses(ctx context.Context, views []cableView,
 				}
 				want = desiredStatus(v, false, false, false, reason)
 			}
-		case before[key] && v.cable.Status.Console.NodeName == s.NodeName:
+		case before[key] && v.cable.Status.Console.NodeName == s.NodeName && stamped:
 			// the console end left this node and no new owner wrote the cable yet: say the line is down
 			want = desiredStatus(v, false, false, false, wire.LineWaitingForDevice)
 		default:
@@ -401,6 +423,8 @@ func lineMessage(reason string) string {
 		return "a port of the line cannot be attached now; retrying"
 	case wire.LinePeerUnreachable:
 		return "the node of the serial end cannot be reached; retrying"
+	case wire.LineNodeLineLimit:
+		return "the node of the console end runs the most console lines it may; waiting for room"
 	}
 	return "the line is up"
 }
