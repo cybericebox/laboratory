@@ -32,7 +32,7 @@ func TestFragmentIsWellFormedAndPromisesTheModuleList(t *testing.T) {
 		}
 		seen[l] = true
 	}
-	for _, must := range []string{"CONFIG_NF_TABLES=y", "CONFIG_BRIDGE=y", "CONFIG_VLAN_8021Q=y", "CONFIG_WIREGUARD=y", "CONFIG_TUN=y", "CONFIG_BONDING=y", "CONFIG_NF_CONNTRACK_FTP=y", "CONFIG_NF_CONNTRACK=y"} {
+	for _, must := range []string{"CONFIG_NF_TABLES=y", "CONFIG_BRIDGE=y", "CONFIG_VLAN_8021Q=y", "CONFIG_WIREGUARD=y", "CONFIG_TUN=y", "CONFIG_BONDING=y", "CONFIG_NF_CONNTRACK_FTP=y", "CONFIG_NF_CONNTRACK=y", "CONFIG_PRINTK=y", "CONFIG_PRINTK_TIME=y"} {
 		if !seen[must] {
 			t.Errorf("the promised %s is missing", must)
 		}

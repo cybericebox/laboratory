@@ -277,4 +277,7 @@ func TestConsoleCablesNodeAgent(t *testing.T) {
 	if err != nil || !strings.Contains(pol, "'cybericebox.com/console-relay'") {
 		t.Errorf("the node-agent may not put the relay annotation on its node: %v", err)
 	}
+	if !strings.Contains(pol, "'cybericebox.com/console-kernel-log'") {
+		t.Error("the node-agent may not put the kernel log annotation on its node")
+	}
 }

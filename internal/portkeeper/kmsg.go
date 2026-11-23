@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -45,6 +46,14 @@ const (
 	// starts kata-containers.target on it. A node's command line never has it.
 	kataGuestUnit = "systemd.unit=kata-containers.target"
 )
+
+// printkTimeOn says the printk.time parameter (/sys/module/printk/parameters/time) is on: the keeper's cursor is the timestamp of each
+// message, so without timestamps it would lose messages without a word once the ring buffer wraps. "N" (printk.time=0) turns the kernel
+// log of the line off with the notice; an unreadable value is taken as off too.
+func printkTimeOn(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "Y" || v == "1"
+}
 
 // kataGuest says the kernel command line is a Kata guest's.
 func kataGuest(cmdline string) (bool, string) {
@@ -141,7 +150,10 @@ func lineOut(text string) []byte {
 			break
 		}
 		switch {
-		case r == utf8.RuneError && size <= 1, r < 0x20 && r != '\t', r >= 0x7f && r <= 0x9f:
+		case r == utf8.RuneError && size <= 1, r < 0x20 && r != '\t', r >= 0x7f && r <= 0x9f,
+			// format characters (bidi overrides and isolates, zero-width joiners and spaces) and the line and paragraph separators can
+			// make a terminal show something other than what was sent
+			unicode.Is(unicode.Cf, r), r == '\u2028', r == '\u2029':
 			out = append(out, '?')
 		default:
 			out = append(out, text[i:i+size]...)
@@ -161,6 +173,10 @@ type kmsgFollower struct {
 	told   bool
 	cursor kmsgKey
 	seen   bool
+	// lastLen and lastTail are the size and the last bytes of the previous read: an unchanged buffer has nothing new, so an idle poll
+	// is not parsed.
+	lastLen  int
+	lastTail string
 }
 
 func newKmsgFollower(src KernelLog) *kmsgFollower { return &kmsgFollower{src: src} }
@@ -181,7 +197,26 @@ func (f *kmsgFollower) read() ([]kmsgLine, []kmsgKey) {
 		f.off = err.Error()
 		return nil, nil
 	}
+	f.lastLen, f.lastTail = len(b), string(b[max(0, len(b)-kmsgTail):])
 	return parseKmsg(b)
+}
+
+// kmsgTail is how much of the end of a read is kept to see that nothing changed.
+const kmsgTail = 256
+
+// unchanged reads the buffer and says it is the same as at the previous read (a cheap idle poll); it never moves the cursor.
+func (f *kmsgFollower) unchanged() (bool, []kmsgLine, []kmsgKey) {
+	b, err := f.src.ReadAll()
+	if err != nil {
+		f.off = err.Error()
+		return false, nil, nil
+	}
+	if len(b) == f.lastLen && string(b[max(0, len(b)-kmsgTail):]) == f.lastTail {
+		return true, nil, nil
+	}
+	f.lastLen, f.lastTail = len(b), string(b[max(0, len(b)-kmsgTail):])
+	lines, keys := parseKmsg(b)
+	return false, lines, keys
 }
 
 func (f *kmsgFollower) notice() []byte {
@@ -223,7 +258,15 @@ func (f *kmsgFollower) poll() []byte {
 	if f.off != "" {
 		return nil
 	}
-	lines, keys := f.read()
+	if !f.seen {
+		// only a dump starts the follow: a poll before it would write a part of the ring buffer
+		_ = f.dump()
+		return nil
+	}
+	same, lines, keys := f.unchanged()
+	if same {
+		return nil
+	}
 	if f.off != "" {
 		if f.told {
 			return nil
@@ -255,12 +298,12 @@ func (f *kmsgFollower) poll() []byte {
 }
 
 // followKernelLog writes the kernel log to the client of h: the ring buffer when a client attaches, then new messages every poll while
-// it stays. With no client nothing is read.
-func followKernelLog(ctx context.Context, h *Hub, src KernelLog, every time.Duration) {
+// it stays. With no client nothing is read. attached is h.AttachEvents(), taken by the caller before the line is served, so no attach
+// is missed.
+func followKernelLog(ctx context.Context, h *Hub, attached <-chan struct{}, src KernelLog, every time.Duration) {
 	if every <= 0 {
 		every = KernelLogPoll
 	}
-	attached := h.AttachEvents()
 	f := newKmsgFollower(src)
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -271,7 +314,15 @@ func followKernelLog(ctx context.Context, h *Hub, src KernelLog, every time.Dura
 		case <-attached:
 			h.Inject(f.dump())
 		case <-t.C:
-			if h.Attached() {
+			if !h.Attached() {
+				continue
+			}
+			// A client that attached since the last pass gets its dump first, never a poll before it: its attach signalled the channel
+			// under the same lock that Attached reads, so the signal is there by now.
+			select {
+			case <-attached:
+				h.Inject(f.dump())
+			default:
 				h.Inject(f.poll())
 			}
 		}

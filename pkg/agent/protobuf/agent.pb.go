@@ -8269,8 +8269,8 @@ type ConsoleCablesFeature struct {
 	Enabled           bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	MaxCablesPerLab   int32                  `protobuf:"varint,2,opt,name=max_cables_per_lab,json=maxCablesPerLab,proto3" json:"max_cables_per_lab,omitempty"`       // 64 (names.MaxConsoleCablesPerLab)
 	MaxBytesPerSecond int32                  `protobuf:"varint,3,opt,name=max_bytes_per_second,json=maxBytesPerSecond,proto3" json:"max_bytes_per_second,omitempty"` // per line and direction, 65536
-	// A console port may carry the guest kernel's log (Lab.spec devices[].consolePorts[].kernelLog; contract 3.2): enabled and the microVM
-	// profile is offered. Only on a device with profile microvm, at most one port per device, not with native; any other use is refused
+	// A console port may carry the guest kernel's log (Lab.spec devices[].consolePorts[].kernelLog; contract 3.2): enabled, the microVM
+	// profile is offered, and every lab node says its relay understands it (node annotation cybericebox.com/console-kernel-log). Only on a device with profile microvm, at most one port per device, not with native; any other use is refused
 	// with InvalidArgument and the ErrorInfo reason CONSOLE_CABLE_INVALID. False (or an agent older than 3.2): never send kernelLog, an
 	// older agent drops the field without a word.
 	KernelLog     bool `protobuf:"varint,4,opt,name=kernel_log,json=kernelLog,proto3" json:"kernel_log,omitempty"`

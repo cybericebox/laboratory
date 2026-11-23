@@ -22,13 +22,20 @@ func TestFeaturesReportConsoleCables(t *testing.T) {
 		on    bool
 		nodes map[string]string // node -> annotation ("-": none)
 		want  bool
+		// old: nodes whose relay does not report the kernel log (names.AnnotationConsoleKernelLog absent or unsupported)
+		old map[string]string
+		// kernelLog: what console_cables.kernel_log says with the microVM profile on
+		kernelLog bool
 	}{
-		"off":                       {false, map[string]string{"w1": ready}, false},
-		"on, no node":               {true, nil, false},
-		"on, every relay ready":     {true, map[string]string{"w1": ready, "w2": ready}, true},
-		"on, a node without relay":  {true, map[string]string{"w1": ready, "w2": "-"}, false},
-		"on, a relay not answering": {true, map[string]string{"w1": ready, "w2": nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "x")}, false},
-		"on, a relay disabled":      {true, map[string]string{"w1": nodeagent.PreflightDisabled}, false},
+		"off":                            {false, map[string]string{"w1": ready}, false, nil, false},
+		"on, no node":                    {true, nil, false, nil, false},
+		"on, every relay ready":          {true, map[string]string{"w1": ready, "w2": ready}, true, nil, true},
+		"on, a node of an older release": {true, map[string]string{"w1": ready, "w2": ready}, true, map[string]string{"w2": "-"}, false},
+		"on, a relay without the kernel log": {true, map[string]string{"w1": ready, "w2": ready}, true,
+			map[string]string{"w2": nodeagent.Unavailable(nodeagent.CodeKernelLogUnsupported, "x")}, false},
+		"on, a node without relay":  {true, map[string]string{"w1": ready, "w2": "-"}, false, nil, false},
+		"on, a relay not answering": {true, map[string]string{"w1": ready, "w2": nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "x")}, false, nil, false},
+		"on, a relay disabled":      {true, map[string]string{"w1": nodeagent.PreflightDisabled}, false, nil, false},
 	} {
 		for _, microVM := range []bool{false, true} {
 			f := testFeatures
@@ -42,6 +49,13 @@ func TestFeaturesReportConsoleCables(t *testing.T) {
 					Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
 				if ann != "-" {
 					n.Annotations[names.AnnotationConsoleRelay] = ann
+					n.Annotations[names.AnnotationConsoleKernelLog] = ready
+				}
+				if kl, ok := c.old[node]; ok {
+					delete(n.Annotations, names.AnnotationConsoleKernelLog)
+					if kl != "-" {
+						n.Annotations[names.AnnotationConsoleKernelLog] = kl
+					}
 				}
 				if _, err := h.k8s.CoreV1().Nodes().Create(context.Background(), n, metav1.CreateOptions{}); err != nil {
 					t.Fatal(err)

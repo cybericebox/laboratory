@@ -29,6 +29,9 @@ type nodeVerdict struct {
 	// (and at least one) says its relay is ready (names.AnnotationConsoleRelay).
 	relayAsked  bool
 	relayReason string
+	// kernelLogReason is "" when every ready lab node (and at least one) says its relay understands port lists with the kernel log
+	// (names.AnnotationConsoleKernelLog); asked with the relay.
+	kernelLogReason string
 }
 
 // verifyNodes reads the annotations of the lab nodes that are ready for pods. A node that has not published a result (a node-agent of
@@ -113,6 +116,29 @@ func verifyRelay(nodes []corev1.Node, selector map[string]string, tolerations []
 	return codeReason(byCode, checked)
 }
 
+// verifyKernelLog is the reason the kernel log of a console port cannot be offered: "" when every lab node that is ready for pods, and at
+// least one, says the device access service of its node understands port lists with kernel_log. An older service refuses such a list
+// (and with it every line of the device), so one node of an older release, during a rolling upgrade, holds the field back.
+func verifyKernelLog(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration) string {
+	checked := 0
+	byCode := map[string]int{}
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Labels[names.LabelNodeAgentReady] != "true" || !nodecap.Schedulable(n, selector, tolerations) {
+			continue
+		}
+		checked++
+		v, ok := n.Annotations[names.AnnotationConsoleKernelLog]
+		if code := nodeagent.KernelLogCodeOf(v, ok); code != "" {
+			byCode[code]++
+		}
+	}
+	if checked == 0 {
+		return nodeagent.CodeNodeUnconfirmed + ":0/0"
+	}
+	return codeReason(byCode, checked)
+}
+
 // nodeVerdict reads the nodes for the features the chart configured.
 func (h *Handler) nodeVerdict(ctx context.Context, wantPersistence, wantObservation, wantRelay bool) (nodeVerdict, error) {
 	if !wantPersistence && !wantObservation && !wantRelay {
@@ -125,6 +151,7 @@ func (h *Handler) nodeVerdict(ctx context.Context, wantPersistence, wantObservat
 	v := verifyNodes(list.Items, h.labSelector, h.labTolerations, wantPersistence, wantObservation)
 	if wantRelay {
 		v.relayAsked, v.relayReason = true, verifyRelay(list.Items, h.labSelector, h.labTolerations)
+		v.kernelLogReason = verifyKernelLog(list.Items, h.labSelector, h.labTolerations)
 	}
 	return v, nil
 }
@@ -134,6 +161,10 @@ func applyNodeSupport(base *protobuf.FeaturesResponse, v nodeVerdict) {
 	// console cables need the relay of the nodes, whatever the chart says (the feature has no reason field: the detail is on the Nodes)
 	if v.relayAsked && v.relayReason != "" && base.ConsoleCables != nil {
 		base.ConsoleCables.Enabled = false
+	}
+	// the kernel log of a console port needs the lines and, on every lab node, a relay that understands it
+	if c := base.ConsoleCables; c != nil && (!c.Enabled || !v.relayAsked || v.kernelLogReason != "") {
+		c.KernelLog = false
 	}
 	if v.checked == 0 {
 		return

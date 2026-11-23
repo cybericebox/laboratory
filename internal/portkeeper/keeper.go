@@ -90,7 +90,7 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.Clock = RealClock{}
 	}
 	if cfg.KernelLog == nil {
-		cfg.KernelLog = OSKernelLog{}
+		cfg.KernelLog = &OSKernelLog{}
 	}
 	logf := func(format string, a ...any) {
 		if cfg.Log != nil {
@@ -247,7 +247,9 @@ func manufacturedLine(ctx context.Context, cfg Config, c ConsolePort, h *Hub, lo
 	argv := c.EffectiveCommand()
 	h.SetLine(master)
 	if c.KernelLog {
-		go followKernelLog(ctx, h, cfg.KernelLog, cfg.KernelLogPoll)
+		// taken now, before the line is served: the first client's attach is never missed
+		attached := h.AttachEvents()
+		go followKernelLog(ctx, h, attached, cfg.KernelLog, cfg.KernelLogPoll)
 	}
 	go func() {
 		// The keeper holds the slave open for the life of the line: the line and its settings survive a respawn of the program.

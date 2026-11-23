@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -771,6 +772,10 @@ func TestCableSockHandler(t *testing.T) {
 	var r wire.LinesReply
 	if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil || w.Code != http.StatusOK || r.Relay != wire.RelayVersion || len(r.Lines) != 1 {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	// the service says it understands port lists with the kernel log (the node-agent publishes it on the node)
+	if !slices.Contains(r.Features, wire.FeatureKernelLog) {
+		t.Fatalf("features %v", r.Features)
 	}
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, wire.LinesPath, strings.NewReader(`{"lines":[],"command":["/bin/sh"]}`)))

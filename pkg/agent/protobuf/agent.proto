@@ -1239,8 +1239,8 @@ message ConsoleCablesFeature {
   bool enabled = 1;
   int32 max_cables_per_lab = 2;   // 64 (names.MaxConsoleCablesPerLab)
   int32 max_bytes_per_second = 3; // per line and direction, 65536
-  // A console port may carry the guest kernel's log (Lab.spec devices[].consolePorts[].kernelLog; contract 3.2): enabled and the microVM
-  // profile is offered. Only on a device with profile microvm, at most one port per device, not with native; any other use is refused
+  // A console port may carry the guest kernel's log (Lab.spec devices[].consolePorts[].kernelLog; contract 3.2): enabled, the microVM
+  // profile is offered, and every lab node says its relay understands it (node annotation cybericebox.com/console-kernel-log). Only on a device with profile microvm, at most one port per device, not with native; any other use is refused
   // with InvalidArgument and the ErrorInfo reason CONSOLE_CABLE_INVALID. False (or an agent older than 3.2): never send kernelLog, an
   // older agent drops the field without a word.
   bool kernel_log = 4;

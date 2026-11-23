@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +55,9 @@ const (
 	CodeRelayUnreachable = "CONSOLE_RELAY_UNREACHABLE"
 	CodeRelayOld         = "CONSOLE_RELAY_OUTDATED"
 	CodeRelayDisabled    = "CONSOLE_RELAY_DISABLED"
+	// CodeKernelLogUnsupported (names.AnnotationConsoleKernelLog): the device access service of the node answers, but without
+	// wire.FeatureKernelLog (an older release).
+	CodeKernelLogUnsupported = "CONSOLE_KERNEL_LOG_UNSUPPORTED"
 )
 
 // RelayCodeOf is the code of a value of names.AnnotationConsoleRelay that is not ready: one of the relay codes, CodeRelayDisabled for
@@ -142,6 +146,9 @@ type ConsoleCableSync struct {
 	// RelayKey, when set, is told the public key of the device access process of this node: the value of the annotation
 	// names.AnnotationConsoleRelayKey, which the peers verify its signatures with.
 	RelayKey func(value string)
+	// KernelLog, when set, is told whether the device access service of this node understands port lists with the kernel log: the value
+	// of the annotation names.AnnotationConsoleKernelLog.
+	KernelLog func(value string)
 
 	mu sync.Mutex
 	// owned are the cables whose status this node-agent wrote as their owner.
@@ -234,7 +241,13 @@ func (s *ConsoleCableSync) Sync(ctx context.Context) error {
 	reply, err := s.Cable.PutLines(ctx, req)
 	if err != nil {
 		s.relay(Unavailable(CodeRelayUnreachable, "the device access service of this node does not answer on cable.sock"))
+		s.kernelLog(Unavailable(CodeRelayUnreachable, "the device access service of this node does not answer on cable.sock"))
 		return fmt.Errorf("cable.sock: %w", err)
+	}
+	if slices.Contains(reply.Features, wire.FeatureKernelLog) {
+		s.kernelLog(PreflightReady)
+	} else {
+		s.kernelLog(Unavailable(CodeKernelLogUnsupported, "the device access service of this node does not know the kernel log of a console port"))
 	}
 	if reply.RelayKey != "" && s.RelayKey != nil {
 		s.RelayKey(reply.RelayKey)
@@ -255,6 +268,30 @@ func (s *ConsoleCableSync) relay(v string) {
 	if s.Relay != nil {
 		s.Relay(v)
 	}
+}
+
+func (s *ConsoleCableSync) kernelLog(v string) {
+	if s.KernelLog != nil {
+		s.KernelLog(v)
+	}
+}
+
+// KernelLogCodeOf is the code of a value of names.AnnotationConsoleKernelLog that is not ready: CodeKernelLogUnsupported or
+// CodeRelayUnreachable as written, CodeNodeUnconfirmed for anything else (no value: an older node-agent). "" for ready.
+func KernelLogCodeOf(v string, present bool) string {
+	switch {
+	case !present:
+		return CodeNodeUnconfirmed
+	case v == PreflightReady:
+		return ""
+	}
+	if r, ok := strings.CutPrefix(v, preflightUnavailable); ok {
+		code, _, _ := strings.Cut(r, ": ")
+		if code == CodeKernelLogUnsupported || code == CodeRelayUnreachable {
+			return code
+		}
+	}
+	return CodeNodeUnconfirmed
 }
 
 // labDevices are the Devices of a lab by their name in the lab.

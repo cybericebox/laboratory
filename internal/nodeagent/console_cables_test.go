@@ -37,6 +37,8 @@ type fakeCable struct {
 	last  wire.LinesRequest
 	calls int
 	err   error
+	// old: a service of a release without the kernel log (no Features in its answer)
+	old bool
 	// state answers a line
 	state func(l wire.LineSpec) wire.LineState
 }
@@ -50,6 +52,9 @@ func (f *fakeCable) PutLines(_ context.Context, req wire.LinesRequest) (wire.Lin
 		return wire.LinesReply{}, f.err
 	}
 	out := wire.LinesReply{Relay: wire.RelayVersion, RelayKey: relayKeyOf("n1")}
+	if !f.old {
+		out.Features = []string{wire.FeatureKernelLog}
+	}
 	for _, l := range req.Lines {
 		st := wire.LineState{Namespace: l.Namespace, Name: l.Name, UID: l.UID, Role: l.Role, Reason: wire.LineWaitingForDevice}
 		if f.state != nil {
@@ -400,5 +405,30 @@ func TestDeviceAccessPodAddresses(t *testing.T) {
 	}
 	if peers["n2"] != "[fd00:10:244::7]:8081" || peers["n4"] != "10.1.0.4:8081" || peers["n3"] != "" {
 		t.Fatalf("%v", peers)
+	}
+}
+
+// The node-agent publishes whether the device access service of its node understands port lists with the kernel log (it answers with
+// wire.FeatureKernelLog): an older service would refuse such a list, so the management agent must not offer the field before every node has
+// it.
+func TestConsoleCableSyncKernelLogAnnotation(t *testing.T) {
+	for name, c := range map[string]struct {
+		cable *fakeCable
+		code  string
+	}{
+		"a service of this release": {&fakeCable{state: upState}, ""},
+		"an older service":          {&fakeCable{state: upState, old: true}, CodeKernelLogUnsupported},
+		"no service":                {&fakeCable{err: errors.New("dial unix: no such file")}, CodeRelayUnreachable},
+	} {
+		s, _, _ := ccSync(t, "n1", c.cable, ccCable("l1"), ccDevice("r1", "l1", "n1", false), ccDevice("pc1", "l1", "n1", true))
+		var got string
+		s.KernelLog = func(v string) { got = v }
+		_ = s.Sync(context.Background())
+		if code := KernelLogCodeOf(got, got != ""); code != c.code {
+			t.Errorf("%s: annotation %q, code %q, want %q", name, got, code, c.code)
+		}
+	}
+	if KernelLogCodeOf("", false) != CodeNodeUnconfirmed || KernelLogCodeOf("whatever", true) != CodeNodeUnconfirmed || KernelLogCodeOf("ready", true) != "" {
+		t.Fatal("KernelLogCodeOf")
 	}
 }

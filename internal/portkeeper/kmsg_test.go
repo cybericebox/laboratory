@@ -1,8 +1,10 @@
 package portkeeper
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -245,5 +247,65 @@ func TestKeeperWithoutKernelLogNeverReadsIt(t *testing.T) {
 	defer src.mu.Unlock()
 	if src.reads != 0 || src.guests != 0 {
 		t.Fatalf("reads %d guest checks %d", src.reads, src.guests)
+	}
+}
+
+// Format characters (bidi overrides, zero-width) and the Unicode line separators are replaced too: they make a terminal show other text
+// than what was sent.
+func TestKernelLogFormatCharactersAreReplaced(t *testing.T) {
+	got := string(lineOut("a\u202eb\u2066c\u200bd\u2028e\u2029f\u00e9"))
+	if got != "a?b?c?d?e?fé\r\n" {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestPrintkTime(t *testing.T) {
+	for v, want := range map[string]bool{"Y\n": true, "1": true, "N\n": false, "": false, "0": false} {
+		if printkTimeOn(v) != want {
+			t.Errorf("%q", v)
+		}
+	}
+}
+
+// A poll never runs before the first dump: it starts nothing and writes nothing.
+func TestKernelLogPollBeforeDumpWritesNothing(t *testing.T) {
+	f := newKmsgFollower(bootLog())
+	if b := f.poll(); len(b) != 0 {
+		t.Fatalf("a poll before the dump: %q", b)
+	}
+}
+
+// A client always gets the ring buffer from its start first, even when the kernel writes all the time and the client attaches between
+// two polls (the dump is never preceded by a poll of the client's own line).
+func TestKernelLogNewClientGetsTheDumpFirst(t *testing.T) {
+	src := bootLog()
+	h := NewHub()
+	ln, err := Listen(SocketPath(shortDir(t), "console0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go h.Serve(ln)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go followKernelLog(ctx, h, h.AttachEvents(), src, time.Millisecond)
+	go func() {
+		for i := 0; ctx.Err() == nil; i++ {
+			src.add(fmt.Sprintf("<6>[ %5d.000000] tick %d", 100+i, i))
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+	for i := 0; i < 30; i++ {
+		c := dialAttached(t, ln.Addr().String())
+		buf := make([]byte, 40)
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := io.ReadFull(c, buf); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(buf); !strings.HasPrefix(got, "[    0.000000] Linux version") && !strings.HasPrefix(got, "[kernel log: ") {
+			t.Fatalf("attach %d: the first bytes are not the dump: %q", i, got)
+		}
+		_ = c.Close()
+		eventually(t, "detach", func() bool { return !h.Attached() })
 	}
 }
