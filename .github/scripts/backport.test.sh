@@ -237,7 +237,6 @@ b8=$(head_of HEAD)
 dev=$(git ls-remote origin refs/heads/develop | cut -f1)
 git checkout -q -b forged release/1.10
 echo forged >forged.txt; git add -A; git commit -qm "fix with a forged trailer" -m "Carried-from: $dev"
-f1=$(head_of HEAD)
 git checkout -q release/1.10
 git merge -q --no-ff -m "Merge pull request #8 forged" forged
 t13=$(head_of HEAD)
