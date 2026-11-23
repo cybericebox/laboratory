@@ -27,7 +27,7 @@ func (h *Handler) persistenceUnavailable(ctx context.Context) (string, error) {
 	if !h.features.StatePersistence {
 		return "", nil
 	}
-	v, err := h.nodeVerdict(ctx, true, false)
+	v, err := h.nodeVerdict(ctx, true, false, false)
 	if err != nil || v.checked == 0 {
 		return "", err
 	}

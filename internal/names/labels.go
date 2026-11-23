@@ -71,6 +71,10 @@ const (
 	// supports from them, not from the chart values.
 	AnnotationStatePersistence   = "cybericebox.com/state-persistence"
 	AnnotationRuntimeObservation = "cybericebox.com/runtime-observation"
+	// AnnotationConsoleRelay is set on a node by its node-agent while console cables are on: "ready" when the device access service of the
+	// node answers on cable.sock with the relay of this release, "disabled" with the switch off, else "unavailable: <CODE>: <detail>". The
+	// management agent reports console cables only when every lab node says ready.
+	AnnotationConsoleRelay = "cybericebox.com/console-relay"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).

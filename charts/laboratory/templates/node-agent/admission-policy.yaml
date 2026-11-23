@@ -2,15 +2,16 @@
 {{- /*
 RBAC cannot limit a patch of nodes to one label of one node, so this policy does. The node-agent's ServiceAccount may patch the Node object of
 its own node (the node name is in the bound token of its pod) and change nothing but the label laboratory.cybericebox.com/node-agent-ready,
-which may only be "true", the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field) and the two
-annotation cybericebox.com/runtime-observation, the result of its start-up check (ready, disabled or "unavailable: <CODE>: <detail>").
+which may only be "true", the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field) and the
+annotations cybericebox.com/runtime-observation, the result of its start-up check, and cybericebox.com/console-relay, the state of the
+console line relay of the node (each ready, disabled or "unavailable: <CODE>: <detail>").
 The annotation cybericebox.com/state-persistence is node-state's (templates/node-state/admission-policy.yaml). See DEPLOY.md, "Which nodes
 run labs".
 */ -}}
 {{- $nodeAgent := printf "system:serviceaccount:%s:laboratory-node-agent" .Release.Namespace }}
 {{- $nodeState := printf "system:serviceaccount:%s:laboratory-node-state" .Release.Namespace }}
 {{- $key := "laboratory.cybericebox.com/node-agent-ready" }}
-{{- $annotationKeys := "['cybericebox.com/runtime-observation']" }}
+{{- $annotationKeys := "['cybericebox.com/runtime-observation', 'cybericebox.com/console-relay']" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -53,7 +54,7 @@ spec:
       message: {{ printf "the node-agent may change only the label %s of its node" $key | quote }}
       reason: Forbidden
     - expression: "variables.newAnnotations.all(k, k in {{ $annotationKeys }} || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k in {{ $annotationKeys }} || k in variables.newAnnotations)"
-      message: "the node-agent may change only the annotation cybericebox.com/runtime-observation of its node"
+      message: "the node-agent may change only the annotations cybericebox.com/runtime-observation and cybericebox.com/console-relay of its node"
       reason: Forbidden
     - expression: "variables.newAnnotations.all(k, !(k in {{ $annotationKeys }}) || variables.newAnnotations[k].matches('^(ready|disabled|unavailable: [A-Z0-9_]+: .{0,500})$'))"
       message: "the check annotations are ready, disabled or unavailable: CODE: detail"

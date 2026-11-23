@@ -209,6 +209,18 @@ spec:
               value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             - name: RUNTIME_OBSERVATION_ENABLED
               value: {{ .Values.lifecycle.runtimeObservation.enabled | quote }}
+            {{- if .Values.consoleCables.enabled }}
+            # Console cables: the lines of this node go to the device access service of the node over cable.sock; the device access pods of
+            # the other nodes are found in their namespace and take the cable stream on consoleCables.port.
+            - name: CONSOLE_CABLES_ENABLED
+              value: "true"
+            - name: CABLE_SOCKET
+              value: {{ printf "%s/cable.sock" (trimSuffix "/" .Values.consoleCables.socketDir) | quote }}
+            - name: DEVICE_ACCESS_NAMESPACE
+              value: {{ include "laboratory.deviceAccess.namespace" . | quote }}
+            - name: CONSOLE_CABLE_PORT
+              value: {{ .Values.consoleCables.port | quote }}
+            {{- end }}
             - name: RUNTIME_OBSERVATION_INTERVAL
               value: {{ .Values.lifecycle.runtimeObservation.interval | quote }}
             - name: ERROR_JOURNAL_NAMESPACE
@@ -288,6 +300,11 @@ spec:
               mountPath: /run/openvswitch
             - name: grpc-dir
               mountPath: /run/cybericebox
+            {{- if .Values.consoleCables.enabled }}
+            # cable.sock of the device access service of this node (the same host directory the device access pod mounts).
+            - name: cable-socket
+              mountPath: {{ .Values.consoleCables.socketDir | quote }}
+            {{- end }}
             - name: cri-sock
               mountPath: {{ .Values.nodeAgent.criSocket | quote }}
             # The kubelet's device-plugin directory: the node-agent registers cybericebox.com/tun here.
@@ -344,6 +361,12 @@ spec:
           hostPath:
             path: {{ .Values.nodeAgent.ovsRunHostPath }}
             type: DirectoryOrCreate
+        {{- if .Values.consoleCables.enabled }}
+        - name: cable-socket
+          hostPath:
+            path: {{ .Values.consoleCables.socketDir | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
         - name: ovs-db
           hostPath:
             path: {{ .Values.nodeAgent.ovsDBHostPath }}

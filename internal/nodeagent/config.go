@@ -47,6 +47,14 @@ type Config struct {
 	ImagePullConcurrency int           `env:"IMAGE_PULL_CONCURRENCY" envDefault:"2"`
 	ImagePullTimeout     time.Duration `env:"IMAGE_PULL_TIMEOUT"     envDefault:"5m"`
 
+	// Console cables (chart consoleCables.enabled): the node-agent drives the console lines of this node through the device access service
+	// of the node (CableSocket, cable.sock), and finds the device access pods of the other nodes in DeviceAccessNamespace, whose cable
+	// stream listens on ConsoleCablePort.
+	ConsoleCables         bool   `env:"CONSOLE_CABLES_ENABLED" envDefault:"false"`
+	CableSocket           string `env:"CABLE_SOCKET" envDefault:"/run/cybericebox/console-cables/cable.sock"`
+	DeviceAccessNamespace string `env:"DEVICE_ACCESS_NAMESPACE" envDefault:"laboratory-device-access"`
+	ConsoleCablePort      int    `env:"CONSOLE_CABLE_PORT" envDefault:"8081"`
+
 	// The platform registry (zot): the snapshots of device state and the image cache.
 	//
 	// StateRegistryAddr is host:port of the registry gate's TLS port (empty = names.RegistryGateAddr: the chart always installs it there).

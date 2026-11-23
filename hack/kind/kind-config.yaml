@@ -6,6 +6,14 @@
 # whatever the kind release defaults to. Change the three lines together.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+# The images of the platform are loaded onto the nodes (kind load), not pulled. Once a lab device on a node has pulled the node image
+# through the registry gate (its init container, pinned to a digest), the kubelet (KEP-2535, on by default in 1.35) re-verifies the loaded
+# tag for every later pod of that image and tries the unreachable https://registry.e2e.test: a device access or node-agent pod made after a
+# lab started (a restart) would never start. The tests verify no pull credential, so the kubelet does not either.
+kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    imagePullCredentialsVerificationPolicy: NeverVerify
 nodes:
   - role: control-plane
     image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0

@@ -41,6 +41,16 @@ rules:
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ connections/status, devices/status ]
     verbs: [ get, update, patch ]
+  {{- if .Values.consoleCables.enabled }}
+  # Console cables: it reads the cables (and the Devices of their ends, above), drives the lines of its node through the device access
+  # service of the node, and writes the status of the cables whose console end runs on its node.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ consolecables ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ consolecables/status ]
+    verbs: [ get, update, patch ]
+  {{- end }}
   - apiGroups: [ "" ]
     resources: [ nodes ]
     verbs: [ get, list, watch ]
