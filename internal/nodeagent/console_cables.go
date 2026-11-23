@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -284,7 +285,12 @@ func (s *ConsoleCableSync) deviceAccessPods(ctx context.Context) (map[string]str
 		if p.Spec.NodeName == "" || p.Status.PodIP == "" || p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning || !podReady(p) {
 			continue
 		}
-		out[p.Spec.NodeName] = net.JoinHostPort(p.Status.PodIP, strconv.Itoa(s.CablePort))
+		// the canonical form: the device access service takes nothing else
+		ip, err := netip.ParseAddr(p.Status.PodIP)
+		if err != nil || s.CablePort <= 0 || s.CablePort > 65535 {
+			continue
+		}
+		out[p.Spec.NodeName] = netip.AddrPortFrom(ip.Unmap(), uint16(s.CablePort)).String()
 	}
 	return out, nil
 }

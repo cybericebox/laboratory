@@ -389,3 +389,16 @@ func TestConsoleCableSyncRelayKeys(t *testing.T) {
 		t.Fatalf("%v %+v", err, cable.last.Lines)
 	}
 }
+
+// The peer address is the canonical form of the pod IP (the device access service takes nothing else); a pod IP that is not an IP is
+// skipped.
+func TestDeviceAccessPodAddresses(t *testing.T) {
+	s, _, _ := ccSync(t, "n1", &fakeCable{}, daPod("n2", "fd00:10:244:0::7", true), daPod("n3", "not-an-ip", true), daPod("n4", "10.1.0.4", true))
+	peers, err := s.deviceAccessPods(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peers["n2"] != "[fd00:10:244::7]:8081" || peers["n4"] != "10.1.0.4:8081" || peers["n3"] != "" {
+		t.Fatalf("%v", peers)
+	}
+}
