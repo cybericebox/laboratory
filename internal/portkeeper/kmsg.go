@@ -305,6 +305,7 @@ func followKernelLog(ctx context.Context, h *Hub, attached <-chan struct{}, src 
 		every = KernelLogPoll
 	}
 	f := newKmsgFollower(src)
+	var dumped uint64 // the client the ring buffer was last written for (0: none; clients are numbered from 1)
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -312,19 +313,19 @@ func followKernelLog(ctx context.Context, h *Hub, attached <-chan struct{}, src 
 		case <-ctx.Done():
 			return
 		case <-attached:
-			h.Inject(f.dump())
 		case <-t.C:
-			if !h.Attached() {
-				continue
-			}
-			// A client that attached since the last pass gets its dump first, never a poll before it: its attach signalled the channel
-			// under the same lock that Attached reads, so the signal is there by now.
-			select {
-			case <-attached:
-				h.Inject(f.dump())
-			default:
-				h.Inject(f.poll())
-			}
+		}
+		// A client gets its dump before anything else: the pass works for one client (its number), dumps for a client it has not dumped
+		// for yet, and what it read is dropped if another client holds the line by the time it is queued.
+		gen, ok := h.Client()
+		if !ok {
+			continue
+		}
+		if gen != dumped {
+			dumped = gen
+			h.InjectFor(gen, f.dump())
+		} else {
+			h.InjectFor(gen, f.poll())
 		}
 	}
 }

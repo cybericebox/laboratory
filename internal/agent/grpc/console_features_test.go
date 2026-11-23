@@ -69,8 +69,8 @@ func TestFeaturesReportConsoleCables(t *testing.T) {
 			if cc == nil || cc.GetEnabled() != c.want || cc.GetMaxCablesPerLab() != 64 || cc.GetMaxBytesPerSecond() != 65536 {
 				t.Errorf("%s: console cables %+v", name, cc)
 			}
-			// the kernel log of a console port (contract 3.2) needs the lines and the microVM profile
-			if cc.GetKernelLog() != (c.want && microVM) {
+			// the kernel log of a console port (contract 3.2) needs the lines, the microVM profile and every node's relay to know it
+			if cc.GetKernelLog() != (c.kernelLog && microVM) {
 				t.Errorf("%s, microvm %v: kernel_log %v", name, microVM, cc.GetKernelLog())
 			}
 			if k := got.GetConstants(); k.GetMaxConsolePorts() != 4 || k.GetMaxSerialPorts() != 16 {
