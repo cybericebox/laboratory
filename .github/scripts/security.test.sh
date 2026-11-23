@@ -49,13 +49,18 @@ case "$1 $2" in
         p=$(jq -r ".variables.input.fileChanges.additions[$k].path" "$req")
         mkdir -p "$(dirname "$p")"; jq -r ".variables.input.fileChanges.additions[$k].contents" "$req" | base64 -d >"$p"; git add -- "$p"
       done
-      git commit -q -m "$(jq -r .variables.input.message.headline "$req")" -m "$(jq -r .variables.input.message.body "$req")" && git push -q origin "HEAD:refs/heads/$branch" ) || exit 1
+      git commit -q -m "$(jq -r .variables.input.message.headline "$req")" -m "$(jq -r .variables.input.message.body "$req")" && git push -q origin "HEAD:refs/heads/$branch" && touch "$STATE/bot_$(git rev-parse HEAD)" ) || exit 1
     rm -rf "$d"
     echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"x"}}}}' ;;
   "api repos/"*)
     case "$2" in
       */commits/*/pulls) ;;
-      */commits/*) echo "${FAKE_VERIFIED:-true}" ;;
+      */commits/*)
+        if [[ "$*" == *@tsv* ]]; then # provenance: only the commits of the fake commit API are the Security workflow's
+          if [[ -f "$STATE/bot_${2##*/}" ]]; then printf 'true\tgithub-actions[bot]\tweb-flow\n'; else printf 'false\tsomeone\tsomeone\n'; fi
+          exit 0
+        fi
+        echo "${FAKE_VERIFIED:-true}" ;;
     esac ;;
 esac
 exit 0

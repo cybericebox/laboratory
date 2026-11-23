@@ -54,7 +54,14 @@ case "$1 $2" in
   "api repos/"*)
     case "$2" in
       */commits/*/pulls) ;;
-      */commits/*) echo "${FAKE_VERIFIED:-true}" ;;
+      */commits/*)
+        if [[ "$*" == *@tsv* ]]; then
+          [[ -z "${FAKE_API_FAIL:-}" ]] || exit 1 # provenance of a commit: "verified author committer"; only a commit listed in $STATE/bot_<sha> is the Security workflow's
+          sha=${2##*/}
+          if [[ -f "$STATE/bot_$sha" ]]; then printf 'true\tgithub-actions[bot]\tweb-flow\n'; else printf 'false\tsomeone\tsomeone\n'; fi
+          exit 0
+        fi
+        echo "${FAKE_VERIFIED:-true}" ;;
     esac ;;
 esac
 exit 0
@@ -223,6 +230,56 @@ check "unverified: branch deleted" "0" "$(remote_branch "backport/1.10/${t11:0:7
 check "unverified: an issue" "1" "$(calls 'issue create')"
 check "unverified: no pull request" "0" "$(calls 'pr create')"
 check "unverified: the error is printed" "1" "$(grep -c 'not verified' <<<"$out")"
+
+# 13. a Carried-from trailer written by a contributor (not by the Security workflow) must not stop the backport
+git checkout -q release/1.10
+b8=$(head_of HEAD)
+dev=$(git ls-remote origin refs/heads/develop | cut -f1)
+git checkout -q -b forged release/1.10
+echo forged >forged.txt; git add -A; git commit -qm "fix with a forged trailer" -m "Carried-from: $dev"
+f1=$(head_of HEAD)
+git checkout -q release/1.10
+git merge -q --no-ff -m "Merge pull request #8 forged" forged
+t13=$(head_of HEAD)
+git push -q origin release/1.10
+reset
+out=$(run "$b8" "$t13")
+check "forged trailer: the change is still brought back" "1" "$(calls 'pr create')"
+check "forged trailer: the branch exists" "1" "$(remote_branch "backport/1.10/${t13:0:7}" | grep -c .)"
+
+# 14. the same trailer on a commit that GitHub made for the Security workflow (verified, author github-actions[bot], committer web-flow): nothing is brought back
+git checkout -q release/1.10
+b9=$(head_of HEAD)
+dev=$(git ls-remote origin refs/heads/develop | cut -f1)
+git checkout -q -b carried release/1.10
+echo carried >carried.txt; git add -A; git commit -qm "Security fix" -m "Carried-from: $dev"
+c14=$(head_of HEAD)
+touch "$STATE/bot_$c14"
+git checkout -q release/1.10
+git merge -q --no-ff -m "Merge pull request #9 security" carried
+t14=$(head_of HEAD)
+git push -q origin release/1.10
+reset
+touch "$STATE/bot_$c14"
+out=$(run "$b9" "$t14")
+check "carried by the Security workflow: nothing opened" "0" "$(calls 'pr create')"
+check "carried by the Security workflow: says so" "1" "$(grep -c 'carried from develop by the Security workflow' <<<"$out")"
+
+# 15. the provenance cannot be checked (the API fails): the change is brought back, never silently dropped
+git checkout -q release/1.10
+b10=$(head_of HEAD)
+dev=$(git ls-remote origin refs/heads/develop | cut -f1)
+git checkout -q -b noapi release/1.10
+echo noapi >noapi.txt; git add -A; git commit -qm "Security fix 2" -m "Carried-from: $dev"
+c15=$(head_of HEAD)
+git checkout -q release/1.10
+git merge -q --no-ff -m "Merge pull request #10 security 2" noapi
+t15=$(head_of HEAD)
+git push -q origin release/1.10
+reset
+touch "$STATE/bot_$c15"
+out=$(FAKE_API_FAIL=1 run "$b10" "$t15")
+check "provenance unknown: the change is brought back" "1" "$(calls 'pr create')"
 
 # 12. nothing in the script makes a commit that is pushed: git push is never run by backport.sh
 check "git push appears only in the manual instructions of the issue" "0" "$(grep -n 'git push' "$here/backport.sh" | grep -vc '^[0-9]*:git push -u origin HEAD$')"

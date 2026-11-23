@@ -11,7 +11,8 @@
 # and one pull request into release/X.Y with the label security is opened for it (no auto-merge: the owner merges into a line by hand,
 # and the Line gate judges it like any fix; the label large-fix of the source pull request is carried along).
 # The commit message ends with the trailer "Carried-from: <MERGE_SHA>": backport.sh sees it after the merge into the line and does not
-# bring the change back into develop, where it already is. The trailer is trusted because every merge into a line is the owner's, by hand.
+# bring the change back into develop, where it already is. backport.sh honours the trailer only on a commit that GitHub made for this
+# workflow (verified, author github-actions[bot], committer web-flow), since anyone can write the text in a pull request.
 #   - the line already has the change (the commits are in it, a commit of it carries the same trailer, or the pick is empty): nothing;
 #   - the branch exists with a commit on it: this line was done before (a re-run does not open it twice); an empty branch left by a failed
 #     run is made again;

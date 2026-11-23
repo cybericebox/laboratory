@@ -8,8 +8,10 @@
 # backport/X.Y/<7 hex of AFTER>, and one pull request into develop is opened for it.
 #   - a commit already in develop, or whose change is already there (an empty pick), is left out; when nothing is left, nothing is opened;
 #   - a commit carried from develop by the Security workflow (security.sh) is left out: every commit it brings ends with the trailer
-#     "Carried-from: <commit of develop>", so the change is already in develop and is never sent back (no loop). The trailer is trusted
-#     because every merge into a line is the owner's, by hand;
+#     "Carried-from: <commit of develop>", so the change is already in develop and is never sent back (no loop). A trailer is only text
+#     that any author of a commit in a pull request can write, so it counts only on a commit that GitHub made for the Security workflow
+#     (verified, author github-actions[bot], committer web-flow, asked of the API); a trailer anywhere else, or one whose origin cannot
+#     be checked, is ignored and the change is brought back (a duplicate pull request is harmless, a silently lost fix is not);
 #   - the branch exists with a commit on it: this push was brought back before (a re-run does not open it twice); an empty branch left by
 #     a failed run is made again;
 #   - a pick does not apply cleanly, or the change cannot be sent through the API (a file mode, a symlink, a submodule, too large): no
@@ -68,7 +70,13 @@ Then open a pull request into $base. If $base already has this fix in another fo
   echo "::warning::${after:0:7} does not apply to $base: an issue was opened"
 }
 
-carried() { # carried COMMIT: true when every commit it brings has a Carried-from trailer naming a commit of develop
+made_by_security() { # made_by_security COMMIT: true when GitHub made it for the Security workflow (createCommitOnBranch, verified)
+  local row
+  row=$(gh api "repos/$GITHUB_REPOSITORY/commits/$1" --jq '[.commit.verification.verified, .author.login, .committer.login] | @tsv' 2>/dev/null) || return 1
+  [[ "$row" == $'true\tgithub-actions[bot]\tweb-flow' ]]
+}
+
+carried() { # carried COMMIT: true when every commit it brings is the Security workflow's and has a Carried-from trailer naming a commit of develop
   local c=$1 k from n=0 own=()
   if [[ $(git rev-list --parents -n 1 "$c" | wc -w) -gt 2 ]]; then
     while read -r k; do [[ -n "$k" ]] && own+=("$k"); done < <(git rev-list --no-merges "$c^1..$c")
@@ -77,7 +85,7 @@ carried() { # carried COMMIT: true when every commit it brings has a Carried-fro
   fi
   for k in "${own[@]}"; do
     from=$(git log -1 --format='%(trailers:key=Carried-from,valueonly)' "$k" | sed -n '/^[0-9a-f]\{40\}$/p' | tail -n 1)
-    [[ -n "$from" ]] && git merge-base --is-ancestor "$from" "$remote/$base" || return 1
+    [[ -n "$from" ]] && git merge-base --is-ancestor "$from" "$remote/$base" && made_by_security "$k" || return 1
     n=$((n + 1))
   done
   [[ "$n" -gt 0 ]]
