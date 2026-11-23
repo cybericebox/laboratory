@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -157,7 +158,8 @@ func lineServiceOn(t *testing.T, rt Runtime, node string, id ...*Identity) *Serv
 	if len(id) > 0 {
 		identity = id[0]
 	}
-	s := New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), Identity: identity, NodeName: node})
+	s := New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), Identity: identity, NodeName: node, CablePort: 8081})
+	s.allowLoopbackPeers = true // the cable listeners of the tests are on the loopback (dialable)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -329,11 +331,11 @@ func TestLineCrossNode(t *testing.T) {
 	a, b := lineServiceOn(t, rtA, "n1"), lineServiceOn(t, rtB, "n2")
 	srv := httptest.NewServer(b.CableHandler())
 	t.Cleanup(srv.Close)
-	peer := strings.TrimPrefix(srv.URL, "http://")
+	peer := dialable(a, srv)
 
-	// the owner dials before the serial node knows the line: refused, the owner waits
+	// the owner dials before the serial node knows the line: refused before authentication, so nothing of the refusal is believed
 	a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, peer)}})
-	waitFor(t, "WaitingForDevice", func() bool { return stateOf(a, "cable-1").Reason == wire.LineWaitingForDevice })
+	waitFor(t, "PeerUnreachable", func() bool { return stateOf(a, "cable-1").Reason == wire.LinePeerUnreachable })
 	b.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
 	waitFor(t, "the line up on both nodes", func() bool { return stateOf(a, "cable-1").Up && stateOf(b, "cable-1").Up })
 	term.in <- []byte("hostname\r")
@@ -359,7 +361,7 @@ func TestLineCrossNodeWrongKey(t *testing.T) {
 		srv := httptest.NewServer(b.CableHandler())
 		t.Cleanup(srv.Close)
 		b.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
-		a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, strings.TrimPrefix(srv.URL, "http://"))}})
+		a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, dialable(a, srv))}})
 		waitFor(t, "PeerUnreachable", func() bool { return stateOf(a, "cable-1").Reason == wire.LinePeerUnreachable })
 	})
 	t.Run("the dialer is not who the console end's node published", func(t *testing.T) {
@@ -370,7 +372,7 @@ func TestLineCrossNodeWrongKey(t *testing.T) {
 		srv := httptest.NewServer(b.CableHandler())
 		t.Cleanup(srv.Close)
 		b.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
-		a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, strings.TrimPrefix(srv.URL, "http://"))}})
+		a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, dialable(a, srv))}})
 		waitFor(t, "PeerUnreachable", func() bool { return stateOf(a, "cable-1").Reason == wire.LinePeerUnreachable })
 		if len(rtB.started()) != 0 {
 			t.Fatal("the serial port was attached for an open the console end's node did not sign")
@@ -820,5 +822,58 @@ func TestAdmitLinesIsFairBetweenTenants(t *testing.T) {
 	a, _ := admitLines([]wire.LineSpec{l})
 	if len(a) != 1 {
 		t.Fatal("a line without a tenant")
+	}
+}
+
+// dialable makes the cable listener of a test reachable for the owner: its port becomes the owner's cable port.
+func dialable(owner *Service, srv *httptest.Server) string {
+	u, _ := url.Parse(srv.URL)
+	p, _ := strconv.Atoi(u.Port())
+	owner.cablePort = p
+	return u.Host
+}
+
+// A peer is a unicast pod IP on the cable port and nothing else; the URL is built from the parsed address and the service's port.
+func TestPeerAddr(t *testing.T) {
+	s := New(Config{Runtime: &fakeRuntime{}, Log: logr.Discard(), CablePort: 8081})
+	for _, ok := range []string{"10.244.1.7:8081", "192.168.3.4:8081", "[fd00:10:244::7]:8081", "[2001:db8::1]:8081", "[::ffff:10.0.0.1]:8081"} {
+		if _, err := s.peerAddr(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "10.244.1.7", "10.244.1.7:8082", "10.244.1.7:0", "evil.example.com:8081", "localhost:8081", "127.0.0.1:8081", "[::1]:8081",
+		"169.254.169.254:8081", "[fe80::1]:8081", "[fe80::1%eth0]:8081", "0.0.0.0:8081", "[::]:8081", "224.0.0.1:8081", "[ff02::1]:8081",
+		"255.255.255.255:8081", "10.244.1.7:8081/path", "10.244.1.7:8081?x", "user@10.244.1.7:8081", "10.244.1.7:08081",
+	} {
+		if _, err := s.peerAddr(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	for in, want := range map[string]string{
+		"10.244.1.7:8081":        "ws://10.244.1.7:8081" + wire.CablePath,
+		"[fd00:10:244::7]:8081":  "ws://[fd00:10:244:0:0:0:0:7]:8081" + wire.CablePath,
+		"[::ffff:10.0.0.1]:8081": "ws://10.0.0.1:8081" + wire.CablePath,
+	} {
+		ap, _ := s.peerAddr(in)
+		if got := s.cableURL(ap); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
+		}
+	}
+	// without a cable port, no peer at all
+	if _, err := New(Config{Runtime: &fakeRuntime{}, Log: logr.Discard()}).peerAddr("10.244.1.7:8081"); err == nil {
+		t.Error("a peer without a cable port")
+	}
+}
+
+// A line whose peer is not a pod IP on the cable port is never taken, so the service never dials it.
+func TestSyncLinesRefusesBadPeers(t *testing.T) {
+	rt, _, _ := lineRuntime(t, true, false)
+	s := lineServiceOn(t, rt, "n1")
+	s.allowLoopbackPeers = false
+	for _, peer := range []string{"metadata.google.internal:80", "169.254.169.254:8081", "127.0.0.1:8081", "10.0.0.1:22"} {
+		if got := s.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, peer)}}); len(got.Lines) != 0 {
+			t.Errorf("%s taken: %+v", peer, got.Lines)
+		}
 	}
 }

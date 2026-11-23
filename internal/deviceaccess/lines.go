@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -93,7 +92,7 @@ func (l *line) endSession(s *cableSession) {
 }
 
 // validateLine checks a line the node-agent sent before the service acts on it.
-func validateLine(l wire.LineSpec) error {
+func (s *Service) validateLine(l wire.LineSpec) error {
 	for _, f := range []string{l.Namespace, l.Name, l.UID, l.Lab, l.LabUID, l.Serial.Device, l.Console.Device} {
 		if f == "" || len(f) > maxName {
 			return errors.New("a name of the line is empty or too long")
@@ -111,8 +110,8 @@ func validateLine(l wire.LineSpec) error {
 	switch l.Role {
 	case wire.RoleOwner:
 		if l.Peer != "" {
-			if _, _, err := net.SplitHostPort(l.Peer); err != nil {
-				return errors.New("the peer is not host:port")
+			if _, err := s.peerAddr(l.Peer); err != nil {
+				return err
 			}
 			if _, err := ParsePublicKey(l.PeerKey); err != nil {
 				return errors.New("a line to a peer carries the key of the peer's node")
@@ -218,7 +217,7 @@ func (s *Service) SyncLines(req wire.LinesRequest) wire.LinesReply {
 	var valid []wire.LineSpec
 	seen := map[string]bool{}
 	for _, l := range req.Lines {
-		if err := validateLine(l); err != nil {
+		if err := s.validateLine(l); err != nil {
 			s.log.Info("console line refused", "namespace", l.Namespace, "cable", l.Name, "reason", err.Error())
 			continue
 		}

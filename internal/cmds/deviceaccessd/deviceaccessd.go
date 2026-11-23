@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -135,8 +137,20 @@ func run(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// The cable port is the same on every device access pod (the chart's consoleCables.port): the port of this listener is the only port
+	// a peer is dialled on.
+	cablePort := 0
+	if cfg.CableListen != "" {
+		_, p, err := net.SplitHostPort(cfg.CableListen)
+		if err == nil {
+			cablePort, err = strconv.Atoi(p)
+		}
+		if err != nil || cablePort <= 0 || cablePort > 65535 {
+			return fmt.Errorf("CABLE_LISTEN %q has no port", cfg.CableListen)
+		}
+	}
 	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL),
-		Identity: id, NodeName: cfg.NodeName})
+		Identity: id, NodeName: cfg.NodeName, CablePort: cablePort})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())

@@ -155,3 +155,28 @@ func TestPublicKeyShape(t *testing.T) {
 		}
 	}
 }
+
+// A dialer's clock may run ahead of the acceptor's: an open it signed before the acceptor restarted can carry a time after the start.
+// Once the node has opened a stream to this process, every open it signed before that one is refused.
+func TestCableAuthRefusesOpensSignedBeforeTheFirstAccepted(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	a := testAuth(now)
+	a.started = now.Add(-5 * time.Second)
+	n1 := testIDs["n1"].PublicKey()
+	captured, _, _ := signOpen(testIDs["n1"], "n1", testOpen(), now.Add(-2*time.Second)) // signed (dialer ahead) before the restart
+	fresh, _, _ := signOpen(testIDs["n1"], "n1", testOpen(), now)
+	if err := a.check(fresh, n1); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.check(captured, n1); !errors.Is(err, errCableReplay) {
+		t.Fatalf("an open signed before the first accepted one: %v", err)
+	}
+	later, _, _ := signOpen(testIDs["n1"], "n1", testOpen(), now.Add(time.Second))
+	if err := a.check(later, n1); err != nil {
+		t.Fatalf("a later open: %v", err)
+	}
+	other, _, _ := signOpen(testIDs["n3"], "n3", testOpen(), now.Add(-time.Second))
+	if err := a.check(other, testIDs["n3"].PublicKey()); err != nil {
+		t.Fatalf("the floor is per node: %v", err)
+	}
+}

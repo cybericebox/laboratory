@@ -89,6 +89,9 @@ type Config struct {
 	// NodeName is the node of this service: it names it in the cable streams it dials, and the acceptor serves it only for the lines
 	// whose console end runs there.
 	NodeName string
+	// CablePort is the port of the cable stream of every device access pod (chart consoleCables.port): a peer is dialled on it and on
+	// nothing else. Zero: no line to a peer is taken.
+	CablePort int
 }
 
 // Service serves consoles.
@@ -105,6 +108,9 @@ type Service struct {
 	lines   *lineSet
 	pending *pendingCable
 	node    string
+	// cablePort is Config.CablePort; allowLoopbackPeers lets the tests dial a local listener (never set outside tests).
+	cablePort          int
+	allowLoopbackPeers bool
 
 	mu       sync.Mutex
 	stopping bool
@@ -127,6 +133,7 @@ func New(c Config) *Service {
 	s.cable = &cableAuth{id: id, nonces: newNonceCache(maxNonces, maxNoncesPerSource), now: time.Now, started: time.Now()}
 	s.pending = &pendingCable{bySource: map[string]int{}}
 	s.node = c.NodeName
+	s.cablePort = c.CablePort
 	s.lines = &lineSet{svc: s, lines: map[string]*line{}}
 	return s
 }

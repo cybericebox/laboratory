@@ -114,13 +114,18 @@ func (s *Service) dialPeer(ctx context.Context, l wire.LineSpec) (side, string, 
 	if s.node == "" || s.cable.id == nil {
 		return nil, wire.LinePeerUnreachable, errors.New("the service has no node name or identity")
 	}
+	// checked when the line was taken; checked again here, and the URL is built from the parsed address (peer.go)
+	peer, err := s.peerAddr(l.Peer)
+	if err != nil {
+		return nil, wire.LinePeerUnreachable, err
+	}
 	open, eph, err := signOpen(s.cable.id, s.node, cableOpenOf(l), s.cable.now())
 	if err != nil {
 		return nil, wire.LinePeerUnreachable, err
 	}
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	ws, _, err := websocket.Dial(dctx, "ws://"+l.Peer+wire.CablePath, &websocket.DialOptions{
+	ws, _, err := websocket.Dial(dctx, s.cableURL(peer), &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
 		HTTPClient:      &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	})
@@ -149,11 +154,8 @@ func (s *Service) dialPeer(ctx context.Context, l wire.LineSpec) (side, string, 
 	}
 	openT := openTranscript(open)
 	if reply.Sig == "" {
-		// Refused before the peer authenticated this dialer: nothing is signed. Only the reason of the status follows the code.
-		if reply.Error == wire.CodeNotFound {
-			return fail(wire.LineWaitingForDevice, errors.New("the peer has no such line yet"))
-		}
-		return fail(wire.LinePeerUnreachable, errors.New("the peer refused the cable stream: "+reply.Error))
+		// Refused before the peer authenticated this dialer: nothing is signed, so nothing of it is believed, not even the reason.
+		return fail(wire.LinePeerUnreachable, errors.New("the peer refused the cable stream before authenticating it: "+reply.Error))
 	}
 	if err := checkReply(l.PeerKey, openT, reply, open.Nonce); err != nil {
 		return fail(wire.LinePeerUnreachable, err)

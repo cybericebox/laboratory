@@ -1270,17 +1270,23 @@ never over the lab network or a device NIC: a cable works with every lab interfa
   - **Handshake.** The dialer makes an ephemeral X25519 key and sends its node, the cable, its UID, the lab and its UID, both ends, its
     time, a 16-byte nonce and the ephemeral public key, signed with its identity. The acceptor finds the line its own node-agent gave it
     with the `serial` role, the same cable, UID, lab, lab UID and ends, and the dialer's node equal to the console end's node; it checks
-    the signature with the key that node published, the time (within 30 s of its own clock and not before the acceptor process started,
-    so an open captured before a restart is never accepted again) and the nonce (new for that node, and newer than any nonce of that node
+    the signature with the key that node published, the time (within 30 s of its own clock, not before the acceptor process started,
+    and not before the first open of that node the process accepted, so an open captured before a restart is not accepted again even
+    from a dialer whose clock runs ahead) and the nonce (new for that node, and newer than any nonce of that node
     it had to forget). Only then does it sign anything: its reply carries its own nonce and ephemeral key, signed with its identity over
     the digest of the open, and the owner checks it with the key the serial end's node published. A refusal before authentication is
-    unsigned, and a nonce that is not 32 hex characters is never echoed. A newer authenticated stream for the same line replaces an
+    unsigned, and a nonce that is not 32 hex characters is never echoed; the owner believes nothing of an unsigned refusal and reports
+    the line `PeerUnreachable`. A newer authenticated stream for the same line replaces an
     older one.
   - **Transport.** The session secret is the X25519 secret of the two ephemeral keys, bound (HMAC) to the digest of both signed
     messages. Every message after the handshake is one frame sealed with AES-256-GCM, one key per direction and an authenticated sequence
     number. Nobody on the path can read the line, inject, change, drop, reorder, replay or splice a frame: the receiver ends the line on
     anything but the next frame under its own key. A replayed open (even one whose original never arrived) is accepted at most once and
     gives the replayer nothing: it lacks the dialer's ephemeral private key.
+  - **The peer address.** The address of the serial end's pod comes from the node-agent over `cable.sock`; the service takes it only as
+    the canonical form of a unicast pod IP (not loopback, link-local, unspecified or multicast, no zone) with the cable port of its own
+    listener, checks it again before the dial, and builds the URL from the parsed address and its own port. A compromised node-agent can
+    make it dial a pod IP on the cable port and nothing else, and the peer must still prove the published key of the serial end's node.
   - **Abuse bounds.** At most 64 handshakes are pending at once, 16 from one address, each must send its first message within 3 s.
     The nonce cache holds 20000 nonces, at most 2000 per dialer node (the node the signature proved; a node over its quota loses its own
     oldest), and when full forgets the oldest of all. It never refuses for room, so a flood never locks the lines of the others; a

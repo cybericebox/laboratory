@@ -308,6 +308,12 @@ type cableAuth struct {
 	now    func() time.Time
 	// started is when this process started: an open signed before that is refused (it could be a replay of one the previous process saw).
 	started time.Time
+	// first is, per dialer node, the time of the first open of that node this process accepted. A dialer's clock may run ahead of the
+	// acceptor's by up to the window, so an open it signed before the acceptor restarted can carry a time after the start; once the node
+	// has opened a stream to this process, every open it signed before that one is refused. (One that arrives before it gets a stream it
+	// cannot use: the session needs the dialer's ephemeral key.)
+	mu    sync.Mutex
+	first map[string]int64
 }
 
 // check authenticates an open request for a line whose console end is the node with the published key nodeKey: the signature, then the
@@ -326,8 +332,19 @@ func (a *cableAuth) check(r wire.CableOpen, nodeKey string) error {
 	if d := now.Sub(t); d > CableWindow || d < -CableWindow || r.Time < a.started.UnixMilli() {
 		return errCableTime
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if f, ok := a.first[r.Node]; ok && r.Time < f {
+		return errCableReplay
+	}
 	if !a.nonces.add(r.Nonce, r.Node, r.Time, now) {
 		return errCableReplay
+	}
+	if _, ok := a.first[r.Node]; !ok {
+		if a.first == nil {
+			a.first = map[string]int64{}
+		}
+		a.first[r.Node] = r.Time
 	}
 	return nil
 }
