@@ -64,6 +64,9 @@ type ConsolePort struct {
 	// Native is "", stdio or tcp; Port is the loopback port of tcp.
 	Native string `json:"native,omitempty"`
 	Port   int    `json:"port,omitempty"`
+	// KernelLog: the line also carries the kernel's messages (kmsg.go). The operator sets it only for a microvm device (the guest kernel
+	// is the device's own); the keeper checks again that it runs in a Kata guest before it reads anything.
+	KernelLog bool `json:"kernel_log,omitempty"`
 }
 
 // SerialPort is a terminal line: Path is the character device inside the device.
@@ -134,8 +137,14 @@ func (s Spec) Validate() error {
 		return bad("more than %d serial ports", MaxSerialPorts)
 	}
 	seen := map[string]bool{}
-	stdio := 0
+	stdio, kernelLogs := 0, 0
 	for _, c := range s.Console {
+		if c.KernelLog {
+			kernelLogs++
+			if c.Native != "" {
+				return bad("console port %q: the kernel log goes on a line with a command, not on a native console", c.Name)
+			}
+		}
 		if !consoleNameRE.MatchString(c.Name) {
 			return bad("console port name %q", c.Name)
 		}
@@ -166,6 +175,9 @@ func (s Spec) Validate() error {
 	}
 	if stdio > 1 {
 		return bad("more than one stdio console")
+	}
+	if kernelLogs > 1 {
+		return bad("more than one console port with the kernel log")
 	}
 	paths := map[string]bool{}
 	for _, p := range s.Serial {
@@ -231,9 +243,27 @@ func Marshal(s Spec) []byte {
 // Hash is the digest of a port list that the operator stamps on the pod of the device (names.LabelPorts): the first 32 hex characters
 // of the SHA-256 of its JSON. The device access service recomputes it from the list the node-agent sends and attaches a line only when
 // it equals the label of the sandbox, so the list cannot name a port the device does not have.
+//
+// The kernel log flag is left out of the digest: it says nothing about which ports the device has, and leaving it out keeps the digest
+// equal across releases (a node-agent of a release before the flag computes the list without it, and the operator labels the pod with
+// the digest of the list with it).
 func Hash(s Spec) string {
-	sum := sha256.Sum256(Marshal(s))
+	sum := sha256.Sum256(Marshal(s.WithoutKernelLog()))
 	return hex.EncodeToString(sum[:])[:32]
+}
+
+// WithoutKernelLog is a copy of the list with the kernel log flag off on every port: what the device access service gets (it checks port
+// names and kinds only, and a service of a release before the flag refuses a list that has it).
+func (s Spec) WithoutKernelLog() Spec {
+	out := Spec{Serial: s.Serial}
+	if s.Console != nil {
+		out.Console = make([]ConsolePort, len(s.Console))
+		for i, c := range s.Console {
+			c.KernelLog = false
+			out.Console[i] = c
+		}
+	}
+	return out
 }
 
 // HasConsole and HasSerial say the list declares the port with that kind.

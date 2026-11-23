@@ -116,8 +116,17 @@ func TestConsolePortsAndCablesValidation(t *testing.T) {
 		"two console ends": {nil, []ConsoleCableTemplate{cable("r1", "console0", "r2", "console0")}, "the serial end names a serial port"},
 		"one device":       {nil, []ConsoleCableTemplate{cable("pc1", "serial0", "pc1", "console0")}, "two different devices"},
 		"a NIC as an end":  {nil, []ConsoleCableTemplate{cable("pc1", "eth0", "r1", "console0")}, "consoleCables"},
-		"64 cables":        {nil, many(64), ""},
-		"65 cables":        {nil, many(65), "Too many"},
+		"kernel log on a microvm": {[]DeviceTemplate{{Name: "r1", Type: DeviceTypeContainer, Profile: DeviceProfileMicroVM,
+			ConsolePorts: []ConsolePortSpec{{Name: "console0", KernelLog: true}, {Name: "aux0"}}}}, nil, ""},
+		"kernel log on a container": {[]DeviceTemplate{router(ConsolePortSpec{Name: "console0", KernelLog: true})}, nil, "kernelLog is only for a microvm device"},
+		"kernel log on an explicit container profile": {[]DeviceTemplate{{Name: "r1", Type: DeviceTypeContainer, Profile: DeviceProfileContainer,
+			ConsolePorts: []ConsolePortSpec{{Name: "console0", KernelLog: true}}}}, nil, "kernelLog is only for a microvm device"},
+		"kernel log on two ports": {[]DeviceTemplate{{Name: "r1", Type: DeviceTypeContainer, Profile: DeviceProfileMicroVM,
+			ConsolePorts: []ConsolePortSpec{{Name: "console0", KernelLog: true}, {Name: "aux0", KernelLog: true}}}}, nil, "at most one console port"},
+		"kernel log on a native console": {[]DeviceTemplate{{Name: "r1", Type: DeviceTypeContainer, Profile: DeviceProfileMicroVM,
+			ConsolePorts: []ConsolePortSpec{{Name: "console0", KernelLog: true, Native: &NativeConsoleSpec{Kind: NativeConsoleStdio}}}}}, nil, "not for a native console"},
+		"64 cables": {nil, many(64), ""},
+		"65 cables": {nil, many(65), "Too many"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := try(tc.devices, tc.cables...)
@@ -157,6 +166,21 @@ func TestDevicePortsAndConsoleCablesAreImmutable(t *testing.T) {
 	d.Spec.Image = "nginx"
 	if err := c.Update(ctx, d); err != nil {
 		t.Fatalf("another field of the device still changes: %v", err)
+	}
+	d.Spec.ConsolePorts[0].KernelLog = true
+	if err := c.Update(ctx, d); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("turning the kernel log on must be refused: %v", err)
+	}
+
+	// a Device made directly (not through a Lab) gets the same kernel log rules
+	k := &Device{ObjectMeta: metav1.ObjectMeta{Name: "k1", Namespace: "ns"}, Spec: DeviceSpec{LabRef: "l", Name: "k1", Type: DeviceTypeContainer,
+		ConsolePorts: []ConsolePortSpec{{Name: "console0", KernelLog: true}}}}
+	if err := c.Create(ctx, k); err == nil || !strings.Contains(err.Error(), "kernelLog is only for a microvm device") {
+		t.Fatalf("a container Device with kernelLog must be refused: %v", err)
+	}
+	k.Spec.Profile = DeviceProfileMicroVM
+	if err := c.Create(ctx, k); err != nil {
+		t.Fatalf("a microvm Device with kernelLog: %v", err)
 	}
 
 	cc := &ConsoleCable{ObjectMeta: metav1.ObjectMeta{Name: "l--pc1-serial0", Namespace: "ns"}, Spec: ConsoleCableSpec{LabRef: "l",

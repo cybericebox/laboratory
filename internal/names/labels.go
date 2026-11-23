@@ -78,6 +78,11 @@ const (
 	// node answers on cable.sock with the relay of this release, "disabled" with the switch off, else "unavailable: <CODE>: <detail>". The
 	// management agent reports console cables only when every lab node says ready.
 	AnnotationConsoleRelay = "cybericebox.com/console-relay"
+	// AnnotationConsoleKernelLog is set on a node by its node-agent while console cables are on: "ready" when the device access service of
+	// the node understands port lists with the kernel log of a console port (wire.FeatureKernelLog), else "unavailable: <CODE>: <detail>".
+	// The management agent reports console_cables.kernel_log only when every lab node says ready, so a port list with kernel_log never
+	// reaches a service that would refuse it (a rolling upgrade).
+	AnnotationConsoleKernelLog = "cybericebox.com/console-kernel-log"
 	// AnnotationConsoleRelayKey is the public key (Ed25519, base64url without padding) of the device access process of a node, put on the
 	// node by its node-agent: the device access services of the other nodes verify the cable streams of this node with it. Only the
 	// node-agent of the node may set it (admission policy laboratory-node-agent-label).

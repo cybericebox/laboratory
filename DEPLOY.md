@@ -1154,6 +1154,8 @@ in the project root.
 - `devices[].consolePorts` (at most 4, `names.MaxConsolePorts`): `{name: console<n>|aux<n>, command, user}` runs the command on the line
   (default `/bin/login` as root), respawned like a getty; `{name, native: {kind: stdio}}` makes the line the service's own terminal;
   `{name, native: {kind: tcp, port}}` bridges a TCP port on the device's own loopback (an emulator's console).
+  `kernelLog: true` (default off) also puts the guest kernel's messages on a console port that runs a command, like a kernel console
+  ("Kernel log on a console port" below); only on a `profile: microvm` device, at most one port per device.
 - `devices[].serialPorts` (at most 16, `names.MaxSerialPorts`): `{name: serial<n>, path}`, a character device inside the device, by default
   `/dev/ttyCON<n>`.
 - `spec.consoleCables` (at most 64): `{serial: {device, port}, console: {device, port}}`. They are not `connections`: the operator makes a
@@ -1163,6 +1165,8 @@ The ports of a Device are immutable (CEL), like its interfaces. The API server c
 port, one of `command` and `native`, the two ends of a cable). The management agent reports the feature in `GetFeatures.console_cables`
 (`enabled`, `max_cables_per_lab` 64, `max_bytes_per_second` 65536) and the port limits in `constants` (`max_console_ports`,
 `max_serial_ports`), and the lab status carries `console_cables` (both ends, `line_up`, `reason`); all of it is contract 3.1.
+`console_cables.kernel_log` (contract 3.2) says a console port may carry the kernel log: the lines are enabled, `microvm.enabled` is on
+and every lab node's relay supports it ("Kernel log on a console port", rolling upgrades).
 
 The switch also renders the device access service (it moves the bytes of the lines between the nodes). With the switch off a lab that has a
 port or a cable is refused at the three layers of "Feature switches" with `CONSOLE_CABLES_UNAVAILABLE`; the policy
@@ -1183,8 +1187,8 @@ a longer one is refused with `CONSOLE_CABLE_INVALID`.
 **What the operator does.** A Lab whose ports or cables break a rule the CRD cannot express is failed with the reason `ConsoleCableInvalid`
 (the agent refuses the same spec earlier: `InvalidArgument`, ErrorInfo reason `CONSOLE_CABLE_INVALID`): an end that is not a declared
 port of that kind, a port used by two cables, a port named like an interface of its device, two `stdio` consoles on one device, a serial
-path used twice, `vm-serial` (reserved with the vm profile), or a device with ports but no service command and user (it has to start
-through the launcher). For a valid lab it copies the ports onto the Devices, makes one `ConsoleCable` per cable (owned by the Lab, labelled
+path used twice, `vm-serial` (reserved with the vm profile), `kernelLog` on a device that is not `profile: microvm`, on a native
+console or on two ports of one device, or a device with ports but no service command and user (it has to start through the launcher). For a valid lab it copies the ports onto the Devices, makes one `ConsoleCable` per cable (owned by the Lab, labelled
 with it, name from both ends; an unplugged or re-plugged cable deletes the old object) and lists them in `status.consoleCables`. A line
 that is down never holds the lab back from Ready.
 
@@ -1240,6 +1244,58 @@ when the keeper could not make that port (the reason on stderr). When
 no keeper answers (root in the device killed it) the attach starts a new one and retries for 3 s, and only then reports a port recorded as
 failed (exit 5), so a record left by an earlier keeper does not stop it: the lines of that device restart (a
 `stdio` line cannot be made again: its master went with the keeper that started with the service).
+
+**Kernel log on a console port.** A microVM device has a kernel of its own (Kata Containers boots a guest kernel per pod), so its console
+line can show what the console of a real machine shows besides the login: `consolePorts[].kernelLog: true`. It is not a real `ttyS0`:
+Kata with Cloud Hypervisor keeps the guest serial port off unless the hypervisor runs in debug mode, and the guest's `ttyS0` belongs to the
+Kata guest image, not to the device (`docs/internal-docs/laboratory/research/2026-11-23-kata-serial-console.md`). Neither Kata's debug
+mode nor the agent debug console is used, and nothing reads a log on the node.
+
+**Not yet verified on a KVM node.** Before `kernelLog` is relied on in a release, PoC step 1 of the research note must confirm on a KVM
+node, in a microVM device: the token `systemd.unit=kata-containers.target` on `/proc/cmdline`, `kernel.dmesg_restrict` 0,
+`SYSLOG_ACTION_READ_ALL` working for the keeper (root, the device's own capabilities), the size of the ring buffer, and the timestamps of
+the boot messages. Until then the feature is built and unit-tested only; every check below fails closed.
+
+- **What the line shows.** When a client attaches (the cable's line comes up), the keeper writes the kernel's ring buffer to the client,
+  every message since boot (the newest 64 KiB, with a line counting the ones left out), then every 500 ms the messages that came since,
+  while the client stays; the program of the port (by default `/bin/login`) runs as before, and its prompt appears on the next Enter. A
+  client always gets the ring buffer first, before any newer message. The kernel lines go towards the client only, never to the program,
+  so they are not input. Each line ends with CR LF; control bytes (but the tab), format characters (bidi overrides, zero-width
+  characters), the Unicode line and paragraph separators and bytes that are not UTF-8 are written as `?`, so a message cannot send an
+  escape sequence to the terminal at the other end or change what it shows; a line is cut at 1 KiB.
+- **Flood bound.** One poll writes at most 8 KiB, plus one notice line (16 KiB/s, a quarter of a line's 64 KiB/s): the rest of a burst
+  (a netfilter `LOG` rule that logs every packet) is left out and counted in that notice line, so the login stays usable. The follow is
+  by timestamp, so a burst that wraps the ring buffer between two polls loses what was overwritten.
+- **Timestamps.** `CONFIG_PRINTK=y` and `CONFIG_PRINTK_TIME=y` are in `kernel/microvm/cybericebox.fragment` and checked at the kernel
+  build; to be verified on a KVM node. At run time the keeper reads `/sys/module/printk/parameters/time` before the first read and on
+  every dump: with `N` (`printk.time=0`), or when a message without a timestamp follows one with it, the line shows the notice instead of
+  a log that would lose messages without a word.
+- **How it is read, and the privileges.** `syslog(2)` `SYSLOG_ACTION_READ_ALL` (and `SIZE_BUFFER` for the size, one buffer kept across
+  polls), by the keeper, which runs as root in the device with the device's own capability set: no capability is added (no
+  `CAP_SYSLOG`), no device node (`/dev/kmsg` is not in a container's `/dev` and the device cgroup does not allow it), no volume, no
+  host path. It works because the guest kernel does not restrict the kernel log (`kernel.dmesg_restrict` 0;
+  `kernel/microvm/build.sh` fails a kernel with `CONFIG_SECURITY_DMESG_RESTRICT=y`) and Kata does not apply the container seccomp
+  profile inside the guest by default (`disable_guest_seccomp`). A guest sysctl `kernel.dmesg_restrict=1` or a seccomp profile applied
+  in the guest makes the read fail with `EPERM`: fail closed, with the notice. Any user of the device can run `dmesg` too: the line
+  shows nothing the device does not already show.
+- **Never the node's kernel.** On a container device the kernel is the node's, shared with every other tenant: the flag is refused there
+  (CRD, agent, operator: `CONSOLE_CABLE_INVALID` / `ConsoleCableInvalid`), the operator writes `kernel_log` into the port list of a
+  microVM device only, and the keeper itself reads nothing unless the kernel command line is a Kata guest's
+  (`systemd.unit=kata-containers.target`). If that check, the timestamp check or a read fails, the line shows one line
+  `[kernel log not available: <why>]` to each client and the keeper never tries again; the login works as before.
+- **Rolling upgrades and rollbacks.** The guarantee is on the node side: a node that cannot do the kernel log never loses the other
+  lines of a device. The digest of a port list (the pod label `laboratory.cybericebox.com/ports`) leaves `kernel_log` out, so it is
+  the same for every release, and the node-agent never sends `kernel_log` to the device access service (the service checks port names
+  and kinds only; the kernel log is the keeper's, which reads the list the operator wrote into the pod). A device access service of a
+  release before the flag, which refuses an unknown field, therefore never sees it. The feature flag is best effort on top of that:
+  the node-agent publishes `cybericebox.com/console-kernel-log` on its Node, `ready:1 <relay key>` when the device access service of
+  the node answers on `cable.sock` with the feature `kernel-log`, else `unavailable: CONSOLE_KERNEL_LOG_UNSUPPORTED: ...` (or
+  `CONSOLE_RELAY_UNREACHABLE`). The value names the relay key of the process that answered, so a ready left behind by an earlier process
+  (a rolled-back service is a new process with a new key) no longer counts. The management agent reports `console_cables.kernel_log`
+  only when every lab node ready for pods has a ready value of this revision with the relay key now on the node, besides the lines
+  being enabled and `microvm.enabled` (the answer is cached for 5 s). A caller sends `kernelLog` only while it reports true.
+- Not shown: anything after the container (and its keeper) is gone, a kernel panic, the firmware or a bootloader (there is none: direct
+  kernel boot). That is step 2 of the research note (a serial socket of the hypervisor), with the same field.
 
 **The relay (the device access service).** The line of a cable is moved by the device access services of the nodes of its two ends,
 never over the lab network or a device NIC: a cable works with every lab interface down.
@@ -1356,6 +1412,8 @@ The operator gets `patch` on `consolecables` (the stamp only; the spec is immuta
 **What the agent reports.** The node-agent keeps the annotation `cybericebox.com/console-relay` on its node: `ready` once the device
 access service of the node answers on `cable.sock` with the relay of this release, `unavailable: CONSOLE_RELAY_UNREACHABLE: …` (or
 `CONSOLE_RELAY_OUTDATED`) otherwise (the admission policy of the node-agent lets it change this annotation of its own node and no other).
+Beside it, `cybericebox.com/console-kernel-log` says whether that service knows the kernel log of a console port (`ready:1 <relay key>`,
+or `unavailable: CONSOLE_KERNEL_LOG_UNSUPPORTED: …`; the same policy); `GetFeatures.console_cables.kernel_log` needs it on every lab node.
 With the switch off the node-agent writes nothing: no annotation, no line, no status.
 
 **The relay keys.** With the switch on the node-agent also puts the public key the device access process of its node reports on

@@ -287,7 +287,7 @@ func (s *Service) LineStates() wire.LinesReply {
 	sort.Slice(out, func(i, j int) bool {
 		return lineID(out[i].Namespace, out[i].Name) < lineID(out[j].Namespace, out[j].Name)
 	})
-	return wire.LinesReply{Relay: wire.RelayVersion, RelayKey: s.cable.id.PublicKey(), Lines: out}
+	return wire.LinesReply{Relay: wire.RelayVersion, RelayKey: s.cable.id.PublicKey(), Features: []string{wire.FeatureKernelLog}, Lines: out}
 }
 
 func (set *lineSet) start(spec wire.LineSpec, key string) *line {

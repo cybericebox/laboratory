@@ -31,6 +31,8 @@ type fakeSys struct {
 	endAtOnce  bool
 	kills      int
 	opened     []*os.File
+	// klog is the kernel log the keeper reads (kmsg_test.go); nil: a source that fails every test that reads it
+	klog KernelLog
 }
 
 func pair(t *testing.T) (*os.File, *os.File) {
@@ -114,7 +116,10 @@ func startKeeper(t *testing.T, spec Spec, mods ...func(*fakeSys)) (*fakeSys, str
 				return Identity{}, errors.New("unknown user")
 			}
 			return Identity{UID: 0, GID: 0, Home: "/root"}, nil
-		}, Sys: sys}
+		}, Sys: sys, KernelLog: sys.klog, KernelLogPoll: 20 * time.Millisecond}
+	if cfg.KernelLog == nil {
+		cfg.KernelLog = noKernelLog{t}
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- Run(ctx, cfg) }()
 	t.Cleanup(func() {
@@ -282,4 +287,16 @@ func TestConsoleProgramIsKilledOnShutdownAndRespawn(t *testing.T) {
 	if n := sys.count(&sys.kills); n != 0 {
 		t.Fatalf("a logout must not kill the group of the program: %d kills", n)
 	}
+}
+
+// noKernelLog is the kernel log of a test that must never read one.
+type noKernelLog struct{ t *testing.T }
+
+func (n noKernelLog) Guest() (bool, string) {
+	n.t.Error("the keeper asked about the kernel log")
+	return false, "test"
+}
+func (n noKernelLog) ReadAll() ([]byte, error) {
+	n.t.Error("the keeper read the kernel log")
+	return nil, errors.New("test")
 }

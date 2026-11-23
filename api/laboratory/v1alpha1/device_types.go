@@ -8,6 +8,8 @@ import (
 // +kubebuilder:validation:XValidation:rule="has(self.consolePorts) == has(oldSelf.consolePorts) && (!has(self.consolePorts) || self.consolePorts == oldSelf.consolePorts)",message="the console ports of a device are immutable"
 // +kubebuilder:validation:XValidation:rule="has(self.serialPorts) == has(oldSelf.serialPorts) && (!has(self.serialPorts) || self.serialPorts == oldSelf.serialPorts)",message="the serial ports of a device are immutable"
 // +kubebuilder:validation:XValidation:rule="self.type == 'container' || (!has(self.consolePorts) && !has(self.serialPorts))",message="only a container device has console and serial ports"
+// +kubebuilder:validation:XValidation:rule="!has(self.consolePorts) || !self.consolePorts.exists(c, has(c.kernelLog) && c.kernelLog) || (has(self.profile) && self.profile == 'microvm')",message="kernelLog is only for a microvm device: a container device shares the node's kernel, whose log is never shown"
+// +kubebuilder:validation:XValidation:rule="!has(self.consolePorts) || self.consolePorts.filter(c, has(c.kernelLog) && c.kernelLog).size() <= 1",message="at most one console port of a device has kernelLog"
 type DeviceSpec struct {
 	// LabRef is the name of the parent Lab.
 	// +kubebuilder:validation:Required

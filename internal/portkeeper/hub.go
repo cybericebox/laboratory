@@ -30,11 +30,16 @@ type Hub struct {
 	mu     sync.Mutex
 	client *client
 	line   io.Writer
+	// attached, when made by AttachEvents, gets a signal each time a client attaches (the kernel log writes its ring buffer then).
+	attached chan struct{}
+	// gen counts the attaches: each client has its own number (Client, InjectFor).
+	gen uint64
 }
 
 // client is the attached connection and its writer, which sends the handshake before it takes anything from the queue.
 type client struct {
 	conn net.Conn
+	gen  uint64
 	out  chan []byte
 	// done is closed by detach: the writer stops, so a detached client leaves no goroutine and no queue behind.
 	done chan struct{}
@@ -58,6 +63,37 @@ func (h *Hub) Attached() bool {
 	return h.client != nil
 }
 
+// AttachEvents is a channel that is signalled when a client attaches (signals do not pile up: one waiting signal at most).
+func (h *Hub) AttachEvents() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.attached == nil {
+		h.attached = make(chan struct{}, 1)
+	}
+	return h.attached
+}
+
+// Client is the number of the attached client (it changes with every attach), and whether one is attached.
+func (h *Hub) Client() (uint64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.client == nil {
+		return 0, false
+	}
+	return h.client.gen, true
+}
+
+// InjectFor queues bytes for the client with that number as if the line had sent them (in chunks of the queue's size); they are dropped
+// when another client, or none, holds the line by then, so what was read for one client never reaches the next.
+func (h *Hub) InjectFor(gen uint64, p []byte) {
+	const chunk = 4096
+	for len(p) > 0 {
+		n := min(len(p), chunk)
+		h.deliverTo(gen, p[:n])
+		p = p[n:]
+	}
+}
+
 // WriteLine writes the client's bytes to the line end, or drops them when there is none.
 func (h *Hub) WriteLine(p []byte) (int, error) {
 	h.mu.Lock()
@@ -73,7 +109,20 @@ func (h *Hub) WriteLine(p []byte) (int, error) {
 func (h *Hub) deliver(p []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	c := h.client
+	h.queue(h.client, p)
+}
+
+// deliverTo is deliver for the client with that number only.
+func (h *Hub) deliverTo(gen uint64, p []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.client != nil && h.client.gen == gen {
+		h.queue(h.client, p)
+	}
+}
+
+// queue puts a copy of p in the queue of c (h.mu held).
+func (h *Hub) queue(c *client, p []byte) {
 	if c == nil {
 		return
 	}
@@ -113,8 +162,15 @@ func (h *Hub) attach(conn net.Conn) *client {
 	if h.client != nil {
 		return nil
 	}
-	c := &client{conn: conn, out: make(chan []byte, clientQueue), done: make(chan struct{})}
+	h.gen++
+	c := &client{conn: conn, gen: h.gen, out: make(chan []byte, clientQueue), done: make(chan struct{})}
 	h.client = c
+	if h.attached != nil {
+		select {
+		case h.attached <- struct{}{}:
+		default:
+		}
+	}
 	return c
 }
 

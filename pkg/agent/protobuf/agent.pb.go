@@ -8269,8 +8269,13 @@ type ConsoleCablesFeature struct {
 	Enabled           bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	MaxCablesPerLab   int32                  `protobuf:"varint,2,opt,name=max_cables_per_lab,json=maxCablesPerLab,proto3" json:"max_cables_per_lab,omitempty"`       // 64 (names.MaxConsoleCablesPerLab)
 	MaxBytesPerSecond int32                  `protobuf:"varint,3,opt,name=max_bytes_per_second,json=maxBytesPerSecond,proto3" json:"max_bytes_per_second,omitempty"` // per line and direction, 65536
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// A console port may carry the guest kernel's log (Lab.spec devices[].consolePorts[].kernelLog; contract 3.2): enabled, the microVM
+	// profile is offered, and every lab node says its relay understands it (node annotation cybericebox.com/console-kernel-log). Only on a device with profile microvm, at most one port per device, not with native; any other use is refused
+	// with InvalidArgument and the ErrorInfo reason CONSOLE_CABLE_INVALID. False (or an agent older than 3.2): never send kernelLog, an
+	// older agent drops the field without a word.
+	KernelLog     bool `protobuf:"varint,4,opt,name=kernel_log,json=kernelLog,proto3" json:"kernel_log,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ConsoleCablesFeature) Reset() {
@@ -8322,6 +8327,13 @@ func (x *ConsoleCablesFeature) GetMaxBytesPerSecond() int32 {
 		return x.MaxBytesPerSecond
 	}
 	return 0
+}
+
+func (x *ConsoleCablesFeature) GetKernelLog() bool {
+	if x != nil {
+		return x.KernelLog
+	}
+	return false
 }
 
 // The list of allowed registries. any is true when every registry is allowed (the chart list holds "*"); registries is then empty.
@@ -14466,11 +14478,13 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\bactivity\x18\x16 \x01(\v2\x1b.labmanager.ActivityFeatureR\bactivity\x127\n" +
 	"\binternet\x18\x17 \x01(\v2\x1b.labmanager.InternetFeatureR\binternet\x12S\n" +
 	"\x12allowed_registries\x18\x18 \x01(\v2$.labmanager.AllowedRegistriesFeatureR\x11allowedRegistries\x12G\n" +
-	"\x0econsole_cables\x18\x19 \x01(\v2 .labmanager.ConsoleCablesFeatureR\rconsoleCablesJ\x04\b\x12\x10\x13R\bterminal\"\x8e\x01\n" +
+	"\x0econsole_cables\x18\x19 \x01(\v2 .labmanager.ConsoleCablesFeatureR\rconsoleCablesJ\x04\b\x12\x10\x13R\bterminal\"\xad\x01\n" +
 	"\x14ConsoleCablesFeature\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12+\n" +
 	"\x12max_cables_per_lab\x18\x02 \x01(\x05R\x0fmaxCablesPerLab\x12/\n" +
-	"\x14max_bytes_per_second\x18\x03 \x01(\x05R\x11maxBytesPerSecond\"L\n" +
+	"\x14max_bytes_per_second\x18\x03 \x01(\x05R\x11maxBytesPerSecond\x12\x1d\n" +
+	"\n" +
+	"kernel_log\x18\x04 \x01(\bR\tkernelLog\"L\n" +
 	"\x18AllowedRegistriesFeature\x12\x10\n" +
 	"\x03any\x18\x01 \x01(\bR\x03any\x12\x1e\n" +
 	"\n" +

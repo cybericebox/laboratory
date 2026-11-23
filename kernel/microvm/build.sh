@@ -37,6 +37,16 @@ while IFS= read -r line; do
 done < "$here/cybericebox.fragment"
 [[ "$missing" == 0 ]] || { echo "the kernel dropped options of the fragment" >&2; exit 1; }
 
+# The kernel log of a console port (consolePorts[].kernelLog) reads the ring buffer with syslog(2) and no capability: that needs
+# kernel.dmesg_restrict 0 (no CONFIG_SECURITY_DMESG_RESTRICT), and the keeper follows new messages by their timestamps (CONFIG_PRINTK_TIME).
+if grep -qx 'CONFIG_SECURITY_DMESG_RESTRICT=y' "$built/.config"; then
+  echo "CONFIG_SECURITY_DMESG_RESTRICT=y: the kernel log of a console port would not be readable in the device" >&2
+  exit 1
+fi
+for opt in CONFIG_PRINTK=y CONFIG_PRINTK_TIME=y; do
+  grep -qx "$opt" "$built/.config" || { echo "missing in .config: $opt (the kernel log of a console port needs it)" >&2; exit 1; }
+done
+
 mkdir -p "$OUT"
 cp "$built/vmlinux" "$built/.config" "$OUT/"
 cp "$built/arch/x86/boot/bzImage" "$OUT/vmlinuz" 2>/dev/null || true

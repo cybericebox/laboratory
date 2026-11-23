@@ -1,6 +1,8 @@
 package portkeeper
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -86,5 +88,42 @@ func TestHashAndLookups(t *testing.T) {
 	}
 	if !s.HasConsole("console0") || s.HasConsole("serial0") || !s.HasSerial("serial0") || s.HasSerial("console0") {
 		t.Fatal("lookups by kind")
+	}
+}
+
+func TestKernelLogInTheSpec(t *testing.T) {
+	ok := Spec{Console: []ConsolePort{{Name: "console0", KernelLog: true}, {Name: "aux0"}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Parse([]byte(`{"console":[{"name":"console0","kernel_log":true}]}`))
+	if err != nil || !s.Console[0].KernelLog {
+		t.Fatalf("parse: %+v %v", s, err)
+	}
+	for name, bad := range map[string]Spec{
+		"two":   {Console: []ConsolePort{{Name: "console0", KernelLog: true}, {Name: "aux0", KernelLog: true}}},
+		"stdio": {Console: []ConsolePort{{Name: "console0", Native: NativeStdio, KernelLog: true}}},
+		"tcp":   {Console: []ConsolePort{{Name: "console0", Native: NativeTCP, Port: 23, KernelLog: true}}},
+	} {
+		if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The digest leaves the kernel log out: an older release (whose list has no kernel_log) computes the same digest for the same ports, and
+// the list without the flag is what an older parser takes.
+func TestHashIgnoresTheKernelLog(t *testing.T) {
+	with := Spec{Console: []ConsolePort{{Name: "console0", KernelLog: true}, {Name: "aux0"}}, Serial: []SerialPort{{Name: "serial0", Path: "/dev/ttyCON0"}}}
+	without := with.WithoutKernelLog()
+	if Hash(with) != Hash(without) || !with.Console[0].KernelLog || without.Console[0].KernelLog {
+		t.Fatal("the kernel log must not change the digest, and WithoutKernelLog must copy")
+	}
+	sum := sha256.Sum256([]byte(`{"console":[{"name":"console0"},{"name":"aux0"}],"serial":[{"name":"serial0","path":"/dev/ttyCON0"}]}`))
+	if Hash(with) != hex.EncodeToString(sum[:])[:32] {
+		t.Fatal("the digest differs from the one of a release before the kernel log")
+	}
+	if strings.Contains(string(Marshal(without)), "kernel_log") {
+		t.Fatal("kernel_log left in the stripped list")
 	}
 }

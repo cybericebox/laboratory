@@ -371,6 +371,7 @@ func setupConsoleCables(mgr ctrl.Manager, cfg *nodeagent.Config, labeler *nodeag
 		return
 	}
 	labeler.SetAnnotation(names.AnnotationConsoleRelay, nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "not asked yet"))
+	labeler.SetAnnotation(names.AnnotationConsoleKernelLog, nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "not asked yet"))
 	var last string
 	relay := func(v string) {
 		if v == last {
@@ -397,9 +398,24 @@ func setupConsoleCables(mgr ctrl.Manager, cfg *nodeagent.Config, labeler *nodeag
 			log.Error(err, "cannot put the console relay key on the node; the labeler asserts it later")
 		}
 	}
+	var lastKernelLog string
+	kernelLog := func(v string) {
+		if v == lastKernelLog {
+			return
+		}
+		labeler.SetAnnotation(names.AnnotationConsoleKernelLog, v)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := nodeagent.PatchNodeAnnotation(ctx, mgr.GetClient(), cfg.NodeName, names.AnnotationConsoleKernelLog, v); err != nil {
+			log.Error(err, "cannot put the console kernel log annotation on the node; tried again on the next pass")
+			return
+		}
+		// remembered only once it is on the node, so a failed patch is tried again on the next pass
+		lastKernelLog = v
+	}
 	if err := mgr.Add(&nodeagent.ConsoleCableSync{
 		Client: mgr.GetClient(), NodeName: cfg.NodeName, Cable: nodeagent.NewCableClient(cfg.CableSocket),
-		DeviceAccessNamespace: cfg.DeviceAccessNamespace, CablePort: cfg.ConsoleCablePort, Relay: relay, RelayKey: relayKey,
+		DeviceAccessNamespace: cfg.DeviceAccessNamespace, CablePort: cfg.ConsoleCablePort, Relay: relay, RelayKey: relayKey, KernelLog: kernelLog,
 	}); err != nil {
 		log.Error(err, "setup ConsoleCableSync")
 		os.Exit(1)

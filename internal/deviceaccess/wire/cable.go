@@ -29,6 +29,12 @@ const CablePath = "/v1/cable"
 // answers with this version or a later one.
 const RelayVersion = 3
 
+// FeatureKernelLog is in LinesReply.Features of a service that reads port lists with kernel_log (the kernel log of a console port of a
+// microVM device; portkeeper.ConsolePort.KernelLog). An older service refuses such a list (its parser takes no unknown field), so the
+// node-agent publishes names.AnnotationConsoleKernelLog from it and the management agent reports the feature only when every lab node has
+// it. It is not a RelayVersion bump: the relay itself, and the cable stream between nodes, are unchanged.
+const FeatureKernelLog = "kernel-log"
+
 // Roles of a line on a node.
 const (
 	// RoleOwner: the console end runs on this node; the service attaches it, attaches the serial end too when it runs here (Peer empty),
@@ -109,7 +115,9 @@ type LinesReply struct {
 	Relay int `json:"relay"`
 	// RelayKey is the public key of this device access process (Ed25519, base64url without padding): the node-agent publishes it on its
 	// Node, and the peers verify the signed messages of this process with it. A new process has a new key.
-	RelayKey string      `json:"relayKey,omitempty"`
+	RelayKey string `json:"relayKey,omitempty"`
+	// Features are the optional port list features this service understands (FeatureKernelLog).
+	Features []string    `json:"features,omitempty"`
 	Lines    []LineState `json:"lines"`
 	Error    string      `json:"error,omitempty"`
 }

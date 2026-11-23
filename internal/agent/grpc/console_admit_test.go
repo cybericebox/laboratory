@@ -45,6 +45,9 @@ func TestCreateLabsChecksConsoleCables(t *testing.T) {
 			s.ConsoleCables = append(s.ConsoleCables, laboratoryv1alpha1.ConsoleCableTemplate{
 				Serial: laboratoryv1alpha1.PortRef{Device: "pc", Port: "serial1"}, Console: laboratoryv1alpha1.PortRef{Device: "r1", Port: "console0"}})
 		}, "more than one console cable"},
+		// the kernel log of a console port (contract 3.2) is a microvm device's only: on a container it would be the node's kernel
+		"kernel log on a container device": {func(s *laboratoryv1alpha1.LabSpec) { s.Devices[0].ConsolePorts[0].KernelLog = true },
+			`device "r1": the port "console0" has kernelLog, which only a microvm device has`},
 		"two stdio": {func(s *laboratoryv1alpha1.LabSpec) {
 			stdio := &laboratoryv1alpha1.NativeConsoleSpec{Kind: "stdio"}
 			s.Devices[0].ConsolePorts = []laboratoryv1alpha1.ConsolePortSpec{{Name: "console0", Native: stdio}, {Name: "aux0", Native: stdio}}
