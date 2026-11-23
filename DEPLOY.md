@@ -1972,7 +1972,11 @@ passthrough load balancers) instead of the node port needs that address on the S
 `exposure: open`, `agent.service.externalIPs` (one IPv4 address each, empty by default; infrastructure sets them on Google only). Cilium then serves address:port on
 the node with the same `Local` policy. An in-cluster pod that dials such an address is answered by Cilium on its own node, so these entries must have no
 in-cluster callers (they have none: the backend dials the agent's Service name). The registry gate takes no external IP: its callers are the lab nodes, and on
-Google its load balancer port is its node port (`registry.gate.address` carries that port).
+Google its load balancer port is its node port (`registry.gate.address` carries that port). `registry.gate.service.externalIPs` is refused at install time.
+The chart refuses an address that is not one plain IPv4 address of the load balancer: a CIDR, a name, more than one address, the wildcard, loopback, link-local
+`169.254.0.0/16` (the metadata service), multicast `224.0.0.0/4` and reserved `240.0.0.0/4` (with the broadcast address). The refusal is fail closed for the L7
+proxy and the agent: a value that is refused, or an agent value without `exposure: open`, stops the render, so the Service is never made with it. It is not a gate
+for the VPN: the wg-demux admits every UDP datagram on its port and holds no keys, so WireGuard's own handshake of the VPN pods is the only boundary.
 
 **Exposure** (`exposure`: `closed`, `partial` by default, `open`; infrastructure's `LABORATORY_EXPOSURE`) decides the agent's entry. With `closed` and `partial` the agent is
 in-cluster only: its Service is `ClusterIP` and the platform's backend dials `laboratory-agent.laboratory-agent.svc:<agent.grpcPort>` over the pod network, verifying the
