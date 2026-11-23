@@ -44,6 +44,9 @@ const (
 	// LabelPorts is the digest (consolespec.PortsHash) of the console and serial ports of a device, stamped by the operator on its pod. The
 	// device access service trusts sandbox labels only: it attaches a line only to a port of a list whose digest equals this label.
 	LabelPorts = LabelPrefix + "ports"
+	// AnnotationConsoleNode is the node of the console end of a ConsoleCable (the Device's status.nodeName), stamped by the operator. The
+	// admission policy of the node-agent lets only the node-agent of that node write the status of the cable.
+	AnnotationConsoleNode = LabelPrefix + "console-node"
 	// AnnotationPortsSpec is the port list itself (JSON, package portkeeper) on the pod of a device with ports; the device container reads it
 	// through a downward API volume (PortsSpecVolume). Not secret: it is what the Device says.
 	AnnotationPortsSpec = LabelPrefix + "ports-spec"
@@ -71,6 +74,14 @@ const (
 	// supports from them, not from the chart values.
 	AnnotationStatePersistence   = "cybericebox.com/state-persistence"
 	AnnotationRuntimeObservation = "cybericebox.com/runtime-observation"
+	// AnnotationConsoleRelay is set on a node by its node-agent while console cables are on: "ready" when the device access service of the
+	// node answers on cable.sock with the relay of this release, "disabled" with the switch off, else "unavailable: <CODE>: <detail>". The
+	// management agent reports console cables only when every lab node says ready.
+	AnnotationConsoleRelay = "cybericebox.com/console-relay"
+	// AnnotationConsoleRelayKey is the public key (Ed25519, base64url without padding) of the device access process of a node, put on the
+	// node by its node-agent: the device access services of the other nodes verify the cable streams of this node with it. Only the
+	// node-agent of the node may set it (admission policy laboratory-node-agent-label).
+	AnnotationConsoleRelayKey = LabelPrefix + "console-relay-key"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).

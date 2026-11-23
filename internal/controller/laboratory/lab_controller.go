@@ -127,7 +127,7 @@ type LabReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices;connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/status;connections/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=consolecables,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=consolecables,verbs=get;list;watch;create;delete;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns;labgateways,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns/status;labgateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns/finalizers;labgateways/finalizers,verbs=update

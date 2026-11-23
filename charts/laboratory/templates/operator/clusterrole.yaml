@@ -51,11 +51,15 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [labgroupaccesspolicies, labtrafficreports]
   verbs: [get, list, watch]
-# Image prepull requests the scheduler makes and the node-agents answer (see DEPLOY.md, "Scheduler"), and the console cables of the labs
-# (made and removed, never changed: a ConsoleCable is immutable; its status belongs to the node-agent).
+# Image prepull requests the scheduler makes and the node-agents answer (see DEPLOY.md, "Scheduler").
 - apiGroups: [laboratory.cybericebox.com]
-  resources: [consolecables, imagepulls]
+  resources: [imagepulls]
   verbs: [create, delete, get, list, watch]
+# The console cables of the labs: made and removed; the spec is immutable, the operator patches only the annotation of the node of the
+# console end (laboratory.cybericebox.com/console-node); the status belongs to the node-agent.
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [consolecables]
+  verbs: [create, delete, get, list, patch, watch]
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections/finalizers, devices/finalizers, labgateways/finalizers, labgroupclients/finalizers, labgroups/finalizers, labs/finalizers, labvpns/finalizers]
   verbs: [update]

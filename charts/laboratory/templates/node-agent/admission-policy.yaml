@@ -2,15 +2,20 @@
 {{- /*
 RBAC cannot limit a patch of nodes to one label of one node, so this policy does. The node-agent's ServiceAccount may patch the Node object of
 its own node (the node name is in the bound token of its pod) and change nothing but the label laboratory.cybericebox.com/node-agent-ready,
-which may only be "true", the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field) and the two
-annotation cybericebox.com/runtime-observation, the result of its start-up check (ready, disabled or "unavailable: <CODE>: <detail>").
+which may only be "true", the removal of the startup taint cybericebox.com/node-starting (no other taint, no other spec field) and the
+annotations cybericebox.com/runtime-observation, the result of its start-up check, and cybericebox.com/console-relay, the state of the
+console line relay of the node (each ready, disabled or "unavailable: <CODE>: <detail>"), and laboratory.cybericebox.com/console-relay-key,
+the public key of the device access process of the node (an Ed25519 key: the other nodes verify the console lines of this node with it, so
+no node-agent may publish a key on another node).
 The annotation cybericebox.com/state-persistence is node-state's (templates/node-state/admission-policy.yaml). See DEPLOY.md, "Which nodes
 run labs".
 */ -}}
 {{- $nodeAgent := printf "system:serviceaccount:%s:laboratory-node-agent" .Release.Namespace }}
 {{- $nodeState := printf "system:serviceaccount:%s:laboratory-node-state" .Release.Namespace }}
 {{- $key := "laboratory.cybericebox.com/node-agent-ready" }}
-{{- $annotationKeys := "['cybericebox.com/runtime-observation']" }}
+{{- $annotationKeys := "['cybericebox.com/runtime-observation', 'cybericebox.com/console-relay']" }}
+{{- $relayKey := "laboratory.cybericebox.com/console-relay-key" }}
+{{- $ownKeys := "['cybericebox.com/runtime-observation', 'cybericebox.com/console-relay', 'laboratory.cybericebox.com/console-relay-key']" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -52,11 +57,14 @@ spec:
     - expression: "object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
       message: {{ printf "the node-agent may change only the label %s of its node" $key | quote }}
       reason: Forbidden
-    - expression: "variables.newAnnotations.all(k, k in {{ $annotationKeys }} || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k in {{ $annotationKeys }} || k in variables.newAnnotations)"
-      message: "the node-agent may change only the annotation cybericebox.com/runtime-observation of its node"
+    - expression: "variables.newAnnotations.all(k, k in {{ $ownKeys }} || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) && variables.oldAnnotations.all(k, k in {{ $ownKeys }} || k in variables.newAnnotations)"
+      message: "the node-agent may change only the annotations cybericebox.com/runtime-observation, cybericebox.com/console-relay and laboratory.cybericebox.com/console-relay-key of its node"
       reason: Forbidden
     - expression: "variables.newAnnotations.all(k, !(k in {{ $annotationKeys }}) || variables.newAnnotations[k].matches('^(ready|disabled|unavailable: [A-Z0-9_]+: .{0,500})$'))"
       message: "the check annotations are ready, disabled or unavailable: CODE: detail"
+      reason: Forbidden
+    - expression: "!('{{ $relayKey }}' in variables.newAnnotations) || variables.newAnnotations['{{ $relayKey }}'].matches('^[A-Za-z0-9_-]{43}$')"
+      message: "the console relay key is an Ed25519 public key, base64url without padding"
       reason: Forbidden
     - expression: "variables.newLabels.all(k, k == '{{ $key }}' ? variables.newLabels[k] == 'true' : (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k]))"
       message: {{ printf "the node-agent may only set the label %s to true, and change no other label" $key | quote }}
@@ -275,4 +283,49 @@ metadata:
 spec:
   policyName: laboratory-vni-ledger-guard
   validationActions: [Deny]
+{{- if .Values.consoleCables.enabled }}
+---
+{{- /*
+The status of a ConsoleCable belongs to the node-agent of the node of its console end. RBAC cannot say which cables, so this policy does: a
+node-agent may write the status of a cable only when the operator's stamp laboratory.cybericebox.com/console-node (the console Device's
+status.nodeName, which the node-agent cannot change: a status write never changes metadata) names the node in its bound token. A node-agent
+of another node, or one of a node the cable has left, is refused.
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-console-cable-status
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["laboratory.cybericebox.com"]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [consolecables/status]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: stamp
+      expression: "oldObject.metadata.?annotations.orValue({})[?'laboratory.cybericebox.com/console-node'].orValue('')"
+  validations:
+    - expression: "variables.ownNode != '' && variables.stamp == variables.ownNode"
+      message: "the node-agent may write the status of a console cable only when its console end runs on its node"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-console-cable-status
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-node-agent-console-cable-status
+  validationActions: [Deny]
+{{- end }}
 {{- end }}

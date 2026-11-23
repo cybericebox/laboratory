@@ -1321,8 +1321,55 @@ never over the lab network or a device NIC: a cable works with every lab interfa
 | `consoleCables.socketDir` (`/run/cybericebox/console-cables`) | the node directory of `cable.sock` (hostPath of the device access pod and the node-agent) |
 | `consoleCables.socketUid`, `consoleCables.socketGid` (0, 0) | the user and group the node-agent runs as: the socket is 0660 for that group and the peer must be that user |
 
-**Not complete yet.** The node-agent that drives the lines (the owner by the console end, the peer address, a reschedule) and writes
-the status of the cables comes in the next step of the design (phase 7); keep the switch off on a production laboratory until it is in.
+**The node-agent (who drives a line).** Every second the node-agent of a node computes the lines of its node from the ConsoleCables
+and the `status.nodeName` of the Devices of their ends, and puts the whole set on `cable.sock`:
+
+- a cable whose **console end** runs on the node is **owned** there: the line goes to the service with the role `owner` and, when the
+  serial end runs on another node, the address of the ready device access pod of that node (its pod IP, from the pod cache: the
+  node-agent may read pods, the service may not). Without such a pod, or while the serial end has no node, the line is not given and
+  the cable says `PeerUnreachable` or `WaitingForDevice`;
+- a cable whose **serial end** only runs on the node is given with the role `serial` and the node of the console end: the service of that
+  node accepts the owner's stream for it, from that node only, and for nothing else;
+- the owner's node-agent writes `ConsoleCable.status`: the node and the attach of each end, `lineUp`, and the `Ready` condition
+  (`LineUp`, or `WaitingForDevice`, `PortDown`, `PeerUnreachable`); the operator sums it into `Lab.status.consoleCables` and the
+  agent into `LabStatus.console_cables`. A down line never holds a lab or a device back from Ready. A line the node cannot run because
+  it runs 500 already says `NodeLineLimit`;
+- the operator stamps each ConsoleCable with the node of its console end (annotation `laboratory.cybericebox.com/console-node`, from the
+  console Device's `status.nodeName`), and the admission policy `laboratory-node-agent-console-cable-status` lets a node-agent write the
+  status of a cable only when that stamp names the node of its bound token (a status write cannot change the stamp). Until the stamp
+  follows a moved console end the new owner runs the line but leaves the status for the next pass.
+
+| Event | What happens |
+|---|---|
+| Lab starts | the owner attaches as soon as both devices run (retry 0.5 s doubling to 10 s); `lineUp` goes true |
+| A device restarts in place | its attach ends, the line goes down (`PortDown`) and is attached again to the new keeper (the console program starts fresh) |
+| A device is rescheduled | the node-agent of the node the console end now runs on owns the line; the old owner stops it and writes the cable down once unless the new owner already wrote it; a moved serial end changes the peer address |
+| A device access pod restarts | the lines of its node drop and are given again within a second; the keepers keep their PTYs, so a logged-in session survives |
+| The node-agent restarts | the lines keep running: an unchanged set changes nothing in the service |
+| The lab network is down | no effect: the bytes never use it |
+| Lab stopped or deleted | the ConsoleCables go with the Lab; the next pass stops their lines and the execs are removed |
+
+The node-agent gets, with the switch on, `get/list/watch` on `consolecables` and `get/update/patch` on `consolecables/status` (none of
+it with the switch off), the directory of `cable.sock` (`consoleCables.socketDir`) and the namespace and port of the device access pods.
+The operator gets `patch` on `consolecables` (the stamp only; the spec is immutable).
+
+**What the agent reports.** The node-agent keeps the annotation `cybericebox.com/console-relay` on its node: `ready` once the device
+access service of the node answers on `cable.sock` with the relay of this release, `unavailable: CONSOLE_RELAY_UNREACHABLE: …` (or
+`CONSOLE_RELAY_OUTDATED`) otherwise (the admission policy of the node-agent lets it change this annotation of its own node and no other).
+With the switch off the node-agent writes nothing: no annotation, no line, no status.
+
+**The relay keys.** With the switch on the node-agent also puts the public key the device access process of its node reports on
+`cable.sock` on its Node (`laboratory.cybericebox.com/console-relay-key`, an Ed25519 key in base64url; the same admission policy lets it
+set that annotation on its own node only, with that shape), and gives its service, with every line, the key published on the peer's node:
+to the owner the key of the serial end's node, to the serial end the key of the console end's node. A peer whose node has published no
+key yet gets no line (`PeerUnreachable`) until it does. The device access service still reads nothing of the Kubernetes API. `GetFeatures.console_cables.enabled` is true only when the switch is on **and** every lab node
+that is ready for pods, and at least one, says `ready`; the backend's `ConsoleCablesAvailable` follows it. The reason of a node that
+does not is on the Node, not in the answer (the feature has no reason field).
+
+**Checks on a cluster.** `kubectl get consolecables -A` shows each line (`Line` column); `kubectl get nodes -o
+jsonpath='{range .items[*]}{.metadata.name} {.metadata.annotations.cybericebox\.com/console-relay}{"\n"}{end}'` the relay of each node.
+The kind e2e (`test/e2e/console_cables_test.go`) logs in over a cable on one node, after a device moved to the other node, and after a
+restart of a device access pod.
 
 ## 6. Uninstall
 

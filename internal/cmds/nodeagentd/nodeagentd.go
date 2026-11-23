@@ -233,8 +233,11 @@ func Run() {
 		os.Exit(1)
 	}
 
+	labeler := nodeagent.NewNodeLabeler(mgr, cfg, pre)
+	setupConsoleCables(mgr, cfg, labeler, log)
+
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := setupReadiness(mgr, cfg, pre); err != nil {
+	if err := nodeagent.SetupNodeReadiness(mgr, cfg, labeler); err != nil {
 		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
@@ -360,7 +363,45 @@ func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightRe
 	return pre
 }
 
-// setupReadiness makes the node usable for labs.
-func setupReadiness(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult) error {
-	return nodeagent.SetupNodeReadiness(mgr, cfg, nodeagent.NewNodeLabeler(mgr, cfg, pre))
+// setupConsoleCables drives the console lines of this node (consoleCables.enabled) and keeps the annotation of the relay on the node: the
+// answer of the device access service of the node on cable.sock. The labeler asserts the value with its other annotations; a change is also
+// put on the node at once. With the switch off nothing is started and nothing is written: the node stays as it was.
+func setupConsoleCables(mgr ctrl.Manager, cfg *nodeagent.Config, labeler *nodeagent.NodeLabeler, log logr.Logger) {
+	if !cfg.ConsoleCables {
+		return
+	}
+	labeler.SetAnnotation(names.AnnotationConsoleRelay, nodeagent.Unavailable(nodeagent.CodeRelayUnreachable, "not asked yet"))
+	var last string
+	relay := func(v string) {
+		if v == last {
+			return
+		}
+		last = v
+		labeler.SetAnnotation(names.AnnotationConsoleRelay, v)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := nodeagent.PatchNodeAnnotation(ctx, mgr.GetClient(), cfg.NodeName, names.AnnotationConsoleRelay, v); err != nil {
+			log.Error(err, "cannot put the console relay annotation on the node; the labeler asserts it later")
+		}
+	}
+	var lastKey string
+	relayKey := func(v string) {
+		if v == lastKey {
+			return
+		}
+		lastKey = v
+		labeler.SetAnnotation(names.AnnotationConsoleRelayKey, v)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := nodeagent.PatchNodeAnnotation(ctx, mgr.GetClient(), cfg.NodeName, names.AnnotationConsoleRelayKey, v); err != nil {
+			log.Error(err, "cannot put the console relay key on the node; the labeler asserts it later")
+		}
+	}
+	if err := mgr.Add(&nodeagent.ConsoleCableSync{
+		Client: mgr.GetClient(), NodeName: cfg.NodeName, Cable: nodeagent.NewCableClient(cfg.CableSocket),
+		DeviceAccessNamespace: cfg.DeviceAccessNamespace, CablePort: cfg.ConsoleCablePort, Relay: relay, RelayKey: relayKey,
+	}); err != nil {
+		log.Error(err, "setup ConsoleCableSync")
+		os.Exit(1)
+	}
 }

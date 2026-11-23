@@ -21,6 +21,7 @@ const chartDir = "../../charts/laboratory"
 // everything is every optional component of the chart, so that the renders below see all of its pods.
 var everything = []string{
 	"--set", "agent.enabled=true", "--set", "terminal.enabled=true", "--set", "checks.enabled=true", "--set", statePath + "enabled=true",
+	"--set", "consoleCables.enabled=true",
 	"--set", "imagePullSecrets[0].name=platform-pull", "--set", "operator.networkPolicy.enabled=true",
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -223,5 +224,57 @@ func TestConsoleCablesNetworkPolicy(t *testing.T) {
 	render(t, "templates/deviceaccess/netpol.yaml", &none, consoleOn...)
 	if len(none.Spec.Egress) != 1 || len(none.Spec.Egress[0].ToEndpoints) != 0 {
 		t.Errorf("without cables there is no egress: %+v", none.Spec.Egress)
+	}
+}
+
+// With console cables on, the node-agent gets cable.sock (the same host directory as the device access pod), where the device access pods
+// of the other nodes are, the rights on ConsoleCables it needs, and may put the relay annotation on its node; with them off, none of it.
+func TestConsoleCablesNodeAgent(t *testing.T) {
+	ds := nodeAgent(t, "--set", "consoleCables.enabled=true")
+	var c corev1.Container
+	for _, x := range ds.Spec.Template.Spec.Containers {
+		if x.Name == "node-agent" {
+			c = x
+		}
+	}
+	env := envOf(c)
+	for k, v := range map[string]string{"CONSOLE_CABLES_ENABLED": "true", "CABLE_SOCKET": "/run/cybericebox/console-cables/cable.sock",
+		"DEVICE_ACCESS_NAMESPACE": "laboratory-device-access", "CONSOLE_CABLE_PORT": "8081"} {
+		if env[k].Value != v {
+			t.Errorf("%s = %q, want %q", k, env[k].Value, v)
+		}
+	}
+	mounted := false
+	for _, m := range c.VolumeMounts {
+		mounted = mounted || m.Name == "cable-socket" && m.MountPath == "/run/cybericebox/console-cables"
+	}
+	if !mounted {
+		t.Error("the node-agent does not mount the directory of cable.sock")
+	}
+	off := nodeAgent(t)
+	for _, x := range off.Spec.Template.Spec.Containers {
+		for k := range envOf(x) {
+			if k == "CABLE_SOCKET" || k == "CONSOLE_CABLE_PORT" {
+				t.Errorf("console cables off, but %s is set", k)
+			}
+		}
+	}
+
+	role := func(extra ...string) string {
+		out, err := helmTemplate(t, append(extra, "-s", "templates/node-agent/clusterrole.yaml")...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if r := role("--set", "consoleCables.enabled=true"); !strings.Contains(r, "consolecables ]") || !strings.Contains(r, "consolecables/status ]") {
+		t.Errorf("the node-agent ClusterRole without the cables:\n%s", r)
+	}
+	if r := role(); strings.Contains(r, "consolecables") {
+		t.Errorf("console cables off, but the node-agent may read them:\n%s", r)
+	}
+	pol, err := helmTemplate(t, "-s", "templates/node-agent/admission-policy.yaml")
+	if err != nil || !strings.Contains(pol, "'cybericebox.com/console-relay'") {
+		t.Errorf("the node-agent may not put the relay annotation on its node: %v", err)
 	}
 }

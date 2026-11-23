@@ -25,6 +25,10 @@ import (
 type nodeVerdict struct {
 	checked                              int
 	persistenceReason, observationReason string
+	// relayAsked: console cables are switched on, so the relay of the lab nodes was asked; relayReason is "" when every ready lab node
+	// (and at least one) says its relay is ready (names.AnnotationConsoleRelay).
+	relayAsked  bool
+	relayReason string
 }
 
 // verifyNodes reads the annotations of the lab nodes that are ready for pods. A node that has not published a result (a node-agent of
@@ -86,20 +90,51 @@ func codeReason(byCode map[string]int, total int) string {
 	return fmt.Sprintf("%s:%d/%d", best, failing, total)
 }
 
+// verifyRelay is the reason console cables cannot be served: "" when every lab node that is ready for pods, and at least one, says the
+// relay of its node is ready (the node-agent drives the lines and the device access service of the node answers on cable.sock). Unlike
+// the lifecycle features, no ready node is not "nothing to ask": without a relay on a node there is no line.
+func verifyRelay(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration) string {
+	checked := 0
+	byCode := map[string]int{}
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Labels[names.LabelNodeAgentReady] != "true" || !nodecap.Schedulable(n, selector, tolerations) {
+			continue
+		}
+		checked++
+		v, ok := n.Annotations[names.AnnotationConsoleRelay]
+		if code := nodeagent.RelayCodeOf(v, ok); code != "" {
+			byCode[code]++
+		}
+	}
+	if checked == 0 {
+		return nodeagent.CodeNodeUnconfirmed + ":0/0"
+	}
+	return codeReason(byCode, checked)
+}
+
 // nodeVerdict reads the nodes for the features the chart configured.
-func (h *Handler) nodeVerdict(ctx context.Context, wantPersistence, wantObservation bool) (nodeVerdict, error) {
-	if !wantPersistence && !wantObservation {
+func (h *Handler) nodeVerdict(ctx context.Context, wantPersistence, wantObservation, wantRelay bool) (nodeVerdict, error) {
+	if !wantPersistence && !wantObservation && !wantRelay {
 		return nodeVerdict{}, nil
 	}
 	list, err := h.k8s.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nodeVerdict{}, err
 	}
-	return verifyNodes(list.Items, h.labSelector, h.labTolerations, wantPersistence, wantObservation), nil
+	v := verifyNodes(list.Items, h.labSelector, h.labTolerations, wantPersistence, wantObservation)
+	if wantRelay {
+		v.relayAsked, v.relayReason = true, verifyRelay(list.Items, h.labSelector, h.labTolerations)
+	}
+	return v, nil
 }
 
 // applyNodeSupport holds back, in the answer, what the nodes do not confirm.
 func applyNodeSupport(base *protobuf.FeaturesResponse, v nodeVerdict) {
+	// console cables need the relay of the nodes, whatever the chart says (the feature has no reason field: the detail is on the Nodes)
+	if v.relayAsked && v.relayReason != "" && base.ConsoleCables != nil {
+		base.ConsoleCables.Enabled = false
+	}
 	if v.checked == 0 {
 		return
 	}

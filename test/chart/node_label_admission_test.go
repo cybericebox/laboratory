@@ -85,6 +85,12 @@ func TestNodeAgentLabelAdmissionAllowsTheCheckAnnotations(t *testing.T) {
 	}{
 		{"label and check annotation in one patch", "node-a", `{"metadata":{"labels":{"` + label + `":"true"},"annotations":{"` + observation + `":"unavailable: CGROUP_V2_MISSING: no cgroup v2 here"}}}`, true},
 		{"the annotation again with another value", "node-a", `{"metadata":{"annotations":{"` + observation + `":"disabled"}}}`, true},
+		{"the console relay annotation", "node-a", `{"metadata":{"annotations":{"cybericebox.com/console-relay":"ready"}}}`, true},
+		{"the console relay annotation, unavailable", "node-a", `{"metadata":{"annotations":{"cybericebox.com/console-relay":"unavailable: CONSOLE_RELAY_UNREACHABLE: no answer"}}}`, true},
+		{"the console relay key", "node-a", `{"metadata":{"annotations":{"laboratory.cybericebox.com/console-relay-key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}}`, true},
+		{"a console relay key that is no key", "node-a", `{"metadata":{"annotations":{"laboratory.cybericebox.com/console-relay-key":"not a key"}}}`, false},
+		{"the console relay key of another node", "node-b", `{"metadata":{"annotations":{"laboratory.cybericebox.com/console-relay-key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}}`, false},
+		{"the console relay annotation of another node", "node-b", `{"metadata":{"annotations":{"cybericebox.com/console-relay":"ready"}}}`, false},
 		{"the state persistence annotation is node-state's", "node-a", `{"metadata":{"annotations":{"` + persistence + `":"ready"}}}`, false},
 		{"another node", "node-b", `{"metadata":{"annotations":{"` + observation + `":"ready"}}}`, false},
 		{"another annotation", "node-a", `{"metadata":{"annotations":{"evil":"x"}}}`, false},

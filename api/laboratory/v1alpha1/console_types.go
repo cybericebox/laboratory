@@ -154,6 +154,8 @@ const (
 	ConsoleCableReasonWaitingForDevice = "WaitingForDevice"
 	ConsoleCableReasonPortDown         = "PortDown"
 	ConsoleCableReasonPeerUnreachable  = "PeerUnreachable"
+	// ConsoleCableReasonNodeLineLimit: the node of the console end runs the most lines it may (500, shared fairly between the labs).
+	ConsoleCableReasonNodeLineLimit = "NodeLineLimit"
 )
 
 // ConsoleCableStatus is the observed state of a ConsoleCable (written by the node-agent of the console end).

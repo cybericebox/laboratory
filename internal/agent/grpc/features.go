@@ -220,7 +220,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				},
 			}
 			// the chart says what is configured; the nodes say what they can do
-			verdict, err := h.nodeVerdict(ctx, f.StatePersistence, lifecycleConfigured(f.Lifecycle))
+			verdict, err := h.nodeVerdict(ctx, f.StatePersistence, lifecycleConfigured(f.Lifecycle), h.cluster().ConsoleCables)
 			if err != nil {
 				return nil, err
 			}
@@ -300,7 +300,7 @@ func (h *Handler) vpnFeature() *protobuf.VPNFeature {
 }
 
 // consoleCablesFeature is whether devices may have console and serial ports and labs console cables (chart consoleCables.enabled), with
-// the limits the laboratory enforces.
+// the limits the laboratory enforces. GetFeatures then holds it back unless every lab node confirms its relay (applyNodeSupport).
 func (h *Handler) consoleCablesFeature() *protobuf.ConsoleCablesFeature {
 	return &protobuf.ConsoleCablesFeature{
 		Enabled:           h.cluster().ConsoleCables,
