@@ -83,10 +83,11 @@ type Config struct {
 	Log    logr.Logger
 	// Tap, when set, sees every byte of a console in both directions (see stream.pass). Nothing sets it today.
 	Tap Tap
-	// CableKey is the key of the cable stream between the device access services (chart consoleCables). Nil: no cable stream is
-	// accepted or dialled; lines with both ends on this node still work.
-	CableKey *CableKey
-	// NodeName is the node of this service: its node key signs the cable streams it dials, and the acceptor checks it.
+	// Identity is the Ed25519 identity of this process for the cable stream between the device access services (made at start, in
+	// memory only). Nil: a fresh one is made.
+	Identity *Identity
+	// NodeName is the node of this service: it names it in the cable streams it dials, and the acceptor serves it only for the lines
+	// whose console end runs there.
 	NodeName string
 }
 
@@ -116,7 +117,14 @@ func New(c Config) *Service {
 	reg := prometheus.NewRegistry()
 	s := &Service{rt: c.Runtime, auth: c.Auth, lim: c.Limits.withDefaults(), log: c.Log, tap: c.Tap, reg: reg, m: newMetrics(reg), active: map[*stream]struct{}{}}
 	s.counter = limiter{perClient: map[string]int{}, perLab: map[string]int{}}
-	s.cable = &cableAuth{key: c.CableKey, nonces: newNonceCache(maxNonces, maxNoncesPerSource), now: time.Now}
+	id := c.Identity
+	if id == nil {
+		var err error
+		if id, err = NewIdentity(); err != nil {
+			panic(err) // the system has no randomness
+		}
+	}
+	s.cable = &cableAuth{id: id, nonces: newNonceCache(maxNonces, maxNoncesPerSource), now: time.Now, started: time.Now()}
 	s.pending = &pendingCable{bySource: map[string]int{}}
 	s.node = c.NodeName
 	s.lines = &lineSet{svc: s, lines: map[string]*line{}}

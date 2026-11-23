@@ -49,15 +49,12 @@ type Config struct {
 
 	// Console lines (chart consoleCables.enabled; empty: none). CableSocket is cable.sock, the socket of the node-agent of this node, in a
 	// node directory the two pods share (file mode 0660 for group CableGID and the peer credentials of user CablePeerUID and group CableGID).
-	// CableListen is the listener of the cable stream from the device access pods of other nodes (the pod IP and consoleCables.port);
-	// CableKeyFile is its key, a Secret only the device access pods mount.
+	// CableListen is the listener of the cable stream from the device access pods of other nodes (the pod IP and consoleCables.port). The
+	// stream is authenticated with an Ed25519 identity this process makes at start and keeps in memory; there is no key file.
 	CableSocket  string `env:"CABLE_SOCKET"`
 	CableGID     int    `env:"CABLE_GID" envDefault:"0"`
 	CablePeerUID int    `env:"CABLE_PEER_UID" envDefault:"0"`
 	CableListen  string `env:"CABLE_LISTEN"`
-	CableKeyFile string `env:"CABLE_KEY_FILE"`
-	// CableKeyPreviousFile is the key being rotated out (accepted, never used to sign); the file may be absent.
-	CableKeyPreviousFile string `env:"CABLE_KEY_PREVIOUS_FILE"`
 	// NodeName is the node of the pod (downward API): its node key signs the cable streams it dials.
 	NodeName string `env:"NODE_NAME"`
 
@@ -133,12 +130,13 @@ func run(cfg Config) error {
 	lim.PerClient, lim.PerLab, lim.PerNode = cfg.PerClient, cfg.PerLab, cfg.PerNode
 	lim.Idle, lim.Lifetime = cfg.Idle, cfg.Lifetime
 	lim.KeyRecheck = cfg.KeyReload
-	var cableKey *deviceaccess.CableKey
-	if cfg.CableKeyFile != "" {
-		cableKey = deviceaccess.NewCableKey(cfg.CableKeyFile, cfg.CableKeyPreviousFile)
+	// The identity of the cable stream: new for every process, never written anywhere (the node-agent publishes its public half).
+	id, err := deviceaccess.NewIdentity()
+	if err != nil {
+		return err
 	}
 	svc := deviceaccess.New(deviceaccess.Config{Runtime: rt, Limits: lim, Log: log, Auth: deviceaccess.NewAuth(keys.Lookup, cfg.GrantMaxTTL),
-		CableKey: cableKey, NodeName: cfg.NodeName})
+		Identity: id, NodeName: cfg.NodeName})
 
 	api := deviceaccess.NewHTTPServer(cfg.Listen, svc.Handler())
 	metrics := deviceaccess.NewHTTPServer(cfg.MetricsListen, svc.MetricsHandler())
@@ -174,8 +172,8 @@ func run(cfg Config) error {
 	}
 	listeners := []*http.Server{api, metrics}
 	if cfg.CableListen != "" {
-		if cableKey == nil || cfg.NodeName == "" {
-			return errors.New("CABLE_LISTEN needs CABLE_KEY_FILE and NODE_NAME")
+		if cfg.NodeName == "" {
+			return errors.New("CABLE_LISTEN needs NODE_NAME")
 		}
 		cable := deviceaccess.NewHTTPServer(cfg.CableListen, svc.CableHandler())
 		servers = append(servers, cable)

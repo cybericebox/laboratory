@@ -1,8 +1,7 @@
 {{- if include "laboratory.deviceAccess.enabled" . }}
 {{- /*
 The operator copies the access public keys of the tenants (public data) into the ConfigMap laboratory-access-keys of the device access service's
-namespace; the service mounts it. The Role is that one ConfigMap and nothing else of the namespace; with console cables, also the creation of
-the cable key Secret (create only: the operator never reads a Secret there).
+namespace; the service mounts it. The Role is that one ConfigMap and nothing else of the namespace.
 */ -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -19,12 +18,6 @@ rules:
     resources: [ configmaps ]
     resourceNames: [ laboratory-access-keys ]
     verbs: [ get, update ]
-  {{- if .Values.consoleCables.enabled }}
-  # The key of the cable stream (console cables): made once when it is missing; the operator never reads it back or changes it.
-  - apiGroups: [ "" ]
-    resources: [ secrets ]
-    verbs: [ create ]
-  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -17,10 +17,10 @@ import (
 
 // The cable stream: the line owner on the node of the console end dials the device access service of the node of the serial end. It is a
 // WebSocket on the pod network between two device access pods (the network policy of the chart admits nothing else on that port), never
-// the lab network. The first message is a CableOpen signed with the dialer's node key (cable_auth.go); the acceptor serves it only for a
-// line its own node-agent gave it with the serial-end role, the same cable, lab and ends, and the dialer's node as the console end's node,
-// attaches the serial port and answers with a signed CableReply that adds its own nonce. Then every message is a sealed frame
-// (cable_session.go): Data frames both ways and a Close frame with a reason.
+// the lab network. The first message is a CableOpen signed with the dialer's own identity (cable_auth.go); the acceptor serves it only for
+// a line its own node-agent gave it with the serial-end role, the same cable, lab and ends, and the dialer's node as the console end's node,
+// verified with the key that node published; it attaches the serial port and answers with a reply signed with its own identity. Then every
+// message is a sealed frame (cable_session.go): Data frames both ways and a Close frame with a reason.
 
 // cableReadLimit bounds a message of the cable stream: a frame and what sealing adds.
 const cableReadLimit = wire.MaxFrame + sealOverhead
@@ -29,7 +29,7 @@ const cableReadLimit = wire.MaxFrame + sealOverhead
 // first message within cableFirstMessage.
 const (
 	maxPendingCable     = 64
-	maxPendingPerSource = 4
+	maxPendingPerSource = 16
 )
 
 var cableFirstMessage = 3 * time.Second
@@ -108,17 +108,13 @@ func cableOpenOf(l wire.LineSpec) wire.CableOpen {
 }
 
 // dialPeer opens the cable stream of an owner line to the service of the serial end's node. On a failure it returns the reason of the
-// line: PeerUnreachable when the peer cannot be reached or does not prove it holds the key, WaitingForDevice or PortDown when the peer
-// says so about the serial end.
+// line: PeerUnreachable when the peer cannot be reached or does not prove it is the serial end's node, WaitingForDevice or PortDown when
+// the peer says so about the serial end.
 func (s *Service) dialPeer(ctx context.Context, l wire.LineSpec) (side, string, error) {
-	keys, err := s.cable.key.Keys()
-	if err != nil {
-		return nil, wire.LinePeerUnreachable, err
+	if s.node == "" || s.cable.id == nil {
+		return nil, wire.LinePeerUnreachable, errors.New("the service has no node name or identity")
 	}
-	if s.node == "" {
-		return nil, wire.LinePeerUnreachable, errors.New("the service does not know its node name")
-	}
-	open, key, err := signOpen(keys[0], s.node, cableOpenOf(l), s.cable.now())
+	open, eph, err := signOpen(s.cable.id, s.node, cableOpenOf(l), s.cable.now())
 	if err != nil {
 		return nil, wire.LinePeerUnreachable, err
 	}
@@ -151,19 +147,31 @@ func (s *Service) dialPeer(ctx context.Context, l wire.LineSpec) (side, string, 
 	if err := dec.Decode(&reply); err != nil {
 		return fail(wire.LinePeerUnreachable, err)
 	}
-	if err := checkReply(key, reply, open.Nonce); err != nil {
+	openT := openTranscript(open)
+	if reply.Sig == "" {
+		// Refused before the peer authenticated this dialer: nothing is signed. Only the reason of the status follows the code.
+		if reply.Error == wire.CodeNotFound {
+			return fail(wire.LineWaitingForDevice, errors.New("the peer has no such line yet"))
+		}
+		return fail(wire.LinePeerUnreachable, errors.New("the peer refused the cable stream: "+reply.Error))
+	}
+	if err := checkReply(l.PeerKey, openT, reply, open.Nonce); err != nil {
 		return fail(wire.LinePeerUnreachable, err)
 	}
 	if !reply.OK {
 		switch reply.Error {
 		case wire.CodeNotFound:
-			return fail(wire.LineWaitingForDevice, errors.New("the peer has no such line or no serial device yet"))
+			return fail(wire.LineWaitingForDevice, errors.New("the peer has no serial device yet"))
 		case wire.CodePortDown:
 			return fail(wire.LinePortDown, errors.New("the peer could not attach the serial port"))
 		}
 		return fail(wire.LinePeerUnreachable, errors.New("the peer refused the cable stream: "+reply.Error))
 	}
-	sc, err := newSealedConn(conn, key, open.Nonce, reply.Accept, open.UID, true)
+	shared, err := eph.shared(reply.Eph)
+	if err != nil {
+		return fail(wire.LinePeerUnreachable, err)
+	}
+	sc, err := newSealedConn(conn, sessionSecret(shared, openT, replyTranscript(openT, reply)), true)
 	if err != nil {
 		return fail(wire.LinePeerUnreachable, err)
 	}
@@ -229,13 +237,13 @@ func (s *Service) CableHandler() http.Handler {
 		}
 		c.SetReadLimit(cableReadLimit)
 		defer func() { _ = c.CloseNow() }()
-		s.serveCable(r.Context(), wsConn{c}, c, source, release)
+		s.serveCable(r.Context(), wsConn{c}, c, release)
 	})
 	return mux
 }
 
 // serveCable serves one cable stream from another node. handshaken is called once the handshake is over (authenticated or refused).
-func (s *Service) serveCable(ctx context.Context, conn Conn, ws *websocket.Conn, source string, handshaken func()) {
+func (s *Service) serveCable(ctx context.Context, conn Conn, ws *websocket.Conn, handshaken func()) {
 	s.mu.Lock()
 	if s.stopping {
 		s.mu.Unlock()
@@ -245,22 +253,22 @@ func (s *Service) serveCable(ctx context.Context, conn Conn, ws *websocket.Conn,
 	s.mu.Unlock()
 	defer s.wg.Done()
 
-	// answer sends a reply. key is the node key that authenticated the request: only then is a reply signed, so an unauthenticated caller
-	// never gets a MAC over anything; the nonce is echoed only when it has the shape of one.
-	answer := func(key []byte, code, nonce, accept string) {
-		if !validNonce(nonce) {
-			nonce = ""
+	// answer sends a reply; it is signed only when signed is the transcript of an authenticated open, so a caller without one never gets
+	// anything signed, and the nonce is echoed only when it has the shape of one.
+	answer := func(signed []byte, r wire.CableReply) {
+		if !validNonce(r.Nonce) {
+			r.Nonce = ""
 		}
-		reply := wire.CableReply{OK: code == "", Error: code, Nonce: nonce, Accept: accept}
-		if key != nil {
-			reply = signReply(key, reply)
+		r.OK = r.Error == ""
+		if signed != nil {
+			r = signReply(s.cable.id, signed, r)
 		}
-		b, _ := json.Marshal(reply)
+		b, _ := json.Marshal(r)
 		wctx, cancel := context.WithTimeout(ctx, s.lim.WriteTimeout)
 		_ = conn.WriteText(wctx, b)
 		cancel()
-		if code != "" {
-			s.m.refused.WithLabelValues("cable-" + code).Inc()
+		if r.Error != "" {
+			s.m.refused.WithLabelValues("cable-" + r.Error).Inc()
 		}
 	}
 	rctx, cancel := context.WithTimeout(ctx, cableFirstMessage)
@@ -273,26 +281,27 @@ func (s *Service) serveCable(ctx context.Context, conn Conn, ws *websocket.Conn,
 	var req wire.CableOpen
 	dec := json.NewDecoder(bytes.NewReader(msg))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		answer(nil, wire.CodeBadRequest, "", "")
+	if err := dec.Decode(&req); err != nil || validateCableOpen(req) != nil {
+		answer(nil, wire.CableReply{Error: wire.CodeBadRequest})
 		handshaken()
 		return
 	}
-	// Authenticated before anything else is done with it; nothing of a failed request is logged but the code.
-	key, err := s.cable.check(req, source)
-	if err != nil {
-		s.log.Info("cable stream refused", "code", wire.CodeUnauthorized)
-		answer(nil, wire.CodeUnauthorized, req.Nonce, "")
+	l := s.lines.accepting(req)
+	if l == nil {
+		s.log.Info("cable stream refused: no such line on this node, or not from the node of its console end", "namespace", req.Namespace, "cable", req.Name, "dialer", req.Node)
+		answer(nil, wire.CableReply{Error: wire.CodeNotFound, Nonce: req.Nonce})
+		handshaken()
+		return
+	}
+	// Authenticated with the key the console end's node published, before anything else is done with it.
+	if err := s.cable.check(req, l.spec.ConsoleNodeKey); err != nil {
+		s.log.Info("cable stream refused", "code", wire.CodeUnauthorized, "dialer", req.Node)
+		answer(nil, wire.CableReply{Error: wire.CodeUnauthorized, Nonce: req.Nonce})
 		handshaken()
 		return
 	}
 	handshaken()
-	l := s.lines.accepting(req)
-	if l == nil {
-		s.log.Info("cable stream refused: no such line on this node, or not from the node of its console end", "namespace", req.Namespace, "cable", req.Name, "dialer", req.Node)
-		answer(key, wire.CodeNotFound, req.Nonce, "")
-		return
-	}
+	openT := openTranscript(req)
 	sess := l.beginSession()
 	defer l.endSession(sess)
 	spec := l.spec
@@ -304,20 +313,35 @@ func (s *Service) serveCable(ctx context.Context, conn Conn, ws *websocket.Conn,
 			code = wire.CodeNotFound
 		}
 		s.log.V(1).Info("cable stream: the serial end cannot be attached", "cable", spec.Name, "reason", reason, "error", err.Error())
-		answer(key, code, req.Nonce, "")
+		answer(openT, wire.CableReply{Error: code, Nonce: req.Nonce})
 		return
 	}
-	accept, err := newNonce()
+	accept, err1 := newNonce()
+	eph, err2 := newEphemeral()
+	if err1 != nil || err2 != nil {
+		serial.close("")
+		return
+	}
+	shared, err := eph.shared(req.Eph)
+	if err != nil {
+		serial.close("")
+		answer(openT, wire.CableReply{Error: wire.CodeBadRequest, Nonce: req.Nonce})
+		return
+	}
+	reply := signReply(s.cable.id, openT, wire.CableReply{OK: true, Nonce: req.Nonce, Accept: accept, Eph: eph.public()})
+	sc, err := newSealedConn(conn, sessionSecret(shared, openT, replyTranscript(openT, reply)), false)
 	if err != nil {
 		serial.close("")
 		return
 	}
-	sc, err := newSealedConn(conn, key, req.Nonce, accept, req.UID, false)
-	if err != nil {
+	b, _ := json.Marshal(reply)
+	wctx, wcancel := context.WithTimeout(ctx, s.lim.WriteTimeout)
+	werr := conn.WriteText(wctx, b)
+	wcancel()
+	if werr != nil {
 		serial.close("")
 		return
 	}
-	answer(key, "", req.Nonce, accept)
 	l.setState(func(st *wire.LineState) { st.SerialAttached, st.Up, st.Reason = true, true, "" })
 	s.log.Info("console line up", "role", wire.RoleSerial, "namespace", spec.Namespace, "cable", spec.Name)
 	stream := newStreamSide(sc, ws, s.lim.WriteTimeout)

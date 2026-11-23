@@ -114,6 +114,9 @@ func validateLine(l wire.LineSpec) error {
 			if _, _, err := net.SplitHostPort(l.Peer); err != nil {
 				return errors.New("the peer is not host:port")
 			}
+			if _, err := ParsePublicKey(l.PeerKey); err != nil {
+				return errors.New("a line to a peer carries the key of the peer's node")
+			}
 		}
 	case wire.RoleSerial:
 		if l.Peer != "" {
@@ -122,6 +125,9 @@ func validateLine(l wire.LineSpec) error {
 		if l.ConsoleNode == "" || len(l.ConsoleNode) > maxName {
 			return errors.New("a serial-end line names the node of its console end")
 		}
+		if _, err := ParsePublicKey(l.ConsoleNodeKey); err != nil {
+			return errors.New("a serial-end line carries the key of the console end's node")
+		}
 	default:
 		return errors.New("unknown role")
 	}
@@ -129,8 +135,9 @@ func validateLine(l wire.LineSpec) error {
 }
 
 // admitLines is the lines the node runs, at most MaxLinesPerNode, and the ones it refuses for the limit. The order is deterministic
-// whatever the order of the request: by the creation of the cable, then by namespace and name. The labs share the node fairly: one
-// line of each lab in turn (labs ordered by their first line), so a lab with many cables cannot take the lines of the others.
+// whatever the order of the request: by the creation of the cable, then by namespace and name. The tenants share the node fairly: one line
+// of each tenant in turn (tenants ordered by their first line), and inside a tenant one line of each of its labs in turn, so neither a
+// tenant with many labs nor a lab with many cables can take the lines of the others.
 func admitLines(lines []wire.LineSpec) (admitted, refused []wire.LineSpec) {
 	sorted := append([]wire.LineSpec(nil), lines...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -140,30 +147,66 @@ func admitLines(lines []wire.LineSpec) (admitted, refused []wire.LineSpec) {
 		}
 		return lineID(a.Namespace, a.Name) < lineID(b.Namespace, b.Name)
 	})
-	var labs []string
-	byLab := map[string][]wire.LineSpec{}
-	for _, l := range sorted {
-		lab := l.Namespace + "/" + l.Lab
-		if _, ok := byLab[lab]; !ok {
-			labs = append(labs, lab)
+	tenantOf := func(l wire.LineSpec) string {
+		if l.Tenant != "" {
+			return "t/" + l.Tenant
 		}
-		byLab[lab] = append(byLab[lab], l)
+		return "ns/" + l.Namespace
 	}
+	var tenants []string
+	byTenant := map[string][]wire.LineSpec{}
+	for _, l := range sorted {
+		t := tenantOf(l)
+		if _, ok := byTenant[t]; !ok {
+			tenants = append(tenants, t)
+		}
+		byTenant[t] = append(byTenant[t], l)
+	}
+	queues := make([][]wire.LineSpec, 0, len(tenants))
+	for _, t := range tenants {
+		queues = append(queues, roundRobin(byTenant[t], func(l wire.LineSpec) string { return l.Namespace + "/" + l.Lab }))
+	}
+	for _, l := range interleave(queues) {
+		if len(admitted) < MaxLinesPerNode {
+			admitted = append(admitted, l)
+		} else {
+			refused = append(refused, l)
+		}
+	}
+	return admitted, refused
+}
+
+// roundRobin orders lines one of each group in turn (groups in the order of their first line, lines of a group in their order).
+func roundRobin(lines []wire.LineSpec, group func(wire.LineSpec) string) []wire.LineSpec {
+	var keys []string
+	by := map[string][]wire.LineSpec{}
+	for _, l := range lines {
+		k := group(l)
+		if _, ok := by[k]; !ok {
+			keys = append(keys, k)
+		}
+		by[k] = append(by[k], l)
+	}
+	queues := make([][]wire.LineSpec, 0, len(keys))
+	for _, k := range keys {
+		queues = append(queues, by[k])
+	}
+	return interleave(queues)
+}
+
+// interleave takes the first of every queue, then the second of every queue, and so on.
+func interleave(queues [][]wire.LineSpec) []wire.LineSpec {
+	var out []wire.LineSpec
 	for round := 0; ; round++ {
 		any := false
-		for _, lab := range labs {
-			if round >= len(byLab[lab]) {
-				continue
-			}
-			any = true
-			if len(admitted) < MaxLinesPerNode {
-				admitted = append(admitted, byLab[lab][round])
-			} else {
-				refused = append(refused, byLab[lab][round])
+		for _, q := range queues {
+			if round < len(q) {
+				any = true
+				out = append(out, q[round])
 			}
 		}
 		if !any {
-			return admitted, refused
+			return out
 		}
 	}
 }
@@ -245,7 +288,7 @@ func (s *Service) LineStates() wire.LinesReply {
 	sort.Slice(out, func(i, j int) bool {
 		return lineID(out[i].Namespace, out[i].Name) < lineID(out[j].Namespace, out[j].Name)
 	})
-	return wire.LinesReply{Relay: wire.RelayVersion, Lines: out}
+	return wire.LinesReply{Relay: wire.RelayVersion, RelayKey: s.cable.id.PublicKey(), Lines: out}
 }
 
 func (set *lineSet) start(spec wire.LineSpec, key string) *line {

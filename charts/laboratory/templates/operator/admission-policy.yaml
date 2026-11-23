@@ -50,12 +50,8 @@ spec:
       expression: {{ printf $owned "namespaceObject" "namespaceObject" | quote }}
     - name: platformNamespace
       expression: namespaceObject.metadata.name in [{{ .Release.Namespace | quote }}, "laboratory-tenants", "laboratory-upstream", "laboratory-access-keys"]
-    # Console cables: the one Secret the operator makes in the device access namespace, the key of the cable stream, created once and never
-    # changed by it.
-    - name: cableKey
-      expression: {{ printf "%t && request.operation == 'CREATE' && request.resource.resource == 'secrets' && namespaceObject.metadata.name == '%s' && object.metadata.name == 'laboratory-console-cable-key'" (and .Values.consoleCables.enabled true) (include "laboratory.deviceAccess.namespace" .) | quote }}
   validations:
-    - expression: "variables.groupNamespace || (variables.platformNamespace && !(request.resource.resource in ['rolebindings', 'roles'])) || variables.cableKey"
+    - expression: "variables.groupNamespace || (variables.platformNamespace && !(request.resource.resource in ['rolebindings', 'roles']))"
       message: "the operator may write here only in the namespaces of its LabGroups (RoleBindings and Roles: only there), the release namespace, the tenants, upstream credentials and access keys namespaces"
       reason: Forbidden
 ---

@@ -323,14 +323,6 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
 	}
-	if cfg.ConsoleCablesEnabled && cfg.DeviceAccessNamespace != "" {
-		// The key of the cable stream between the device access pods: made once when it is missing (not by the chart, which would make a new
-		// one at every render without a cluster).
-		if err = mgr.Add(&laboratorycontroller.CableKeyEnsurer{Client: mgr.GetClient(), Namespace: cfg.DeviceAccessNamespace}); err != nil {
-			setupLog.Error(err, "unable to add the cable key ensurer")
-			os.Exit(1)
-		}
-	}
 	if cfg.Bandwidth.Enabled {
 		bw := cfg.Bandwidth.Config()
 		if err := bw.Validate(); err != nil {

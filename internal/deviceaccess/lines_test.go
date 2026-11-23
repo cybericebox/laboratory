@@ -119,27 +119,45 @@ func lineRuntime(t *testing.T, withR1, withPC1 bool) (*fakeRuntime, *attachBehav
 	return rt, ab, term
 }
 
-func lineSpec(role, peer string) wire.LineSpec {
-	consoleNode := ""
-	if role == wire.RoleSerial {
-		consoleNode = "n1" // the owner's node in these tests
+// testIDs are the identities of the device access services of the test nodes.
+var testIDs = func() map[string]*Identity {
+	out := map[string]*Identity{}
+	for _, n := range []string{"n1", "n2", "n3"} {
+		id, err := NewIdentity()
+		if err != nil {
+			panic(err)
+		}
+		out[n] = id
 	}
-	return wire.LineSpec{Namespace: testNS, Name: "cable-1", UID: "cable-uid", Lab: testLab, LabUID: "lab-uid", Role: role, Peer: peer, ConsoleNode: consoleNode,
+	return out
+}()
+
+// lineSpec is the line of the tests: the console end on n1, the serial end on n2 when peer is set; the keys as the node-agents publish them.
+func lineSpec(role, peer string) wire.LineSpec {
+	l := wire.LineSpec{Namespace: testNS, Name: "cable-1", UID: "cable-uid", Lab: testLab, LabUID: "lab-uid", Role: role, Peer: peer,
 		Serial:  wire.LineEnd{Device: "pc1", Port: "serial0", Ports: portkeeper.Marshal(pc1Ports)},
 		Console: wire.LineEnd{Device: "r1", Port: "console0", Ports: portkeeper.Marshal(r1Ports)}}
+	if role == wire.RoleSerial {
+		l.ConsoleNode, l.ConsoleNodeKey = "n1", testIDs["n1"].PublicKey()
+	}
+	if peer != "" {
+		l.PeerKey = testIDs["n2"].PublicKey()
+	}
+	return l
 }
 
 func lineService(t *testing.T, rt Runtime) *Service { return lineServiceOn(t, rt, "n1") }
 
-// lineServiceOn is the service of a node.
-func lineServiceOn(t *testing.T, rt Runtime, node string, keys ...[]byte) *Service {
+// lineServiceOn is the service of a node, with the identity of that node (or the given one).
+func lineServiceOn(t *testing.T, rt Runtime, node string, id ...*Identity) *Service {
 	t.Helper()
 	lim := DefaultLimits()
 	lim.WriteTimeout, lim.Cleanup = 2*time.Second, time.Second
-	if len(keys) == 0 {
-		keys = [][]byte{testCableKey}
+	identity := testIDs[node]
+	if len(id) > 0 {
+		identity = id[0]
 	}
-	s := New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), CableKey: StaticCableKey(keys...), NodeName: node})
+	s := New(Config{Runtime: rt, Limits: lim, Log: logr.Discard(), Identity: identity, NodeName: node})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -328,21 +346,36 @@ func TestLineCrossNode(t *testing.T) {
 	waitFor(t, "the line up again", func() bool { return stateOf(a, "cable-1").Up })
 }
 
-// A peer without the key is unreachable for the owner: its reply cannot be authentic.
+// The keys decide: a peer whose identity is not the one its node published is unreachable for the owner, and an owner whose identity is not
+// the one the console end's node published is refused by the acceptor. Nothing is attached in either case.
 func TestLineCrossNodeWrongKey(t *testing.T) {
 	fastRetry(t)
-	rtA, _, _ := lineRuntime(t, true, false)
-	rtB, _, _ := lineRuntime(t, false, true)
-	a := lineServiceOn(t, rtA, "n1")
-	b := lineServiceOn(t, rtB, "n2", oldCableKey)
-	srv := httptest.NewServer(b.CableHandler())
-	t.Cleanup(srv.Close)
-	b.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
-	a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, strings.TrimPrefix(srv.URL, "http://"))}})
-	waitFor(t, "PeerUnreachable", func() bool { return stateOf(a, "cable-1").Reason == wire.LinePeerUnreachable })
-	if len(rtB.started()) != 0 {
-		t.Fatal("the serial port was attached for a request with another key")
-	}
+	impostor, _ := NewIdentity()
+	t.Run("the acceptor is not who its node published", func(t *testing.T) {
+		rtA, _, _ := lineRuntime(t, true, false)
+		rtB, _, _ := lineRuntime(t, false, true)
+		a := lineServiceOn(t, rtA, "n1")
+		b := lineServiceOn(t, rtB, "n2", impostor)
+		srv := httptest.NewServer(b.CableHandler())
+		t.Cleanup(srv.Close)
+		b.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
+		a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, strings.TrimPrefix(srv.URL, "http://"))}})
+		waitFor(t, "PeerUnreachable", func() bool { return stateOf(a, "cable-1").Reason == wire.LinePeerUnreachable })
+	})
+	t.Run("the dialer is not who the console end's node published", func(t *testing.T) {
+		rtA, _, _ := lineRuntime(t, true, false)
+		rtB, _, _ := lineRuntime(t, false, true)
+		a := lineServiceOn(t, rtA, "n1", impostor)
+		b := lineServiceOn(t, rtB, "n2")
+		srv := httptest.NewServer(b.CableHandler())
+		t.Cleanup(srv.Close)
+		b.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
+		a.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleOwner, strings.TrimPrefix(srv.URL, "http://"))}})
+		waitFor(t, "PeerUnreachable", func() bool { return stateOf(a, "cable-1").Reason == wire.LinePeerUnreachable })
+		if len(rtB.started()) != 0 {
+			t.Fatal("the serial port was attached for an open the console end's node did not sign")
+		}
+	})
 }
 
 // dialCable opens a raw WebSocket to the cable endpoint (what any pod of the cluster could do).
@@ -375,9 +408,10 @@ func sendOpen(t *testing.T, srv *httptest.Server, open any) (wire.CableReply, *w
 	return r, c, ctx
 }
 
-// What a holder of the key that is not the owner of a real line can do on the acceptor: nothing. A request for another lab, another
-// cable UID, another port, from another node than the console end's, an unsigned one and a replayed one are refused, and nothing is run in
-// the device. A refusal before authentication carries no MAC, and a nonce that is not a nonce is never echoed.
+// What another node can do on the acceptor: nothing. A request for another lab, another cable UID, another port or namespace, from a node
+// that is not the console end's, signed by a node that claims to be the console end's (a compromised node impersonating another), unsigned,
+// replayed, or signed before the acceptor started is refused, and nothing is run in the device. A refusal before authentication carries no
+// signature, and a nonce that is not a nonce is never echoed.
 func TestCableStreamRefusals(t *testing.T) {
 	rt, _, _ := lineRuntime(t, false, true)
 	s := lineServiceOn(t, rt, "n2")
@@ -387,39 +421,51 @@ func TestCableStreamRefusals(t *testing.T) {
 	base := cableOpenOf(lineSpec(wire.RoleOwner, ""))
 	for name, c := range map[string]struct {
 		mod  func(*wire.CableOpen)
+		id   string
 		node string
+		want string
 	}{
-		"another lab":                  {func(r *wire.CableOpen) { r.Lab = "lab2" }, "n1"},
-		"another lab uid":              {func(r *wire.CableOpen) { r.LabUID = "x" }, "n1"},
-		"another cable":                {func(r *wire.CableOpen) { r.UID = "x" }, "n1"},
-		"another port":                 {func(r *wire.CableOpen) { r.Serial.Port = "serial1" }, "n1"},
-		"another namespace":            {func(r *wire.CableOpen) { r.Namespace = "lab-group-b" }, "n1"},
-		"not the console end's node":   {func(*wire.CableOpen) {}, "n3"},
-		"the serial end's node itself": {func(*wire.CableOpen) {}, "n2"},
+		"another lab":                 {func(r *wire.CableOpen) { r.Lab = "lab2" }, "n1", "n1", wire.CodeNotFound},
+		"another lab uid":             {func(r *wire.CableOpen) { r.LabUID = "x" }, "n1", "n1", wire.CodeNotFound},
+		"another cable":               {func(r *wire.CableOpen) { r.UID = "x" }, "n1", "n1", wire.CodeNotFound},
+		"another port":                {func(r *wire.CableOpen) { r.Serial.Port = "serial1" }, "n1", "n1", wire.CodeNotFound},
+		"another namespace":           {func(r *wire.CableOpen) { r.Namespace = "lab-group-b" }, "n1", "n1", wire.CodeNotFound},
+		"not the console end's node":  {func(*wire.CableOpen) {}, "n3", "n3", wire.CodeNotFound},
+		"n3 claiming to be n1":        {func(*wire.CableOpen) {}, "n3", "n1", wire.CodeUnauthorized},
+		"the serial node claiming n1": {func(*wire.CableOpen) {}, "n2", "n1", wire.CodeUnauthorized},
 	} {
 		open := base
 		c.mod(&open)
-		signed, key, _ := signOpen(testCableKey, c.node, open, time.Now())
-		if r, _, _ := sendOpen(t, srv, signed); r.OK || r.Error != wire.CodeNotFound || checkReply(key, r, signed.Nonce) != nil {
+		signed, _, _ := signOpen(testIDs[c.id], c.node, open, time.Now())
+		if r, _, _ := sendOpen(t, srv, signed); r.OK || r.Error != c.want || r.Sig != "" {
 			t.Errorf("%s: %+v", name, r)
 		}
 	}
-	unsigned := base
-	unsigned.V, unsigned.Node, unsigned.Time, unsigned.Nonce, unsigned.MAC = wire.RelayVersion, "n1", time.Now().UnixMilli(), strings.Repeat("a", 32), strings.Repeat("b", 64)
-	if r, _, _ := sendOpen(t, srv, unsigned); r.OK || r.Error != wire.CodeUnauthorized || r.MAC != "" || r.Nonce != unsigned.Nonce {
+	tampered, _, _ := signOpen(testIDs["n1"], "n1", base, time.Now())
+	tampered.Serial.Device = "r1"
+	if r, _, _ := sendOpen(t, srv, tampered); r.OK || r.Sig != "" {
+		t.Errorf("a field changed after signing: %+v", r)
+	}
+	unsigned, _, _ := signOpen(testIDs["n1"], "n1", base, time.Now())
+	unsigned.Sig = strings.Repeat("A", 86)
+	if r, _, _ := sendOpen(t, srv, unsigned); r.OK || r.Error != wire.CodeUnauthorized || r.Sig != "" || r.Nonce != unsigned.Nonce {
 		t.Errorf("unsigned: %+v", r)
 	}
-	// the signing oracle: a nonce that is not 32 hex characters is never echoed and nothing is signed
 	odd := unsigned
 	odd.Nonce = "<script>" + strings.Repeat("a", 24)
-	if r, _, _ := sendOpen(t, srv, odd); r.OK || r.Nonce != "" || r.MAC != "" {
+	if r, _, _ := sendOpen(t, srv, odd); r.OK || r.Nonce != "" || r.Sig != "" {
 		t.Errorf("a malformed nonce: %+v", r)
+	}
+	// signed before this process started: it may be a replay of an open the previous process accepted
+	early, _, _ := signOpen(testIDs["n1"], "n1", base, s.cable.started.Add(-time.Second))
+	if r, _, _ := sendOpen(t, srv, early); r.OK || r.Error != wire.CodeUnauthorized {
+		t.Errorf("an open from before the start: %+v", r)
 	}
 	if len(rt.started()) != 0 {
 		t.Fatal("a refused request attached the serial port")
 	}
-	good, key, _ := signOpen(testCableKey, "n1", base, time.Now())
-	if r, _, _ := sendOpen(t, srv, good); !r.OK || checkReply(key, r, good.Nonce) != nil || !validNonce(r.Accept) {
+	good, _, _ := signOpen(testIDs["n1"], "n1", base, time.Now())
+	if r, _, _ := sendOpen(t, srv, good); !r.OK || checkReply(testIDs["n2"].PublicKey(), openTranscript(good), r, good.Nonce) != nil {
 		t.Fatalf("the real line: %+v", r)
 	}
 	if r, _, _ := sendOpen(t, srv, good); r.OK || r.Error != wire.CodeUnauthorized {
@@ -428,16 +474,17 @@ func TestCableStreamRefusals(t *testing.T) {
 }
 
 // A signed open replayed by somebody on the path whose original never reached the acceptor is accepted once, but the replayer cannot
-// use the stream: it does not have the node key, so it cannot derive the session keys from the two nonces. What the acceptor sends is
-// sealed (no byte of the serial line is readable), and a frame it did not seal ends the line. The open cannot be used a second time.
+// use the stream: the session comes from the dialer's ephemeral X25519 key, whose private half the replayer does not have. What the
+// acceptor sends is sealed (no byte of the serial line is readable), and a frame it did not seal ends the line. The open cannot be used a
+// second time.
 func TestCableStreamReplayGetsNothing(t *testing.T) {
 	rt, _, term := lineRuntime(t, false, true)
 	s := lineServiceOn(t, rt, "n2")
 	s.SyncLines(wire.LinesRequest{Lines: []wire.LineSpec{lineSpec(wire.RoleSerial, "")}})
 	srv := httptest.NewServer(s.CableHandler())
 	t.Cleanup(srv.Close)
-	// the original open, captured and never delivered
-	captured, _, _ := signOpen(testCableKey, "n1", cableOpenOf(lineSpec(wire.RoleOwner, "")), time.Now())
+	// the original open, captured and never delivered (its ephemeral key stays with the dialer)
+	captured, _, _ := signOpen(testIDs["n1"], "n1", cableOpenOf(lineSpec(wire.RoleOwner, "")), time.Now())
 	r, c, ctx := sendOpen(t, srv, captured)
 	if !r.OK {
 		t.Fatalf("the replay is answered like the original would be: %+v", r)
@@ -451,12 +498,14 @@ func TestCableStreamReplayGetsNothing(t *testing.T) {
 	if strings.Contains(string(msg), "SECRET") {
 		t.Fatal("the bytes of the line travel in the clear")
 	}
-	// a key derived without the node key does not open it
-	guess, _ := newSealedConn(nil, []byte(strings.Repeat("g", 32)), captured.Nonce, r.Accept, captured.UID, true)
+	// a session from another ephemeral key (the replayer's own) does not open it
+	mine, _ := newEphemeral()
+	shared, _ := mine.shared(r.Eph)
+	openT := openTranscript(captured)
+	guess, _ := newSealedConn(nil, sessionSecret(shared, openT, replyTranscript(openT, r)), true)
 	if _, err := guess.recv.Open(nil, gcmNonce(0), msg[8:], msg[:8]); err == nil {
-		t.Fatal("a frame opened without the node key")
+		t.Fatal("a frame opened without the dialer's ephemeral key")
 	}
-	// an injected frame ends the line, and nothing reaches the serial device
 	if err := c.Write(ctx, websocket.MessageBinary, wire.Data([]byte("rm -rf /\r"))); err != nil {
 		t.Fatal(err)
 	}
@@ -473,10 +522,9 @@ func TestCableStreamReplayGetsNothing(t *testing.T) {
 // refused.
 func TestSealedConn(t *testing.T) {
 	key := []byte(strings.Repeat("s", 32))
-	aPipe, bPipe := newPipeConn(), newPipeConn()
-	_ = bPipe
-	dialer, _ := newSealedConn(aPipe, key, "nd", "na", "uid", true)
-	acceptor, _ := newSealedConn(aPipe, key, "nd", "na", "uid", false)
+	aPipe := newPipeConn()
+	dialer, _ := newSealedConn(aPipe, key, true)
+	acceptor, _ := newSealedConn(aPipe, key, false)
 	ctx := context.Background()
 	var sent [][]byte
 	for _, f := range []string{"one", "two", "three"} {
@@ -496,13 +544,13 @@ func TestSealedConn(t *testing.T) {
 	if _, err := feed(sent[0]); err == nil {
 		t.Fatal("a replayed frame")
 	}
-	acc2, _ := newSealedConn(aPipe, key, "nd", "na", "uid", false)
+	acc2, _ := newSealedConn(aPipe, key, false)
 	if _, err := func() ([]byte, error) { aPipe.in <- message{false, sent[2]}; return acc2.readFrame(ctx) }(); err == nil {
 		t.Fatal("a frame out of order")
 	}
 	tampered := append([]byte(nil), sent[1]...)
 	tampered[len(tampered)-1] ^= 1
-	acc3, _ := newSealedConn(aPipe, key, "nd", "na", "uid", false)
+	acc3, _ := newSealedConn(aPipe, key, false)
 	if _, err := func() ([]byte, error) { aPipe.in <- message{false, sent[0]}; return acc3.readFrame(ctx) }(); err != nil {
 		t.Fatal(err)
 	}
@@ -513,8 +561,8 @@ func TestSealedConn(t *testing.T) {
 	if _, err := func() ([]byte, error) { aPipe.in <- message{false, sent[0]}; return dialer.readFrame(ctx) }(); err == nil {
 		t.Fatal("a reflected frame")
 	}
-	// another session (another acceptor nonce) does not open it
-	other, _ := newSealedConn(aPipe, key, "nd", "other", "uid", false)
+	// another session (another secret) does not open it
+	other, _ := newSealedConn(aPipe, []byte(strings.Repeat("o", 32)), false)
 	if _, err := func() ([]byte, error) { aPipe.in <- message{false, sent[0]}; return other.readFrame(ctx) }(); err == nil {
 		t.Fatal("a frame spliced from another session")
 	}
@@ -733,4 +781,44 @@ func TestCableSockHandler(t *testing.T) {
 		t.Fatalf("GET: %d %s", w.Code, w.Body)
 	}
 	_, _ = io.Copy(io.Discard, w.Body)
+}
+
+// The share is per tenant: a tenant with many labs gets no more of a full node than a tenant with one, and inside a tenant the labs share
+// its part.
+func TestAdmitLinesIsFairBetweenTenants(t *testing.T) {
+	var lines []wire.LineSpec
+	n := 0
+	add := func(tenant, lab string, count int) {
+		for range count {
+			l := lineSpec(wire.RoleOwner, "")
+			l.Namespace, l.Lab, l.Tenant, l.Name, l.Created = "ns-"+tenant, lab, tenant, "c"+strconv.Itoa(n), int64(n)
+			n++
+			lines = append(lines, l)
+		}
+	}
+	for i := range 10 {
+		add("many", "lab"+strconv.Itoa(i), 100)
+	}
+	add("one", "only", 300)
+	admitted, refused := admitLines(lines)
+	byTenant, byLab := map[string]int{}, map[string]int{}
+	for _, l := range admitted {
+		byTenant[l.Tenant]++
+		byLab[l.Lab]++
+	}
+	if len(admitted) != MaxLinesPerNode || len(refused) != 800 || byTenant["one"] != 250 || byTenant["many"] != 250 {
+		t.Fatalf("per tenant %v, refused %d", byTenant, len(refused))
+	}
+	for i := range 10 {
+		if c := byLab["lab"+strconv.Itoa(i)]; c != 25 {
+			t.Fatalf("the labs of a tenant share its part: %v", byLab)
+		}
+	}
+	// without a tenant label the namespace is the tenant
+	l := lineSpec(wire.RoleOwner, "")
+	l.Tenant = ""
+	a, _ := admitLines([]wire.LineSpec{l})
+	if len(a) != 1 {
+		t.Fatal("a line without a tenant")
+	}
 }

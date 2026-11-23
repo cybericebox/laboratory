@@ -1,13 +1,15 @@
 package deviceaccess
 
 import (
+	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,149 +18,106 @@ import (
 	"github.com/cybericebox/laboratory/internal/deviceaccess/wire"
 )
 
-// The authentication of the cable stream between the device access services of two nodes. Only the device access pods hold the master key
-// (a Secret of their namespace that nothing else mounts; it is not the access key of a tenant and not the grant of a console). Each node
-// signs with its node key, HMAC(master, node name), and names its node in the open request; the acceptor derives that node key, checks the
-// MAC in constant time, the time within CableWindow of its own clock, that the nonce was not seen, and that the dialer's node is the node
-// of the console end of the line its own node-agent registered. Its reply is signed over the request's nonce and its own nonce, and the
-// session keys of the stream (cable_session.go) are derived from the node key and both nonces: a replayed open, even one whose original
-// never arrived, yields a stream the replayer can neither read nor write. Authentication is not authorization: an accepted request is
-// served only for a line the acceptor's node-agent gave it with the serial role and the same cable, UID, lab, lab UID and ends.
+// The authentication of the cable stream between the device access services of two nodes.
+//
+// Every device access process makes its own Ed25519 identity at start and keeps the private key in memory only (it never touches a disk
+// and dies with the process). It gives the public key to the node-agent of its node over cable.sock; the node-agent publishes it on its
+// own Node (annotation laboratory.cybericebox.com/console-relay-key; the admission policy of the node-agent lets a node-agent set it on its
+// own node only). The node-agent of the serial end's node gives its service, with each line, the key published on the console end's node;
+// the owner's node-agent gives its service the key of the serial end's node. So a node holds no secret of another node: a compromised node
+// can sign only as itself, and is served only for the lines whose console end runs on it.
+//
+// The handshake:
+//
+//   - The dialer makes an ephemeral X25519 key and sends CableOpen: its node, the cable, its UID, the lab and lab UID, both ends, its clock,
+//     a 16-byte nonce and the ephemeral public key, signed with its identity.
+//   - The acceptor finds the line its own node-agent gave it with the serial role, the same cable, lab and ends and that dialer node; it
+//     checks the signature with that node's published key, the time (within CableWindow of its clock, and not before the process started),
+//     and that the nonce is new for that node (no older than an evicted one of the same node). Only then does it sign anything: the reply
+//     carries its nonce and its own ephemeral key, signed with its identity over the digest of the open and the reply.
+//   - Both sides compute the X25519 secret of the two ephemeral keys; the session keys (cable_session.go) are HMACs of it over the digest of
+//     both signed messages. A replayed open gets a reply for an ephemeral key whose private half the replayer does not have: it can neither
+//     read nor write the stream, and the reply's signature covers the acceptor's fresh key, so it is of no use elsewhere either.
+//
+// Authentication is not authorization: an accepted open is served only for a line the acceptor's node-agent gave it.
 
 // CableWindow is how far the time of an open request may be from the acceptor's clock.
 const CableWindow = 30 * time.Second
 
-// minCableKey is the shortest key accepted (bytes of the file after trimming); maxNonces bounds the nonces remembered and
-// maxNoncesPerSource the nonces of one source address, so one source can never fill the cache for the others.
+// maxNonces bounds the nonces remembered and maxNoncesPerSource the nonces of one dialer node, so one node can never fill the cache for the
+// others.
 const (
-	minCableKey        = 32
 	maxNonces          = 20000
 	maxNoncesPerSource = 2000
 )
 
 var (
-	errCableKey    = errors.New("no usable cable key")
-	errCableMAC    = errors.New("the cable request is not authentic")
+	errCableSig    = errors.New("the cable message is not signed by the expected node")
 	errCableTime   = errors.New("the cable request is outside the time window")
-	errCableReplay = errors.New("the nonce of the cable request was seen before")
+	errCableReplay = errors.New("the nonce of the cable request was seen before, or is older than one forgotten")
 )
 
-// CableKey reads the master key from a file and, during a rotation, the previous key from a second file, again whenever a file changes
-// (a rotated Secret reaches the pod without a restart). Requests are signed with the current key and accepted with either.
-type CableKey struct {
-	paths []string
+var b64 = base64.RawURLEncoding
 
-	mu    sync.Mutex
-	files []keyFile
-	fixed [][]byte
+// Identity is the Ed25519 key pair of one device access process.
+type Identity struct {
+	priv ed25519.PrivateKey
+	pub  ed25519.PublicKey
 }
 
-type keyFile struct {
-	key   []byte
-	mtime time.Time
-	size  int64
-}
-
-// NewCableKey returns the key of the file at path; previous, when not empty, is the file of the key being rotated out (it may be absent).
-func NewCableKey(path, previous string) *CableKey {
-	k := &CableKey{paths: []string{path}}
-	if previous != "" {
-		k.paths = append(k.paths, previous)
-	}
-	k.files = make([]keyFile, len(k.paths))
-	return k
-}
-
-// StaticCableKey is a key held in memory (tests); more keys are previous keys.
-func StaticCableKey(keys ...[]byte) *CableKey {
-	k := &CableKey{}
-	for _, key := range keys {
-		k.fixed = append(k.fixed, append([]byte(nil), key...))
-	}
-	return k
-}
-
-// Keys returns the usable keys, the current one first; an error when the current one is missing or too short.
-func (k *CableKey) Keys() ([][]byte, error) {
-	if k == nil {
-		return nil, errCableKey
-	}
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.paths == nil {
-		var out [][]byte
-		for _, key := range k.fixed {
-			if len(key) >= minCableKey {
-				out = append(out, key)
-			} else if len(out) == 0 {
-				return nil, errCableKey
-			}
-		}
-		if len(out) == 0 {
-			return nil, errCableKey
-		}
-		return out, nil
-	}
-	var out [][]byte
-	for i, p := range k.paths {
-		key := k.read(i, p)
-		if key == nil {
-			if i == 0 {
-				return nil, errCableKey
-			}
-			continue
-		}
-		out = append(out, key)
-	}
-	return out, nil
-}
-
-func (k *CableKey) read(i int, path string) []byte {
-	st, err := os.Stat(path)
+// NewIdentity makes a fresh identity.
+func NewIdentity() (*Identity, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		k.files[i] = keyFile{}
-		return nil
+		return nil, err
 	}
-	f := &k.files[i]
-	if f.key == nil || !st.ModTime().Equal(f.mtime) || st.Size() != f.size {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		key := []byte(strings.TrimSpace(string(raw)))
-		if len(key) < minCableKey {
-			*f = keyFile{}
-			return nil
-		}
-		*f = keyFile{key: key, mtime: st.ModTime(), size: st.Size()}
-	}
-	return f.key
+	return &Identity{priv: priv, pub: pub}, nil
 }
 
-// macOf joins the fields of a MAC: a NUL never appears in a field (validateCableOpen refuses it), so the encoding is unambiguous.
-func macOf(key []byte, parts ...string) string {
-	return hex.EncodeToString(macBytes(key, parts...))
+// PublicKey is the public key as the node-agent publishes it (base64url without padding, 43 characters).
+func (id *Identity) PublicKey() string { return b64.EncodeToString(id.pub) }
+
+func (id *Identity) sign(msg []byte) string { return b64.EncodeToString(ed25519.Sign(id.priv, msg)) }
+
+// ParsePublicKey reads a published key.
+func ParsePublicKey(s string) (ed25519.PublicKey, error) {
+	raw, err := b64.DecodeString(s)
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return nil, errors.New("not an Ed25519 public key")
+	}
+	return ed25519.PublicKey(raw), nil
 }
 
-func macBytes(key []byte, parts ...string) []byte {
-	m := hmac.New(sha256.New, key)
+func verifySig(pubKey, sig string, msg []byte) error {
+	pub, err := ParsePublicKey(pubKey)
+	if err != nil {
+		return errCableSig
+	}
+	raw, err := b64.DecodeString(sig)
+	if err != nil || len(raw) != ed25519.SignatureSize || !ed25519.Verify(pub, msg, raw) {
+		return errCableSig
+	}
+	return nil
+}
+
+// transcript joins the fields of a signed message: a NUL never appears in a field (validateCableOpen refuses it), so it is unambiguous.
+func transcript(parts ...string) []byte {
+	var b strings.Builder
 	for _, p := range parts {
-		_, _ = m.Write([]byte(p))
-		_, _ = m.Write([]byte{0})
+		b.WriteString(p)
+		b.WriteByte(0)
 	}
-	return m.Sum(nil)
+	return []byte(b.String())
 }
 
-// nodeKey is the key a node signs with: HMAC(master, node name).
-func nodeKey(master []byte, node string) []byte { return macBytes(master, "cib-cable-node", node) }
-
-func openMAC(key []byte, r wire.CableOpen) string {
-	return macOf(key, "cib-cable-open", strconv.Itoa(r.V), r.Node, r.Namespace, r.Name, r.UID, r.Lab, r.LabUID,
-		r.Serial.Device, r.Serial.Port, r.Console.Device, r.Console.Port, strconv.FormatInt(r.Time, 10), r.Nonce)
+func openTranscript(r wire.CableOpen) []byte {
+	return transcript("cib-cable-open/3", strconv.Itoa(r.V), r.Node, r.Namespace, r.Name, r.UID, r.Lab, r.LabUID,
+		r.Serial.Device, r.Serial.Port, r.Console.Device, r.Console.Port, strconv.FormatInt(r.Time, 10), r.Nonce, r.Eph)
 }
 
-func replyMAC(key []byte, r wire.CableReply) string {
-	return macOf(key, "cib-cable-reply", r.Nonce, r.Accept, strconv.FormatBool(r.OK), r.Error)
+func replyTranscript(open []byte, r wire.CableReply) []byte {
+	sum := sha256.Sum256(open)
+	return transcript("cib-cable-reply/3", hex.EncodeToString(sum[:]), r.Nonce, r.Accept, strconv.FormatBool(r.OK), r.Error, r.Eph)
 }
 
 // newNonce is 16 random bytes in hex.
@@ -183,31 +142,63 @@ func validNonce(s string) bool {
 	return true
 }
 
-// signOpen fills the version, the dialer's node, the time, a fresh nonce and the MAC of an open request; it returns the node key it
-// signed with (the session is derived from it).
-func signOpen(master []byte, node string, r wire.CableOpen, now time.Time) (wire.CableOpen, []byte, error) {
+// ephemeral is one side's X25519 key of a handshake.
+type ephemeral struct{ key *ecdh.PrivateKey }
+
+func newEphemeral() (*ephemeral, error) {
+	k, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	return &ephemeral{key: k}, nil
+}
+
+func (e *ephemeral) public() string { return b64.EncodeToString(e.key.PublicKey().Bytes()) }
+
+// shared is the X25519 secret with the peer's ephemeral key (an all-zero result, a low-order peer key, is an error).
+func (e *ephemeral) shared(peer string) ([]byte, error) {
+	raw, err := b64.DecodeString(peer)
+	if err != nil {
+		return nil, errCableSig
+	}
+	pk, err := ecdh.X25519().NewPublicKey(raw)
+	if err != nil {
+		return nil, errCableSig
+	}
+	return e.key.ECDH(pk)
+}
+
+// signOpen fills the version, the dialer's node, the time, a fresh nonce and ephemeral key, and the signature of an open request.
+func signOpen(id *Identity, node string, r wire.CableOpen, now time.Time) (wire.CableOpen, *ephemeral, error) {
 	nonce, err := newNonce()
 	if err != nil {
 		return r, nil, err
 	}
-	key := nodeKey(master, node)
-	r.V, r.Node, r.Time, r.Nonce = wire.RelayVersion, node, now.UnixMilli(), nonce
-	r.MAC = openMAC(key, r)
-	return r, key, nil
+	eph, err := newEphemeral()
+	if err != nil {
+		return r, nil, err
+	}
+	r.V, r.Node, r.Time, r.Nonce, r.Eph = wire.RelayVersion, node, now.UnixMilli(), nonce, eph.public()
+	r.Sig = id.sign(openTranscript(r))
+	return r, eph, nil
 }
 
-func signReply(key []byte, r wire.CableReply) wire.CableReply {
-	r.MAC = replyMAC(key, r)
+// signReply signs a reply to the open.
+func signReply(id *Identity, open []byte, r wire.CableReply) wire.CableReply {
+	r.Sig = id.sign(replyTranscript(open, r))
 	return r
 }
 
-// checkReply says the reply is authentic and answers the request with this nonce.
-func checkReply(key []byte, r wire.CableReply, nonce string) error {
-	if r.Nonce != nonce || !hmac.Equal([]byte(r.MAC), []byte(replyMAC(key, r))) {
-		return errCableMAC
+// checkReply says the reply is signed by the peer's key and answers the request with this nonce.
+func checkReply(peerKey string, open []byte, r wire.CableReply, nonce string) error {
+	if r.Nonce != nonce {
+		return errCableSig
 	}
-	if r.OK && !validNonce(r.Accept) {
-		return errCableMAC
+	if err := verifySig(peerKey, r.Sig, replyTranscript(open, r)); err != nil {
+		return err
+	}
+	if r.OK && (!validNonce(r.Accept) || r.Eph == "") {
+		return errCableSig
 	}
 	return nil
 }
@@ -219,8 +210,8 @@ func validateCableOpen(r wire.CableOpen) error {
 			return errors.New("cable request: a field is empty, too long or holds NUL")
 		}
 	}
-	if !validNonce(r.Nonce) || len(r.MAC) != 64 {
-		return errors.New("cable request: bad nonce or MAC")
+	if !validNonce(r.Nonce) || len(r.Eph) != 43 || len(r.Sig) != 86 {
+		return errors.New("cable request: bad nonce, key or signature")
 	}
 	if r.V != wire.RelayVersion {
 		return fmt.Errorf("cable request: version %d", r.V)
@@ -228,13 +219,15 @@ func validateCableOpen(r wire.CableOpen) error {
 	return nil
 }
 
-// nonceCache remembers the nonces accepted within twice the window. One source address holds at most perSource of them (its oldest goes
-// first); when the whole cache is full the oldest nonce goes, so a flood never locks the lines of everybody else. A nonce forgotten that
-// way could be replayed inside its window, and the replay would still get nothing: the session keys bind the acceptor's fresh nonce.
+// nonceCache remembers the nonces of the opens accepted within twice the window, per dialer node (the node the signature proved). One node
+// holds at most perSource of them and loses its oldest first; a full cache loses the oldest of all; it never refuses for room, so a flood
+// never locks the lines of the others. A forgotten nonce must not be replayable inside its window: the cache keeps, per node, the time of
+// the newest open it forgot (the floor) and refuses every open of that node that is not newer.
 type nonceCache struct {
 	mu        sync.Mutex
 	seen      map[string]nonceEntry
 	bySource  map[string]int
+	floor     map[string]int64 // node -> open time (Unix ms) of the newest forgotten nonce
 	max       int
 	perSource int
 }
@@ -242,10 +235,18 @@ type nonceCache struct {
 type nonceEntry struct {
 	at     time.Time
 	source string
+	open   int64
 }
 
 func newNonceCache(max, perSource int) *nonceCache {
-	return &nonceCache{seen: map[string]nonceEntry{}, bySource: map[string]int{}, max: max, perSource: perSource}
+	return &nonceCache{seen: map[string]nonceEntry{}, bySource: map[string]int{}, floor: map[string]int64{}, max: max, perSource: perSource}
+}
+
+// forget drops a nonce that may still be inside its window and raises the floor of its node.
+func (c *nonceCache) forget(n string) {
+	e := c.seen[n]
+	c.floor[e.source] = max(c.floor[e.source], e.open)
+	c.drop(n)
 }
 
 func (c *nonceCache) drop(n string) {
@@ -256,79 +257,86 @@ func (c *nonceCache) drop(n string) {
 	}
 }
 
-// oldest is the oldest nonce, of one source when source is not empty.
+// oldest is the nonce with the oldest open time, of one node when source is not empty.
 func (c *nonceCache) oldest(source string) string {
 	var name string
-	var at time.Time
+	var open int64
 	for n, e := range c.seen {
 		if source != "" && e.source != source {
 			continue
 		}
-		if name == "" || e.at.Before(at) {
-			name, at = n, e.at
+		if name == "" || e.open < open {
+			name, open = n, e.open
 		}
 	}
 	return name
 }
 
-// add records the nonce of a source; false when it was seen before.
-func (c *nonceCache) add(nonce, source string, now time.Time) bool {
+// add records the nonce of an open of a node at open time openMs; false when it was seen before or is not newer than a forgotten one.
+func (c *nonceCache) add(nonce, source string, openMs int64, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for n, e := range c.seen {
+		// past twice the window an open is refused by its time anyway: no floor needed
 		if now.Sub(e.at) > 2*CableWindow {
 			c.drop(n)
 		}
 	}
-	if _, ok := c.seen[nonce]; ok {
+	for s, f := range c.floor {
+		if now.Sub(time.UnixMilli(f)) > 2*CableWindow {
+			delete(c.floor, s)
+		}
+	}
+	if _, ok := c.seen[nonce]; ok || openMs <= c.floor[source] {
 		return false
 	}
 	if c.bySource[source] >= c.perSource {
-		c.drop(c.oldest(source))
+		c.forget(c.oldest(source))
 	}
 	if len(c.seen) >= c.max {
-		c.drop(c.oldest(""))
+		c.forget(c.oldest(""))
 	}
-	c.seen[nonce] = nonceEntry{at: now, source: source}
+	c.seen[nonce] = nonceEntry{at: now, source: source, open: openMs}
 	c.bySource[source]++
 	return true
 }
 
 // cableAuth checks open requests.
 type cableAuth struct {
-	key    *CableKey
+	id     *Identity
 	nonces *nonceCache
 	now    func() time.Time
+	// started is when this process started: an open signed before that is refused (it could be a replay of one the previous process saw).
+	started time.Time
 }
 
-// check authenticates an open request from a source address: the shape, the MAC with the node key of the named node under any current
-// key (constant time), then the time, then the nonce (so an unauthentic request cannot fill the nonce cache). It returns the node key that
-// verified it. A failure never says which check failed.
-func (a *cableAuth) check(r wire.CableOpen, source string) ([]byte, error) {
-	keys, err := a.key.Keys()
-	if err != nil {
-		return nil, err
-	}
+// check authenticates an open request for a line whose console end is the node with the published key nodeKey: the signature, then the
+// time (inside the window and not before this process started), then the nonce (so an unauthentic request cannot fill the nonce cache).
+// A failure never says which check failed.
+func (a *cableAuth) check(r wire.CableOpen, nodeKey string) error {
 	if err := validateCableOpen(r); err != nil {
-		return nil, err
+		return err
 	}
-	var key []byte
-	for _, master := range keys {
-		nk := nodeKey(master, r.Node)
-		if hmac.Equal([]byte(r.MAC), []byte(openMAC(nk, r))) {
-			key = nk
-			break
-		}
-	}
-	if key == nil {
-		return nil, errCableMAC
+	if err := verifySig(nodeKey, r.Sig, openTranscript(r)); err != nil {
+		return err
 	}
 	now := a.now()
-	if d := now.Sub(time.UnixMilli(r.Time)); d > CableWindow || d < -CableWindow {
-		return nil, errCableTime
+	t := time.UnixMilli(r.Time)
+	// the time is in milliseconds: an open of the same millisecond as the start is not "before" it
+	if d := now.Sub(t); d > CableWindow || d < -CableWindow || r.Time < a.started.UnixMilli() {
+		return errCableTime
 	}
-	if !a.nonces.add(r.Nonce, source, now) {
-		return nil, errCableReplay
+	if !a.nonces.add(r.Nonce, r.Node, r.Time, now) {
+		return errCableReplay
 	}
-	return key, nil
+	return nil
+}
+
+// sessionSecret is the base of the session keys: the X25519 secret, bound to both signed messages.
+func sessionSecret(shared, open, reply []byte) []byte {
+	sum := sha256.Sum256(append(append([]byte(nil), open...), reply...))
+	m := hmac.New(sha256.New, shared)
+	_, _ = m.Write([]byte("cib-cable-session/3"))
+	_, _ = m.Write(sum[:])
+	return m.Sum(nil)
 }

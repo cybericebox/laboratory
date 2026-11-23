@@ -86,7 +86,7 @@ func TestConsoleCablesDeviceAccess(t *testing.T) {
 	env := envOf(spec.Containers[0])
 	want := map[string]string{
 		"CABLE_SOCKET": "/run/cybericebox/console-cables/cable.sock", "CABLE_PEER_UID": "0", "CABLE_GID": "0",
-		"CABLE_LISTEN": "$(POD_IP):8081", "CABLE_KEY_FILE": "/etc/device-access/cable-key/key",
+		"CABLE_LISTEN": "$(POD_IP):8081",
 	}
 	for k, v := range want {
 		if env[k].Value != v {
@@ -100,17 +100,17 @@ func TestConsoleCablesDeviceAccess(t *testing.T) {
 	if !port {
 		t.Error("the cable port is not declared")
 	}
-	var hostDir, secret string
+	var hostDir string
 	for _, v := range spec.Volumes {
 		if v.Name == "cable-socket" && v.HostPath != nil {
 			hostDir = v.HostPath.Path
 		}
-		if v.Name == "cable-key" && v.Secret != nil {
-			secret = v.Secret.SecretName
+		if v.Secret != nil && strings.Contains(v.Secret.SecretName, "cable") {
+			t.Errorf("a cable key Secret is mounted: %+v", v)
 		}
 	}
-	if hostDir != "/run/cybericebox/console-cables" || secret != "laboratory-console-cable-key" {
-		t.Errorf("volumes: %q %q", hostDir, secret)
+	if hostDir != "/run/cybericebox/console-cables" {
+		t.Errorf("volumes: %q", hostDir)
 	}
 
 	// off: nothing of it
@@ -126,34 +126,24 @@ func TestConsoleCablesDeviceAccess(t *testing.T) {
 	}
 }
 
-// The key is not rendered by the chart (a render without a cluster would make a new one each time): the operator makes the Secret once,
-// with a create-only right in the device access namespace, and the DaemonSet mounts it as optional, with the previous key of a rotation.
-func TestConsoleCableKey(t *testing.T) {
+// There is no shared key: each device access process makes its own identity at start. The chart renders no key Secret, the DaemonSet mounts
+// none, the operator gets no right on Secrets there, and the pod knows its node (the name it signs as).
+func TestConsoleCablesHaveNoSharedKey(t *testing.T) {
 	out, err := helmTemplate(t, cablesOn...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "kind: Secret\nmetadata:\n  name: laboratory-console-cable-key") {
-		t.Fatal("the chart renders the cable key")
+	if strings.Contains(out, "laboratory-console-cable-key") || strings.Contains(out, "CABLE_KEY") {
+		t.Fatal("the chart still renders or mounts a cable key")
 	}
 	var ds appsv1.DaemonSet
 	render(t, "templates/deviceaccess/daemonset.yaml", &ds, cablesOn...)
-	for _, v := range ds.Spec.Template.Spec.Volumes {
-		if v.Name == "cable-key" && (v.Secret == nil || v.Secret.Optional == nil || !*v.Secret.Optional) {
-			t.Errorf("the key volume must be optional: %+v", v)
-		}
-	}
-	if e := envOf(ds.Spec.Template.Spec.Containers[0]); e["CABLE_KEY_PREVIOUS_FILE"].Value != "/etc/device-access/cable-key/previous" ||
-		e["NODE_NAME"].ValueFrom == nil || e["NODE_NAME"].ValueFrom.FieldRef.FieldPath != "spec.nodeName" {
+	if e := envOf(ds.Spec.Template.Spec.Containers[0]); e["NODE_NAME"].ValueFrom == nil || e["NODE_NAME"].ValueFrom.FieldRef.FieldPath != "spec.nodeName" {
 		t.Errorf("env %+v", e)
 	}
 	role, err := helmTemplate(t, append(append([]string{}, cablesOn...), "-s", "templates/deviceaccess/access-keys-rbac.yaml")...)
-	if err != nil || !strings.Contains(role, "resources: [ secrets ]\n    verbs: [ create ]") || strings.Contains(role, "secrets ]\n    verbs: [ get") {
-		t.Errorf("the operator may create the key Secret and nothing more:\n%s", role)
-	}
-	off, _ := helmTemplate(t, append(append([]string{}, consoleOn...), "-s", "templates/deviceaccess/access-keys-rbac.yaml")...)
-	if strings.Contains(off, "secrets") {
-		t.Error("console cables off, but the operator may create Secrets")
+	if err != nil || strings.Contains(role, "secrets") {
+		t.Errorf("the operator may touch Secrets in the device access namespace:\n%s", role)
 	}
 }
 

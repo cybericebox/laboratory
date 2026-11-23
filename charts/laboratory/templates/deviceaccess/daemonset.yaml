@@ -113,8 +113,8 @@ spec:
               value: {{ .Values.checks.maxConcurrent | quote }}
             {{- end }}
             {{- if .Values.consoleCables.enabled }}
-            # Console lines: cable.sock for the node-agent of this node, the cable stream from the device access pods of the other nodes (on the
-            # pod IP), and the key of that stream.
+            # Console lines: cable.sock for the node-agent of this node and the cable stream from the device access pods of the other nodes
+            # (on the pod IP). The stream is signed with an identity the process makes at start (in memory); there is no shared key.
             - name: CABLE_SOCKET
               value: {{ printf "%s/cable.sock" (trimSuffix "/" .Values.consoleCables.socketDir) | quote }}
             - name: CABLE_PEER_UID
@@ -123,11 +123,7 @@ spec:
               value: {{ .Values.consoleCables.socketGid | quote }}
             - name: CABLE_LISTEN
               value: {{ printf "$(POD_IP):%d" (int .Values.consoleCables.port) | quote }}
-            - name: CABLE_KEY_FILE
-              value: /etc/device-access/cable-key/key
-            - name: CABLE_KEY_PREVIOUS_FILE
-              value: /etc/device-access/cable-key/previous
-            # The node key of this pod is derived from the master key and the node name; the acceptor checks the dialer's node.
+            # The node this pod names in the streams it dials; the acceptor serves it only for lines whose console end runs there.
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -187,9 +183,6 @@ spec:
             {{- if .Values.consoleCables.enabled }}
             - name: cable-socket
               mountPath: {{ .Values.consoleCables.socketDir | quote }}
-            - name: cable-key
-              mountPath: /etc/device-access/cable-key
-              readOnly: true
             {{- end }}
             - name: tmp
               mountPath: /tmp
@@ -223,13 +216,6 @@ spec:
           hostPath:
             path: {{ .Values.consoleCables.socketDir | quote }}
             type: DirectoryOrCreate
-        # Made once by the operator when it is missing and never changed by it afterwards (no helm lookup: a render never makes a new
-        # key). Optional: the pod starts before the operator made it; lines across nodes wait for the file.
-        - name: cable-key
-          secret:
-            secretName: laboratory-console-cable-key
-            defaultMode: 0400
-            optional: true
         {{- end }}
         - name: tmp
           emptyDir:
