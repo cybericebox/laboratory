@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
-	github.com/bits-and-blooms/bitset v1.29.0
+	github.com/bits-and-blooms/bitset v1.30.0
 	github.com/caarlos0/env/v11 v11.4.2
 	github.com/cilium/ebpf v0.22.0
 	github.com/coder/websocket v1.8.15
