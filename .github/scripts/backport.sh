@@ -9,9 +9,11 @@
 #   - a commit already in develop, or whose change is already there (an empty pick), is left out; when nothing is left, nothing is opened;
 #   - a commit carried from develop by the Security workflow (security.sh) is left out: every commit it brings ends with the trailer
 #     "Carried-from: <commit of develop>", so the change is already in develop and is never sent back (no loop). A trailer is only text
-#     that any author of a commit in a pull request can write, so it counts only on a commit that GitHub made for the Security workflow
-#     (verified, author github-actions[bot], committer web-flow, asked of the API); a trailer anywhere else, or one whose origin cannot
-#     be checked, is ignored and the change is brought back (a duplicate pull request is harmless, a silently lost fix is not);
+#     that any author of a commit in a pull request can write, so it counts only on a commit that the Security workflow made in THIS
+#     repository: the API must show it verified (author github-actions[bot], committer web-flow; that triple alone only proves "some
+#     workflow with a job token", a fork can make it too) and it must belong to a pull request whose head is a branch security/X.Y/*
+#     of this repository (a fork cannot create branches here). A trailer anywhere else, or one whose origin cannot be checked (an API
+#     failure), is ignored and the change is brought back (a duplicate pull request is harmless, a silently lost fix is not);
 #   - the branch exists with a commit on it: this push was brought back before (a re-run does not open it twice); an empty branch left by
 #     a failed run is made again;
 #   - a pick does not apply cleanly, or the change cannot be sent through the API (a file mode, a symlink, a submodule, too large): no
@@ -70,12 +72,17 @@ Then open a pull request into $base. If $base already has this fix in another fo
   echo "::warning::${after:0:7} does not apply to $base: an issue was opened"
 }
 
-made_by_security() { # made_by_security COMMIT: true when GitHub made it for the Security workflow (createCommitOnBranch, verified)
-  local row
+made_by_security() { # made_by_security COMMIT: true when the Security workflow of this repository made it (createCommitOnBranch, verified)
+  local row prs
   row=$(gh api "repos/$GITHUB_REPOSITORY/commits/$1" --jq '[.commit.verification.verified, .author.login, .committer.login] | @tsv' 2>/dev/null) || return 1
-  [[ "$row" == $'true\tgithub-actions[bot]\tweb-flow' ]]
+  [[ "$row" == $'true\tgithub-actions[bot]\tweb-flow' ]] || return 1
+  prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$1/pulls" --jq '.[] | [.head.repo.full_name, .head.ref] | @tsv' 2>/dev/null) || return 1
+  awk -F'\t' -v repo="$GITHUB_REPOSITORY" -v pre="security/$line/" '$1 == repo && index($2, pre) == 1 && length($2) > length(pre) { ok = 1 } END { exit !ok }' <<<"$prs"
 }
 
+# "from" is only checked to be an ancestor of develop, not to be the change itself: once made_by_security holds, the commit is one that security.sh
+# made (it writes the merge commit of develop it carries), and no one else can make such a commit here, so naming any commit of develop is
+# enough; the check only keeps a garbled trailer from counting.
 carried() { # carried COMMIT: true when every commit it brings is the Security workflow's and has a Carried-from trailer naming a commit of develop
   local c=$1 k from n=0 own=()
   if [[ $(git rev-list --parents -n 1 "$c" | wc -w) -gt 2 ]]; then

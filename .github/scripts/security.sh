@@ -11,8 +11,9 @@
 # and one pull request into release/X.Y with the label security is opened for it (no auto-merge: the owner merges into a line by hand,
 # and the Line gate judges it like any fix; the label large-fix of the source pull request is carried along).
 # The commit message ends with the trailer "Carried-from: <MERGE_SHA>": backport.sh sees it after the merge into the line and does not
-# bring the change back into develop, where it already is. backport.sh honours the trailer only on a commit that GitHub made for this
-# workflow (verified, author github-actions[bot], committer web-flow), since anyone can write the text in a pull request.
+# bring the change back into develop, where it already is. backport.sh honours the trailer only on a commit that this workflow made
+# in this repository (verified, author github-actions[bot], committer web-flow, and a pull request from a branch security/X.Y/* of this
+# repository), since anyone can write the text in a pull request. A manual carry therefore has no trailer.
 #   - the line already has the change (the commits are in it, a commit of it carries the same trailer, or the pick is empty): nothing;
 #   - the branch exists with a commit on it: this line was done before (a re-run does not open it twice); an empty branch left by a failed
 #     run is made again;
@@ -64,12 +65,13 @@ git fetch origin
 git checkout -b security/X.Y/$short origin/release/X.Y
 $cmds# resolve each conflict, then: git cherry-pick --continue
 git reset --soft origin/release/X.Y
-git commit -m 'Security fix: <what it fixes>' --trailer 'Carried-from: $merge'
+git commit -m 'Security fix: <what it fixes>'
 git push -u origin HEAD
 \`\`\`
 
-Then open a pull request into release/X.Y with the label security (the owner merges it by hand). Keep it one commit with the trailer:
-it tells the Backport workflow that the change is already in $base. If a line does not need the fix, close this issue."
+Then open a pull request into release/X.Y with the label security (the owner merges it by hand). No trailer is needed: after the merge
+the Backport workflow cherry-picks the change onto $base, finds it already there (an empty pick) and opens nothing; if $base has changed
+the same lines since, it opens an issue that says so, and that issue can be closed. If a line does not need the fix, close this issue."
   gh issue create --title "$t" --body "$body" --label security
   echo "::warning::$short does not apply to $target: an issue was opened"
 }

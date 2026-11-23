@@ -49,12 +49,14 @@ case "$1 $2" in
         p=$(jq -r ".variables.input.fileChanges.additions[$k].path" "$req")
         mkdir -p "$(dirname "$p")"; jq -r ".variables.input.fileChanges.additions[$k].contents" "$req" | base64 -d >"$p"; git add -- "$p"
       done
-      git commit -q -m "$(jq -r .variables.input.message.headline "$req")" -m "$(jq -r .variables.input.message.body "$req")" && git push -q origin "HEAD:refs/heads/$branch" && touch "$STATE/bot_$(git rev-parse HEAD)" ) || exit 1
+      git commit -q -m "$(jq -r .variables.input.message.headline "$req")" -m "$(jq -r .variables.input.message.body "$req")" && git push -q origin "HEAD:refs/heads/$branch" && touch "$STATE/bot_$(git rev-parse HEAD)" && printf 'o/r\t%s\n' "$branch" >"$STATE/pulls_$(git rev-parse HEAD)" ) || exit 1
     rm -rf "$d"
     echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"x"}}}}' ;;
   "api repos/"*)
     case "$2" in
-      */commits/*/pulls) ;;
+      */commits/*/pulls)
+        if [[ "$*" == *head.repo* ]]; then sha=${2%/pulls}; sha=${sha##*/}; [[ -f "$STATE/pulls_$sha" ]] && cat "$STATE/pulls_$sha"; fi
+        exit 0 ;;
       */commits/*)
         if [[ "$*" == *@tsv* ]]; then # provenance: only the commits of the fake commit API are the Security workflow's
           if [[ -f "$STATE/bot_${2##*/}" ]]; then printf 'true\tgithub-actions[bot]\tweb-flow\n'; else printf 'false\tsomeone\tsomeone\n'; fi
@@ -243,7 +245,8 @@ check "conflict: no branch for 1.11" "0" "$(remote_branch "security/1.11/$s4" | 
 check "conflict: one issue" "1" "$(calls 'issue create')"
 check "conflict: the issue names the line" "1" "$(grep -c "Security fix $s4 into release/1.11 does not apply" "$STATE/issues")"
 check "conflict: the issue has the label" "security" "$(cat "$STATE/issue_labels")"
-check "conflict: the issue gives the trailer" "1" "$(grep -c "trailer 'Carried-from: $m4'" "$STATE/issue_bodies")"
+check "conflict: the issue asks for no trailer" "0" "$(grep -c -- '--trailer\|Carried-from' "$STATE/issue_bodies")"
+check "conflict: the issue says a manual carry needs none" "1" "$(grep -c 'No trailer is needed' "$STATE/issue_bodies")"
 check "conflict: the other lines get pull requests" "2" "$(calls 'pr create')"
 : >"$STATE/calls"
 run "$m4" 16 >/dev/null

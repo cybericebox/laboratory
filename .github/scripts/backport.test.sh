@@ -53,7 +53,13 @@ case "$1 $2" in
     echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"x"}}}}' ;;
   "api repos/"*)
     case "$2" in
-      */commits/*/pulls) ;;
+      */commits/*/pulls)
+        if [[ "$*" == *head.repo* ]]; then # the pull requests of a commit: "head repo<TAB>head branch" lines from $STATE/pulls_<sha>
+          [[ -z "${FAKE_API_FAIL:-}" ]] || exit 1
+          sha=${2%/pulls}; sha=${sha##*/}
+          [[ -f "$STATE/pulls_$sha" ]] && cat "$STATE/pulls_$sha"
+        fi
+        exit 0 ;;
       */commits/*)
         if [[ "$*" == *@tsv* ]]; then
           [[ -z "${FAKE_API_FAIL:-}" ]] || exit 1 # provenance of a commit: "verified author committer"; only a commit listed in $STATE/bot_<sha> is the Security workflow's
@@ -253,13 +259,12 @@ dev=$(git ls-remote origin refs/heads/develop | cut -f1)
 git checkout -q -b carried release/1.10
 echo carried >carried.txt; git add -A; git commit -qm "Security fix" -m "Carried-from: $dev"
 c14=$(head_of HEAD)
-touch "$STATE/bot_$c14"
 git checkout -q release/1.10
 git merge -q --no-ff -m "Merge pull request #9 security" carried
 t14=$(head_of HEAD)
 git push -q origin release/1.10
 reset
-touch "$STATE/bot_$c14"
+touch "$STATE/bot_$c14"; printf 'o/r\tsecurity/1.10/abcdef0\n' >"$STATE/pulls_$c14"
 out=$(run "$b9" "$t14")
 check "carried by the Security workflow: nothing opened" "0" "$(calls 'pr create')"
 check "carried by the Security workflow: says so" "1" "$(grep -c 'carried from develop by the Security workflow' <<<"$out")"
@@ -276,9 +281,40 @@ git merge -q --no-ff -m "Merge pull request #10 security 2" noapi
 t15=$(head_of HEAD)
 git push -q origin release/1.10
 reset
-touch "$STATE/bot_$c15"
+touch "$STATE/bot_$c15"; printf 'o/r\tsecurity/1.10/abcdef0\n' >"$STATE/pulls_$c15"
 out=$(FAKE_API_FAIL=1 run "$b10" "$t15")
 check "provenance unknown: the change is brought back" "1" "$(calls 'pr create')"
+
+# 16-18. the identity triple alone is not enough: a workflow of a fork (or of another branch) can make the same commit
+variant() { # variant NAME BOT PULLS: a line merge of a commit with the trailer; BOT=1 marks the triple, PULLS is the pull request line ("" for none)
+  local name=$1 bot=$2 pulls=$3 b dev c t
+  git checkout -q release/1.10
+  b=$(head_of HEAD)
+  dev=$(git ls-remote origin refs/heads/develop | cut -f1)
+  git checkout -q -b "v-$name" release/1.10
+  echo "$name" >"$name.txt"; git add -A; git commit -qm "Security fix $name" -m "Carried-from: $dev"
+  c=$(head_of HEAD)
+  git checkout -q release/1.10
+  git merge -q --no-ff -m "Merge pull request #20 $name" "v-$name"
+  t=$(head_of HEAD)
+  git push -q origin release/1.10
+  reset
+  [[ "$bot" != 1 ]] || touch "$STATE/bot_$c"
+  [[ -z "$pulls" ]] || printf '%s\n' "$pulls" >"$STATE/pulls_$c"
+  run "$b" "$t" >/dev/null
+}
+variant fork 1 "$(printf 'evil/r\tsecurity/1.10/abcdef0')"
+check "fork pull request with the triple: the change is brought back" "1" "$(calls 'pr create')"
+variant otherbranch 1 "$(printf 'o/r\tfeature/x')"
+check "own repository, not a security branch: the change is brought back" "1" "$(calls 'pr create')"
+variant otherline 1 "$(printf 'o/r\tsecurity/1.9/abcdef0')"
+check "security branch of another line: the change is brought back" "1" "$(calls 'pr create')"
+variant nopr 1 ""
+check "no pull request: the change is brought back" "1" "$(calls 'pr create')"
+variant nobot 0 "$(printf 'o/r\tsecurity/1.10/abcdef0')"
+check "security branch but not made by the bot: the change is brought back" "1" "$(calls 'pr create')"
+variant legit 1 "$(printf 'o/r\tsecurity/1.10/abcdef0')"
+check "own security branch made by the bot: nothing is opened" "0" "$(calls 'pr create')"
 
 # 12. nothing in the script makes a commit that is pushed: git push is never run by backport.sh
 check "git push appears only in the manual instructions of the issue" "0" "$(grep -n 'git push' "$here/backport.sh" | grep -vc '^[0-9]*:git push -u origin HEAD$')"
