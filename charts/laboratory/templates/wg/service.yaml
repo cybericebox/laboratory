@@ -16,6 +16,11 @@ metadata:
 spec:
   type: NodePort
   externalTrafficPolicy: Local
+  {{- with .Values.proxy.wg.service.externalIPs }}
+  # the load balancer's own address (Google: the passthrough load balancer delivers to it on the public port, not to the node port)
+  externalIPs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     app: laboratory-proxy-wg
   ports:

@@ -648,3 +648,26 @@ laboratory.cybericebox.com/component: gateway
 {{- define "laboratory.egressLogPVC" -}}
 {{- if and .Values.internetEgress.monitor.enabled .Values.internetEgress.log.persistence.enabled (not .Values.internetEgress.log.dir) -}}yes{{- end -}}
 {{- end -}}
+
+{{- /* The external IP of a public entry Service (proxy.l7.service.externalIPs, proxy.wg.service.externalIPs, agent.service.externalIPs): the
+       address of a passthrough load balancer that delivers to the node with its own address and port as the destination (Google; infrastructure
+       cluster-layout 18.5, G1), so Cilium serves address:port on the node. An external IP is a frontend on every node of the cluster: at most one
+       plain IPv4 address, never the wildcard or a loopback address. Called with (dict "name" <value path> "list" <value>). */ -}}
+{{- define "laboratory.assertExternalIPs" -}}
+{{- $name := .name -}}
+{{- if not (kindIs "slice" .list) -}}
+{{- fail (printf "%s must be a list of one IPv4 address, e.g. [\"203.0.113.10\"] (got %v)" $name .list) -}}
+{{- end -}}
+{{- if gt (len .list) 1 -}}
+{{- fail (printf "%s: %d addresses, at most one: the address of the entry's load balancer" $name (len .list)) -}}
+{{- end -}}
+{{- range .list -}}
+{{- $ip := toString . -}}
+{{- if not (regexMatch "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$" $ip) -}}
+{{- fail (printf "%s: %q is not a plain IPv4 address (a.b.c.d, no prefix, no name, no leading zeros)" $name $ip) -}}
+{{- end -}}
+{{- if or (eq $ip "0.0.0.0") (hasPrefix "127." $ip) -}}
+{{- fail (printf "%s: %q is not allowed: name the load balancer's own address" $name $ip) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

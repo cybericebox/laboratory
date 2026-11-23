@@ -19,6 +19,11 @@ spec:
   # dialling the Service name. mTLS stays (certificate-server.yaml).
   type: NodePort
   externalTrafficPolicy: Local
+  {{- with .Values.agent.service.externalIPs }}
+  # the lab load balancer's own address (Google: the passthrough load balancer delivers to it on the agent port, not to the node port)
+  externalIPs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- else }}
   # closed and partial: in-cluster only. The platform's backend dials laboratory-agent.<namespace>.svc over the pod network and verifies the
   # certificate's name (agent.domain); no node port, no load balancer.

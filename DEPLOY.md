@@ -1962,10 +1962,17 @@ so a node without a pod of the component takes no traffic.
 
 | Service | Port | Values |
 | --- | --- | --- |
-| `laboratory-proxy-l7` (namespace `laboratory-proxy`) | TCP 443 to the proxy's own TLS (`proxy-tls`) | `proxy.l7.service.nodePort`, `proxy.l7.service.annotations` |
-| `laboratory-agent` (only with `exposure: open`; otherwise `ClusterIP`) | `agent.grpcPort` (mTLS stays) | `agent.service.nodePort`, `agent.service.annotations` |
-| `laboratory-proxy-wg` (namespace `laboratory-wg`) | UDP `proxy.wg.publicPort` to 51820, in every demux mode | `proxy.wg.nodePort`, `proxy.wg.service.annotations` |
+| `laboratory-proxy-l7` (namespace `laboratory-proxy`) | TCP 443 to the proxy's own TLS (`proxy-tls`) | `proxy.l7.service.nodePort`, `proxy.l7.service.externalIPs`, `proxy.l7.service.annotations` |
+| `laboratory-agent` (only with `exposure: open`; otherwise `ClusterIP`) | `agent.grpcPort` (mTLS stays) | `agent.service.nodePort`, `agent.service.externalIPs`, `agent.service.annotations` |
+| `laboratory-proxy-wg` (namespace `laboratory-wg`) | UDP `proxy.wg.publicPort` to 51820, in every demux mode | `proxy.wg.nodePort`, `proxy.wg.service.externalIPs`, `proxy.wg.service.annotations` |
 | `laboratory-registry` | TCP 5443, the gate (nodes, by `registry.gate.address`) | `registry.gate.service.nodePort`, `registry.gate.service.annotations` |
+
+**External IPs of the public entries.** A load balancer that delivers to the node with its own address and the public port as the destination (Google's
+passthrough load balancers) instead of the node port needs that address on the Service: `proxy.l7.service.externalIPs`, `proxy.wg.service.externalIPs` and, with
+`exposure: open`, `agent.service.externalIPs` (one IPv4 address each, empty by default; infrastructure sets them on Google only). Cilium then serves address:port on
+the node with the same `Local` policy. An in-cluster pod that dials such an address is answered by Cilium on its own node, so these entries must have no
+in-cluster callers (they have none: the backend dials the agent's Service name). The registry gate takes no external IP: its callers are the lab nodes, and on
+Google its load balancer port is its node port (`registry.gate.address` carries that port).
 
 **Exposure** (`exposure`: `closed`, `partial` by default, `open`; infrastructure's `LABORATORY_EXPOSURE`) decides the agent's entry. With `closed` and `partial` the agent is
 in-cluster only: its Service is `ClusterIP` and the platform's backend dials `laboratory-agent.laboratory-agent.svc:<agent.grpcPort>` over the pod network, verifying the
