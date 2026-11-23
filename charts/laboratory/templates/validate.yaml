@@ -359,33 +359,44 @@ list plus the registries of the platform's own images) must be one the cache ser
 {{- fail (printf "exposure must be closed, partial or open (got %q)" $exposure) }}
 {{- end }}
 {{- if .Values.agent.enabled }}
-{{- $from := .Values.agent.networkPolicy.ingressFrom | default dict }}
+{{- $np := .Values.agent.networkPolicy | default dict }}
+{{- if not (kindIs "map" $np) }}
+{{- fail (printf "agent.networkPolicy must be a map (got %v)" $np) }}
+{{- end }}
+{{- $from := $np.ingressFrom | default dict }}
+{{- if not (kindIs "map" $from) }}
+{{- fail (printf "agent.networkPolicy.ingressFrom must be a map with fromEndpoints and fromCIDR (got %v)" $from) }}
+{{- end }}
+
 {{- $cidrs := $from.fromCIDR | default list }}
+{{- if not (kindIs "slice" $cidrs) }}
+{{- fail (printf "agent.networkPolicy.ingressFrom.fromCIDR must be a list of CIDRs, e.g. [\"198.51.100.0/24\"] (got %v)" $cidrs) }}
+{{- end }}
+{{- $endpoints := $from.fromEndpoints | default list }}
+{{- if not (kindIs "slice" $endpoints) }}
+{{- fail (printf "agent.networkPolicy.ingressFrom.fromEndpoints must be a list of label maps (got %v)" $endpoints) }}
+{{- end }}
 {{- if and (ne $exposure "open") .Values.agent.service.nodePort }}
 {{- fail (printf "agent.service.nodePort is set but exposure is %s: the agent has a node port only with exposure=open (its public listener); in-cluster callers dial the ClusterIP Service" $exposure) }}
 {{- end }}
 {{- if and (ne $exposure "open") $cidrs }}
 {{- fail (printf "agent.networkPolicy.ingressFrom.fromCIDR is set but exposure is %s: the allowlist of the public listener applies only with exposure=open" $exposure) }}
 {{- end }}
-{{- if and (eq $exposure "open") (not $cidrs) }}
+{{- if eq $exposure "open" }}
+{{- if not $np.enabled }}
+{{- fail "exposure=open needs agent.networkPolicy.enabled=true: without the policy the public listener would admit the whole internet instead of agent.networkPolicy.ingressFrom.fromCIDR" }}
+{{- end }}
+{{- if not $cidrs }}
 {{- fail "exposure=open needs agent.networkPolicy.ingressFrom.fromCIDR: the public listener of the agent admits an allowlist, never the whole internet" }}
 {{- end }}
-{{- range $cidrs }}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$|^[0-9a-fA-F:]+:[0-9a-fA-F:]*/[0-9]{1,3}$" (toString .)) }}
-{{- fail (printf "agent.networkPolicy.ingressFrom.fromCIDR: %q is not a CIDR (address/prefix)" .) }}
 {{- end }}
-{{- if hasSuffix "/0" (toString .) }}
-{{- fail (printf "agent.networkPolicy.ingressFrom.fromCIDR: %q is the whole address space; list the callers' addresses" .) }}
-{{- end }}
-{{- end }}
-{{- if .Values.agent.networkPolicy.enabled }}
-{{- if and (not $from.fromEndpoints) (ne $exposure "open") }}
+{{- include "laboratory.assertCIDRList" (dict "name" "agent.networkPolicy.ingressFrom.fromCIDR" "list" $cidrs) }}
+{{- if $np.enabled }}
+{{- if and (not $endpoints) (ne $exposure "open") }}
 {{- fail "agent.networkPolicy.ingressFrom.fromEndpoints is empty and exposure is not open: no caller could reach the agent (default: the backend, namespace platform, app: backend)" }}
 {{- end }}
-{{- range $from.fromEndpoints }}
-{{- if or (not (kindIs "map" .)) (not (hasKey . "k8s:io.kubernetes.pod.namespace")) }}
-{{- fail (printf "agent.networkPolicy.ingressFrom.fromEndpoints: every entry names its namespace with k8s:io.kubernetes.pod.namespace (got %v)" .) }}
-{{- end }}
+{{- range $endpoints }}
+{{- include "laboratory.assertCallerEndpoint" (dict "name" "agent.networkPolicy.ingressFrom.fromEndpoints" "entry" .) }}
 {{- end }}
 {{- end }}
 {{- end }}

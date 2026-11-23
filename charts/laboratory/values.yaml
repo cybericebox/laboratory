@@ -34,6 +34,10 @@ pools:
 #         agent.networkPolicy.ingressFrom.fromCIDR only (required, non-empty).
 # The L7 proxy and the VPN are public in partial and open; their policy sources for closed (internal listeners for the user VPN, 18.10) are not
 # built yet, so closed is partial for them.
+# ROLLOUT ORDER: partial needs the platform side first: the backend dials the agent's Service name with a separate verify-name (AGENT_ENDPOINT =
+# laboratory-agent.laboratory-agent.svc:<grpcPort>, AGENT_SERVER_NAME = agent.domain) and the platform namespace has an egress rule to the agent
+# pods on the agent port (infrastructure, cluster-layout A2/A3). Until that change is deployed, install with exposure=open and the backend's
+# address in agent.networkPolicy.ingressFrom.fromCIDR, so the backend keeps its path through the public listener.
 exposure: partial
 
 # ============================================================
@@ -1468,14 +1472,19 @@ agent:
     enabled: true
     # Who may call the gRPC port (cluster-layout 15, 18.4). Everything else of the agent's namespace is closed (default deny).
     ingressFrom:
-      # The in-cluster callers, by Cilium endpoint labels; each entry must name the namespace (k8s:io.kubernetes.pod.namespace). Default: the
-      # platform's backend. Every exposure mode.
+      # The in-cluster callers, by Cilium endpoint labels. Default: the platform's backend. Every exposure mode. Each entry names its namespace with
+      # k8s:io.kubernetes.pod.namespace (a non-empty name) and at least one plain pod label: a namespace-only entry would admit every pod of the
+      # namespace, so it is refused, as are source-prefixed keys (any:, k8s:, reserved:) and Cilium or namespace identity labels (io.cilium.*,
+      # io.kubernetes.pod.namespace) as pod labels.
       fromEndpoints:
         - k8s:io.kubernetes.pod.namespace: platform
           app: backend
-      # exposure=open only (and then required): the source CIDRs admitted through the public listener (infrastructure's
-      # LABORATORY_AGENT_ALLOW_CIDRS). The load balancer keeps the client's address, so these are the callers' own addresses; a health check
-      # of the load balancer from an address outside the cluster must be in the list too. Never 0.0.0.0/0 or ::/0.
+      # exposure=open only (and then required, with networkPolicy.enabled): the source CIDRs admitted through the public listener
+      # (infrastructure's LABORATORY_AGENT_ALLOW_CIDRS); at most 64, IPv4 /8 to /32, IPv6 /32 to /128 (no /0, no split halves). The load balancer
+      # keeps the client's address, so these are the callers' own addresses. Health checks: the Service is a NodePort with
+      # externalTrafficPolicy Local, which has no healthCheckNodePort (that exists only for type LoadBalancer), so the load balancer checks the
+      # traffic node port itself; that check is forwarded to the agent pod like any connection, so its source (the load balancer's own addresses
+      # or the cloud's health-check ranges) must be in this list too, or every target is marked unhealthy.
       fromCIDR: []
 
 # ============================================================

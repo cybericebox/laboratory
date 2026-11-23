@@ -11,7 +11,7 @@ admits stays admitted:
 Ingress only: Cilium enforces egress on an endpoint only where a policy has egress rules, so the components' egress stays as their policies say.
 The kubelet's probes come from the local host, which Cilium admits by default.
 */ -}}
-{{- if .Values.operator.networkPolicy.enabled }}
+{{- if (.Values.operator.networkPolicy | default dict).enabled }}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -24,7 +24,7 @@ spec:
   ingress:
     - {}
 {{- end }}
-{{- if and .Values.agent.enabled .Values.agent.networkPolicy.enabled }}
+{{- if and .Values.agent.enabled (.Values.agent.networkPolicy | default dict).enabled }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

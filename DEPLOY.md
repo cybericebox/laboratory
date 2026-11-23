@@ -1973,20 +1973,33 @@ certificate's name (`agent.domain`). With `open` the Service is the `NodePort` a
 `agent.networkPolicy.ingressFrom.fromCIDR` (required; never `0.0.0.0/0`); in-cluster callers keep the Service name. `agent.service.nodePort` and `fromCIDR` are refused
 without `open`. The proxy and the VPN are public in `partial` and `open` (`closed` changes nothing for them yet).
 
+**Rollout order.** `partial` (the default) works only after the platform side has changed: the backend dials the Service name with a separate verify-name
+(`AGENT_ENDPOINT=laboratory-agent.laboratory-agent.svc:<agent.grpcPort>`, `AGENT_SERVER_NAME=<agent.domain>`) and the platform namespace has an egress rule
+to the agent pods on the agent port (infrastructure; cluster-layout A2/A3). Deploy that change together with this chart. Until it is deployed, install with
+`exposure: open` and the backend's address in `agent.networkPolicy.ingressFrom.fromCIDR`, so the backend keeps reaching the agent through the public listener.
+
 **Ingress of the lab-control pool.** The platform pool shares a tunnel with this pool, so its namespaces (the release namespace and the agent's) hold a default-deny ingress
 policy (`laboratory-default-deny-ingress`, every endpoint, one empty rule), and each component admits only its real callers:
 
 | Component | Admitted | Values |
 | --- | --- | --- |
-| agent | gRPC port: `agent.networkPolicy.ingressFrom.fromEndpoints` (default namespace `platform`, `app: backend`; each entry names its namespace); with `open` also `fromCIDR`; metrics port from the cluster when `agent.metrics.enabled` | `agent.networkPolicy.*` |
+| agent | gRPC port: `agent.networkPolicy.ingressFrom.fromEndpoints` (default namespace `platform`, `app: backend`; each entry names its namespace and at least one pod label, since a namespace-only entry would admit every pod there; identity and source-prefixed keys are refused); with `open` also `fromCIDR`; metrics port from the cluster when `agent.metrics.enabled` | `agent.networkPolicy.*` |
 | operator | nothing (no webhook, no conversion webhook, gateway statistics through the API); metrics port from the cluster when `operator.metrics.enabled` | `operator.networkPolicy.enabled` |
 | lab scheduler | nothing (a client of the API server only) | `labScheduler.networkPolicy.enabled` |
 | registry gate | 5443 from the lab nodes, the operator and the agent (below) | `registry.networkPolicy.enabled` |
 
-The kubelet's probes come from the local host, which Cilium admits by default; `kubectl port-forward` enters a pod through the kubelet and is not affected. The proxy's pod
+The default deny covers **the whole namespace**: any pod on the pod network that is placed in `laboratory-system` or `laboratory-agent` without a policy of its own
+(a debug pod, a sidecar tool, a future component) accepts no connection from another pod or from outside; give it its own CiliumNetworkPolicy. Pods on the host
+network (the node-agent, node-state) are not governed by pod policies. The metrics ports admit the whole cluster when they are switched on (off by default):
+no scraper exists yet, so there is no narrower source to name; narrow the rule when one is deployed.
+
+The kubelet's probes come from the local host, which Cilium admits by default (`allow-localhost`, which infrastructure does not change); `kubectl port-forward` enters a pod
+through the kubelet and is not affected. The proxy's pod
 policy admits the `world` entity on its container port. Whether Cilium classes a `Local` NodePort client as `world`, and whether `host` or `remote-node`
-must be added for the node health check, is proved on the staging cluster (`docs/laboratory/specs/pools-release.md`, S3); for the agent with `open`, a health check from an
-address outside the cluster must be in `fromCIDR`. The proxy and the demux use **no cluster DNS**: the proxy takes the
+must be added for the node health check, is proved on the staging cluster (`docs/laboratory/specs/pools-release.md`, S3); for the agent with `open`: a
+`NodePort` Service with `externalTrafficPolicy: Local` has no `healthCheckNodePort` (Kubernetes allocates one only for `type: LoadBalancer`), so the load balancer
+checks the traffic node port, which is forwarded to the agent pod like any connection; the check's source (the load balancer's addresses or the cloud's health-check
+ranges) must therefore be in `fromCIDR`. The proxy and the demux use **no cluster DNS**: the proxy takes the
 address of a device pod from the Device it watches, the demux the VPN pod's address from `LabGroup.status.vpn.backend`, and both fail closed (`404`, `503`, no table entry) when it is missing or stale. The
 agent and the operator keep one DNS rule each, for the gate's Service name and the upstream registries.
 

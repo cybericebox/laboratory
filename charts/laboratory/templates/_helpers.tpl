@@ -370,6 +370,86 @@ Labels that select the snapshot registry pod.
 {{- /* The exposure mode of the laboratory (cluster-layout 18.9): closed, partial (default) or open. validate.yaml refuses any other value. */}}
 {{- define "laboratory.exposure" -}}{{ .Values.exposure | default "partial" }}{{- end }}
 
+{{- /*
+Assert a list of CIDRs is a real allowlist (the rule of the brain chart): at most 64 entries; each is address/prefix, the prefix a decimal integer
+without leading zeros, an IPv4 address of four octets up to 255 with a prefix /8 to /32, an IPv6 address whose first group is not zero (no ::/x
+wildcard in any spelling, no IPv4-mapped range) with a prefix /32 to /128. So 0.0.0.0/0, ::/0, 0.0.0.0/00 and the split halves 0.0.0.0/1 +
+128.0.0.0/1 are refused. Arguments: dict "name" <value path> "list" <[]cidr>.
+*/}}
+{{- define "laboratory.assertCIDRList" -}}
+{{- $name := .name -}}
+{{- if gt (len .list) 64 -}}
+{{- fail (printf "%s: %d entries, at most 64: an allowlist names its callers, it is never this long" $name (len .list)) -}}
+{{- end -}}
+{{- range .list -}}
+{{- $cidr := toString . -}}
+{{- $parts := splitList "/" $cidr -}}
+{{- if or (ne (len $parts) 2) (ne (trim $cidr) $cidr) -}}
+{{- fail (printf "%s: %q is not a CIDR (address/prefix, e.g. 198.51.100.0/24)" $name $cidr) -}}
+{{- end -}}
+{{- $addr := lower (index $parts 0) -}}
+{{- $p := index $parts 1 -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,2}$" $p) -}}
+{{- fail (printf "%s: %q is not a CIDR: the prefix must be a decimal number from 1 without leading zeros (/0 is the whole address space)" $name $cidr) -}}
+{{- end -}}
+{{- $prefix := atoi $p -}}
+{{- if contains ":" $addr -}}
+{{- if not (regexMatch "^[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}$" $addr) -}}
+{{- fail (printf "%s: %q is not a CIDR: not an IPv6 address" $name $cidr) -}}
+{{- end -}}
+{{- $first := first (splitList ":" $addr) -}}
+{{- if or (eq $first "") (regexMatch "^0+$" $first) -}}
+{{- fail (printf "%s: %q is not allowed: an IPv6 entry must not start with :: or a zero group (that is the ::/0 wildcard in any spelling, or the IPv4-mapped range); name the callers' prefix" $name $cidr) -}}
+{{- end -}}
+{{- if or (lt $prefix 32) (gt $prefix 128) -}}
+{{- fail (printf "%s: %q: an IPv6 prefix must be between /32 and /128" $name $cidr) -}}
+{{- end -}}
+{{- else -}}
+{{- if not (regexMatch "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$" $addr) -}}
+{{- fail (printf "%s: %q is not a CIDR: not an IPv4 address (four octets, 0 to 255, no leading zeros)" $name $cidr) -}}
+{{- end -}}
+{{- if or (lt $prefix 8) (gt $prefix 32) -}}
+{{- fail (printf "%s: %q: an IPv4 prefix must be between /8 and /32 (this refuses 0.0.0.0/0 and the split halves 0.0.0.0/1 + 128.0.0.0/1)" $name $cidr) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- /*
+Assert one caller entry of a fromEndpoints list (Cilium endpoint labels; the rule of the brain chart): a map that names its namespace with
+k8s:io.kubernetes.pod.namespace, a non-empty string without surrounding spaces, and at least one ordinary pod label with a non-empty value. A
+namespace-only entry would admit every pod of that namespace, so it is refused. Every other key is a plain pod label: keys with a source prefix
+(any:, k8s:, reserved:, ...) or a Cilium or namespace identity label (io.cilium..., io.kubernetes.pod.namespace) are refused, case-insensitively,
+because they could widen or retarget the rule. Arguments: dict "name" <value path> "entry" <map>.
+*/}}
+{{- define "laboratory.assertCallerEndpoint" -}}
+{{- $name := .name -}}
+{{- $e := .entry -}}
+{{- if not (kindIs "map" $e) -}}
+{{- fail (printf "%s: an entry must be a map of labels (got %v)" $name $e) -}}
+{{- end -}}
+{{- $ns := index $e "k8s:io.kubernetes.pod.namespace" -}}
+{{- if or (not (kindIs "string" $ns)) (eq (trim (toString $ns)) "") (ne (trim (toString $ns)) (toString $ns)) -}}
+{{- fail (printf "%s: every entry names its namespace with k8s:io.kubernetes.pod.namespace, a non-empty name without spaces (got %v)" $name $e) -}}
+{{- end -}}
+{{- $labels := 0 -}}
+{{- range $k, $v := $e -}}
+{{- if ne $k "k8s:io.kubernetes.pod.namespace" -}}
+{{- $lk := lower $k -}}
+{{- if or (regexMatch "^[a-z0-9-]+:" $lk) (hasPrefix "io.cilium" $lk) (hasPrefix "io.kubernetes.pod.namespace" $lk) (contains "cilium.io" $lk) -}}
+{{- fail (printf "%s: %q is not allowed: a source-prefixed key (any:, k8s:, reserved:, ...) or a Cilium or namespace identity label could widen or retarget the rule; use plain pod labels (e.g. app: backend)" $name $k) -}}
+{{- end -}}
+{{- if or (not (kindIs "string" $v)) (eq (trim (toString $v)) "") -}}
+{{- fail (printf "%s: the label %q needs a non-empty value" $name $k) -}}
+{{- end -}}
+{{- $labels = add1 $labels -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $labels 0 -}}
+{{- fail (printf "%s: the entry for namespace %q has no pod label: a namespace-only entry would admit every pod of that namespace; add one (e.g. app: backend)" $name $ns) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "laboratory.registrySelector" -}}
 app: laboratory-registry
 {{- end }}

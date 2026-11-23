@@ -20,7 +20,16 @@ clusters, e.g. Kind). Cilium joins its rules with the CiliumNetworkPolicy's, so 
 
 Egress is handled entirely by the CiliumNetworkPolicy below; the native NetworkPolicy here only governs ingress.
 */}}
-{{- if and .Values.agent.enabled .Values.agent.networkPolicy.enabled }}
+{{- $np := .Values.agent.networkPolicy | default dict }}
+{{- $from := $np.ingressFrom | default dict }}
+{{- /* Wrong shapes render nothing here; validate.yaml refuses them with a message. */}}
+{{- $eps := list }}
+{{- $cidrs := list }}
+{{- if kindIs "map" $from }}
+{{- if kindIs "slice" $from.fromEndpoints }}{{- $eps = $from.fromEndpoints }}{{- end }}
+{{- if kindIs "slice" $from.fromCIDR }}{{- $cidrs = $from.fromCIDR }}{{- end }}
+{{- end }}
+{{- if and .Values.agent.enabled $np.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -59,7 +68,7 @@ spec:
     matchLabels:
       app: laboratory-agent
   ingress:
-  {{- with .Values.agent.networkPolicy.ingressFrom.fromEndpoints }}
+  {{- with $eps }}
     # The in-cluster callers: the platform's backend.
     - fromEndpoints:
         {{- range . }}
@@ -74,7 +83,7 @@ spec:
   {{- if eq (include "laboratory.exposure" .) "open" }}
     # exposure=open: the public listener of the lab load balancer, from the allowlist only.
     - fromCIDR:
-        {{- range .Values.agent.networkPolicy.ingressFrom.fromCIDR }}
+        {{- range $cidrs }}
         - {{ . | quote }}
         {{- end }}
       toPorts:

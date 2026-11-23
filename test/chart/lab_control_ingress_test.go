@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -26,6 +27,7 @@ type peer struct {
 	ns     string
 	labels map[string]string
 	ip     string // set for a source outside the cluster (the world)
+	entity string // "host" (the local node: the kubelet's probes) or "remote-node" (another node of the cluster)
 }
 
 var (
@@ -34,6 +36,8 @@ var (
 	labPodPeer    = peer{name: "a lab pod", ns: "lg-x", labels: map[string]string{"laboratory.cybericebox.com/device": "d"}}
 	worldPeer     = peer{name: "the internet", ip: "203.0.113.7"}
 	allowlistPeer = peer{name: "an allowlisted address", ip: "198.51.100.10"}
+	kubeletPeer   = peer{name: "the kubelet (local host)", entity: "host"}
+	nodePeer      = peer{name: "another node", entity: "remote-node"}
 )
 
 // policy is one rendered CiliumNetworkPolicy or NetworkPolicy, reduced to what decides ingress.
@@ -41,6 +45,7 @@ type policy struct {
 	kind, name, ns string
 	selector       map[string]any // endpointSelector / podSelector
 	hasIngress     bool           // the policy enforces ingress on what it selects
+	hasDeny        bool           // ingressDeny rules (the chart writes none; the model refuses to judge them)
 	rules          []map[string]any
 }
 
@@ -58,6 +63,7 @@ func policiesOf(t *testing.T, out string) []policy {
 		if kind == "CiliumNetworkPolicy" {
 			p.selector, _ = spec["endpointSelector"].(map[string]any)
 			_, p.hasIngress = spec["ingress"]
+			_, p.hasDeny = spec["ingressDeny"]
 		} else {
 			p.selector, _ = spec["podSelector"].(map[string]any)
 			types, _ := spec["policyTypes"].([]any)
@@ -165,7 +171,7 @@ func ciliumRuleAdmits(t *testing.T, p policy, r map[string]any, src peer, port s
 		sources++
 		for _, e := range eps {
 			sel, _ := e.(map[string]any)
-			if src.ip != "" {
+			if src.ip != "" || src.entity != "" {
 				continue
 			}
 			// a selector without the namespace key matches the policy's own namespace only
@@ -192,7 +198,9 @@ func ciliumRuleAdmits(t *testing.T, p policy, r map[string]any, src peer, port s
 				ok = ok || src.ip != ""
 			case "cluster":
 				ok = ok || src.ip == ""
-			case "host", "remote-node", "kube-apiserver":
+			case "host", "remote-node":
+				ok = ok || src.entity == e
+			case "kube-apiserver":
 			default:
 				t.Fatalf("entity %v is not modelled", e)
 			}
@@ -241,13 +249,24 @@ func npRuleAdmits(t *testing.T, p policy, r map[string]any, src peer, port strin
 }
 
 // admits decides whether src reaches the pod (ns, labels) on port: with no policy that enforces ingress the pod is open; otherwise any rule
-// of any selecting policy must admit (allow rules only, as the chart writes them).
+// of any selecting policy must admit (allow rules only, as the chart writes them). The local host (the kubelet's probes) is admitted to its
+// own endpoints whatever the allow rules say: Cilium's allow-localhost default, which infrastructure does not change
+// (ansible/roles/cluster/templates/cilium-values.yaml.j2 sets no allow-localhost); only an ingressDeny rule could cut it, and the chart has none.
 func admits(t *testing.T, pols []policy, ns string, labels map[string]string, src peer, port string) bool {
 	t.Helper()
 	enforced := false
 	for _, p := range pols {
-		if p.ns != ns || !p.hasIngress || !selects(t, p.selector, ns, labels) {
+		if p.ns != ns || !selects(t, p.selector, ns, labels) {
 			continue
+		}
+		if p.hasDeny {
+			t.Fatalf("%s/%s: ingressDeny is not modelled (and would cut the kubelet's probes)", p.ns, p.name)
+		}
+		if !p.hasIngress {
+			continue
+		}
+		if src.entity == "host" {
+			return true
 		}
 		enforced = true
 		for _, r := range p.rules {
@@ -334,6 +353,14 @@ func TestLabControlIngressPartial(t *testing.T) {
 			reach{lcScheduler, src, "10259", false},
 			reach{lcRegistry, src, "5443", false}, reach{lcRegistry, src, "5002", false})
 	}
+	// the kubelet's probes (tcpSocket on the agent's gRPC port, HTTP on the operator's 8081, the scheduler's 10259, the gate's 5002) are admitted;
+	// another node reaches none of them (the registry admits nodes on its gate port only)
+	cases = append(cases,
+		reach{lcAgent, kubeletPeer, "5454", true}, reach{lcOperator, kubeletPeer, "8081", true},
+		reach{lcScheduler, kubeletPeer, "10259", true}, reach{lcRegistry, kubeletPeer, "5002", true},
+		reach{lcAgent, nodePeer, "5454", false}, reach{lcOperator, nodePeer, "8081", false},
+		reach{lcScheduler, nodePeer, "10259", false}, reach{lcRegistry, nodePeer, "5002", false},
+		reach{lcRegistry, nodePeer, "5443", true})
 	checkReach(t, "partial", out, cases)
 	// closed changes nothing for the agent
 	closed, err := helmTemplate(t, append(append([]string{}, labControlSet...), "--set", "exposure=closed")...)
@@ -505,6 +532,70 @@ func TestAgentServiceFollowsExposure(t *testing.T) {
 	}
 }
 
+// Switching an installed agent from open back to partial: Helm 4 applies the chart server-side, and the API server must turn the NodePort
+// into a ClusterIP Service, dropping the node port and externalTrafficPolicy that the same field manager no longer sets (envtest).
+func TestAgentServiceSwitchesFromOpenToClusterIP(t *testing.T) {
+	renderU := func(set ...string) *unstructured.Unstructured {
+		t.Helper()
+		out, err := helmTemplate(t, append(append(append([]string{}, agentSet...), set...), "-s", "templates/agent/service.yaml")...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		u := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal([]byte(out), &u.Object); err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	// rendered afresh for every apply: Apply writes the server's answer (managedFields included) back into the object
+	open := func() *unstructured.Unstructured {
+		return renderU("--set", "exposure=open", "--set", "agent.networkPolicy.ingressFrom.fromCIDR[0]=198.51.100.0/24", "--set", "agent.service.nodePort=30454")
+	}
+	partial := func() *unstructured.Unstructured { return renderU() }
+	env := &envtest.Environment{BinaryAssetsDirectory: envtestDir()}
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("start API server: %v", err)
+	}
+	t.Cleanup(func() { _ = env.Stop() })
+	ctx := context.Background()
+	c, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "laboratory-agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	apply := func(u *unstructured.Unstructured) {
+		t.Helper()
+		if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("helm"), client.ForceOwnership); err != nil {
+			t.Fatalf("server-side apply: %v", err)
+		}
+	}
+	get := func() corev1.Service {
+		t.Helper()
+		var svc corev1.Service
+		if err := c.Get(ctx, client.ObjectKey{Namespace: "laboratory-agent", Name: "laboratory-agent"}, &svc); err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+	apply(open())
+	if svc := get(); svc.Spec.Type != corev1.ServiceTypeNodePort || svc.Spec.Ports[0].NodePort != 30454 || svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
+		t.Fatalf("open: %+v", svc.Spec)
+	}
+	apply(partial())
+	svc := get()
+	if svc.Spec.Type != corev1.ServiceTypeClusterIP || svc.Spec.Ports[0].NodePort != 0 || svc.Spec.ExternalTrafficPolicy != "" || svc.Spec.HealthCheckNodePort != 0 {
+		t.Errorf("open -> partial left node-port fields: %+v", svc.Spec)
+	}
+	// and back to open: the fixed node port returns
+	apply(open())
+	if svc := get(); svc.Spec.Type != corev1.ServiceTypeNodePort || svc.Spec.Ports[0].NodePort != 30454 {
+		t.Errorf("partial -> open: %+v", svc.Spec)
+	}
+}
+
 // Values that would open the agent wider than the mode says, or to nobody, are refused at install time.
 func TestAgentExposureValuesAreChecked(t *testing.T) {
 	open := []string{"--set", "exposure=open"}
@@ -523,21 +614,63 @@ func TestAgentExposureValuesAreChecked(t *testing.T) {
 	}{
 		{"unknown mode", join([]string{"--set", "exposure=public"}), "exposure must be closed, partial or open"},
 		{"open without an allowlist", join(open), "agent.networkPolicy.ingressFrom.fromCIDR"},
+		{"open without the policy", join(open, cidr, []string{"--set", "agent.networkPolicy.enabled=false"}), "exposure=open needs agent.networkPolicy.enabled=true"},
 		{"an allowlist without open", join(cidr), "only with exposure=open"},
 		{"a node port without open", join([]string{"--set", "agent.service.nodePort=30454"}), "agent.service.nodePort"},
-		{"the whole internet", join(open, []string{"--set", "agent.networkPolicy.ingressFrom.fromCIDR[0]=0.0.0.0/0"}), "the whole address space"},
-		{"not a CIDR", join(open, []string{"--set", "agent.networkPolicy.ingressFrom.fromCIDR[0]=198.51.100.10"}), "not a CIDR"},
+		{"fromCIDR not a list", join(open, []string{"--set", "agent.networkPolicy.ingressFrom.fromCIDR=198.51.100.0/24"}), "must be a list of CIDRs"},
+		{"fromEndpoints not a list", join([]string{"--set", "agent.networkPolicy.ingressFrom.fromEndpoints=backend"}), "must be a list of label maps"},
+		{"too many CIDRs", join(open, []string{"--set-json", "agent.networkPolicy.ingressFrom.fromCIDR=[" + strings.TrimSuffix(strings.Repeat("\"198.51.100.0/24\",", 65), ",") + "]"}), "at most 64"},
 		{"no caller at all", join([]string{"--set-json", "agent.networkPolicy.ingressFrom.fromEndpoints=[]"}), "no caller"},
-		{"a caller of every namespace", join([]string{"--set-json", "agent.networkPolicy.ingressFrom.fromEndpoints=[{\"app\":\"backend\"}]"}), "k8s:io.kubernetes.pod.namespace"},
 	} {
 		out, err := helmTemplate(t, c.set...)
 		if err == nil || !strings.Contains(out, c.msg) {
 			t.Errorf("%s: err %v, want a refusal naming %q:\n%s", c.name, err, c.msg, out)
 		}
 	}
-	for _, ok := range [][]string{join(), join(open, cidr), join(open, cidr, []string{"--set", "agent.service.nodePort=30454"})} {
+	// Every spelling of a wide or broken allowlist entry is refused.
+	for _, bad := range []string{
+		"0.0.0.0/0", "0.0.0.0/00", "198.51.100.0/0", "198.51.100.0/08", "0.0.0.0/1", "128.0.0.0/1", "10.0.0.0/7", "198.51.100.10", "198.51.100.0/33",
+		"256.1.1.1/24", "198.51.100.010/24", "198.51.100/24", "198.51.100.0/x", " 198.51.100.0/24", "198.51.100.0/24/1",
+		"::/0", "::/00", "::/64", "0::/64", "0000:1::/48", "::ffff:198.51.100.0/120", "2001:db8::/16", "2001:db8::/129", "2001:zz8::/48",
+	} {
+		out, err := helmTemplate(t, append(join(open), "--set-json", "agent.networkPolicy.ingressFrom.fromCIDR=[\""+bad+"\"]")...)
+		if err == nil || !strings.Contains(out, "agent.networkPolicy.ingressFrom.fromCIDR") {
+			t.Errorf("fromCIDR %q accepted (err %v):\n%s", bad, err, out)
+		}
+	}
+	for _, good := range []string{"198.51.100.0/24", "10.0.0.0/8", "203.0.113.7/32", "2001:db8::/32", "2001:db8:1:2::/64"} {
+		if out, err := helmTemplate(t, append(join(open), "--set-json", "agent.networkPolicy.ingressFrom.fromCIDR=[\""+good+"\"]")...); err != nil {
+			t.Errorf("fromCIDR %q refused: %v\n%s", good, err, out)
+		}
+	}
+	// Caller entries: the namespace named, a real pod label, no identity or source-prefixed key.
+	for _, bad := range []string{
+		`[{"app":"backend"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"","app":"backend"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":" platform","app":"backend"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","app":""}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","app":"backend","any:app":"x"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","K8S:app":"backend"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","reserved:host":""}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","Reserved:World":"x"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","io.cilium.k8s.policy.cluster":"default"}]`,
+		`[{"k8s:io.kubernetes.pod.namespace":"platform","IO.Kubernetes.Pod.Namespace":"other"}]`,
+		`["backend"]`,
+	} {
+		out, err := helmTemplate(t, append(join(), "--set-json", "agent.networkPolicy.ingressFrom.fromEndpoints="+bad)...)
+		if err == nil || !strings.Contains(out, "agent.networkPolicy.ingressFrom.fromEndpoints") {
+			t.Errorf("fromEndpoints %s accepted (err %v):\n%s", bad, err, out)
+		}
+	}
+	for _, ok := range [][]string{join(), join(open, cidr), join(open, cidr, []string{"--set", "agent.service.nodePort=30454"}),
+		join([]string{"--set-json", `agent.networkPolicy.ingressFrom.fromEndpoints=[{"k8s:io.kubernetes.pod.namespace":"apps","app.kubernetes.io/name":"api"}]`})} {
 		if out, err := helmTemplate(t, ok...); err != nil {
 			t.Errorf("%v refused: %v\n%s", ok, err, out)
 		}
+	}
+	// nil-safe: an emptied ingressFrom is a clear refusal, not a template crash
+	if out, err := helmTemplate(t, append(join(), "--set", "agent.networkPolicy.ingressFrom=null")...); err == nil || !strings.Contains(out, "no caller") {
+		t.Errorf("ingressFrom=null: err %v\n%s", err, out)
 	}
 }
