@@ -78,6 +78,10 @@ const (
 	// node answers on cable.sock with the relay of this release, "disabled" with the switch off, else "unavailable: <CODE>: <detail>". The
 	// management agent reports console cables only when every lab node says ready.
 	AnnotationConsoleRelay = "cybericebox.com/console-relay"
+	// AnnotationConsoleRelayKey is the public key (Ed25519, base64url without padding) of the device access process of a node, put on the
+	// node by its node-agent: the device access services of the other nodes verify the cable streams of this node with it. Only the
+	// node-agent of the node may set it (admission policy laboratory-node-agent-label).
+	AnnotationConsoleRelayKey = LabelPrefix + "console-relay-key"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).

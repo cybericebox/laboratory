@@ -384,9 +384,22 @@ func setupConsoleCables(mgr ctrl.Manager, cfg *nodeagent.Config, labeler *nodeag
 			log.Error(err, "cannot put the console relay annotation on the node; the labeler asserts it later")
 		}
 	}
+	var lastKey string
+	relayKey := func(v string) {
+		if v == lastKey {
+			return
+		}
+		lastKey = v
+		labeler.SetAnnotation(names.AnnotationConsoleRelayKey, v)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := nodeagent.PatchNodeAnnotation(ctx, mgr.GetClient(), cfg.NodeName, names.AnnotationConsoleRelayKey, v); err != nil {
+			log.Error(err, "cannot put the console relay key on the node; the labeler asserts it later")
+		}
+	}
 	if err := mgr.Add(&nodeagent.ConsoleCableSync{
 		Client: mgr.GetClient(), NodeName: cfg.NodeName, Cable: nodeagent.NewCableClient(cfg.CableSocket),
-		DeviceAccessNamespace: cfg.DeviceAccessNamespace, CablePort: cfg.ConsoleCablePort, Relay: relay,
+		DeviceAccessNamespace: cfg.DeviceAccessNamespace, CablePort: cfg.ConsoleCablePort, Relay: relay, RelayKey: relayKey,
 	}); err != nil {
 		log.Error(err, "setup ConsoleCableSync")
 		os.Exit(1)

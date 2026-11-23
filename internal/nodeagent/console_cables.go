@@ -138,6 +138,9 @@ type ConsoleCableSync struct {
 	Interval time.Duration
 	// Relay, when set, is told the state of the relay of this node: the value of the annotation names.AnnotationConsoleRelay.
 	Relay func(value string)
+	// RelayKey, when set, is told the public key of the device access process of this node: the value of the annotation
+	// names.AnnotationConsoleRelayKey, which the peers verify its signatures with.
+	RelayKey func(value string)
 
 	mu sync.Mutex
 	// owned are the cables whose status this node-agent wrote as their owner.
@@ -192,6 +195,10 @@ func (s *ConsoleCableSync) Sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	keys, err := s.relayKeys(ctx)
+	if err != nil {
+		return err
+	}
 	devices := map[string]map[string]*laboratoryv1alpha1.Device{} // namespace/lab -> device name -> Device
 	var views []cableView
 	for i := range cables.Items {
@@ -207,7 +214,7 @@ func (s *ConsoleCableSync) Sync(ctx context.Context) error {
 			}
 			devices[key] = m
 		}
-		views = append(views, s.view(c, devices[key], peers))
+		views = append(views, s.view(c, devices[key], peers, keys))
 	}
 	req := wire.LinesRequest{Lines: []wire.LineSpec{}}
 	for _, v := range views {
@@ -227,6 +234,9 @@ func (s *ConsoleCableSync) Sync(ctx context.Context) error {
 	if err != nil {
 		s.relay(Unavailable(CodeRelayUnreachable, "the device access service of this node does not answer on cable.sock"))
 		return fmt.Errorf("cable.sock: %w", err)
+	}
+	if reply.RelayKey != "" && s.RelayKey != nil {
+		s.RelayKey(reply.RelayKey)
 	}
 	if reply.Relay < wire.RelayVersion {
 		s.relay(Unavailable(CodeRelayOld, "the device access service of this node speaks relay version "+strconv.Itoa(reply.Relay)))
@@ -288,6 +298,21 @@ func podReady(p *corev1.Pod) bool {
 	return false
 }
 
+// relayKeys are the public keys the node-agents published on their Nodes (names.AnnotationConsoleRelayKey), by node.
+func (s *ConsoleCableSync) relayKeys(ctx context.Context) (map[string]string, error) {
+	var nodes corev1.NodeList
+	if err := s.Client.List(ctx, &nodes); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for i := range nodes.Items {
+		if k := nodes.Items[i].Annotations[names.AnnotationConsoleRelayKey]; k != "" {
+			out[nodes.Items[i].Name] = k
+		}
+	}
+	return out, nil
+}
+
 // labUIDOf is the UID of the Lab that owns the cable.
 func labUIDOf(c *laboratoryv1alpha1.ConsoleCable) string {
 	for _, o := range c.OwnerReferences {
@@ -303,7 +328,7 @@ func lineEnd(d *laboratoryv1alpha1.Device, port string) wire.LineEnd {
 }
 
 // view decides what this node does for a cable.
-func (s *ConsoleCableSync) view(c *laboratoryv1alpha1.ConsoleCable, devs map[string]*laboratoryv1alpha1.Device, peers map[string]string) cableView {
+func (s *ConsoleCableSync) view(c *laboratoryv1alpha1.ConsoleCable, devs map[string]*laboratoryv1alpha1.Device, peers, keys map[string]string) cableView {
 	v := cableView{cable: c}
 	serial, console := devs[c.Spec.Serial.Device], devs[c.Spec.Console.Device]
 	if serial != nil {
@@ -320,7 +345,8 @@ func (s *ConsoleCableSync) view(c *laboratoryv1alpha1.ConsoleCable, devs map[str
 		return v
 	}
 	spec := wire.LineSpec{Namespace: c.Namespace, Name: c.Name, UID: string(c.UID), Lab: c.Spec.LabRef, LabUID: labUID,
-		Serial: lineEnd(serial, c.Spec.Serial.Port), Console: lineEnd(console, c.Spec.Console.Port), Created: c.CreationTimestamp.Unix()}
+		Serial: lineEnd(serial, c.Spec.Serial.Port), Console: lineEnd(console, c.Spec.Console.Port), Created: c.CreationTimestamp.Unix(),
+		Tenant: c.Labels[names.LabelTenant]}
 	switch {
 	case v.consoleNode == s.NodeName:
 		spec.Role = wire.RoleOwner
@@ -329,19 +355,20 @@ func (s *ConsoleCableSync) view(c *laboratoryv1alpha1.ConsoleCable, devs map[str
 		case v.serialNode == "":
 			v.reason = wire.LineWaitingForDevice
 			return v
-		case peers[v.serialNode] == "":
+		case peers[v.serialNode] == "" || keys[v.serialNode] == "":
+			// no ready device access pod there, or its node published no key yet
 			v.reason = wire.LinePeerUnreachable
 			return v
 		default:
-			spec.Peer = peers[v.serialNode]
+			spec.Peer, spec.PeerKey = peers[v.serialNode], keys[v.serialNode]
 		}
 		v.line = &spec
 	case v.serialNode == s.NodeName:
-		if v.consoleNode == "" {
+		if v.consoleNode == "" || keys[v.consoleNode] == "" {
 			return v
 		}
-		// the acceptor serves the stream only from the node of the console end
-		spec.Role, spec.ConsoleNode = wire.RoleSerial, v.consoleNode
+		// the acceptor serves the stream only from the node of the console end, signed with the key that node published
+		spec.Role, spec.ConsoleNode, spec.ConsoleNodeKey = wire.RoleSerial, v.consoleNode, keys[v.consoleNode]
 		v.line = &spec
 	}
 	return v

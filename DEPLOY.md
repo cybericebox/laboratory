@@ -1356,7 +1356,13 @@ The operator gets `patch` on `consolecables` (the stamp only; the spec is immuta
 **What the agent reports.** The node-agent keeps the annotation `cybericebox.com/console-relay` on its node: `ready` once the device
 access service of the node answers on `cable.sock` with the relay of this release, `unavailable: CONSOLE_RELAY_UNREACHABLE: …` (or
 `CONSOLE_RELAY_OUTDATED`) otherwise (the admission policy of the node-agent lets it change this annotation of its own node and no other).
-With the switch off the node-agent writes nothing: no annotation, no line, no status. `GetFeatures.console_cables.enabled` is true only when the switch is on **and** every lab node
+With the switch off the node-agent writes nothing: no annotation, no line, no status.
+
+**The relay keys.** With the switch on the node-agent also puts the public key the device access process of its node reports on
+`cable.sock` on its Node (`laboratory.cybericebox.com/console-relay-key`, an Ed25519 key in base64url; the same admission policy lets it
+set that annotation on its own node only, with that shape), and gives its service, with every line, the key published on the peer's node:
+to the owner the key of the serial end's node, to the serial end the key of the console end's node. A peer whose node has published no
+key yet gets no line (`PeerUnreachable`) until it does. The device access service still reads nothing of the Kubernetes API. `GetFeatures.console_cables.enabled` is true only when the switch is on **and** every lab node
 that is ready for pods, and at least one, says `ready`; the backend's `ConsoleCablesAvailable` follows it. The reason of a node that
 does not is on the Node, not in the answer (the feature has no reason field).
 

@@ -49,7 +49,7 @@ func (f *fakeCable) PutLines(_ context.Context, req wire.LinesRequest) (wire.Lin
 	if f.err != nil {
 		return wire.LinesReply{}, f.err
 	}
-	out := wire.LinesReply{Relay: wire.RelayVersion}
+	out := wire.LinesReply{Relay: wire.RelayVersion, RelayKey: relayKeyOf("n1")}
 	for _, l := range req.Lines {
 		st := wire.LineState{Namespace: l.Namespace, Name: l.Name, UID: l.UID, Role: l.Role, Reason: wire.LineWaitingForDevice}
 		if f.state != nil {
@@ -114,8 +114,17 @@ func daPod(node, ip string, ready bool) *corev1.Pod {
 		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: ip, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: st}}}}
 }
 
+// relayKeyOf is the key the node-agent of a test node published.
+func relayKeyOf(node string) string { return strings.Repeat(node[len(node)-1:], 43) }
+
+// ccNode is a node whose node-agent published its relay key.
+func ccNode(name string) *corev1.Node {
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{names.AnnotationConsoleRelayKey: relayKeyOf(name)}}}
+}
+
 func ccSync(t *testing.T, node string, cable *fakeCable, objs ...client.Object) (*ConsoleCableSync, client.Client, *string) {
 	t.Helper()
+	objs = append(objs, ccNode("n1"), ccNode("n2"), ccNode("n3"))
 	c := fake.NewClientBuilder().WithScheme(ccScheme(t)).WithObjects(objs...).WithStatusSubresource(&laboratoryv1alpha1.ConsoleCable{}).Build()
 	relay := new(string)
 	return &ConsoleCableSync{Client: c, NodeName: node, Cable: cable, DeviceAccessNamespace: "laboratory-device-access", CablePort: 8081,
@@ -171,8 +180,8 @@ func TestConsoleCableSyncTwoNodes(t *testing.T) {
 	if err := s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(owner.last.Lines) != 1 || owner.last.Lines[0].Role != wire.RoleOwner || owner.last.Lines[0].Peer != "10.1.0.2:8081" {
-		t.Fatalf("owner lines %+v", owner.last.Lines)
+	if len(owner.last.Lines) != 1 || owner.last.Lines[0].Role != wire.RoleOwner || owner.last.Lines[0].Peer != "10.1.0.2:8081" || owner.last.Lines[0].PeerKey != relayKeyOf("n2") {
+		t.Fatalf("owner lines (with the key the serial end's node published) %+v", owner.last.Lines)
 	}
 	if st := cableStatus(t, c, "l1"); !st.LineUp || st.Serial.NodeName != "n2" || st.Console.NodeName != "n1" {
 		t.Fatalf("status %+v", st)
@@ -183,7 +192,8 @@ func TestConsoleCableSyncTwoNodes(t *testing.T) {
 	if err := s2.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(serial.last.Lines) != 1 || serial.last.Lines[0].Role != wire.RoleSerial || serial.last.Lines[0].Peer != "" || serial.last.Lines[0].ConsoleNode != "n1" {
+	if len(serial.last.Lines) != 1 || serial.last.Lines[0].Role != wire.RoleSerial || serial.last.Lines[0].Peer != "" || serial.last.Lines[0].ConsoleNode != "n1" ||
+		serial.last.Lines[0].ConsoleNodeKey != relayKeyOf("n1") {
 		t.Fatalf("serial lines (the acceptor must know the console end's node) %+v", serial.last.Lines)
 	}
 	if st := cableStatus(t, c2, "l1"); st.Console.NodeName != "" || len(st.Conditions) != 0 {
@@ -350,5 +360,32 @@ func TestConsoleCableSyncOrderAndNodeLimit(t *testing.T) {
 	cond := meta.FindStatusCondition(cableStatus(t, c, "l2").Conditions, labstatus.ConditionReady)
 	if cond == nil || cond.Reason != laboratoryv1alpha1.ConsoleCableReasonNodeLineLimit {
 		t.Fatalf("condition %+v", cond)
+	}
+}
+
+// The node-agent publishes the key the device access process of its node reports, and a peer whose node published no key gets no line.
+func TestConsoleCableSyncRelayKeys(t *testing.T) {
+	cable := &fakeCable{state: upState}
+	cc := ccCable("l1")
+	cc.Labels[names.LabelTenant] = "acme"
+	s, c, _ := ccSync(t, "n1", cable, cc, ccDevice("r1", "l1", "n1", false), ccDevice("pc1", "l1", "n4", true), daPod("n4", "10.1.0.4", true))
+	var published string
+	s.RelayKey = func(v string) { published = v }
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if published != relayKeyOf("n1") {
+		t.Fatalf("published %q", published)
+	}
+	if len(cable.last.Lines) != 0 {
+		t.Fatalf("a line to a node without a published key: %+v", cable.last.Lines)
+	}
+	if cond := meta.FindStatusCondition(cableStatus(t, c, "l1").Conditions, labstatus.ConditionReady); cond == nil || cond.Reason != wire.LinePeerUnreachable {
+		t.Fatalf("condition %+v", cond)
+	}
+	// the tenant reaches the service (the line cap is shared per tenant)
+	s2, _, _ := ccSync(t, "n1", cable, cc, ccDevice("r1", "l1", "n1", false), ccDevice("pc1", "l1", "n1", true))
+	if err := s2.Sync(context.Background()); err != nil || len(cable.last.Lines) != 1 || cable.last.Lines[0].Tenant != "acme" {
+		t.Fatalf("%v %+v", err, cable.last.Lines)
 	}
 }
