@@ -543,8 +543,11 @@ proxy:
     # balancer outside the cluster (infrastructure) targets the nodes that run a proxy pod and health-checks them. nodePort: a fixed number for
     # the target group (30000-32767), empty = Kubernetes picks one. annotations: for the Service (for example the address pool of a local
     # load balancer).
+    # externalIPs: the load balancer's own address when it delivers to the node with that address and 443 as the destination instead of the node
+    # port (Google's passthrough load balancer; infrastructure cluster-layout 18.5, G1): one IPv4 address, empty elsewhere.
     service:
       nodePort: null
+      externalIPs: []
       annotations: {}
     # The HTTPS listener is :8443 and the probes (/readyz: the listener is bound and the informer caches have synced; /healthz: the
     # process answers) are on :8081; the TLS files are where proxy-tls is mounted. All constants of the image.
@@ -616,7 +619,10 @@ proxy:
     mode: userspace
     # The demux runs on every node of the lab pool. The entry is a NodePort Service with externalTrafficPolicy Local in every mode (the client's
     # address reaches the demux, and a packet lands on a node that runs a demux pod: the load balancer health-checks the nodes).
+    # externalIPs: the load balancer's own address when it delivers to the node with that address and publicPort as the destination instead of
+    # the node port (Google's passthrough load balancer; infrastructure cluster-layout 18.5, G1): one IPv4 address, empty elsewhere.
     service:
+      externalIPs: []
       annotations: {}
     # The wg-demux binds UDP 51820 (the VPN pods listen on 51820 too), its probes (/readyz: the UDP socket is bound, the
     # caches have synced and every group is in the demux table; /healthz: the process answers) are on :8082 and its Prometheus metrics
@@ -1381,8 +1387,11 @@ agent:
   # The Service laboratory-agent: ClusterIP with exposure closed or partial (the backend dials laboratory-agent.<namespace>.svc); with exposure
   # open a NodePort with externalTrafficPolicy Local, which the public listener of the lab load balancer (infrastructure) targets. mTLS stays.
   # nodePort: a fixed number for the target group (30000-32767), empty = Kubernetes picks one; refused unless exposure is open.
+  # externalIPs: the lab load balancer's own address when it delivers to the node with that address and grpcPort as the destination instead of
+  # the node port (Google's passthrough load balancer; infrastructure cluster-layout 18.5, G1): one IPv4 address; refused unless exposure is open.
   service:
     nodePort: null
+    externalIPs: []
     annotations: {}
 
   # Public domain for the agent's TLS certificate. Empty = ctl.<operator.baseDomain>.

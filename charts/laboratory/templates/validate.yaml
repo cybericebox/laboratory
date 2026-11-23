@@ -358,6 +358,9 @@ list plus the registries of the platform's own images) must be one the cache ser
 {{- if not (has $exposure (list "closed" "partial" "open")) }}
 {{- fail (printf "exposure must be closed, partial or open (got %q)" $exposure) }}
 {{- end }}
+{{- if .Values.registry.gate.service.externalIPs }}
+{{- fail "registry.gate.service.externalIPs is set: the registry gate takes no external IP (its callers are the lab nodes; on Google its load balancer port is its node port, see registry.gate.address)" }}
+{{- end }}
 {{- if .Values.agent.enabled }}
 {{- $np := .Values.agent.networkPolicy | default dict }}
 {{- if not (kindIs "map" $np) }}
@@ -375,6 +378,9 @@ list plus the registries of the platform's own images) must be one the cache ser
 {{- $endpoints := $from.fromEndpoints | default list }}
 {{- if not (kindIs "slice" $endpoints) }}
 {{- fail (printf "agent.networkPolicy.ingressFrom.fromEndpoints must be a list of label maps (got %v)" $endpoints) }}
+{{- end }}
+{{- if and (ne $exposure "open") .Values.agent.service.externalIPs }}
+{{- fail (printf "agent.service.externalIPs is set but exposure is %s: the address of the lab load balancer is a frontend of the agent only with exposure=open (its public listener)" $exposure) }}
 {{- end }}
 {{- if and (ne $exposure "open") .Values.agent.service.nodePort }}
 {{- fail (printf "agent.service.nodePort is set but exposure is %s: the agent has a node port only with exposure=open (its public listener); in-cluster callers dial the ClusterIP Service" $exposure) }}
@@ -406,3 +412,8 @@ list plus the registries of the platform's own images) must be one the cache ser
 {{- if and .Values.agent.enabled (gt (int .Values.agent.replicas) 1) (not .Values.agent.multiReplicaAck) }}
 {{- fail (printf "agent.replicas is %d: the reservation quota and fit checks are serialized inside one agent process, so more than one replica can let two reservations past the quota together (DEPLOY.md, \"Reservations through the agent\"). Keep agent.replicas=1 (one platform is one client), or set agent.multiReplicaAck=true to state that this backend does not use reservations through the agent." (int .Values.agent.replicas)) }}
 {{- end }}
+
+{{- /* The external IP of the public entries (G1 of infrastructure cluster-layout 18.5): one plain IPv4 address each, empty by default. */ -}}
+{{- include "laboratory.assertExternalIPs" (dict "name" "proxy.l7.service.externalIPs" "list" (.Values.proxy.l7.service.externalIPs | default list)) }}
+{{- include "laboratory.assertExternalIPs" (dict "name" "proxy.wg.service.externalIPs" "list" (.Values.proxy.wg.service.externalIPs | default list)) }}
+{{- include "laboratory.assertExternalIPs" (dict "name" "agent.service.externalIPs" "list" (.Values.agent.service.externalIPs | default list)) }}
