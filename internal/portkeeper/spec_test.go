@@ -88,3 +88,23 @@ func TestHashAndLookups(t *testing.T) {
 		t.Fatal("lookups by kind")
 	}
 }
+
+func TestKernelLogInTheSpec(t *testing.T) {
+	ok := Spec{Console: []ConsolePort{{Name: "console0", KernelLog: true}, {Name: "aux0"}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Parse([]byte(`{"console":[{"name":"console0","kernel_log":true}]}`))
+	if err != nil || !s.Console[0].KernelLog {
+		t.Fatalf("parse: %+v %v", s, err)
+	}
+	for name, bad := range map[string]Spec{
+		"two":   {Console: []ConsolePort{{Name: "console0", KernelLog: true}, {Name: "aux0", KernelLog: true}}},
+		"stdio": {Console: []ConsolePort{{Name: "console0", Native: NativeStdio, KernelLog: true}}},
+		"tcp":   {Console: []ConsolePort{{Name: "console0", Native: NativeTCP, Port: 23, KernelLog: true}}},
+	} {
+		if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

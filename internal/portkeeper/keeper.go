@@ -57,6 +57,9 @@ type Config struct {
 	Sys     System
 	// Log receives what goes wrong (stderr of the keeper); nil discards it.
 	Log io.Writer
+	// KernelLog is read for a console port with KernelLog (OSKernelLog when nil); KernelLogPoll is how often (KernelLogPoll when 0).
+	KernelLog     KernelLog
+	KernelLogPoll time.Duration
 }
 
 const (
@@ -85,6 +88,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = RealClock{}
+	}
+	if cfg.KernelLog == nil {
+		cfg.KernelLog = OSKernelLog{}
 	}
 	logf := func(format string, a ...any) {
 		if cfg.Log != nil {
@@ -240,6 +246,9 @@ func manufacturedLine(ctx context.Context, cfg Config, c ConsolePort, h *Hub, lo
 	env := consoleEnv(cfg.Env, id)
 	argv := c.EffectiveCommand()
 	h.SetLine(master)
+	if c.KernelLog {
+		go followKernelLog(ctx, h, cfg.KernelLog, cfg.KernelLogPoll)
+	}
 	go func() {
 		// The keeper holds the slave open for the life of the line: the line and its settings survive a respawn of the program.
 		_ = h.Pump(master)

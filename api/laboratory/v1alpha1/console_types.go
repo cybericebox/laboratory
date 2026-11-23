@@ -29,6 +29,7 @@ var DefaultConsoleCommand = []string{"/bin/login"}
 // ConsolePortSpec is a management line of a device. At most one of Command and Native; neither means the default command (/bin/login).
 // +kubebuilder:validation:XValidation:rule="!has(self.native) || ((!has(self.command) || size(self.command) == 0) && !has(self.user))",message="a console port takes a command (with a user) or a native source, not both"
 // +kubebuilder:validation:XValidation:rule="!has(self.command) || size(self.command) == 0 || (self.command[0].startsWith('/') && !self.command[0].startsWith('/proc/') && !self.command[0].startsWith('/sys/'))",message="the console command starts with an absolute program path outside /proc and /sys"
+// +kubebuilder:validation:XValidation:rule="!has(self.kernelLog) || !self.kernelLog || !has(self.native)",message="kernelLog is for a console port that runs a command, not for a native console"
 type ConsolePortSpec struct {
 	// Name is console<n> or aux<n>, n from 0 to 99. Port names and interface names share one space per device.
 	// +kubebuilder:validation:Required
@@ -48,6 +49,12 @@ type ConsolePortSpec struct {
 	// Native says where the device already puts its console (an emulator); the keeper bridges it to the line instead of running a command.
 	// +optional
 	Native *NativeConsoleSpec `json:"native,omitempty"`
+	// KernelLog shows the guest kernel's messages on the line, like a kernel console: when a client attaches, the keeper first writes the
+	// kernel's ring buffer (every message since boot), then follows new kernel messages, beside the program of the port (the login
+	// prompt). Only on a microvm device (its own kernel; on a container device the kernel is the node's and is never shown), at most one
+	// port of a device, not with native. Contract 3.2 (GetFeatures.console_cables.kernel_log).
+	// +optional
+	KernelLog bool `json:"kernelLog,omitempty"`
 }
 
 // NativeConsoleSpec is where the device already puts its console.

@@ -225,6 +225,8 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				return nil, err
 			}
 			applyNodeSupport(base, verdict)
+			// the kernel log of a console port needs the lines and a microVM to run it on
+			base.ConsoleCables.KernelLog = base.ConsoleCables.GetEnabled() && f.Profiles.MicroVM
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}

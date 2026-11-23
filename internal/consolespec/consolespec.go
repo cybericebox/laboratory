@@ -69,7 +69,19 @@ func Validate(spec *laboratoryv1alpha1.LabSpec) error {
 			ifaces[nic.Name] = true
 		}
 		mine := map[string]port{}
+		kernelLogs := 0
 		for _, c := range d.ConsolePorts {
+			if c.KernelLog {
+				kernelLogs++
+				// The keeper reads the kernel of the sandbox it runs in: in a microVM that is the guest kernel of the device, in a
+				// container it would be the node's (its boot, its hardware, every other tenant's netfilter lines).
+				if d.Profile.Effective() != laboratoryv1alpha1.DeviceProfileMicroVM {
+					return refuse(d.Name, c.Name, "has kernelLog, which only a microvm device has (profile: microvm): a container device shares the node's kernel")
+				}
+				if c.Native != nil {
+					return refuse(d.Name, c.Name, "has kernelLog and a native console: the kernel log goes on a line whose command the keeper runs")
+				}
+			}
 			if ifaces[c.Name] {
 				return refuse(d.Name, c.Name, "has the name of an interface of the device: ports and interfaces share one name space")
 			}
@@ -77,6 +89,9 @@ func Validate(spec *laboratoryv1alpha1.LabSpec) error {
 				return refuse(d.Name, c.Name, "is vm-serial, which the platform sets for console0 of a vm-profile device only")
 			}
 			mine[c.Name] = port{}
+		}
+		if kernelLogs > 1 {
+			return refuse(d.Name, "", "has more than one console port with the kernel log (kernelLog): at most one")
 		}
 		for _, s := range d.SerialPorts {
 			if ifaces[s.Name] {
@@ -129,15 +144,19 @@ func Validate(spec *laboratoryv1alpha1.LabSpec) error {
 }
 
 func deviceSpecOf(d *laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceSpec {
-	return &laboratoryv1alpha1.DeviceSpec{Type: d.Type, ConsolePorts: d.ConsolePorts, SerialPorts: d.SerialPorts}
+	return &laboratoryv1alpha1.DeviceSpec{Type: d.Type, Profile: d.Profile, ConsolePorts: d.ConsolePorts, SerialPorts: d.SerialPorts}
 }
 
 // KeeperSpec is the port list the keeper of the device gets (serial paths resolved to /dev/ttyCON<n> when not declared). vm-serial
-// ports are not the keeper's: the line owner opens the hypervisor's socket (6.4), so they are left out.
+// ports are not the keeper's: the line owner opens the hypervisor's socket (6.4), so they are left out. The kernel log reaches the keeper
+// only from a microvm device: the keeper cannot be sure by itself which kernel it runs on, so this is the gate that keeps the node's
+// kernel log off every line (the keeper's own guest check is the second one).
 func KeeperSpec(d *laboratoryv1alpha1.DeviceSpec) portkeeper.Spec {
 	var out portkeeper.Spec
+	microVM := d.Profile.Effective() == laboratoryv1alpha1.DeviceProfileMicroVM
 	for _, c := range d.ConsolePorts {
-		p := portkeeper.ConsolePort{Name: c.Name, Command: append([]string(nil), c.Command...), User: c.User}
+		p := portkeeper.ConsolePort{Name: c.Name, Command: append([]string(nil), c.Command...), User: c.User,
+			KernelLog: c.KernelLog && microVM && c.Native == nil}
 		if c.Native != nil {
 			if c.Native.Kind == laboratoryv1alpha1.NativeConsoleVMSerial {
 				continue

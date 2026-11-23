@@ -31,6 +31,11 @@ type ConsolePortSpecApplyConfiguration struct {
 	User *string `json:"user,omitempty"`
 	// Native says where the device already puts its console (an emulator); the keeper bridges it to the line instead of running a command.
 	Native *NativeConsoleSpecApplyConfiguration `json:"native,omitempty"`
+	// KernelLog shows the guest kernel's messages on the line, like a kernel console: when a client attaches, the keeper first writes the
+	// kernel's ring buffer (every message since boot), then follows new kernel messages, beside the program of the port (the login
+	// prompt). Only on a microvm device (its own kernel; on a container device the kernel is the node's and is never shown), at most one
+	// port of a device, not with native. Contract 3.2 (GetFeatures.console_cables.kernel_log).
+	KernelLog *bool `json:"kernelLog,omitempty"`
 }
 
 // ConsolePortSpecApplyConfiguration constructs a declarative configuration of the ConsolePortSpec type for use with
@@ -70,5 +75,13 @@ func (b *ConsolePortSpecApplyConfiguration) WithUser(value string) *ConsolePortS
 // If called multiple times, the Native field is set to the value of the last call.
 func (b *ConsolePortSpecApplyConfiguration) WithNative(value *NativeConsoleSpecApplyConfiguration) *ConsolePortSpecApplyConfiguration {
 	b.Native = value
+	return b
+}
+
+// WithKernelLog sets the KernelLog field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the KernelLog field is set to the value of the last call.
+func (b *ConsolePortSpecApplyConfiguration) WithKernelLog(value bool) *ConsolePortSpecApplyConfiguration {
+	b.KernelLog = &value
 	return b
 }

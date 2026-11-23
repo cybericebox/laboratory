@@ -93,3 +93,32 @@ func TestDeviceWithPortsRefusedWithoutTheLauncher(t *testing.T) {
 		t.Fatal("no node image")
 	}
 }
+
+// The kernel log of a console port reaches the keeper only from a microvm device (the operator is the gate: on a container the kernel is
+// the node's); it adds no capability, device or volume to the pod.
+func TestKernelLogReachesTheKeeperOnlyFromAMicroVM(t *testing.T) {
+	for _, c := range []struct {
+		profile laboratoryv1alpha1.DeviceProfile
+		want    bool
+	}{{laboratoryv1alpha1.DeviceProfileMicroVM, true}, {"", false}, {laboratoryv1alpha1.DeviceProfileContainer, false}} {
+		d := portsDevice()
+		d.Spec.Profile = c.profile
+		d.Spec.ConsolePorts[0].KernelLog = true
+		_, _, ann, spec := readinessReconciler().workloadTemplate(d)
+		ks, err := portkeeper.Parse([]byte(ann[names.AnnotationPortsSpec]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ks.Console[0].KernelLog != c.want || strings.Contains(ann[names.AnnotationPortsSpec], "kernel_log") != c.want {
+			t.Fatalf("profile %q: port list %s", c.profile, ann[names.AnnotationPortsSpec])
+		}
+		plain := portsDevice()
+		plain.Spec.Profile = c.profile
+		_, _, _, plainSpec := readinessReconciler().workloadTemplate(plain)
+		main, base := spec.Containers[0], plainSpec.Containers[0]
+		if len(spec.Volumes) != len(plainSpec.Volumes) || len(main.VolumeMounts) != len(base.VolumeMounts) ||
+			len(main.SecurityContext.Capabilities.Add) != len(base.SecurityContext.Capabilities.Add) {
+			t.Fatalf("profile %q: the kernel log changed the pod beyond its port list", c.profile)
+		}
+	}
+}

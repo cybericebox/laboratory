@@ -109,6 +109,8 @@ type DHCPRange struct {
 // +kubebuilder:validation:XValidation:rule="self.type != 'container' || !has(self.interfaces) || size(self.interfaces) <= 16",message="a container device has at most 16 interfaces"
 // +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile == 'container' || self.type == 'container'",message="only a container device has a profile"
 // +kubebuilder:validation:XValidation:rule="self.type == 'container' || (!has(self.consolePorts) && !has(self.serialPorts))",message="only a container device has console and serial ports"
+// +kubebuilder:validation:XValidation:rule="!has(self.consolePorts) || !self.consolePorts.exists(c, has(c.kernelLog) && c.kernelLog) || (has(self.profile) && self.profile == 'microvm')",message="kernelLog is only for a microvm device: a container device shares the node's kernel, whose log is never shown"
+// +kubebuilder:validation:XValidation:rule="!has(self.consolePorts) || self.consolePorts.filter(c, has(c.kernelLog) && c.kernelLog).size() <= 1",message="at most one console port of a device has kernelLog"
 type DeviceTemplate struct {
 	// Name becomes part of the lab's web address (<name>-<code>.<domain>), so
 	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).

@@ -64,6 +64,9 @@ type ConsolePort struct {
 	// Native is "", stdio or tcp; Port is the loopback port of tcp.
 	Native string `json:"native,omitempty"`
 	Port   int    `json:"port,omitempty"`
+	// KernelLog: the line also carries the kernel's messages (kmsg.go). The operator sets it only for a microvm device (the guest kernel
+	// is the device's own); the keeper checks again that it runs in a Kata guest before it reads anything.
+	KernelLog bool `json:"kernel_log,omitempty"`
 }
 
 // SerialPort is a terminal line: Path is the character device inside the device.
@@ -134,8 +137,14 @@ func (s Spec) Validate() error {
 		return bad("more than %d serial ports", MaxSerialPorts)
 	}
 	seen := map[string]bool{}
-	stdio := 0
+	stdio, kernelLogs := 0, 0
 	for _, c := range s.Console {
+		if c.KernelLog {
+			kernelLogs++
+			if c.Native != "" {
+				return bad("console port %q: the kernel log goes on a line with a command, not on a native console", c.Name)
+			}
+		}
 		if !consoleNameRE.MatchString(c.Name) {
 			return bad("console port name %q", c.Name)
 		}
@@ -166,6 +175,9 @@ func (s Spec) Validate() error {
 	}
 	if stdio > 1 {
 		return bad("more than one stdio console")
+	}
+	if kernelLogs > 1 {
+		return bad("more than one console port with the kernel log")
 	}
 	paths := map[string]bool{}
 	for _, p := range s.Serial {

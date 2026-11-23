@@ -105,6 +105,21 @@ func TestValidateRefusals(t *testing.T) {
 			}
 			l.Devices[0].ConsolePorts[0].Command = long
 		}, "port list"},
+		"kernel log on a container device": {func(l *laboratoryv1alpha1.LabSpec) { l.Devices[0].ConsolePorts[0].KernelLog = true },
+			`device "r1": the port "console0" has kernelLog, which only a microvm device has`},
+		"kernel log on an explicit container profile": {func(l *laboratoryv1alpha1.LabSpec) {
+			l.Devices[0].Profile = laboratoryv1alpha1.DeviceProfileContainer
+			l.Devices[0].ConsolePorts[0].KernelLog = true
+		}, "only a microvm device"},
+		"kernel log on two ports": {func(l *laboratoryv1alpha1.LabSpec) {
+			l.Devices[0].Profile = laboratoryv1alpha1.DeviceProfileMicroVM
+			l.Devices[0].ConsolePorts[0].KernelLog = true
+			l.Devices[0].ConsolePorts[1].KernelLog = true
+		}, "more than one console port with the kernel log"},
+		"kernel log on a native console": {func(l *laboratoryv1alpha1.LabSpec) {
+			l.Devices[1].Profile = laboratoryv1alpha1.DeviceProfileMicroVM
+			l.Devices[1].ConsolePorts[0].KernelLog = true
+		}, "kernel log"},
 		"too many cables": {func(l *laboratoryv1alpha1.LabSpec) {
 			for len(l.ConsoleCables) <= 64 {
 				l.ConsoleCables = append(l.ConsoleCables, cable("pc1", "serial0", "r1", "console0"))
@@ -148,5 +163,35 @@ func TestKeeperSpecAndDigest(t *testing.T) {
 	}
 	if !KeeperSpec(&laboratoryv1alpha1.DeviceSpec{}).Empty() {
 		t.Fatal("no ports, empty list")
+	}
+}
+
+// The kernel log is accepted on one manufactured console port of a microvm device, and reaches the keeper only from a microvm device:
+// the operator is the gate (on a container device the kernel is the node's), so a Device that slipped through without the profile never
+// gives the keeper the flag.
+func TestKernelLogOnlyFromAMicroVM(t *testing.T) {
+	l := goodLab()
+	l.Devices[0].Profile = laboratoryv1alpha1.DeviceProfileMicroVM
+	l.Devices[0].ConsolePorts[0].KernelLog = true
+	if err := Validate(l); err != nil {
+		t.Fatalf("kernel log on a microvm device refused: %v", err)
+	}
+	ks := KeeperSpec(&laboratoryv1alpha1.DeviceSpec{Type: laboratoryv1alpha1.DeviceTypeContainer, Profile: laboratoryv1alpha1.DeviceProfileMicroVM,
+		ConsolePorts: l.Devices[0].ConsolePorts})
+	if !ks.Console[0].KernelLog || ks.Console[1].KernelLog {
+		t.Fatalf("microvm keeper spec %+v", ks)
+	}
+	if err := ks.Validate(); err != nil {
+		t.Fatalf("the keeper must accept it: %v", err)
+	}
+	for _, p := range []laboratoryv1alpha1.DeviceProfile{"", laboratoryv1alpha1.DeviceProfileContainer, laboratoryv1alpha1.DeviceProfileVM} {
+		ks := KeeperSpec(&laboratoryv1alpha1.DeviceSpec{Type: laboratoryv1alpha1.DeviceTypeContainer, Profile: p, ConsolePorts: l.Devices[0].ConsolePorts})
+		if ks.Console[0].KernelLog {
+			t.Fatalf("profile %q: the keeper must never get the kernel log", p)
+		}
+	}
+	// a port without the flag keeps the digest it had before the field existed
+	if Marshal(KeeperSpec(&laboratoryv1alpha1.DeviceSpec{ConsolePorts: []laboratoryv1alpha1.ConsolePortSpec{{Name: "console0"}}})) != `{"console":[{"name":"console0"}]}` {
+		t.Fatal("kernel_log must be left out when off")
 	}
 }

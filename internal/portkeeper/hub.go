@@ -30,6 +30,8 @@ type Hub struct {
 	mu     sync.Mutex
 	client *client
 	line   io.Writer
+	// attached, when made by AttachEvents, gets a signal each time a client attaches (the kernel log writes its ring buffer then).
+	attached chan struct{}
 }
 
 // client is the attached connection and its writer, which sends the handshake before it takes anything from the queue.
@@ -56,6 +58,26 @@ func (h *Hub) Attached() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.client != nil
+}
+
+// AttachEvents is a channel that is signalled when a client attaches (signals do not pile up: one waiting signal at most).
+func (h *Hub) AttachEvents() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.attached == nil {
+		h.attached = make(chan struct{}, 1)
+	}
+	return h.attached
+}
+
+// Inject queues bytes for the client as if the line had sent them (in chunks of the queue's size), or drops them with no client.
+func (h *Hub) Inject(p []byte) {
+	const chunk = 4096
+	for len(p) > 0 {
+		n := min(len(p), chunk)
+		h.deliver(p[:n])
+		p = p[n:]
+	}
 }
 
 // WriteLine writes the client's bytes to the line end, or drops them when there is none.
@@ -115,6 +137,12 @@ func (h *Hub) attach(conn net.Conn) *client {
 	}
 	c := &client{conn: conn, out: make(chan []byte, clientQueue), done: make(chan struct{})}
 	h.client = c
+	if h.attached != nil {
+		select {
+		case h.attached <- struct{}{}:
+		default:
+		}
+	}
 	return c
 }
 
