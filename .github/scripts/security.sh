@@ -14,7 +14,7 @@
 # bring the change back into develop, where it already is. backport.sh honours the trailer only on a commit that this workflow made
 # in this repository (verified, author github-actions[bot], committer web-flow, and a pull request from a branch security/X.Y/* of this
 # repository), since anyone can write the text in a pull request. A manual carry therefore has no trailer.
-#   - the line already has the change (the commits are in it, a commit of it carries the same trailer, or the pick is empty): nothing;
+#   - the line already has the change (the commits are in it, a commit that the Security workflow made carries the same trailer (trust.sh), or the pick is empty): nothing;
 #   - the branch exists with a commit on it: this line was done before (a re-run does not open it twice); an empty branch left by a failed
 #     run is made again;
 #   - a pick does not apply cleanly, or the change cannot be sent through the API (a file mode, a symlink, a submodule, a workflow file,
@@ -35,6 +35,8 @@ merge=${MERGE_SHA:?MERGE_SHA is required}
 title=${PR_TITLE:?PR_TITLE is required}
 labels=${PR_LABELS:-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=trust.sh
+source "$here/trust.sh"
 short=${merge:0:7}
 subject=$title
 subject_md=${subject//\`/\'}  # for a code span in the bodies
@@ -149,11 +151,14 @@ if git merge-base --is-ancestor "$last" "$head"; then
   echo "$line_branch already has $short"
   exit 0
 fi
-carried=$(git log --format='%(trailers:key=Carried-from,valueonly)' "$head")
-if grep -qxF "$merge" <<<"$carried"; then
-  echo "$line_branch already has $short (carried before)"
-  exit 0
-fi
+# a commit of the line with the trailer counts only when the Security workflow made it (trust.sh): anyone can write the text
+while read -r k; do
+  [[ -n "$k" ]] || continue
+  if made_by_security "$k" "$line"; then
+    echo "$line_branch already has $short (carried before)"
+    exit 0
+  fi
+done < <(git log --format='%H %(trailers:key=Carried-from,valueonly,separator=%x20)' "$head" | awk -v m="$merge" '{ for (i = 2; i <= NF; i++) if ($i == m) print $1 }')
 
 # the branch: new, or left empty by a failed run (made again at the head of the line), or already carrying the commit (have)
 state=new

@@ -78,7 +78,7 @@ git init -q --bare "$tmp/origin.git"
 git clone -q "$tmp/origin.git" "$tmp/w" 2>/dev/null
 cd "$tmp/w" || exit 1
 mkdir -p .github/scripts
-cp "$here/backport.sh" "$here/release_version.py" "$here/backport_commit.py" .github/scripts/
+cp "$here/backport.sh" "$here/trust.sh" "$here/release_version.py" "$here/backport_commit.py" .github/scripts/
 commit() { echo "$2" >>"$1"; git add -A; git commit -qm "$2"; }
 git checkout -q -b develop
 commit a.txt base
