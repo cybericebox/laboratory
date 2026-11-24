@@ -8,8 +8,11 @@
 # backport/X.Y/<7 hex of AFTER>, and one pull request into develop is opened for it.
 #   - a commit already in develop, or whose change is already there (an empty pick), is left out; when nothing is left, nothing is opened;
 #   - a commit carried from develop by the Security workflow (security.sh) is left out: every commit it brings ends with the trailer
-#     "Carried-from: <commit of develop>", so the change is already in develop and is never sent back (no loop). The trailer is trusted
-#     because every merge into a line is the owner's, by hand;
+#     "Carried-from: <commit of develop>", so the change is already in develop and is never sent back (no loop). A trailer is only text
+#     that any author of a commit in a pull request can write, so it counts only on a commit that the Security workflow made in THIS
+#     repository (made_by_security in trust.sh: verified bot identity and a pull request from a security/X.Y/ branch of this repository);
+#     a trailer anywhere else, or one whose origin cannot be checked, is ignored and the change is brought back (a duplicate pull request
+#     is harmless, a silently lost fix is not);
 #   - the branch exists with a commit on it: this push was brought back before (a re-run does not open it twice); an empty branch left by
 #     a failed run is made again;
 #   - a pick does not apply cleanly, or the change cannot be sent through the API (a file mode, a symlink, a submodule, too large): no
@@ -28,6 +31,8 @@ before=${BEFORE:?BEFORE is required}
 after=${AFTER:?AFTER is required}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 line=$("$here/release_version.py" line-of "$line_branch")
+# shellcheck source=trust.sh
+source "$here/trust.sh"
 
 export GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-github-actions[bot]} GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-github-actions[bot]}
 export GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}
@@ -68,7 +73,10 @@ Then open a pull request into $base. If $base already has this fix in another fo
   echo "::warning::${after:0:7} does not apply to $base: an issue was opened"
 }
 
-carried() { # carried COMMIT: true when every commit it brings has a Carried-from trailer naming a commit of develop
+# "from" is only checked to be an ancestor of develop, not to be the change itself: once made_by_security holds, the commit is one that security.sh
+# made (it writes the merge commit of develop it carries), and no one else can make such a commit here, so naming any commit of develop is
+# enough; the check only keeps a garbled trailer from counting.
+carried() { # carried COMMIT: true when every commit it brings is the Security workflow's and has a Carried-from trailer naming a commit of develop
   local c=$1 k from n=0 own=()
   if [[ $(git rev-list --parents -n 1 "$c" | wc -w) -gt 2 ]]; then
     while read -r k; do [[ -n "$k" ]] && own+=("$k"); done < <(git rev-list --no-merges "$c^1..$c")
@@ -77,7 +85,7 @@ carried() { # carried COMMIT: true when every commit it brings has a Carried-fro
   fi
   for k in "${own[@]}"; do
     from=$(git log -1 --format='%(trailers:key=Carried-from,valueonly)' "$k" | sed -n '/^[0-9a-f]\{40\}$/p' | tail -n 1)
-    [[ -n "$from" ]] && git merge-base --is-ancestor "$from" "$remote/$base" || return 1
+    [[ -n "$from" ]] && git merge-base --is-ancestor "$from" "$remote/$base" && made_by_security "$k" "$line" || return 1
     n=$((n + 1))
   done
   [[ "$n" -gt 0 ]]

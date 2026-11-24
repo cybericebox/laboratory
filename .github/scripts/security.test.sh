@@ -12,7 +12,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 mkdir "$tmp/bin" "$tmp/state" "$tmp/scripts"
 # The scripts run from outside the clone: the clone's checkout moves while they run.
-cp "$here/security.sh" "$here/backport.sh" "$here/release_version.py" "$here/backport_commit.py" "$tmp/scripts/"
+cp "$here/security.sh" "$here/backport.sh" "$here/trust.sh" "$here/release_version.py" "$here/backport_commit.py" "$tmp/scripts/"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 # The fake GitHub: refs and the API commit act on the bare origin; pull requests and issues are files.
@@ -49,13 +49,20 @@ case "$1 $2" in
         p=$(jq -r ".variables.input.fileChanges.additions[$k].path" "$req")
         mkdir -p "$(dirname "$p")"; jq -r ".variables.input.fileChanges.additions[$k].contents" "$req" | base64 -d >"$p"; git add -- "$p"
       done
-      git commit -q -m "$(jq -r .variables.input.message.headline "$req")" -m "$(jq -r .variables.input.message.body "$req")" && git push -q origin "HEAD:refs/heads/$branch" ) || exit 1
+      git commit -q -m "$(jq -r .variables.input.message.headline "$req")" -m "$(jq -r .variables.input.message.body "$req")" && git push -q origin "HEAD:refs/heads/$branch" && touch "$STATE/bot_$(git rev-parse HEAD)" && printf 'o/r\t%s\n' "$branch" >"$STATE/pulls_$(git rev-parse HEAD)" ) || exit 1
     rm -rf "$d"
     echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"x"}}}}' ;;
   "api repos/"*)
     case "$2" in
-      */commits/*/pulls) ;;
-      */commits/*) echo "${FAKE_VERIFIED:-true}" ;;
+      */commits/*/pulls)
+        if [[ "$*" == *head.repo* ]]; then sha=${2%/pulls}; sha=${sha##*/}; [[ -f "$STATE/pulls_$sha" ]] && cat "$STATE/pulls_$sha"; fi
+        exit 0 ;;
+      */commits/*)
+        if [[ "$*" == *@tsv* ]]; then # provenance: only the commits of the fake commit API are the Security workflow's
+          if [[ -f "$STATE/bot_${2##*/}" ]]; then printf 'true\tgithub-actions[bot]\tweb-flow\n'; else printf 'false\tsomeone\tsomeone\n'; fi
+          exit 0
+        fi
+        echo "${FAKE_VERIFIED:-true}" ;;
     esac ;;
 esac
 exit 0
@@ -238,7 +245,8 @@ check "conflict: no branch for 1.11" "0" "$(remote_branch "security/1.11/$s4" | 
 check "conflict: one issue" "1" "$(calls 'issue create')"
 check "conflict: the issue names the line" "1" "$(grep -c "Security fix $s4 into release/1.11 does not apply" "$STATE/issues")"
 check "conflict: the issue has the label" "security" "$(cat "$STATE/issue_labels")"
-check "conflict: the issue gives the trailer" "1" "$(grep -c "trailer 'Carried-from: $m4'" "$STATE/issue_bodies")"
+check "conflict: the issue asks for no trailer" "0" "$(grep -c -- '--trailer\|Carried-from' "$STATE/issue_bodies")"
+check "conflict: the issue says a manual carry needs none" "1" "$(grep -c 'No trailer is needed' "$STATE/issue_bodies")"
 check "conflict: the other lines get pull requests" "2" "$(calls 'pr create')"
 : >"$STATE/calls"
 run "$m4" 16 >/dev/null
@@ -282,6 +290,24 @@ check "mode change: success" "0" "$rc"
 check "mode change: no branch" "0" "$(git ls-remote origin "refs/heads/security/*/${m7:0:7}" | grep -c .)"
 check "mode change: the reason is in the issue" "3" "$(grep -c 'cannot be sent through the GitHub commit API' "$STATE/issue_bodies")"
 check "mode change: no graphql call" "0" "$(calls 'api graphql')"
+
+# 11b. a trailer written by a contributor in a commit of the line does not stop the carry (anyone can write the text)
+reset
+m8=$(merged 21 fix8 f8.txt eight)
+s8=${m8:0:7}
+git checkout -q -B release/1.11 origin/release/1.11
+echo forged >forged.txt; git add -A; git commit -qm "Fix of the line" -m "Carried-from: $m8"
+git push -q origin release/1.11
+git checkout -q develop
+out=$(run "$m8" 21); rc=$?
+check "forged trailer on the line: success" "0" "$rc"
+check "forged trailer on the line: the line still gets its branch" "1" "$(remote_branch "security/1.11/$s8" | grep -c .)"
+check "forged trailer on the line: the other lines too" "1" "$(remote_branch "security/1.10/$s8" | grep -c .)"
+check "forged trailer on the line: not called carried before" "0" "$(grep -c 'carried before' <<<"$out")"
+# the same run again: the security branches exist, so nothing is opened twice
+: >"$STATE/calls"
+out=$(run "$m8" 21); rc=$?
+check "forged trailer on the line: a re-run opens nothing twice" "0" "$(calls 'pr create')"
 
 # 12. bad input
 out=$(PR=1 MERGE_SHA=abc PR_TITLE=t "$tmp/scripts/security.sh" 2>&1); rc=$?
