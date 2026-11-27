@@ -592,14 +592,18 @@ Arguments: dict "policy" <values pullPolicy> "tag" <effective tag>; the tag is n
 
 {{/*
 Non-empty when the proxy Deployment may surge a pod during a rollout: proxy.surge (true/false) when set, else when a live install can count
-the nodes and there are more of them than replicas (the pod anti-affinity is required, so a surge pod needs a node of its own).
+the lab nodes and there are more of them than replicas (the pod anti-affinity is required, so a surge pod needs a lab node of its own; the
+nodes of the other pools never take a proxy pod, so they are not counted).
 */}}
 {{- define "laboratory.proxySurge" -}}
 {{- if kindIs "bool" .Values.proxy.surge -}}
 {{- if .Values.proxy.surge -}}true{{- end -}}
 {{- else -}}
-{{- $nodes := (lookup "v1" "Node" "" "").items -}}
-{{- if and $nodes (gt (len $nodes) (int .Values.proxy.replicas)) -}}true{{- end -}}
+{{- $lab := 0 -}}
+{{- range (lookup "v1" "Node" "" "").items -}}
+{{- if eq (index (.metadata.labels | default dict) "node-restriction.kubernetes.io/cib-pool" | default "") "lab" -}}{{- $lab = add1 $lab -}}{{- end -}}
+{{- end -}}
+{{- if gt $lab (int .Values.proxy.replicas) -}}true{{- end -}}
 {{- end -}}
 {{- end }}
 
